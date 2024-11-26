@@ -1,0 +1,25 @@
+use std::collections::HashMap;
+use aya::programs::{Xdp, XdpFlags};
+use aya::maps::HashMap;
+use Common::model::packet_status::PacketStatus;
+use Common::model::packet_info::PacketInfo;
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    // 加載 eBPF 程序
+    let mut bpf = Bpf::load(include_bytes_aligned!(
+        "../../target/bpfel-unknown-none/debug/ebpf_program"
+    ))?;
+
+    // 獲取 maps
+    let stats: HashMap<_, u32, PacketStats> = bpf.map_mut("STATS")?;
+    let blocked_ips: HashMap<_, u32, u32> = bpf.map_mut("BLOCKED_IPS")?;
+    let forward_rules: HashMap<_, u32, u32> = bpf.map_mut("FORWARD_RULES")?;
+
+    // 啟動 API 服務器
+    let api_server = api::start_server(stats, blocked_ips, forward_rules);
+
+    // 等待終止信號
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
