@@ -1,10 +1,10 @@
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::HashMap;
-use net_guardia_common::{MAX_RULES, MAX_RULES_PORT};
+use net_guardia_common::model::general::MAX_RULES;
 use net_guardia_common::model::ip_port_key::IpPortKey;
 
 #[map]
-static mut FORWARD_RULES: HashMap<IpPortKey, IpPortKey> = HashMap::with_max_entries(MAX_RULES, 0);
+static FORWARD_RULES: HashMap<IpPortKey, IpPortKey> = HashMap::with_max_entries(MAX_RULES, 0);
 
 pub fn get_forward_rule(source_ip: u32, source_port: u16) -> Option<IpPortKey> {
     unsafe {

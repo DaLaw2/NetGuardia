@@ -1,12 +1,12 @@
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::HashMap;
 use net_guardia_common::model::packet_info::PacketInfo;
-use net_guardia_common::{MAX_RULES, MAX_RULES_PORT};
+use net_guardia_common::model::general::{IPv4, IPv6, Port, MAX_RULES, MAX_RULES_PORT};
 
 #[map]
-static mut BLOCKED_IPV4: HashMap<u32, [u16; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES, 0);
+static BLOCKED_IPV4: HashMap<IPv4, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES, 0);
 #[map]
-static mut BLOCKED_IPV6: HashMap<u128, [u16; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES, 0);
+static BLOCKED_IPV6: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES, 0);
 
 pub fn should_block(packet: &PacketInfo) -> bool {
     unsafe {

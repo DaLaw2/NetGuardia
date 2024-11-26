@@ -21,16 +21,16 @@ pub fn parse_packet(ctx: &XdpContext) -> Result<PacketInfo, ()> {
     let eth = unsafe { &*(start as *const EthHdr) };
     offset += size_of::<EthHdr>();
 
-    match unsafe { (*eth).ether_type } {
-        EtherType::Ipv4 => unsafe {
+    match (*eth).ether_type {
+        EtherType::Ipv4 => {
             if start + offset + size_of::<Ipv4Hdr>() > end {
                 return Err(());
             }
             let ipv4 = unsafe { &*((start + offset) as *const Ipv4Hdr) };
             offset += size_of::<Ipv4Hdr>();
 
-            let source_ip = u32::from_be(unsafe { (*ipv4).src_addr });
-            let destination_ip = u32::from_be(unsafe { (*ipv4).dst_addr });
+            let source_ip = (*ipv4).src_addr;
+            let destination_ip = (*ipv4).dst_addr;
             let protocol = ipv4.proto;
 
             let (source_port, destination_port) = match protocol {
@@ -63,7 +63,7 @@ pub fn parse_packet(ctx: &XdpContext) -> Result<PacketInfo, ()> {
                 source_port,
                 destination_port,
                 len: (end - start) as u32,
-                timestamp: bpf_ktime_get_ns(),
+                timestamp: unsafe { bpf_ktime_get_ns() },
             })
         },
         _ => Err(()),
@@ -81,20 +81,18 @@ pub fn modify_packet_destination(ctx: &XdpContext, new_ip: u32, new_port: u16) -
     let eth = unsafe { &mut *(start as *mut EthHdr) };
     offset += size_of::<EthHdr>();
 
-    if unsafe { (*eth).ether_type } == EtherType::Ipv4 {
+    if { (*eth).ether_type } == EtherType::Ipv4 {
         if start + offset + size_of::<Ipv4Hdr>() > end {
             return Err(());
         }
         let ipv4 = unsafe { &mut *((start + offset) as *mut Ipv4Hdr) };
         offset += size_of::<Ipv4Hdr>();
 
-        unsafe {
-            (*ipv4).dst_addr = u32::to_be(new_ip);
-            (*ipv4).check = 0;
-            (*ipv4).check = ipv4_checksum(ipv4);
-        }
+        (*ipv4).dst_addr = u32::to_be(new_ip);
+        (*ipv4).check = 0;
+        (*ipv4).check = ipv4_checksum(ipv4);
 
-        match unsafe { (*ipv4).proto } {
+        match (*ipv4).proto {
             IpProto::Tcp => {
                 if start + offset + size_of::<TcpHdr>() > end {
                     return Err(());
