@@ -54,24 +54,13 @@ async fn print_stats(ebpf: &mut aya::Ebpf, map_name: &str) -> anyhow::Result<()>
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
-
     env_logger::init();
-
-    let rlim = libc::rlimit {
-        rlim_cur: libc::RLIM_INFINITY,
-        rlim_max: libc::RLIM_INFINITY,
-    };
-    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-    if ret != 0 {
-        debug!("remove limit on locked memory failed, ret is: {}", ret);
-    }
 
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/net-guardia"
     )))?;
 
-    // Initialize eBPF logger
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         warn!("Failed to initialize eBPF logger: {}", e);
     }
@@ -81,7 +70,6 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
     info!("Successfully attached XDP program to {}", opt.iface);
 
-    // Set up periodic statistics printing
     let mut interval = time::interval(Duration::from_secs(opt.interval));
     let ctrl_c = signal::ctrl_c();
 
@@ -95,16 +83,16 @@ async fn main() -> anyhow::Result<()> {
                 interval.tick().await;
                 
                 // Print statistics for each time window
-                if let Err(e) = print_stats(&mut ebpf, "SRC_STATS_1MIN").await {
+                if let Err(e) = print_stats(&mut ebpf, "SRC_STATS_IPV4_1MIN").await {
                     warn!("Error printing 1-minute source statistics: {}", e);
                 }
-                if let Err(e) = print_stats(&mut ebpf, "DST_STATS_1MIN").await {
+                if let Err(e) = print_stats(&mut ebpf, "DST_STATS_IPV4_1MIN").await {
                     warn!("Error printing 1-minute destination statistics: {}", e);
                 }
-                if let Err(e) = print_stats(&mut ebpf, "SRC_STATS_10MIN").await {
+                if let Err(e) = print_stats(&mut ebpf, "SRC_STATS_IPV4_10MIN").await {
                     warn!("Error printing 10-minute source statistics: {}", e);
                 }
-                if let Err(e) = print_stats(&mut ebpf, "DST_STATS_10MIN").await {
+                if let Err(e) = print_stats(&mut ebpf, "DST_STATS_IPV4_10MIN").await {
                     warn!("Error printing 10-minute destination statistics: {}", e);
                 }
                 println!("\n{}", "=".repeat(80));

@@ -7,6 +7,20 @@ use network_types::{
     tcp::TcpHdr,
     udp::UdpHdr,
 };
+use network_types::ip::Ipv6Hdr;
+
+pub fn parse_ether_type(ctx: &XdpContext) -> Result<EtherType, ()> {
+    let mut offset = 0;
+    let start = ctx.data();
+    let end = ctx.data_end();
+
+    if start + offset + size_of::<EthHdr>() > end {
+        return Err(());
+    }
+    let eth = unsafe { &*(start as *const EthHdr) };
+    offset += size_of::<EthHdr>();
+    Ok(eth.ether_type)
+}
 
 pub fn parse_packet(ctx: &XdpContext) -> Result<PacketEvent, ()> {
     let mut offset = 0;
@@ -20,14 +34,13 @@ pub fn parse_packet(ctx: &XdpContext) -> Result<PacketEvent, ()> {
     offset += size_of::<EthHdr>();
 
     match eth.ether_type {
-        EtherType::Ipv4 => parse_ipv4_packet(start, end, offset)
-            .map(PacketEvent::IPv4),
-        EtherType::Ipv6 => parse_ipv6_packet(start, end, offset)
-            .map(PacketEvent::IPv6),
+        EtherType::Ipv4 => parse_ipv4_packet(start, end, offset).map(PacketEvent::IPv4),
+        EtherType::Ipv6 => parse_ipv6_packet(start, end, offset).map(PacketEvent::IPv6),
         _ => Err(())
     }
 }
 
+#[inline(always)]
 pub fn parse_ipv4_packet(start: usize, end: usize, mut offset: usize) -> Result<IPv4Event, ()> {
     if start + offset + size_of::<Ipv4Hdr>() > end {
         return Err(());
@@ -40,22 +53,11 @@ pub fn parse_ipv4_packet(start: usize, end: usize, mut offset: usize) -> Result<
     let destination_ip = ipv4.dst_addr;
 
     let (source_port, destination_port) = match protocol {
-        IpProto::Tcp => {
-            let tcp: *const TcpHdr = (start + offset) as *const TcpHdr;
-            if start + offset + size_of::<TcpHdr>() > end {
-                return Err(());
-            }
-            (u16::from_be(unsafe { (*tcp).source }), u16::from_be(unsafe { (*tcp).dest }))
-        }
-        IpProto::Udp => {
-            let udp: *const UdpHdr = (start + offset) as *const UdpHdr;
-            if start + offset + size_of::<UdpHdr>() > end {
-                return Err(());
-            }
-            (u16::from_be(unsafe { (*udp).source }), u16::from_be(unsafe { (*udp).dest }))
-        }
+        IpProto::Tcp => parse_tcp_port(start, end, offset)?,
+        IpProto::Udp => parse_udp_port(start, end, offset)?,
         _ => return Err(()),
     };
+
     Ok(IPv4Event {
         protocol: protocol as u8,
         source_ip,
@@ -67,6 +69,49 @@ pub fn parse_ipv4_packet(start: usize, end: usize, mut offset: usize) -> Result<
     })
 }
 
+#[inline(always)]
 pub fn parse_ipv6_packet(start: usize, end: usize, mut offset: usize) -> Result<IPv6Event, ()> {
-    Err(())
+    if start + offset + size_of::<Ipv6Hdr>() > end {
+        return Err(());
+    }
+    let ipv6 = unsafe { &*((start + offset) as *const Ipv6Hdr) };
+    offset += size_of::<Ipv6Hdr>();
+
+    let protocol = ipv6.next_hdr;
+    let source_ip = u128::from_be_bytes(unsafe { ipv6.src_addr.in6_u.u6_addr8 });
+    let destination_ip = u128::from_be_bytes(unsafe { ipv6.dst_addr.in6_u.u6_addr8 });
+
+    let (source_port, destination_port) = match protocol {
+        IpProto::Tcp => parse_tcp_port(start, end, offset)?,
+        IpProto::Udp => parse_udp_port(start, end, offset)?,
+        _ => return Err(()),
+    };
+
+    Ok(IPv6Event {
+        protocol: protocol as u8,
+        source_ip,
+        destination_ip,
+        source_port,
+        destination_port,
+        len: (end - start) as u32,
+        timestamp: unsafe { bpf_ktime_get_ns() }
+    })
+}
+
+#[inline(always)]
+fn parse_tcp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
+    let tcp: *const TcpHdr = (start + offset) as *const TcpHdr;
+    if start + offset + size_of::<TcpHdr>() > end {
+        return Err(());
+    }
+    Ok((u16::from_be(unsafe { (*tcp).source }), u16::from_be(unsafe { (*tcp).dest })))
+}
+
+#[inline(always)]
+fn parse_udp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
+    let udp: *const UdpHdr = (start + offset) as *const UdpHdr;
+    if start + offset + size_of::<UdpHdr>() > end {
+        return Err(());
+    }
+    Ok((u16::from_be(unsafe { (*udp).source }), u16::from_be(unsafe { (*udp).dest })))
 }

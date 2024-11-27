@@ -114,3 +114,8 @@ pub type AddrPortV4 = [u32; 2];
 /// [1]:    [-------------- Unused (112 bits) --------------][-- Port (16 bits) --]
 /// ```
 pub type AddrPortV6 = [u128; 2];
+
+pub enum AddrPort {
+    IPv4(AddrPortV4),
+    IPv6(AddrPortV6)
+}
