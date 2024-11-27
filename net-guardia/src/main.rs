@@ -1,3 +1,7 @@
+mod core;
+mod model;
+mod web;
+
 use anyhow::Context as _;
 use aya::maps::HashMap;
 use aya::programs::{Xdp, XdpFlags};
@@ -5,7 +9,7 @@ use clap::Parser;
 #[rustfmt::skip]
 use log::{debug, warn};
 use net_guardia_common::model::flow_status::FlowStatus;
-use net_guardia_common::model::general::AddrPortV4;
+use net_guardia_common::model::ip_address::AddrPortV4;
 use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;

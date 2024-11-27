@@ -1,9 +1,10 @@
 use aya_ebpf::helpers::bpf_ktime_get_ns;
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::LruHashMap;
+use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use net_guardia_common::model::flow_status::FlowStatus;
-use net_guardia_common::model::general::{AddrPortV4, AddrPortV6, MAX_STATS};
-use net_guardia_common::model::event::{IPv4Event, IPv6Event, PacketEvent};
+use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
+use net_guardia_common::MAX_STATS;
 
 #[map]
 static SRC_STATS_IPV4_1MIN: LruHashMap<AddrPortV4, FlowStatus> = LruHashMap::with_max_entries(MAX_STATS, 0);
@@ -29,13 +30,6 @@ static DST_STATS_IPV6_10MIN: LruHashMap<AddrPortV6, FlowStatus> = LruHashMap::wi
 static DST_STATS_IPV4_1HOUR: LruHashMap<AddrPortV4, FlowStatus> = LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
 static DST_STATS_IPV6_1HOUR: LruHashMap<AddrPortV6, FlowStatus> = LruHashMap::with_max_entries(MAX_STATS, 0);
-
-pub fn update_stats(event: &PacketEvent) {
-    match event {
-        PacketEvent::IPv4(event) => update_stats_ipv4(event),
-        PacketEvent::IPv6(event) => update_stats_ipv6(event),
-    }
-}
 
 pub fn update_stats_ipv4(event: &IPv4Event) {
     unsafe {
@@ -69,7 +63,7 @@ unsafe fn update_flow_status_ipv4(
     map: &LruHashMap<AddrPortV4, FlowStatus>,
     key: &AddrPortV4,
     event: &IPv4Event,
-    now: u64
+    now: u64,
 ) {
     if let Some(status) = map.get_ptr_mut(key) {
         (*status)[0] += event.len as u64;
@@ -85,7 +79,7 @@ unsafe fn update_flow_status_ipv6(
     map: &LruHashMap<AddrPortV6, FlowStatus>,
     key: &AddrPortV6,
     event: &IPv6Event,
-    now: u64
+    now: u64,
 ) {
     if let Some(status) = map.get_ptr_mut(key) {
         (*status)[0] += event.len as u64;

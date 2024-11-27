@@ -4,10 +4,10 @@
 mod action;
 mod utils;
 
+use crate::utils::{change_destination, parsing};
+use action::{filter, forward, monitor};
 use aya_ebpf::{bindings::xdp_action, macros::xdp, programs::XdpContext};
 use network_types::eth::EtherType;
-use action::{filter, forward, monitor};
-use crate::utils::{parsing, misc};
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
@@ -18,36 +18,29 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 }
 
 fn try_net_guardia(ctx: XdpContext) -> Result<u32, ()> {
-    // let ether_type = match parsing::parse_ether_type(&ctx) {
-    //     Ok(ether_type) => ether_type,
-    //     Err(_) => return Ok(xdp_action::XDP_PASS)
-    // };
-    //
-    // match ether_type {
-    //     EtherType::Ipv4 => {
-    //
-    //     }
-    //     EtherType::Ipv6 => {
-    //
-    //     }
-    //     _ => {}
-    // }
-
-    let event = match parsing::parse_packet(&ctx) {
-        Ok(event) => event,
-        Err(_) => return Ok(xdp_action::XDP_PASS),
-    };
-
-    if filter::should_block(&event) {
-        return Ok(xdp_action::XDP_DROP);
+    match parsing::parse_ether_type(&ctx)? {
+        EtherType::Ipv4 => {
+            let event = parsing::parse_ipv4_packet(&ctx)?;
+            if filter::should_block_ipv4(&event) {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            if let Some(forward_rule) = forward::get_forward_rule_ipv4(&event.get_source()) {
+                change_destination::modify_ipv4_packet_destination(&ctx, forward_rule)?;
+            }
+            monitor::update_stats_ipv4(&event);
+        }
+        EtherType::Ipv6 => {
+            let event = parsing::parse_ipv6_packet(&ctx)?;
+            if filter::should_block_ipv6(&event) {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            if let Some(forward_rule) = forward::get_forward_rule_ipv6(&event.get_source()) {
+                change_destination::modify_ipv6_packet_destination(&ctx, forward_rule)?;
+            }
+            monitor::update_stats_ipv6(&event);
+        }
+        _ => Err(())?,
     }
-
-    if let Some(forward_rule) = forward::get_forward_rule(event.get_source()) {
-        // let _ = misc::modify_packet_destination(&ctx, forward_rule[0], forward_rule[1] as u16);
-    }
-
-    monitor::update_stats(&event);
-
     Ok(xdp_action::XDP_PASS)
 }
 

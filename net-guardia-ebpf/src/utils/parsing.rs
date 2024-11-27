@@ -1,28 +1,26 @@
 use aya_ebpf::helpers::bpf_ktime_get_ns;
 use aya_ebpf::programs::XdpContext;
-use net_guardia_common::model::event::{IPv4Event, IPv6Event, PacketEvent};
+use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::{IpProto, Ipv4Hdr},
+    ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use network_types::ip::Ipv6Hdr;
 
 pub fn parse_ether_type(ctx: &XdpContext) -> Result<EtherType, ()> {
-    let mut offset = 0;
     let start = ctx.data();
     let end = ctx.data_end();
 
-    if start + offset + size_of::<EthHdr>() > end {
+    if start + size_of::<EthHdr>() > end {
         return Err(());
     }
     let eth = unsafe { &*(start as *const EthHdr) };
-    offset += size_of::<EthHdr>();
     Ok(eth.ether_type)
 }
 
-pub fn parse_packet(ctx: &XdpContext) -> Result<PacketEvent, ()> {
+#[inline(always)]
+pub fn parse_ipv4_packet(ctx: &XdpContext) -> Result<IPv4Event, ()> {
     let mut offset = 0;
     let start = ctx.data();
     let end = ctx.data_end();
@@ -30,18 +28,8 @@ pub fn parse_packet(ctx: &XdpContext) -> Result<PacketEvent, ()> {
     if start + offset + size_of::<EthHdr>() > end {
         return Err(());
     }
-    let eth = unsafe { &*(start as *const EthHdr) };
     offset += size_of::<EthHdr>();
 
-    match eth.ether_type {
-        EtherType::Ipv4 => parse_ipv4_packet(start, end, offset).map(PacketEvent::IPv4),
-        EtherType::Ipv6 => parse_ipv6_packet(start, end, offset).map(PacketEvent::IPv6),
-        _ => Err(())
-    }
-}
-
-#[inline(always)]
-pub fn parse_ipv4_packet(start: usize, end: usize, mut offset: usize) -> Result<IPv4Event, ()> {
     if start + offset + size_of::<Ipv4Hdr>() > end {
         return Err(());
     }
@@ -70,7 +58,16 @@ pub fn parse_ipv4_packet(start: usize, end: usize, mut offset: usize) -> Result<
 }
 
 #[inline(always)]
-pub fn parse_ipv6_packet(start: usize, end: usize, mut offset: usize) -> Result<IPv6Event, ()> {
+pub fn parse_ipv6_packet(ctx: &XdpContext) -> Result<IPv6Event, ()> {
+    let mut offset = 0;
+    let start = ctx.data();
+    let end = ctx.data_end();
+
+    if start + offset + size_of::<EthHdr>() > end {
+        return Err(());
+    }
+    offset += size_of::<EthHdr>();
+
     if start + offset + size_of::<Ipv6Hdr>() > end {
         return Err(());
     }
