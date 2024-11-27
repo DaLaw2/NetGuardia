@@ -457,6 +457,7 @@ name = "net-guardia-common"
 version = "0.1.0"
 dependencies = [
  "aya",
+ "network-types",
 ]
 
 [[package]]

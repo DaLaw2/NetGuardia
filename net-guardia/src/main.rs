@@ -5,7 +5,7 @@ use clap::Parser;
 #[rustfmt::skip]
 use log::{debug, warn};
 use net_guardia_common::model::flow_status::FlowStatus;
-use net_guardia_common::model::ip_port_key::IpPortKey;
+use net_guardia_common::model::general::AddrPortV4;
 use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;
@@ -21,7 +21,7 @@ struct Opt {
 }
 
 async fn print_stats(ebpf: &mut aya::Ebpf, map_name: &str) -> anyhow::Result<()> {
-    let status_map: HashMap<_, IpPortKey, FlowStatus> =
+    let status_map: HashMap<_, AddrPortV4, FlowStatus> =
         HashMap::try_from(ebpf.map_mut(map_name).unwrap())?;
 
     println!("\n{} Statistics:", map_name);

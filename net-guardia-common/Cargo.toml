@@ -9,6 +9,7 @@ user = ["aya"]
 
 [dependencies]
 aya = { workspace = true, optional = true }
+network-types = "0.0.7"
 
 [lib]
 path = "src/lib.rs"
