@@ -1,0 +1,6 @@
+[Config]
+ingress_ifindex = "eth0" # nic name
+egress_ifindex = "enx1c860b2f925e" # nic name
+management_ifindex = "wlan0" # nic name
+http_server_bind_port = 8080 # port
+refresh_interval = 5 # seconds
