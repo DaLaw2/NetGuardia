@@ -48,16 +48,16 @@ impl ConfigManager {
 
     pub fn now_blocking() -> Config {
         // Initialization has been ensured
-        let lock = SYNC_CONFIG.get().unwrap();
+        let once_lock = SYNC_CONFIG.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
-        lock.read().unwrap().clone()
+        once_lock.read().unwrap().clone()
     }
 
     pub async fn now() -> Config {
         // Initialization has been ensured
-        let lock = ASYNC_CONFIG.get().unwrap();
+        let once_lock = ASYNC_CONFIG.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
-        lock.read().await.clone()
+        once_lock.read().await.clone()
     }
 
     pub async fn update(config: Config) {

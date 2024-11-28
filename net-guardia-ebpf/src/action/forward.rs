@@ -8,10 +8,12 @@ static FORWARD_RULES_IPV4: HashMap<AddrPortV4, AddrPortV4> = HashMap::with_max_e
 #[map]
 static FORWARD_RULES_IPV6: HashMap<AddrPortV6, AddrPortV6> = HashMap::with_max_entries(MAX_RULES, 0);
 
+#[inline(always)]
 pub fn get_forward_rule_ipv4(source: &AddrPortV4) -> Option<AddrPortV4> {
     unsafe { FORWARD_RULES_IPV4.get(source).cloned() }
 }
 
+#[inline(always)]
 pub fn get_forward_rule_ipv6(source: &AddrPortV6) -> Option<AddrPortV6> {
     unsafe { FORWARD_RULES_IPV6.get(&source).cloned() }
 }

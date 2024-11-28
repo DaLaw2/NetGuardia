@@ -1,11 +1,11 @@
 use tokio::fs;
-use tracing::Level;
+use tracing::{info, Level};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-pub struct Logging {}
+pub struct Logging;
 
 impl Logging {
     pub async fn initialize() -> anyhow::Result<()> {
@@ -32,7 +32,7 @@ impl Logging {
         tracing_subscriber::registry()
             .with(stdout_layer)
             .with(file_layer)
-            .with(EnvFilter::from_default_env().add_directive(Level::DEBUG.into()))
+            .with(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
             .init();
 
         Ok(())

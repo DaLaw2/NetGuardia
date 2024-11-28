@@ -7,6 +7,8 @@ mod utils;
 use crate::utils::{change_destination, parsing};
 use action::{filter, forward, monitor};
 use aya_ebpf::{bindings::xdp_action, macros::xdp, programs::XdpContext};
+#[allow(unused_imports)]
+use aya_log_ebpf::info;
 use network_types::eth::EtherType;
 
 #[xdp]

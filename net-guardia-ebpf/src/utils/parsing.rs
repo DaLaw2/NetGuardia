@@ -8,6 +8,7 @@ use network_types::{
     udp::UdpHdr,
 };
 
+#[inline(always)]
 pub fn parse_ether_type(ctx: &XdpContext) -> Result<EtherType, ()> {
     let start = ctx.data();
     let end = ctx.data_end();

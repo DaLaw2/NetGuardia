@@ -12,4 +12,5 @@ pub struct Config {
     pub egress_ifindex: String,
     pub management_ifindex: String,
     pub refresh_interval: u64,
+    pub http_server_bind_port: u16
 }

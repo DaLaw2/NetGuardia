@@ -1,4 +1,4 @@
-use crate::utils::static_file::StaticFiles;
+use crate::utils::static_files::StaticFiles;
 use actix_web::{get, post, web, HttpResponse, Responder, Scope};
 
 pub fn initialize() -> Scope {
