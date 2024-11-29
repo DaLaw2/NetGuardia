@@ -2,8 +2,10 @@ use crate::core::system::System;
 use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
-use net_guardia_common::model::flow_status::FlowStatus;
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
+use net_guardia_common::model::flow_stats::FlowStats as EbpfFlowStats;
+use net_guardia_common::model::ip_address::{
+    AddrPortV4 as EbpfAddrPortV4, AddrPortV6 as EbpfAddrPortV6,
+};
 use std::collections::HashMap as StdHashMap;
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -12,18 +14,18 @@ use tracing::info;
 static MONITOR: OnceLock<RwLock<Monitor>> = OnceLock::new();
 
 pub struct Monitor {
-    src_ipv4_1min: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    src_ipv6_1min: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
-    src_ipv4_10min: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    src_ipv6_10min: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
-    src_ipv4_1hour: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    src_ipv6_1hour: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
-    dst_ipv4_1min: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    dst_ipv6_1min: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
-    dst_ipv4_10min: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    dst_ipv6_10min: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
-    dst_ipv4_1hour: AyaHashMap<MapData, AddrPortV4, FlowStatus>,
-    dst_ipv6_1hour: AyaHashMap<MapData, AddrPortV6, FlowStatus>,
+    src_ipv4_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    src_ipv4_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    src_ipv4_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    src_ipv6_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    src_ipv6_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    src_ipv6_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    dst_ipv4_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    dst_ipv4_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    dst_ipv4_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    dst_ipv6_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    dst_ipv6_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    dst_ipv6_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
 }
 
 impl Monitor {
@@ -33,16 +35,16 @@ impl Monitor {
         let mut ebpf = &mut system.ebpf;
         let monitor = Monitor {
             src_ipv4_1min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_1MIN").unwrap())?,
-            src_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_1MIN").unwrap())?,
             src_ipv4_10min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_10MIN").unwrap())?,
-            src_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_10MIN").unwrap())?,
             src_ipv4_1hour: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_1HOUR").unwrap())?,
+            src_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_1MIN").unwrap())?,
+            src_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_10MIN").unwrap())?,
             src_ipv6_1hour: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_1HOUR").unwrap())?,
             dst_ipv4_1min: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_1MIN").unwrap())?,
-            dst_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_1MIN").unwrap())?,
             dst_ipv4_10min: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_10MIN").unwrap())?,
-            dst_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_10MIN").unwrap())?,
             dst_ipv4_1hour: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_1HOUR").unwrap())?,
+            dst_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_1MIN").unwrap())?,
+            dst_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_10MIN").unwrap())?,
             dst_ipv6_1hour: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_1HOUR").unwrap())?,
         };
         MONITOR.get_or_init(|| RwLock::new(monitor));
@@ -68,7 +70,7 @@ impl Monitor {
 
     pub async fn get_ipv4_flow_data(
         ipv4_flow_type: IPv4FlowType,
-    ) -> StdHashMap<AddrPortV4, FlowStatus> {
+    ) -> StdHashMap<EbpfAddrPortV4, EbpfFlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv4_flow_type {
             IPv4FlowType::SrcIPv4_1Min => monitor.src_ipv4_1min.iter(),
@@ -83,7 +85,7 @@ impl Monitor {
 
     pub async fn get_ipv6_flow_data(
         ipv6_flow_type: IPv6FlowType,
-    ) -> StdHashMap<AddrPortV6, FlowStatus> {
+    ) -> StdHashMap<EbpfAddrPortV6, EbpfFlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv6_flow_type {
             IPv6FlowType::SrcIPv6_1Min => monitor.src_ipv6_1min.iter(),

@@ -20,7 +20,9 @@ tracing-appender = "0.2.3"
 actix-web = "4.9.0"
 rust-embed = "8.5.0"
 actix-cors = "0.7.0"
+actix = "0.13.5"
 mime_guess = "2.0.5"
+actix-web-actors = "4.3.0"
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

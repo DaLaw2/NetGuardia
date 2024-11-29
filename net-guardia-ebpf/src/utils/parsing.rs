@@ -38,8 +38,8 @@ pub fn parse_ipv4_packet(ctx: &XdpContext) -> Result<IPv4Event, ()> {
     offset += size_of::<Ipv4Hdr>();
 
     let protocol = ipv4.proto;
-    let source_ip = ipv4.src_addr;
-    let destination_ip = ipv4.dst_addr;
+    let source_ip = u32::from_be(ipv4.src_addr);
+    let destination_ip = u32::from_be(ipv4.dst_addr);
 
     let (source_port, destination_port) = match protocol {
         IpProto::Tcp => parse_tcp_port(start, end, offset)?,

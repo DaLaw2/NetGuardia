@@ -5,9 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-use cargo_metadata::{
-    Artifact, CompilerMessage, Message, Metadata, MetadataCommand, Package, Target,
-};
+use cargo_metadata::{Artifact, CompilerMessage, Message, Metadata, MetadataCommand, Package, Target, TargetKind};
 
 /// This crate has a runtime dependency on artifacts produced by the `net-guardia-ebpf` crate.
 /// This would be better expressed as one or more [artifact-dependencies][bindeps] but issues such
@@ -140,7 +138,7 @@ fn main() {
     } else {
         let Package { targets, .. } = ebpf_package;
         for Target { name, kind, .. } in targets {
-            if *kind != ["bin"] {
+            if *kind != [TargetKind::Bin] {
                 continue;
             }
             let dst = out_dir.join(name);

@@ -7,6 +7,7 @@ pub enum IPv4FlowType {
     DstIPv4_10Min,
     DstIPv4_1Hour,
 }
+
 #[derive(Copy, Clone)]
 pub enum IPv6FlowType {
     SrcIPv6_1Min,

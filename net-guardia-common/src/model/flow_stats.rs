@@ -11,7 +11,7 @@
 /// ```ignore
 /// // Create new flow status
 /// let now = bpf_ktime_get_ns();
-/// let status: FlowStatus = [
+/// let status: FlowStats = [
 ///     1500,       // 1500 bytes
 ///     1,          // 1 packet
 ///     now,        // Current timestamp
@@ -34,4 +34,4 @@
 /// [1]:    [------------------ Packets (64 bits) -----------------]
 /// [2]:    [----------------- Timestamp (64 bits) ----------------]
 /// ```
-pub type FlowStatus = [u64; 3];
+pub type FlowStats = [u64; 3];
