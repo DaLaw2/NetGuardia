@@ -53,6 +53,7 @@ impl System {
 
     pub async fn run() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Online);
+        Monitor::run().await;
         let config = ConfigManager::now().await;
         HttpServer::new(|| {
             let cors = actix_cors::Cors::default()
@@ -73,6 +74,7 @@ impl System {
 
     pub async fn terminate() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Terminating);
+        Monitor::terminate().await;
         info!("{}", SystemEntry::TerminateComplete);
         Ok(())
     }

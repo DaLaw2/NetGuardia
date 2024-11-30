@@ -1,7 +1,10 @@
 use crate::core::monitor::Monitor;
 use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
-use actix_web::{get, web, Error, HttpRequest, HttpResponse, Responder, Scope};
 use crate::web::utils::map_util::{transform_ipv4_flow_data, transform_ipv6_flow_data};
+use actix_web::{get, web, Error, HttpRequest, HttpResponse, Responder, Scope};
+use actix_web_actors::ws::start;
+use tracing::info;
+use crate::web::utils::flow_websocket::{IPv4FlowWebSocket, IPv6FlowWebSocket};
 
 pub fn initialize() -> Scope {
     web::scope("/monitor")
@@ -17,6 +20,8 @@ pub fn initialize() -> Scope {
         .service(get_dst_ipv6_1min)
         .service(get_dst_ipv6_10min)
         .service(get_dst_ipv6_1hour)
+        .service(websocket_ipv4)
+        .service(websocket_ipv6)
 }
 
 #[get("/get/src/ipv4/1min")]
@@ -103,7 +108,31 @@ async fn get_dst_ipv6_1hour() -> impl Responder {
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/websocket")]
-async fn websocket(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    Ok(HttpResponse::Forbidden().finish())
+#[get("/websocket/ipv4/{flow_type}")]
+async fn websocket_ipv4(
+    req: HttpRequest,
+    stream: web::Payload,
+    path: web::Path<IPv4FlowType>,
+) -> Result<HttpResponse, Error> {
+    info!("Try to connect ipv4 websocket");
+    let flow_type = path.into_inner();
+    let websocket = IPv4FlowWebSocket {
+        flow_type,
+        interval: None,
+    };
+    start(websocket, &req, stream)
+}
+
+#[get("/websocket/ipv6/{flow_type}")]
+async fn websocket_ipv6(
+    req: HttpRequest,
+    stream: web::Payload,
+    path: web::Path<IPv6FlowType>,
+) -> Result<HttpResponse, Error> {
+    let flow_type = path.into_inner();
+    let websocket = IPv6FlowWebSocket {
+        flow_type,
+        interval: None,
+    };
+    start(websocket, &req, stream)
 }

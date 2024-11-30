@@ -1,4 +1,7 @@
-#[derive(Copy, Clone)]
+use std::str::FromStr;
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug, Copy, Clone)]
 pub enum IPv4FlowType {
     SrcIPv4_1Min,
     SrcIPv4_10Min,
@@ -8,7 +11,7 @@ pub enum IPv4FlowType {
     DstIPv4_1Hour,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Deserialize, Debug, Copy, Clone)]
 pub enum IPv6FlowType {
     SrcIPv6_1Min,
     SrcIPv6_10Min,
