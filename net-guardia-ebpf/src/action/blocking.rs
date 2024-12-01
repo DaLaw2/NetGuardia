@@ -5,21 +5,16 @@ use net_guardia_common::model::ip_address::{IPv4, IPv6, Port};
 use net_guardia_common::{MAX_RULES, MAX_RULES_PORT};
 
 #[map]
-static BLOCKED_IPV4: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
+static PERMANENT_BLACKLIST_IPV4: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
     HashMap::with_max_entries(MAX_RULES, 0);
 #[map]
-static BLOCKED_IPV6: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
+static PERMANENT_BLACKLIST_IPV6: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
     HashMap::with_max_entries(MAX_RULES, 0);
 
 pub fn should_block_ipv4(event: &IPv4Event) -> bool {
     unsafe {
-        if let Some(ports) = BLOCKED_IPV4.get(&event.source_ip) {
+        if let Some(ports) = PERMANENT_BLACKLIST_IPV4.get(&event.source_ip) {
             if is_port_blocked(ports, event.source_port) {
-                return true;
-            }
-        }
-        if let Some(ports) = BLOCKED_IPV4.get(&event.destination_ip) {
-            if is_port_blocked(ports, event.destination_port) {
                 return true;
             }
         }
@@ -29,13 +24,8 @@ pub fn should_block_ipv4(event: &IPv4Event) -> bool {
 
 pub fn should_block_ipv6(event: &IPv6Event) -> bool {
     unsafe {
-        if let Some(ports) = BLOCKED_IPV6.get(&event.source_ip) {
+        if let Some(ports) = PERMANENT_BLACKLIST_IPV6.get(&event.source_ip) {
             if is_port_blocked(ports, event.source_port) {
-                return true;
-            }
-        }
-        if let Some(ports) = BLOCKED_IPV6.get(&event.destination_ip) {
-            if is_port_blocked(ports, event.destination_port) {
                 return true;
             }
         }

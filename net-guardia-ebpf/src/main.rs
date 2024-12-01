@@ -10,6 +10,7 @@ use aya_ebpf::{bindings::xdp_action, macros::xdp, programs::XdpContext};
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
 use network_types::eth::EtherType;
+use crate::action::service;
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
@@ -29,12 +30,17 @@ fn try_net_guardia(ctx: XdpContext) -> Result<u32, ()> {
             if blocking::should_block_ipv4(&event) {
                 return Ok(xdp_action::XDP_DROP);
             }
-
+            if service::ipv4_service_rule_violation(&event, start, end, offset) {
+                return Ok(xdp_action::XDP_DROP);
+            }
             monitor::update_stats_ipv4(&event);
         }
         EtherType::Ipv6 => {
             let event = parsing::parse_ipv6_packet(start, end, &mut offset)?;
             if blocking::should_block_ipv6(&event) {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            if service::ipv6_service_rule_violation(&event, start, end, offset) {
                 return Ok(xdp_action::XDP_DROP);
             }
             monitor::update_stats_ipv6(&event);
