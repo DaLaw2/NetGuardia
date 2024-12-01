@@ -114,7 +114,6 @@ async fn websocket_ipv4(
     stream: web::Payload,
     path: web::Path<IPv4FlowType>,
 ) -> Result<HttpResponse, Error> {
-    info!("Try to connect ipv4 websocket");
     let flow_type = path.into_inner();
     let websocket = IPv4FlowWebSocket {
         flow_type,

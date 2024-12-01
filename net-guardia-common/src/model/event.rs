@@ -1,4 +1,4 @@
-use crate::model::ip_address::{AddrPortV4, AddrPortV6};
+use crate::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 
 pub struct IPv4Event {
     pub protocol: u8,
@@ -12,12 +12,12 @@ pub struct IPv4Event {
 
 impl IPv4Event {
     #[inline(always)]
-    pub fn get_source(&self) -> AddrPortV4 {
+    pub fn get_source(&self) -> EbpfAddrPortV4 {
         [self.source_ip, self.source_port as u32]
     }
 
     #[inline(always)]
-    pub fn get_destination(&self) -> AddrPortV4 {
+    pub fn get_destination(&self) -> EbpfAddrPortV4 {
         [self.destination_ip, self.destination_port as u32]
     }
 }
@@ -34,12 +34,12 @@ pub struct IPv6Event {
 
 impl IPv6Event {
     #[inline(always)]
-    pub fn get_source(&self) -> AddrPortV6 {
+    pub fn get_source(&self) -> EbpfAddrPortV6 {
         [self.source_ip, self.source_port as u128]
     }
 
     #[inline(always)]
-    pub fn get_destination(&self) -> AddrPortV6 {
+    pub fn get_destination(&self) -> EbpfAddrPortV6 {
         [self.destination_ip, self.destination_port as u128]
     }
 }

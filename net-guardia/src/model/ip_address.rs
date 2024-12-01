@@ -1,22 +1,6 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
-use serde::Serialize;
-use net_guardia_common::model::ip_address::{
-    AddrPortV4 as EbpfAddrPortV4, AddrPortV6 as EbpfAddrPortV6
-};
 use crate::utils::definition::IntoString;
-
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
-pub struct AddrPortV4 {
-    pub ip: u32,
-    pub port: u16,
-}
-
-
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
-pub struct AddrPortV6 {
-    pub ip: u128,
-    pub port: u16,
-}
+use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 impl IntoString for EbpfAddrPortV4 {
     fn into_string(self) -> String {

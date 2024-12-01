@@ -1,12 +1,12 @@
 use aya_ebpf::programs::XdpContext;
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
+use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use net_guardia_common::model::pseudo_header::{IPv4PseudoHeader, IPv6PseudoHeader};
 use network_types::eth::EthHdr;
 use network_types::ip::{IpProto, Ipv4Hdr, Ipv6Hdr};
 use network_types::tcp::TcpHdr;
 use network_types::udp::UdpHdr;
 
-pub fn modify_ipv4_packet_destination(ctx: &XdpContext, new_address: AddrPortV4) -> Result<(), ()> {
+pub fn modify_ipv4_packet_destination(ctx: &XdpContext, new_address: EbpfAddrPortV4) -> Result<(), ()> {
     let new_ip = new_address[0];
     let new_port = new_address[1] as u16;
 
@@ -65,7 +65,7 @@ pub fn modify_ipv4_packet_destination(ctx: &XdpContext, new_address: AddrPortV4)
     Ok(())
 }
 
-pub fn modify_ipv6_packet_destination(ctx: &XdpContext, new_address: AddrPortV6) -> Result<(), ()> {
+pub fn modify_ipv6_packet_destination(ctx: &XdpContext, new_address: EbpfAddrPortV6) -> Result<(), ()> {
     let new_ip = new_address[0];
     let new_port = new_address[1] as u16;
 

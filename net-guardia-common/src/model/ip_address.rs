@@ -47,7 +47,7 @@ pub type Port = u16;
 /// let ip_bytes = [192, 168, 1, 1];
 /// let ip = u32::from_be_bytes(ip_bytes);
 /// let port = 8080_u16;
-/// let key: IpPortKey = [ip, port as u32];
+/// let key: EbpfAddrPortV4 = [ip, port as u32];
 /// ```
 ///
 /// # Note
@@ -60,7 +60,7 @@ pub type Port = u16;
 /// [0]:    [------------ IP Address (32 bits) ------------]
 /// [1]:    [-- Unused (16 bits) --][--- Port (16 bits) ---]
 /// ```
-pub type AddrPortV4 = [u32; 2];
+pub type EbpfAddrPortV4 = [u32; 2];
 
 /// Network endpoint identifier combining IPv6 address and port number
 ///
@@ -82,7 +82,7 @@ pub type AddrPortV4 = [u32; 2];
 /// ];
 /// let ip = u128::from_be_bytes(ip_bytes);
 /// let port = 8080_u16;
-/// let key: AddrPortV6 = [ip, port as u128];
+/// let key: EbpfAddrPortV6 = [ip, port as u128];
 /// ```
 ///
 /// # Notes
@@ -95,4 +95,4 @@ pub type AddrPortV4 = [u32; 2];
 /// [0]:    [---------------------- IPv6 Address (128 bits) ----------------------]
 /// [1]:    [-------------- Unused (112 bits) --------------][-- Port (16 bits) --]
 /// ```
-pub type AddrPortV6 = [u128; 2];
+pub type EbpfAddrPortV6 = [u128; 2];

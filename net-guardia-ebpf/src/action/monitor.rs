@@ -2,45 +2,45 @@ use aya_ebpf::helpers::bpf_ktime_get_ns;
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::LruHashMap;
 use net_guardia_common::model::event::{IPv4Event, IPv6Event};
-use net_guardia_common::model::flow_stats::FlowStats;
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
+use net_guardia_common::model::flow_stats::EbpfFlowStats;
+use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use net_guardia_common::MAX_STATS;
 
 #[map]
-static SRC_IPV4_1MIN: LruHashMap<AddrPortV4, FlowStats> =
+static SRC_IPV4_1MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static SRC_IPV4_10MIN: LruHashMap<AddrPortV4, FlowStats> =
+static SRC_IPV4_10MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static SRC_IPV4_1HOUR: LruHashMap<AddrPortV4, FlowStats> =
+static SRC_IPV4_1HOUR: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static SRC_IPV6_1MIN: LruHashMap<AddrPortV6, FlowStats> =
+static SRC_IPV6_1MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static SRC_IPV6_10MIN: LruHashMap<AddrPortV6, FlowStats> =
+static SRC_IPV6_10MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static SRC_IPV6_1HOUR: LruHashMap<AddrPortV6, FlowStats> =
+static SRC_IPV6_1HOUR: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV4_1MIN: LruHashMap<AddrPortV4, FlowStats> =
+static DST_IPV4_1MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV4_10MIN: LruHashMap<AddrPortV4, FlowStats> =
+static DST_IPV4_10MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV4_1HOUR: LruHashMap<AddrPortV4, FlowStats> =
+static DST_IPV4_1HOUR: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV6_1MIN: LruHashMap<AddrPortV6, FlowStats> =
+static DST_IPV6_1MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV6_10MIN: LruHashMap<AddrPortV6, FlowStats> =
+static DST_IPV6_10MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static DST_IPV6_1HOUR: LruHashMap<AddrPortV6, FlowStats> =
+static DST_IPV6_1HOUR: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 
 pub fn update_stats_ipv4(event: &IPv4Event) {
@@ -73,8 +73,8 @@ pub fn update_stats_ipv6(event: &IPv6Event) {
 
 #[inline(always)]
 unsafe fn update_flow_stats_ipv4(
-    map: &LruHashMap<AddrPortV4, FlowStats>,
-    key: &AddrPortV4,
+    map: &LruHashMap<EbpfAddrPortV4, EbpfFlowStats>,
+    key: &EbpfAddrPortV4,
     event: &IPv4Event,
     now: u64,
 ) {
@@ -90,8 +90,8 @@ unsafe fn update_flow_stats_ipv4(
 
 #[inline(always)]
 unsafe fn update_flow_status_ipv6(
-    map: &LruHashMap<AddrPortV6, FlowStats>,
-    key: &AddrPortV6,
+    map: &LruHashMap<EbpfAddrPortV6, EbpfFlowStats>,
+    key: &EbpfAddrPortV6,
     event: &IPv6Event,
     now: u64,
 ) {

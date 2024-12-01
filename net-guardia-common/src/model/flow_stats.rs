@@ -34,4 +34,4 @@
 /// [1]:    [------------------ Packets (64 bits) -----------------]
 /// [2]:    [----------------- Timestamp (64 bits) ----------------]
 /// ```
-pub type FlowStats = [u64; 3];
+pub type EbpfFlowStats = [u64; 3];

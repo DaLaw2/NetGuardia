@@ -3,10 +3,8 @@ use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
-use net_guardia_common::model::flow_stats::FlowStats as EbpfFlowStats;
-use net_guardia_common::model::ip_address::{
-    AddrPortV4 as EbpfAddrPortV4, AddrPortV6 as EbpfAddrPortV6,
-};
+use net_guardia_common::model::flow_stats::EbpfFlowStats;
+use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use std::collections::HashMap as StdHashMap;
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};

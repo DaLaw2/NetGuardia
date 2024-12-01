@@ -1,5 +1,5 @@
 use serde::Serialize;
-use net_guardia_common::model::flow_stats::FlowStats as EbpfFlowStats;
+use net_guardia_common::model::flow_stats::EbpfFlowStats;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct FlowStats {
