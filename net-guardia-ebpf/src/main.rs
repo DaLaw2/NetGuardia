@@ -26,29 +26,29 @@ fn try_net_guardia(ctx: XdpContext) -> Result<u32, ()> {
     match parsing::parse_ether_type(start, end)? {
         EtherType::Ipv4 => {
             let event = parsing::parse_ipv4_packet(start, end)?;
-            if blocking::should_block_ipv4(&event) {
+            if blocking::ipv4_should_block(&event) {
                 return Ok(xdp_action::XDP_DROP);
             }
             if service::ipv4_service_rule_violation(start, end, &event) {
                 return Ok(xdp_action::XDP_DROP);
             }
-            if defence::is_attack_ipv4(&event) {
-                return Ok(xdp_action::XDP_DROP);
-            }
-            monitor::update_stats_ipv4(&event);
+            // if defence::is_attack_ipv4(&event) {
+            //     return Ok(xdp_action::XDP_DROP);
+            // }
+            monitor::ipv4_update_stats(&event);
         }
         EtherType::Ipv6 => {
             let event = parsing::parse_ipv6_packet(start, end)?;
-            if blocking::should_block_ipv6(&event) {
+            if blocking::ipv6_should_block(&event) {
                 return Ok(xdp_action::XDP_DROP);
             }
             if service::ipv6_service_rule_violation(start, end, &event) {
                 return Ok(xdp_action::XDP_DROP);
             }
-            if defence::is_attack_ipv6(&event) {
-                return Ok(xdp_action::XDP_DROP);
-            }
-            monitor::update_stats_ipv6(&event);
+            // if defence::is_attack_ipv6(&event) {
+            //     return Ok(xdp_action::XDP_DROP);
+            // }
+            monitor::ipv6_update_stats(&event);
         }
         _ => Err(())?,
     }

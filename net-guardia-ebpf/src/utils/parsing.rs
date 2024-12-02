@@ -1,5 +1,4 @@
 use aya_ebpf::helpers::bpf_ktime_get_ns;
-use aya_ebpf::programs::XdpContext;
 use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use network_types::{
     eth::{EthHdr, EtherType},

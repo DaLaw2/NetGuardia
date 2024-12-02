@@ -8,102 +8,102 @@ use crate::web::utils::flow_websocket::{IPv4FlowWebSocket, IPv6FlowWebSocket};
 
 pub fn initialize() -> Scope {
     web::scope("/monitor")
-        .service(get_src_ipv4_1min)
-        .service(get_src_ipv4_10min)
-        .service(get_src_ipv4_1hour)
-        .service(get_src_ipv6_1min)
-        .service(get_src_ipv6_10min)
-        .service(get_src_ipv6_1hour)
-        .service(get_dst_ipv4_1min)
-        .service(get_dst_ipv4_10min)
-        .service(get_dst_ipv4_1hour)
-        .service(get_dst_ipv6_1min)
-        .service(get_dst_ipv6_10min)
-        .service(get_dst_ipv6_1hour)
+        .service(get_ipv4_src_1min)
+        .service(get_ipv4_src_10min)
+        .service(get_ipv4_src_1hour)
+        .service(get_ipv6_src_1min)
+        .service(get_ipv6_src_10min)
+        .service(get_ipv6_src_1hour)
+        .service(get_ipv4_dst_1min)
+        .service(get_ipv4_dst_10min)
+        .service(get_ipv4_dst_1hour)
+        .service(get_ipv6_dst_1min)
+        .service(get_ipv6_dst_10min)
+        .service(get_ipv6_dst_1hour)
         .service(websocket_ipv4)
         .service(websocket_ipv6)
 }
 
-#[get("/get/src/ipv4/1min")]
-async fn get_src_ipv4_1min() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::SrcIPv4_1Min).await;
+#[get("/get/ipv4/src/1min")]
+async fn get_ipv4_src_1min() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Src1Min).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/src/ipv4/10min")]
-async fn get_src_ipv4_10min() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::SrcIPv4_10Min).await;
+#[get("/get/ipv4/src/10min")]
+async fn get_ipv4_src_10min() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Src10Min).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/src/ipv4/1hour")]
-async fn get_src_ipv4_1hour() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::SrcIPv4_1Hour).await;
+#[get("/get/ipv4/src/1hour")]
+async fn get_ipv4_src_1hour() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Src1Hour).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/src/ipv6/1min")]
-async fn get_src_ipv6_1min() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_1Min).await;
+#[get("/get/ipv6/src/1min")]
+async fn get_ipv6_src_1min() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src1Min).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/src/ipv6/10min")]
-async fn get_src_ipv6_10min() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_10Min).await;
+#[get("/get/ipv6/src/10min")]
+async fn get_ipv6_src_10min() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src10Min).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/src/ipv6/1hour")]
-async fn get_src_ipv6_1hour() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_1Hour).await;
+#[get("/get/ipv6/src/1hour")]
+async fn get_ipv6_src_1hour() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src1Hour).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv4/1min")]
-async fn get_dst_ipv4_1min() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::DstIPv4_1Min).await;
+#[get("/get/ipv4/dst/1min")]
+async fn get_ipv4_dst_1min() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Dst1Min).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv4/10min")]
-async fn get_dst_ipv4_10min() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::DstIPv4_10Min).await;
+#[get("/get/ipv4/dst/10min")]
+async fn get_ipv4_dst_10min() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Dst10Min).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv4/1hour")]
-async fn get_dst_ipv4_1hour() -> impl Responder {
-    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::DstIPv4_1Hour).await;
+#[get("/get/ipv4/dst/1hour")]
+async fn get_ipv4_dst_1hour() -> impl Responder {
+    let flow_data = Monitor::get_ipv4_flow_data(IPv4FlowType::Dst1Hour).await;
     let formated = transform_ipv4_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv6/1min")]
-async fn get_dst_ipv6_1min() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_1Min).await;
+#[get("/get/ipv6/dst/1min")]
+async fn get_ipv6_dst_1min() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src1Min).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv6/10min")]
-async fn get_dst_ipv6_10min() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_10Min).await;
+#[get("/get/ipv6/dst/10min")]
+async fn get_ipv6_dst_10min() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src10Min).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }
 
-#[get("/get/dst/ipv6/1hour")]
-async fn get_dst_ipv6_1hour() -> impl Responder {
-    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::SrcIPv6_1Hour).await;
+#[get("/get/ipv6/dst/1hour")]
+async fn get_ipv6_dst_1hour() -> impl Responder {
+    let flow_data = Monitor::get_ipv6_flow_data(IPv6FlowType::Src1Hour).await;
     let formated = transform_ipv6_flow_data(flow_data);
     HttpResponse::Ok().json(web::Json(formated))
 }

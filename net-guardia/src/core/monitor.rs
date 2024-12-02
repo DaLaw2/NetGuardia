@@ -14,18 +14,18 @@ static MONITOR: OnceLock<RwLock<Monitor>> = OnceLock::new();
 
 pub struct Monitor {
     terminate: bool,
-    src_ipv4_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    src_ipv4_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    src_ipv4_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    src_ipv6_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    src_ipv6_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    src_ipv6_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    dst_ipv4_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    dst_ipv4_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    dst_ipv4_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    dst_ipv6_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    dst_ipv6_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    dst_ipv6_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv4_src_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv4_src_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv4_src_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv6_src_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv6_src_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv6_src_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv4_dst_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv4_dst_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv4_dst_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
+    ipv6_dst_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv6_dst_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv6_dst_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
 }
 
 impl Monitor {
@@ -35,18 +35,18 @@ impl Monitor {
         let mut ebpf = &mut system.ebpf;
         let monitor = Monitor {
             terminate: false,
-            src_ipv4_1min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_1MIN").unwrap())?,
-            src_ipv4_10min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_10MIN").unwrap())?,
-            src_ipv4_1hour: AyaHashMap::try_from(ebpf.take_map("SRC_IPV4_1HOUR").unwrap())?,
-            src_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_1MIN").unwrap())?,
-            src_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_10MIN").unwrap())?,
-            src_ipv6_1hour: AyaHashMap::try_from(ebpf.take_map("SRC_IPV6_1HOUR").unwrap())?,
-            dst_ipv4_1min: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_1MIN").unwrap())?,
-            dst_ipv4_10min: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_10MIN").unwrap())?,
-            dst_ipv4_1hour: AyaHashMap::try_from(ebpf.take_map("DST_IPV4_1HOUR").unwrap())?,
-            dst_ipv6_1min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_1MIN").unwrap())?,
-            dst_ipv6_10min: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_10MIN").unwrap())?,
-            dst_ipv6_1hour: AyaHashMap::try_from(ebpf.take_map("DST_IPV6_1HOUR").unwrap())?,
+            ipv4_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1MIN").unwrap())?,
+            ipv4_src_10min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_10MIN").unwrap())?,
+            ipv4_src_1hour: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1HOUR").unwrap())?,
+            ipv6_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_1MIN").unwrap())?,
+            ipv6_src_10min: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_10MIN").unwrap())?,
+            ipv6_src_1hour: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_1HOUR").unwrap())?,
+            ipv4_dst_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_1MIN").unwrap())?,
+            ipv4_dst_10min: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_10MIN").unwrap())?,
+            ipv4_dst_1hour: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_1HOUR").unwrap())?,
+            ipv6_dst_1min: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_1MIN").unwrap())?,
+            ipv6_dst_10min: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_10MIN").unwrap())?,
+            ipv6_dst_1hour: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_1HOUR").unwrap())?,
         };
         MONITOR.get_or_init(|| RwLock::new(monitor));
         info!("{}", SystemEntry::InitializeComplete);
@@ -94,18 +94,18 @@ impl Monitor {
             .unwrap()
             .as_nanos() as u64;
 
-        Monitor::cleanup_map(&mut monitor.src_ipv4_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv4_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.src_ipv4_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv4_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.src_ipv4_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv4_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.src_ipv6_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv6_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.src_ipv6_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv6_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.src_ipv6_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.dst_ipv6_1hour, now, ONE_HOUR).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_src_1min, now, ONE_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_dst_1min, now, ONE_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_src_10min, now, TEN_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_dst_10min, now, TEN_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_src_1hour, now, ONE_HOUR).await;
+        Monitor::cleanup_map(&mut monitor.ipv4_dst_1hour, now, ONE_HOUR).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_src_1min, now, ONE_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_dst_1min, now, ONE_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_src_10min, now, TEN_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_dst_10min, now, TEN_MIN).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_src_1hour, now, ONE_HOUR).await;
+        Monitor::cleanup_map(&mut monitor.ipv6_dst_1hour, now, ONE_HOUR).await;
     }
 
     async fn cleanup_map<K>(map: &mut AyaHashMap<MapData, K, EbpfFlowStats>, now: u64, window: u64)
@@ -136,12 +136,12 @@ impl Monitor {
     ) -> StdHashMap<EbpfAddrPortV4, EbpfFlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv4_flow_type {
-            IPv4FlowType::SrcIPv4_1Min => monitor.src_ipv4_1min.iter(),
-            IPv4FlowType::SrcIPv4_10Min => monitor.src_ipv4_10min.iter(),
-            IPv4FlowType::SrcIPv4_1Hour => monitor.src_ipv4_1hour.iter(),
-            IPv4FlowType::DstIPv4_1Min => monitor.dst_ipv4_1min.iter(),
-            IPv4FlowType::DstIPv4_10Min => monitor.dst_ipv4_10min.iter(),
-            IPv4FlowType::DstIPv4_1Hour => monitor.dst_ipv4_1hour.iter(),
+            IPv4FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
+            IPv4FlowType::Src10Min => monitor.ipv4_src_10min.iter(),
+            IPv4FlowType::Src1Hour => monitor.ipv4_src_1hour.iter(),
+            IPv4FlowType::Dst1Min => monitor.ipv4_dst_1min.iter(),
+            IPv4FlowType::Dst10Min => monitor.ipv4_dst_10min.iter(),
+            IPv4FlowType::Dst1Hour => monitor.ipv4_dst_1hour.iter(),
         };
         iter.filter_map(|result| result.ok()).collect()
     }
@@ -151,12 +151,12 @@ impl Monitor {
     ) -> StdHashMap<EbpfAddrPortV6, EbpfFlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv6_flow_type {
-            IPv6FlowType::SrcIPv6_1Min => monitor.src_ipv6_1min.iter(),
-            IPv6FlowType::SrcIPv6_10Min => monitor.src_ipv6_10min.iter(),
-            IPv6FlowType::SrcIPv6_1Hour => monitor.src_ipv6_1hour.iter(),
-            IPv6FlowType::DstIPv6_1Min => monitor.dst_ipv6_1min.iter(),
-            IPv6FlowType::DstIPv6_10Min => monitor.dst_ipv6_10min.iter(),
-            IPv6FlowType::DstIPv6_1Hour => monitor.dst_ipv6_1hour.iter(),
+            IPv6FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
+            IPv6FlowType::Src10Min => monitor.ipv6_src_10min.iter(),
+            IPv6FlowType::Src1Hour => monitor.ipv6_src_1hour.iter(),
+            IPv6FlowType::Dst1Min => monitor.ipv6_dst_1min.iter(),
+            IPv6FlowType::Dst10Min => monitor.ipv6_dst_10min.iter(),
+            IPv6FlowType::Dst1Hour => monitor.ipv6_dst_1hour.iter(),
         };
         iter.filter_map(|result| result.ok()).collect()
     }

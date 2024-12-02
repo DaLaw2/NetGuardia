@@ -1,6 +1,5 @@
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::{Array, HashMap};
-use aya_ebpf::programs::XdpContext;
 use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use net_guardia_common::model::http_method::EbpfHttpMethod;
 use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6, IPv4, IPv6};
@@ -11,10 +10,10 @@ use network_types::ip::{IpProto, Ipv4Hdr, Ipv6Hdr};
 use network_types::tcp::TcpHdr;
 
 #[map]
-static HTTP_SERVICE_V4: HashMap<EbpfAddrPortV4, EbpfHttpMethod> =
+static IPV4_HTTP_SERVICE: HashMap<EbpfAddrPortV4, EbpfHttpMethod> =
     HashMap::with_max_entries(MAX_RULES, 0);
 #[map]
-static HTTP_SERVICE_V6: HashMap<EbpfAddrPortV6, EbpfHttpMethod> =
+static IPV6_HTTP_SERVICE: HashMap<EbpfAddrPortV6, EbpfHttpMethod> =
     HashMap::with_max_entries(MAX_RULES, 0);
 #[map]
 static SSH_WHITE_LIST_ONLY: Array<PlaceHolder> = Array::with_max_entries(1, 0);
@@ -66,7 +65,7 @@ fn ipv4_http_service_violation(
             if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                 return false;
             }
-            match HTTP_SERVICE_V4.get_ptr_mut(destination) {
+            match IPV4_HTTP_SERVICE.get_ptr_mut(destination) {
                 Some(allow_method) => match get_http_request_method(start, end, offset) {
                     Some(http_method) => unsafe { *allow_method & http_method == 0 },
                     None => true,
@@ -95,7 +94,7 @@ fn ipv6_http_service_violation(
             if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                 return false;
             }
-            match HTTP_SERVICE_V6.get_ptr_mut(destination) {
+            match IPV6_HTTP_SERVICE.get_ptr_mut(destination) {
                 Some(allow_method) => match get_http_request_method(start, end, offset) {
                     Some(http_method) => unsafe { *allow_method & http_method == 0 },
                     None => true,
