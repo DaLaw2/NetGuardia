@@ -1,4 +1,5 @@
 use crate::core::system::System;
+use crate::model::flow_stats::FlowStats;
 use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
@@ -6,6 +7,7 @@ use aya::Pod;
 use net_guardia_common::model::flow_stats::EbpfFlowStats;
 use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use std::collections::HashMap as StdHashMap;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::info;
@@ -133,7 +135,7 @@ impl Monitor {
 
     pub async fn get_ipv4_flow_data(
         ipv4_flow_type: IPv4FlowType,
-    ) -> StdHashMap<EbpfAddrPortV4, EbpfFlowStats> {
+    ) -> StdHashMap<SocketAddrV4, FlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv4_flow_type {
             IPv4FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
@@ -143,12 +145,18 @@ impl Monitor {
             IPv4FlowType::Dst10Min => monitor.ipv4_dst_10min.iter(),
             IPv4FlowType::Dst1Hour => monitor.ipv4_dst_1hour.iter(),
         };
-        iter.filter_map(|result| result.ok()).collect()
+        iter.filter_map(Result::ok)
+            .map(|(key, value)| {
+                let ip = Ipv4Addr::from(key[0]);
+                let port = key[1] as u16;
+                (SocketAddrV4::new(ip, port), FlowStats::from(value))
+            })
+            .collect()
     }
 
     pub async fn get_ipv6_flow_data(
         ipv6_flow_type: IPv6FlowType,
-    ) -> StdHashMap<EbpfAddrPortV6, EbpfFlowStats> {
+    ) -> StdHashMap<SocketAddrV6, FlowStats> {
         let monitor = Monitor::instance().await;
         let iter = match ipv6_flow_type {
             IPv6FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
@@ -158,6 +166,12 @@ impl Monitor {
             IPv6FlowType::Dst10Min => monitor.ipv6_dst_10min.iter(),
             IPv6FlowType::Dst1Hour => monitor.ipv6_dst_1hour.iter(),
         };
-        iter.filter_map(|result| result.ok()).collect()
+        iter.filter_map(Result::ok)
+            .map(|(key, value)| {
+                let ip = Ipv6Addr::from(key[0]);
+                let port = key[1] as u16;
+                (SocketAddrV6::new(ip, port, 0, 0), FlowStats::from(value))
+            })
+            .collect()
     }
 }
