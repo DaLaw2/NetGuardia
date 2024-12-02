@@ -1,7 +1,8 @@
 use crate::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
+use network_types::ip::IpProto;
 
 pub struct IPv4Event {
-    pub protocol: u8,
+    pub protocol: IpProto,
     pub source_ip: u32,
     pub destination_ip: u32,
     pub source_port: u16,
@@ -23,7 +24,7 @@ impl IPv4Event {
 }
 
 pub struct IPv6Event {
-    pub protocol: u8,
+    pub protocol: IpProto,
     pub source_ip: u128,
     pub destination_ip: u128,
     pub source_port: u16,

@@ -17,3 +17,5 @@ pub const MAX_RULES: u32 = 1000;
 /// Defines the upper limit for port-based filtering rules to maintain
 /// efficient rule processing.
 pub const MAX_RULES_PORT: usize = 32;
+
+pub const MAX_PORT_ACCESS: usize = 36;

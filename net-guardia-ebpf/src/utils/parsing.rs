@@ -9,23 +9,23 @@ use network_types::{
 };
 
 #[inline(always)]
-pub fn parse_ether_type(start: usize, end: usize, offset: &mut usize) -> Result<EtherType, ()> {
+pub fn parse_ether_type(start: usize, end: usize) -> Result<EtherType, ()> {
     if start + size_of::<EthHdr>() > end {
         return Err(());
     }
     let eth = unsafe { &*(start as *const EthHdr) };
-    *offset += size_of::<EthHdr>();
 
     Ok(eth.ether_type)
 }
 
 #[inline(always)]
-pub fn parse_ipv4_packet(start: usize, end: usize, offset: &mut usize) -> Result<IPv4Event, ()> {
-    if start + *offset + size_of::<Ipv4Hdr>() > end {
+pub fn parse_ipv4_packet(start: usize, end: usize) -> Result<IPv4Event, ()> {
+    let mut offset = size_of::<EthHdr>();
+    if start + offset + size_of::<Ipv4Hdr>() > end {
         return Err(());
     }
-    let ipv4 = unsafe { &*((start + *offset) as *const Ipv4Hdr) };
-    *offset += size_of::<Ipv4Hdr>();
+    let ipv4 = unsafe { &*((start + offset) as *const Ipv4Hdr) };
+    offset += size_of::<Ipv4Hdr>();
 
     let protocol = ipv4.proto;
     let source_ip = u32::from_be(ipv4.src_addr);
@@ -38,7 +38,7 @@ pub fn parse_ipv4_packet(start: usize, end: usize, offset: &mut usize) -> Result
     };
 
     Ok(IPv4Event {
-        protocol: protocol as u8,
+        protocol,
         source_ip,
         destination_ip,
         source_port,
@@ -49,12 +49,13 @@ pub fn parse_ipv4_packet(start: usize, end: usize, offset: &mut usize) -> Result
 }
 
 #[inline(always)]
-pub fn parse_ipv6_packet(start: usize, end: usize, offset: &mut usize) -> Result<IPv6Event, ()> {
-    if start + *offset + size_of::<Ipv6Hdr>() > end {
+pub fn parse_ipv6_packet(start: usize, end: usize) -> Result<IPv6Event, ()> {
+    let mut offset = size_of::<EthHdr>();
+    if start + offset + size_of::<Ipv6Hdr>() > end {
         return Err(());
     }
-    let ipv6 = unsafe { &*((start + *offset) as *const Ipv6Hdr) };
-    *offset += size_of::<Ipv6Hdr>();
+    let ipv6 = unsafe { &*((start + offset) as *const Ipv6Hdr) };
+    offset += size_of::<Ipv6Hdr>();
 
     let protocol = ipv6.next_hdr;
     let source_ip = u128::from_be_bytes(unsafe { ipv6.src_addr.in6_u.u6_addr8 });
@@ -67,7 +68,7 @@ pub fn parse_ipv6_packet(start: usize, end: usize, offset: &mut usize) -> Result
     };
 
     Ok(IPv6Event {
-        protocol: protocol as u8,
+        protocol,
         source_ip,
         destination_ip,
         source_port,
@@ -78,13 +79,11 @@ pub fn parse_ipv6_packet(start: usize, end: usize, offset: &mut usize) -> Result
 }
 
 #[inline(always)]
-fn parse_tcp_port(start: usize, end: usize, offset: &mut usize) -> Result<(u16, u16), ()> {
-    let tcp: *const TcpHdr = (start + *offset) as *const TcpHdr;
-    if start + *offset + size_of::<TcpHdr>() > end {
+fn parse_tcp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
+    let tcp: *const TcpHdr = (start + offset) as *const TcpHdr;
+    if start + offset + size_of::<TcpHdr>() > end {
         return Err(());
     }
-    *offset += size_of::<TcpHdr>();
-
     Ok((
         u16::from_be(unsafe { (*tcp).source }),
         u16::from_be(unsafe { (*tcp).dest }),
@@ -92,13 +91,11 @@ fn parse_tcp_port(start: usize, end: usize, offset: &mut usize) -> Result<(u16, 
 }
 
 #[inline(always)]
-fn parse_udp_port(start: usize, end: usize, offset: &mut usize) -> Result<(u16, u16), ()> {
-    let udp: *const UdpHdr = (start + *offset) as *const UdpHdr;
-    if start + *offset + size_of::<UdpHdr>() > end {
+fn parse_udp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
+    let udp: *const UdpHdr = (start + offset) as *const UdpHdr;
+    if start + offset + size_of::<UdpHdr>() > end {
         return Err(());
     }
-    *offset += size_of::<UdpHdr>();
-
     Ok((
         u16::from_be(unsafe { (*udp).source }),
         u16::from_be(unsafe { (*udp).dest }),
