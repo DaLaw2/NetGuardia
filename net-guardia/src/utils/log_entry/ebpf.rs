@@ -13,17 +13,10 @@ pub enum EbpfEntry {
     AttachProgramSuccess,
     #[error("Failed to attach the XDP program")]
     AttachProgramFailed,
-    #[error("An error occurred while map operation")]
+    #[error("An error occurred during map operation")]
     MapOperationError,
+    #[error("The ip required for operation does not exist")]
+    IpDoesNotExist,
     #[error("Amount of rules has reached the upper limit")]
     RuleReachLimit,
-}
-
-impl From<MapError> for EbpfEntry {
-    fn from(value: MapError) -> Self {
-        match value {
-            MapError::OutOfBounds { .. } => EbpfEntry::RuleReachLimit,
-            _ => EbpfEntry::MapOperationError
-        }
-    }
 }

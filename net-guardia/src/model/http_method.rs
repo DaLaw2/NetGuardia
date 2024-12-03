@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use net_guardia_common::model::http_method::EbpfHttpMethod;
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum HttpMethod {
     GET,
     POST,
