@@ -1,4 +1,3 @@
-use aya::maps::MapError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

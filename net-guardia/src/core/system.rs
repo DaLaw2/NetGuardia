@@ -3,7 +3,7 @@ use crate::core::monitor::Monitor;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{default, monitor};
+use crate::web::api::{control, default, monitor};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
@@ -12,6 +12,7 @@ use aya::Ebpf;
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info, warn};
+use crate::core::control::Control;
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
@@ -26,6 +27,7 @@ impl System {
         ConfigManager::initialization().await?;
         System::ebpf_initialize().await?;
         Monitor::initialize().await?;
+        Control::initialize().await?;
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
@@ -64,6 +66,7 @@ impl System {
             App::new()
                 .wrap(cors)
                 .service(monitor::initialize())
+                .service(control::initialize())
                 .default_service(route().to(default::default_route))
         })
         .bind(format!("0.0.0.0:{}", config.http_server_bind_port))?

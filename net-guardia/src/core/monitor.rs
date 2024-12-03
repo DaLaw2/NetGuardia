@@ -34,7 +34,7 @@ impl Monitor {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
-        let mut ebpf = &mut system.ebpf;
+        let ebpf = &mut system.ebpf;
         let monitor = Monitor {
             terminate: false,
             ipv4_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1MIN").unwrap())?,

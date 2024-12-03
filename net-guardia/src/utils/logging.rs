@@ -1,5 +1,5 @@
 use tokio::fs;
-use tracing::{info, Level};
+use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;

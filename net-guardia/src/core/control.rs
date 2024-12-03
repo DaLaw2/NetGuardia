@@ -3,13 +3,13 @@ use crate::model::http_method::HttpMethod;
 use crate::utils::ip_address::convert_ports_to_vec;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
-use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData, MapError};
+use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use net_guardia_common::model::http_method::EbpfHttpMethod;
 use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6, IPv4, IPv6, Port};
 use net_guardia_common::model::placeholder::PlaceHolder;
 use net_guardia_common::MAX_RULES_PORT;
 use std::collections::HashMap as StdHashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info};
@@ -36,7 +36,7 @@ impl Control {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
-        let mut ebpf = &mut system.ebpf;
+        let ebpf = &mut system.ebpf;
         let mut control = Control {
             ipv4_black_list: AyaHashMap::try_from(ebpf.take_map("IPV4_BLACKLIST").unwrap())?,
             ipv6_black_list: AyaHashMap::try_from(ebpf.take_map("IPV6_BLACKLIST").unwrap())?,
@@ -108,7 +108,7 @@ impl Control {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        let (mut ports, index) = if let Ok(mut ports) = control.ipv4_black_list.get(&ip, 0) {
+        let (mut ports, index) = if let Ok(ports) = control.ipv4_black_list.get(&ip, 0) {
             match ports.iter().position(|&x| x == 0) {
                 Some(index) => (ports, index),
                 None => Err(EbpfEntry::RuleReachLimit)?,
@@ -128,7 +128,7 @@ impl Control {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        let (mut ports, index) = if let Ok(mut ports) = control.ipv6_black_list.get(&ip, 0) {
+        let (mut ports, index) = if let Ok(ports) = control.ipv6_black_list.get(&ip, 0) {
             match ports.iter().position(|&x| x == 0) {
                 Some(index) => (ports, index),
                 None => Err(EbpfEntry::RuleReachLimit)?,
@@ -210,7 +210,7 @@ impl Control {
             }
             Ok(())
         } else {
-            Err(EbpfEntry::IpDoesNotExist)?;
+            Err(EbpfEntry::IpDoesNotExist)?
         }
     }
 
@@ -356,6 +356,74 @@ impl Control {
         Ok(())
     }
 
+    pub async fn get_ipv4_ssh_service() -> Vec<SocketAddrV4> {
+        let control = Control::instance().await;
+        control
+            .ipv4_ssh_service
+            .keys()
+            .filter_map(Result::ok)
+            .map(|key| SocketAddrV4::new(Ipv4Addr::from(key[0]), key[1] as u16))
+            .collect()
+    }
+
+    pub async fn get_ipv6_ssh_service() -> Vec<SocketAddrV6> {
+        let control = Control::instance().await;
+        control
+            .ipv6_ssh_service
+            .keys()
+            .filter_map(Result::ok)
+            .map(|key| SocketAddrV6::new(Ipv6Addr::from(key[0]), key[1] as u16, 0, 0))
+            .collect()
+    }
+
+    pub async fn add_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
+        let ip: u32 = (*address.ip()).into();
+        let port = address.port();
+        let addr_port = [ip, port as u32];
+        let mut control = Control::instance_mut().await;
+        control
+            .ipv4_ssh_service
+            .insert(&addr_port, 0_u8, 0)
+            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+        Ok(())
+    }
+
+    pub async fn add_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let addr_port = [ip, port as u128];
+        let mut control = Control::instance_mut().await;
+        control
+            .ipv6_ssh_service
+            .insert(&addr_port, 0_u8, 0)
+            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
+        let ip: u32 = (*address.ip()).into();
+        let port = address.port();
+        let addr_port = [ip, port as u32];
+        let mut control = Control::instance_mut().await;
+        control
+            .ipv4_ssh_service
+            .remove(&addr_port)
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let addr_port = [ip, port as u128];
+        let mut control = Control::instance_mut().await;
+        control
+            .ipv6_ssh_service
+            .remove(&addr_port)
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+        Ok(())
+    }
+
     pub async fn get_ipv4_ssh_white_list() -> Vec<Ipv4Addr> {
         let control = Control::instance().await;
         control
@@ -402,7 +470,7 @@ impl Control {
         control
             .ipv4_ssh_white_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -412,7 +480,7 @@ impl Control {
         control
             .ipv6_ssh_white_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -442,7 +510,7 @@ impl Control {
         control
             .ipv4_ssh_black_list
             .insert(ip, 0_u8, 0)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::RuleReachLimit)?;
         Ok(())
     }
 
@@ -452,27 +520,27 @@ impl Control {
         control
             .ipv6_ssh_black_list
             .insert(ip, 0_u8, 0)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn remove_ipv6_ssh_black_list(ip: Ipv4Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv4_ssh_black_list(ip: Ipv4Addr) -> anyhow::Result<()> {
         let ip: u32 = ip.into();
         let mut control = Control::instance_mut().await;
         control
             .ipv4_ssh_black_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 
-    pub async fn remove_ipv4_ssh_black_list(ip: Ipv6Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv6_ssh_black_list(ip: Ipv6Addr) -> anyhow::Result<()> {
         let ip: u128 = ip.into();
         let mut control = Control::instance_mut().await;
         control
             .ipv6_ssh_black_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -502,7 +570,7 @@ impl Control {
         control
             .ipv4_scanner_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -512,7 +580,7 @@ impl Control {
         control
             .ipv6_scanner_list
             .remove(&ip)
-            .map_err(EbpfEntry::from)?;
+            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
     }
 }

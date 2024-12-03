@@ -67,7 +67,7 @@ fn ipv4_http_service_violation(
             }
             match IPV4_HTTP_SERVICE.get_ptr_mut(destination) {
                 Some(allow_method) => match get_http_request_method(start, end, offset) {
-                    Some(http_method) => unsafe { *allow_method & http_method == 0 },
+                    Some(http_method) => *allow_method & http_method == 0,
                     None => true,
                 },
                 None => false,
@@ -96,7 +96,7 @@ fn ipv6_http_service_violation(
             }
             match IPV6_HTTP_SERVICE.get_ptr_mut(destination) {
                 Some(allow_method) => match get_http_request_method(start, end, offset) {
-                    Some(http_method) => unsafe { *allow_method & http_method == 0 },
+                    Some(http_method) => *allow_method & http_method == 0,
                     None => true,
                 },
                 None => false,
