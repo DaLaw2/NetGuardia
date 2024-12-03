@@ -3,15 +3,15 @@ use net_guardia_common::model::http_method::EbpfHttpMethod;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum HttpMethod {
-    GET,
-    POST,
-    PUT,
-    DELETE,
-    HEAD,
-    OPTIONS,
-    PATCH,
-    TRACE,
-    CONNECT,
+    GET = 0b0000_0000_0000_0001,
+    POST = 0b0000_0000_0000_0010,
+    PUT = 0b0000_0000_0000_0100,
+    DELETE = 0b0000_0000_0000_1000,
+    HEAD = 0b0000_0000_0001_0000,
+    OPTIONS = 0b0000_0000_0010_0000,
+    PATCH = 0b0000_0000_0100_0000,
+    TRACE = 0b0000_0000_1000_0000,
+    CONNECT = 0b0000_0001_0000_0000,
 }
 
 impl HttpMethod {
@@ -36,24 +36,13 @@ impl HttpMethod {
                 http_methods.push(method);
             }
         }
-
         http_methods
     }
 
     pub fn convert_to_ebpf(http_methods: Vec<HttpMethod>) -> EbpfHttpMethod {
         let mut ebpf_http_method = 0_u16;
         for http_method in http_methods {
-            match http_method {
-                HttpMethod::GET => ebpf_http_method |= 0b0000_0000_0000_0001,
-                HttpMethod::POST => ebpf_http_method |= 0b0000_0000_0000_0010,
-                HttpMethod::PUT => ebpf_http_method |= 0b0000_0000_0000_0100,
-                HttpMethod::DELETE => ebpf_http_method |= 0b0000_0000_0000_1000,
-                HttpMethod::HEAD => ebpf_http_method |= 0b0000_0000_0001_0000,
-                HttpMethod::OPTIONS => ebpf_http_method |= 0b0000_0000_0010_0000,
-                HttpMethod::PATCH => ebpf_http_method |= 0b0000_0000_0100_0000,
-                HttpMethod::TRACE => ebpf_http_method |= 0b0000_0000_1000_0000,
-                HttpMethod::CONNECT => ebpf_http_method |= 0b0000_0001_0000_0000,
-            }
+            ebpf_http_method |= http_method as u16;
         }
         ebpf_http_method
     }

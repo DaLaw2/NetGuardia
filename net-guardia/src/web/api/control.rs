@@ -94,12 +94,14 @@ async fn get_ipv4_http_service() -> impl Responder {
     HttpResponse::Ok().json(web::Json(list))
 }
 
+// Problem
 #[get("/ipv6/http_service")]
 async fn get_ipv6_http_service() -> impl Responder {
     let list = Control::get_ipv6_http_service().await;
     HttpResponse::Ok().json(web::Json(list))
 }
 
+// Problem
 #[put("/ipv4/http_service")]
 async fn add_ipv4_http_service(
     payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
@@ -111,6 +113,7 @@ async fn add_ipv4_http_service(
     }
 }
 
+// Problem
 #[put("/ipv6/http_service")]
 async fn add_ipv6_http_service(
     payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
@@ -122,6 +125,7 @@ async fn add_ipv6_http_service(
     }
 }
 
+// Problem
 #[delete("/ipv4/http_service")]
 async fn remove_ipv4_http_service(
     payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
@@ -133,6 +137,7 @@ async fn remove_ipv4_http_service(
     }
 }
 
+// Problem
 #[delete("/ipv6/http_service")]
 async fn remove_ipv6_http_service(
     payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,

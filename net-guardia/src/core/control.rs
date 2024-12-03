@@ -108,18 +108,33 @@ impl Control {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        let (mut ports, index) = if let Ok(ports) = control.ipv4_black_list.get(&ip, 0) {
-            match ports.iter().position(|&x| x == 0) {
-                Some(index) => (ports, index),
-                None => Err(EbpfEntry::RuleReachLimit)?,
+        let mut new_ports = [0_u16; MAX_RULES_PORT];
+        if port == 0 {
+            new_ports[0] = 0;
+        } else if let Ok(ports) = control.ipv4_black_list.get(&ip, 0) {
+            if ports[0] == 0 {
+                return Ok(());
             }
+            let mut index = None;
+            for (i, &value) in ports.iter().enumerate() {
+                if value == port {
+                    return Ok(());
+                }
+                if index.is_none() && value == 0 {
+                    index = Some(i);
+                }
+            }
+            if index.is_none() {
+                return Err(EbpfEntry::RuleReachLimit.into());
+            }
+            new_ports.copy_from_slice(&ports);
+            new_ports[index.unwrap()] = port;
         } else {
-            ([0_u16; MAX_RULES_PORT], 0)
-        };
-        ports[index] = port;
+            new_ports[0] = port;
+        }
         control
             .ipv4_black_list
-            .insert(ip, ports, 0)
+            .insert(ip, new_ports, 0)
             .map_err(|_| EbpfEntry::MapOperationError)?;
         Ok(())
     }
@@ -128,18 +143,33 @@ impl Control {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        let (mut ports, index) = if let Ok(ports) = control.ipv6_black_list.get(&ip, 0) {
-            match ports.iter().position(|&x| x == 0) {
-                Some(index) => (ports, index),
-                None => Err(EbpfEntry::RuleReachLimit)?,
+        let mut new_ports = [0_u16; MAX_RULES_PORT];
+        if port == 0 {
+            new_ports[0] = 0;
+        } else if let Ok(ports) = control.ipv6_black_list.get(&ip, 0) {
+            if ports[0] == 0 {
+                return Ok(());
             }
+            let mut index = None;
+            for (i, &value) in ports.iter().enumerate() {
+                if value == port {
+                    return Ok(());
+                }
+                if index.is_none() && value == 0 {
+                    index = Some(i);
+                }
+            }
+            if index.is_none() {
+                return Err(EbpfEntry::RuleReachLimit.into());
+            }
+            new_ports.copy_from_slice(&ports);
+            new_ports[index.unwrap()] = port;
         } else {
-            ([0_u16; MAX_RULES_PORT], 0)
-        };
-        ports[index] = port;
+            new_ports[0] = port;
+        }
         control
             .ipv6_black_list
-            .insert(ip, ports, 0)
+            .insert(ip, new_ports, 0)
             .map_err(|_| EbpfEntry::MapOperationError)?;
         Ok(())
     }
@@ -149,7 +179,7 @@ impl Control {
         let port = address.port();
         let mut control = Control::instance_mut().await;
         if let Ok(mut ports) = control.ipv4_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
+            if port == 0 {
                 control
                     .ipv4_black_list
                     .remove(&ip)
@@ -184,7 +214,7 @@ impl Control {
         let port = address.port();
         let mut control = Control::instance_mut().await;
         if let Ok(mut ports) = control.ipv6_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
+            if port == 0 {
                 control
                     .ipv6_black_list
                     .remove(&ip)
@@ -289,13 +319,20 @@ impl Control {
         let addr_port = [ip, port as u32];
         let mut control = Control::instance_mut().await;
         if let Ok(current_http_method) = control.ipv4_http_service.get(&addr_port, 0) {
-            let mut current_http_method = HttpMethod::convert_from_ebpf(current_http_method);
-            current_http_method.retain(|method| !removed_http_method.contains(method));
-            let new_http_method = HttpMethod::convert_to_ebpf(current_http_method);
-            control
-                .ipv4_http_service
-                .insert(&addr_port, new_http_method, 0)
-                .map_err(|_| EbpfEntry::MapOperationError)?;
+            let mut http_method = HttpMethod::convert_from_ebpf(current_http_method);
+            http_method.retain(|method| !removed_http_method.contains(method));
+            if http_method.is_empty() {
+                control
+                    .ipv4_http_service
+                    .remove(&addr_port)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+            } else {
+                let new_http_method = HttpMethod::convert_to_ebpf(http_method);
+                control
+                    .ipv4_http_service
+                    .insert(&addr_port, new_http_method, 0)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+            }
             Ok(())
         } else {
             Err(EbpfEntry::IpDoesNotExist)?
@@ -311,13 +348,20 @@ impl Control {
         let addr_port = [ip, port as u128];
         let mut control = Control::instance_mut().await;
         if let Ok(current_http_method) = control.ipv6_http_service.get(&addr_port, 0) {
-            let mut current_http_method = HttpMethod::convert_from_ebpf(current_http_method);
-            current_http_method.retain(|method| !removed_http_method.contains(method));
-            let new_http_method = HttpMethod::convert_to_ebpf(current_http_method);
-            control
-                .ipv6_http_service
-                .insert(&addr_port, new_http_method, 0)
-                .map_err(|_| EbpfEntry::MapOperationError)?;
+            let mut http_method = HttpMethod::convert_from_ebpf(current_http_method);
+            http_method.retain(|method| !removed_http_method.contains(method));
+            if http_method.is_empty() {
+                control
+                    .ipv6_http_service
+                    .remove(&addr_port)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+            } else {
+                let new_http_method = HttpMethod::convert_to_ebpf(http_method);
+                control
+                    .ipv6_http_service
+                    .insert(&addr_port, new_http_method, 0)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+            }
             Ok(())
         } else {
             Err(EbpfEntry::IpDoesNotExist)?
