@@ -15,6 +15,31 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
+    pub fn convert_from_ebpf(ebpf_http_methods: EbpfHttpMethod) -> Vec<HttpMethod> {
+        let value = ebpf_http_methods as u16;
+        let mut http_methods = Vec::new();
+
+        let all_methods = [
+            HttpMethod::GET,
+            HttpMethod::POST,
+            HttpMethod::PUT,
+            HttpMethod::DELETE,
+            HttpMethod::HEAD,
+            HttpMethod::OPTIONS,
+            HttpMethod::PATCH,
+            HttpMethod::TRACE,
+            HttpMethod::CONNECT,
+        ];
+
+        for method in all_methods {
+            if value & (method as u16) != 0 {
+                http_methods.push(method);
+            }
+        }
+
+        http_methods
+    }
+
     pub fn convert_to_ebpf(http_methods: Vec<HttpMethod>) -> EbpfHttpMethod {
         let mut ebpf_http_method = 0_u16;
         for http_method in http_methods {
