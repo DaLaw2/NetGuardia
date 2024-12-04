@@ -114,11 +114,12 @@ impl Monitor {
     where
         K: Pod,
     {
+        let boot_time = System::boot_time().await;
         let expired_keys: Vec<K> = map
             .iter()
             .filter_map(|result| {
                 if let Ok((key, stats)) = result {
-                    if now - stats[2] > window {
+                    if now - stats[2] - boot_time > window {
                         Some(key)
                     } else {
                         None

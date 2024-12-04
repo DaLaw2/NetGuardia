@@ -3,7 +3,7 @@ use crate::core::monitor::Monitor;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, monitor};
+use crate::web::api::{control, default, misc, monitor};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
@@ -13,11 +13,13 @@ use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info, warn};
 use crate::core::control::Control;
+use sysinfo::System as SystemInfo;
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
 pub struct System {
     pub ebpf: Ebpf,
+    pub boot_time: u64,
 }
 
 impl System {
@@ -48,7 +50,8 @@ impl System {
         program
             .attach(&interface, XdpFlags::default())
             .context(EbpfEntry::AttachProgramFailed)?;
-        SYSTEM.get_or_init(|| RwLock::new(System { ebpf }));
+        let boot_time = SystemInfo::boot_time() * 1_000_000_000;
+        SYSTEM.get_or_init(|| RwLock::new(System { ebpf, boot_time }));
         info!("{}", EbpfEntry::AttachProgramSuccess);
         Ok(())
     }
@@ -67,6 +70,7 @@ impl System {
                 .wrap(cors)
                 .service(monitor::initialize())
                 .service(control::initialize())
+                .service(misc::initialize())
                 .default_service(route().to(default::default_route))
         })
         .bind(format!("0.0.0.0:{}", config.http_server_bind_port))?
@@ -94,5 +98,10 @@ impl System {
         let once_lock = SYSTEM.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
         once_lock.write().await
+    }
+
+    pub async fn boot_time() -> u64 {
+        let system = System::instance().await;
+        system.boot_time
     }
 }
