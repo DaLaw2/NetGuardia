@@ -17,8 +17,10 @@ use tracing::{error, info};
 static CONTROL: OnceLock<RwLock<Control>> = OnceLock::new();
 
 pub struct Control {
-    ipv4_black_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
-    ipv6_black_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
+    ipv4_src_black_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
+    ipv6_src_black_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
+    ipv4_dst_black_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
+    ipv6_dst_black_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
     ipv4_http_service: AyaHashMap<MapData, EbpfAddrPortV4, EbpfHttpMethod>,
     ipv6_http_service: AyaHashMap<MapData, EbpfAddrPortV6, EbpfHttpMethod>,
     ssh_white_list_only: AyaArray<MapData, PlaceHolder>,
@@ -38,8 +40,10 @@ impl Control {
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ebpf;
         let mut control = Control {
-            ipv4_black_list: AyaHashMap::try_from(ebpf.take_map("IPV4_BLACKLIST").unwrap())?,
-            ipv6_black_list: AyaHashMap::try_from(ebpf.take_map("IPV6_BLACKLIST").unwrap())?,
+            ipv4_src_black_list: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_BLACKLIST").unwrap())?,
+            ipv6_src_black_list: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_BLACKLIST").unwrap())?,
+            ipv4_dst_black_list: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_BLACKLIST").unwrap())?,
+            ipv6_dst_black_list: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_BLACKLIST").unwrap())?,
             ipv4_http_service: AyaHashMap::try_from(ebpf.take_map("IPV4_HTTP_SERVICE").unwrap())?,
             ipv6_http_service: AyaHashMap::try_from(ebpf.take_map("IPV6_HTTP_SERVICE").unwrap())?,
             ssh_white_list_only: AyaArray::try_from(ebpf.take_map("SSH_WHITE_LIST_ONLY").unwrap())?,
@@ -84,34 +88,34 @@ impl Control {
         once_lock.write().await
     }
 
-    pub async fn get_ipv4_black_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
+    pub async fn get_ipv4_src_black_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
         let control = Control::instance().await;
         control
-            .ipv4_black_list
+            .ipv4_src_black_list
             .iter()
             .filter_map(Result::ok)
             .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
             .collect()
     }
 
-    pub async fn get_ipv6_black_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
+    pub async fn get_ipv6_src_black_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
         let control = Control::instance().await;
         control
-            .ipv6_black_list
+            .ipv6_src_black_list
             .iter()
             .filter_map(Result::ok)
             .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
             .collect()
     }
 
-    pub async fn add_ipv4_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
+    pub async fn add_ipv4_src_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
         let mut new_ports = [0_u16; MAX_RULES_PORT];
         if port == 0 {
             new_ports[0] = 0;
-        } else if let Ok(ports) = control.ipv4_black_list.get(&ip, 0) {
+        } else if let Ok(ports) = control.ipv4_src_black_list.get(&ip, 0) {
             if ports[0] == 0 {
                 return Ok(());
             }
@@ -133,20 +137,20 @@ impl Control {
             new_ports[0] = port;
         }
         control
-            .ipv4_black_list
+            .ipv4_src_black_list
             .insert(ip, new_ports, 0)
             .map_err(|_| EbpfEntry::MapOperationError)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
+    pub async fn add_ipv6_src_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
         let mut new_ports = [0_u16; MAX_RULES_PORT];
         if port == 0 {
             new_ports[0] = 0;
-        } else if let Ok(ports) = control.ipv6_black_list.get(&ip, 0) {
+        } else if let Ok(ports) = control.ipv6_src_black_list.get(&ip, 0) {
             if ports[0] == 0 {
                 return Ok(());
             }
@@ -168,20 +172,20 @@ impl Control {
             new_ports[0] = port;
         }
         control
-            .ipv6_black_list
+            .ipv6_src_black_list
             .insert(ip, new_ports, 0)
             .map_err(|_| EbpfEntry::MapOperationError)?;
         Ok(())
     }
 
-    pub async fn remove_ipv4_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
+    pub async fn remove_ipv4_src_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        if let Ok(mut ports) = control.ipv4_black_list.get(&ip, 0) {
+        if let Ok(mut ports) = control.ipv4_src_black_list.get(&ip, 0) {
             if port == 0 {
                 control
-                    .ipv4_black_list
+                    .ipv4_src_black_list
                     .remove(&ip)
                     .map_err(|_| EbpfEntry::MapOperationError)?;
                 return Ok(());
@@ -193,12 +197,12 @@ impl Control {
                 ports[MAX_RULES_PORT - 1] = 0;
                 if ports[0] == 0 {
                     control
-                        .ipv4_black_list
+                        .ipv4_src_black_list
                         .remove(&ip)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 } else {
                     control
-                        .ipv4_black_list
+                        .ipv4_src_black_list
                         .insert(ip, ports, 0)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 }
@@ -209,14 +213,14 @@ impl Control {
         }
     }
 
-    pub async fn remove_ipv6_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
+    pub async fn remove_ipv6_src_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut control = Control::instance_mut().await;
-        if let Ok(mut ports) = control.ipv6_black_list.get(&ip, 0) {
+        if let Ok(mut ports) = control.ipv6_src_black_list.get(&ip, 0) {
             if port == 0 {
                 control
-                    .ipv6_black_list
+                    .ipv6_src_black_list
                     .remove(&ip)
                     .map_err(|_| EbpfEntry::MapOperationError)?;
                 return Ok(());
@@ -228,12 +232,172 @@ impl Control {
                 ports[MAX_RULES_PORT - 1] = 0;
                 if ports[0] == 0 {
                     control
-                        .ipv6_black_list
+                        .ipv6_src_black_list
                         .remove(&ip)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 } else {
                     control
-                        .ipv6_black_list
+                        .ipv6_src_black_list
+                        .insert(ip, ports, 0)
+                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(EbpfEntry::IpDoesNotExist)?
+        }
+    }
+
+    pub async fn get_ipv4_dst_black_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
+        let control = Control::instance().await;
+        control
+            .ipv4_dst_black_list
+            .iter()
+            .filter_map(Result::ok)
+            .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
+            .collect()
+    }
+
+    pub async fn get_ipv6_dst_black_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
+        let control = Control::instance().await;
+        control
+            .ipv6_dst_black_list
+            .iter()
+            .filter_map(Result::ok)
+            .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
+            .collect()
+    }
+
+    pub async fn add_ipv4_dst_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
+        let ip: u32 = (*address.ip()).into();
+        let port = address.port();
+        let mut control = Control::instance_mut().await;
+        let mut new_ports = [0_u16; MAX_RULES_PORT];
+        if port == 0 {
+            new_ports[0] = 0;
+        } else if let Ok(ports) = control.ipv4_dst_black_list.get(&ip, 0) {
+            if ports[0] == 0 {
+                return Ok(());
+            }
+            let mut index = None;
+            for (i, &value) in ports.iter().enumerate() {
+                if value == port {
+                    return Ok(());
+                }
+                if index.is_none() && value == 0 {
+                    index = Some(i);
+                }
+            }
+            if index.is_none() {
+                return Err(EbpfEntry::RuleReachLimit.into());
+            }
+            new_ports.copy_from_slice(&ports);
+            new_ports[index.unwrap()] = port;
+        } else {
+            new_ports[0] = port;
+        }
+        control
+            .ipv4_dst_black_list
+            .insert(ip, new_ports, 0)
+            .map_err(|_| EbpfEntry::MapOperationError)?;
+        Ok(())
+    }
+
+    pub async fn add_ipv6_dst_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let mut control = Control::instance_mut().await;
+        let mut new_ports = [0_u16; MAX_RULES_PORT];
+        if port == 0 {
+            new_ports[0] = 0;
+        } else if let Ok(ports) = control.ipv6_dst_black_list.get(&ip, 0) {
+            if ports[0] == 0 {
+                return Ok(());
+            }
+            let mut index = None;
+            for (i, &value) in ports.iter().enumerate() {
+                if value == port {
+                    return Ok(());
+                }
+                if index.is_none() && value == 0 {
+                    index = Some(i);
+                }
+            }
+            if index.is_none() {
+                return Err(EbpfEntry::RuleReachLimit.into());
+            }
+            new_ports.copy_from_slice(&ports);
+            new_ports[index.unwrap()] = port;
+        } else {
+            new_ports[0] = port;
+        }
+        control
+            .ipv6_dst_black_list
+            .insert(ip, new_ports, 0)
+            .map_err(|_| EbpfEntry::MapOperationError)?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv4_dst_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
+        let ip: u32 = (*address.ip()).into();
+        let port = address.port();
+        let mut control = Control::instance_mut().await;
+        if let Ok(mut ports) = control.ipv4_dst_black_list.get(&ip, 0) {
+            if port == 0 {
+                control
+                    .ipv4_dst_black_list
+                    .remove(&ip)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                return Ok(());
+            }
+            if let Some(index) = ports.iter().position(|&x| x == port) {
+                for i in index..(MAX_RULES_PORT - 1) {
+                    ports[i] = ports[i + 1];
+                }
+                ports[MAX_RULES_PORT - 1] = 0;
+                if ports[0] == 0 {
+                    control
+                        .ipv4_dst_black_list
+                        .remove(&ip)
+                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                } else {
+                    control
+                        .ipv4_dst_black_list
+                        .insert(ip, ports, 0)
+                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(EbpfEntry::IpDoesNotExist)?
+        }
+    }
+
+    pub async fn remove_ipv6_dst_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let mut control = Control::instance_mut().await;
+        if let Ok(mut ports) = control.ipv6_dst_black_list.get(&ip, 0) {
+            if port == 0 {
+                control
+                    .ipv6_dst_black_list
+                    .remove(&ip)
+                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                return Ok(());
+            }
+            if let Some(index) = ports.iter().position(|&x| x == port) {
+                for i in index..(MAX_RULES_PORT - 1) {
+                    ports[i] = ports[i + 1];
+                }
+                ports[MAX_RULES_PORT - 1] = 0;
+                if ports[0] == 0 {
+                    control
+                        .ipv6_dst_black_list
+                        .remove(&ip)
+                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                } else {
+                    control
+                        .ipv6_dst_black_list
                         .insert(ip, ports, 0)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 }

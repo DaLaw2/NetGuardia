@@ -32,7 +32,7 @@ fn try_net_guardia(ctx: XdpContext) -> Result<u32, ()> {
             if service::ipv4_service_rule_violation(start, end, &event) {
                 return Ok(xdp_action::XDP_DROP);
             }
-            // if defence::is_attack_ipv4(&event) {
+            // if defence::ipv4_is_attack(&event) {
             //     return Ok(xdp_action::XDP_DROP);
             // }
             monitor::ipv4_update_stats(&event);
@@ -45,7 +45,7 @@ fn try_net_guardia(ctx: XdpContext) -> Result<u32, ()> {
             if service::ipv6_service_rule_violation(start, end, &event) {
                 return Ok(xdp_action::XDP_DROP);
             }
-            // if defence::is_attack_ipv6(&event) {
+            // if defence::ipv6_is_attack(&event) {
             //     return Ok(xdp_action::XDP_DROP);
             // }
             monitor::ipv6_update_stats(&event);

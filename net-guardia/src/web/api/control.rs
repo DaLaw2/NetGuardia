@@ -5,12 +5,18 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 pub fn initialize() -> Scope {
     web::scope("/control")
-        .service(get_ipv4_black_list)
-        .service(get_ipv6_black_list)
-        .service(add_ipv4_black_list)
-        .service(add_ipv6_black_list)
-        .service(remove_ipv4_black_list)
-        .service(remove_ipv6_black_list)
+        .service(get_ipv4_src_black_list)
+        .service(get_ipv6_src_black_list)
+        .service(add_ipv4_src_black_list)
+        .service(add_ipv6_src_black_list)
+        .service(remove_ipv4_src_black_list)
+        .service(remove_ipv6_src_black_list)
+        .service(get_ipv4_dst_black_list)
+        .service(get_ipv6_dst_black_list)
+        .service(add_ipv4_dst_black_list)
+        .service(add_ipv6_dst_black_list)
+        .service(remove_ipv4_dst_black_list)
+        .service(remove_ipv6_dst_black_list)
         .service(get_ipv4_http_service)
         .service(get_ipv6_http_service)
         .service(add_ipv4_http_service)
@@ -44,45 +50,89 @@ pub fn initialize() -> Scope {
         .service(remove_ipv6_scanner_list)
 }
 
-#[get("/ipv4/black_list")]
-async fn get_ipv4_black_list() -> impl Responder {
-    let list = Control::get_ipv4_black_list().await;
+#[get("/ipv4/src_black_list")]
+async fn get_ipv4_src_black_list() -> impl Responder {
+    let list = Control::get_ipv4_src_black_list().await;
     HttpResponse::Ok().json(web::Json(list))
 }
 
-#[get("/ipv6/black_list")]
-async fn get_ipv6_black_list() -> impl Responder {
-    let list = Control::get_ipv6_black_list().await;
+#[get("/ipv6/src_black_list")]
+async fn get_ipv6_src_black_list() -> impl Responder {
+    let list = Control::get_ipv6_src_black_list().await;
     HttpResponse::Ok().json(web::Json(list))
 }
 
-#[put("/ipv4/black_list")]
-async fn add_ipv4_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
-    match Control::add_ipv4_black_list(ip_addr.into_inner()).await {
+#[put("/ipv4/src_black_list")]
+async fn add_ipv4_src_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
+    match Control::add_ipv4_src_black_list(ip_addr.into_inner()).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
-#[put("/ipv6/black_list")]
-async fn add_ipv6_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
-    match Control::add_ipv6_black_list(ip_addr.into_inner()).await {
+#[put("/ipv6/src_black_list")]
+async fn add_ipv6_src_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
+    match Control::add_ipv6_src_black_list(ip_addr.into_inner()).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
-#[delete("/ipv4/black_list")]
-async fn remove_ipv4_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
-    match Control::remove_ipv4_black_list(ip_addr.into_inner()).await {
+#[delete("/ipv4/src_black_list")]
+async fn remove_ipv4_src_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
+    match Control::remove_ipv4_src_black_list(ip_addr.into_inner()).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
-#[delete("/ipv6/black_list")]
-async fn remove_ipv6_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
-    match Control::remove_ipv6_black_list(ip_addr.into_inner()).await {
+#[delete("/ipv6/src_black_list")]
+async fn remove_ipv6_src_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
+    match Control::remove_ipv6_src_black_list(ip_addr.into_inner()).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+#[get("/ipv4/dst_black_list")]
+async fn get_ipv4_dst_black_list() -> impl Responder {
+    let list = Control::get_ipv4_dst_black_list().await;
+    HttpResponse::Ok().json(web::Json(list))
+}
+
+#[get("/ipv6/dst_black_list")]
+async fn get_ipv6_dst_black_list() -> impl Responder {
+    let list = Control::get_ipv6_dst_black_list().await;
+    HttpResponse::Ok().json(web::Json(list))
+}
+
+#[put("/ipv4/dst_black_list")]
+async fn add_ipv4_dst_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
+    match Control::add_ipv4_dst_black_list(ip_addr.into_inner()).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+#[put("/ipv6/dst_black_list")]
+async fn add_ipv6_dst_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
+    match Control::add_ipv6_dst_black_list(ip_addr.into_inner()).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+#[delete("/ipv4/dst_black_list")]
+async fn remove_ipv4_dst_black_list(ip_addr: web::Json<SocketAddrV4>) -> impl Responder {
+    match Control::remove_ipv4_dst_black_list(ip_addr.into_inner()).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+#[delete("/ipv6/dst_black_list")]
+async fn remove_ipv6_dst_black_list(ip_addr: web::Json<SocketAddrV6>) -> impl Responder {
+    match Control::remove_ipv6_dst_black_list(ip_addr.into_inner()).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
