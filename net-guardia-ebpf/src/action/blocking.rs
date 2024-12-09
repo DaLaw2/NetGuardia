@@ -24,11 +24,11 @@ pub fn ipv4_should_block(event: &IPv4Event) -> bool {
                 return true;
             }
         }
-        if let Some(ports) = IPV4_DST_BLACKLIST.get(&event.destination_ip) {
-            if is_port_blocked(ports, event.destination_port) {
-                return true;
-            }
-        }
+        // if let Some(ports) = IPV4_DST_BLACKLIST.get(&event.destination_ip) {
+        //     if is_port_blocked(ports, event.destination_port) {
+        //         return true;
+        //     }
+        // }
     }
     false
 }
@@ -40,11 +40,11 @@ pub fn ipv6_should_block(event: &IPv6Event) -> bool {
                 return true;
             }
         }
-        if let Some(ports) = IPV6_DST_BLACKLIST.get(&event.destination_ip) {
-            if is_port_blocked(ports, event.destination_port) {
-                return true;
-            }
-        }
+        // if let Some(ports) = IPV6_DST_BLACKLIST.get(&event.destination_ip) {
+        //     if is_port_blocked(ports, event.destination_port) {
+        //         return true;
+        //     }
+        // }
     }
     false
 }
