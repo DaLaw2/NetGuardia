@@ -58,6 +58,9 @@ fn ipv4_http_service_violation(
     match protocol {
         IpProto::Tcp => unsafe {
             let offset = size_of::<EthHdr>() + size_of::<Ipv4Hdr>();
+            if start + offset + size_of::<TcpHdr>() > end {
+                return false
+            }
             let tcp_header = &*((start + offset) as *const TcpHdr);
             if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
                 return false;
@@ -87,6 +90,9 @@ fn ipv6_http_service_violation(
     match protocol {
         IpProto::Tcp => unsafe {
             let offset = size_of::<EthHdr>() + size_of::<Ipv6Hdr>();
+            if start + offset + size_of::<TcpHdr>() > end {
+                return false;
+            }
             let tcp_header = &*((start + offset) as *const TcpHdr);
             if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
                 return false;

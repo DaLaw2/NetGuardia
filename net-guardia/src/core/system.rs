@@ -1,4 +1,5 @@
 use crate::core::config_manager::ConfigManager;
+use crate::core::control::Control;
 use crate::core::monitor::Monitor;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
@@ -7,19 +8,22 @@ use crate::web::api::{control, default, misc, monitor};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
+use aya::maps::{Array, MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use std::sync::OnceLock;
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::{error, info, warn};
-use crate::core::control::Control;
+use std::time::Duration;
 use sysinfo::System as SystemInfo;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::time::sleep;
+use tracing::{debug, error, info, warn};
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
 pub struct System {
     pub ebpf: Ebpf,
     pub boot_time: u64,
+    program_array: ProgramArray<MapData>,
 }
 
 impl System {
@@ -37,6 +41,8 @@ impl System {
     async fn ebpf_initialize() -> anyhow::Result<()> {
         let config = ConfigManager::now().await;
         let interface = config.ingress_ifindex;
+        let boot_time = SystemInfo::boot_time() * 1_000_000_000;
+        Self::set_memory_limit()?;
         let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
             env!("OUT_DIR"),
             "/net-guardia"
@@ -45,14 +51,47 @@ impl System {
             error!("{}", e);
             warn!("{}", EbpfEntry::LoggerInitializeFailed);
         }
+        let mut program_array = ProgramArray::try_from(ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut ebpf, &mut program_array, "blocking", 0)?;
+        Self::load_program(&mut ebpf, &mut program_array, "service", 1)?;
+        Self::load_program(&mut ebpf, &mut program_array, "monitor", 2)?;
         let program: &mut Xdp = ebpf.program_mut("net_guardia").unwrap().try_into()?;
         program.load()?;
         program
             .attach(&interface, XdpFlags::default())
             .context(EbpfEntry::AttachProgramFailed)?;
-        let boot_time = SystemInfo::boot_time() * 1_000_000_000;
-        SYSTEM.get_or_init(|| RwLock::new(System { ebpf, boot_time }));
+        let system = System {
+            ebpf,
+            boot_time,
+            program_array,
+        };
+        SYSTEM.get_or_init(|| RwLock::new(system));
         info!("{}", EbpfEntry::AttachProgramSuccess);
+        Ok(())
+    }
+
+    fn set_memory_limit() -> anyhow::Result<()> {
+        let rlim = libc::rlimit {
+            rlim_cur: libc::RLIM_INFINITY,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+        if ret != 0 {
+            info!("Failed to remove limit on locked memory, ret is: {}", ret);
+        }
+        Ok(())
+    }
+
+    fn load_program(
+        ebpf: &mut Ebpf,
+        program_array: &mut ProgramArray<MapData>,
+        function_name: &str,
+        index: u32,
+    ) -> anyhow::Result<()> {
+        let program: &mut Xdp = ebpf.program_mut(function_name).unwrap().try_into()?;
+        program.load()?;
+        let fd = program.fd()?;
+        program_array.set(index, fd, 0)?;
         Ok(())
     }
 

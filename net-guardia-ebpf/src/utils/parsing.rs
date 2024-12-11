@@ -1,5 +1,5 @@
 use aya_ebpf::helpers::bpf_ktime_get_ns;
-use net_guardia_common::model::event::{IPv4Event, IPv6Event};
+use net_guardia_common::model::event::Event;
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
@@ -7,18 +7,20 @@ use network_types::{
     udp::UdpHdr,
 };
 
-#[inline(always)]
-pub fn parse_ether_type(start: usize, end: usize) -> Result<EtherType, ()> {
+pub fn parse_packet(start: usize, end: usize) -> Result<Event, ()> {
     if start + size_of::<EthHdr>() > end {
         return Err(());
     }
     let eth = unsafe { &*(start as *const EthHdr) };
-
-    Ok(eth.ether_type)
+    match eth.ether_type {
+        EtherType::Ipv4 => parse_ipv4_packet(start, end),
+        EtherType::Ipv6 => parse_ipv6_packet(start, end),
+        _ => Err(())
+    }
 }
 
 #[inline(always)]
-pub fn parse_ipv4_packet(start: usize, end: usize) -> Result<IPv4Event, ()> {
+pub fn parse_ipv4_packet(start: usize, end: usize) -> Result<Event, ()> {
     let mut offset = size_of::<EthHdr>();
     if start + offset + size_of::<Ipv4Hdr>() > end {
         return Err(());
@@ -36,10 +38,11 @@ pub fn parse_ipv4_packet(start: usize, end: usize) -> Result<IPv4Event, ()> {
         _ => return Err(()),
     };
 
-    Ok(IPv4Event {
+    Ok(Event {
+        eth_type: EtherType::Ipv4,
         protocol,
-        source_ip,
-        destination_ip,
+        source_ip: source_ip as u128,
+        destination_ip: destination_ip as u128,
         source_port,
         destination_port,
         len: (end - start) as u32,
@@ -48,7 +51,7 @@ pub fn parse_ipv4_packet(start: usize, end: usize) -> Result<IPv4Event, ()> {
 }
 
 #[inline(always)]
-pub fn parse_ipv6_packet(start: usize, end: usize) -> Result<IPv6Event, ()> {
+pub fn parse_ipv6_packet(start: usize, end: usize) -> Result<Event, ()> {
     let mut offset = size_of::<EthHdr>();
     if start + offset + size_of::<Ipv6Hdr>() > end {
         return Err(());
@@ -66,7 +69,8 @@ pub fn parse_ipv6_packet(start: usize, end: usize) -> Result<IPv6Event, ()> {
         _ => return Err(()),
     };
 
-    Ok(IPv6Event {
+    Ok(Event {
+        eth_type: EtherType::Ipv6,
         protocol,
         source_ip,
         destination_ip,
