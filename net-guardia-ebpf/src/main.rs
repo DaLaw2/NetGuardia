@@ -105,43 +105,43 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
         }
         _ => Err(())?,
     }
-    if PROGRAM_ARRAY.tail_call(&ctx, 2).is_err() {
-        error!(&ctx, "Tail call failed");
-    }
-    Err(())
-}
-
-#[xdp]
-pub fn defence(ctx: XdpContext) -> u32 {
-    match unsafe { try_defence(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
-    }
-}
-
-unsafe fn try_defence(ctx: XdpContext) -> Result<u32, ()> {
-    let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read();
-    match parsed_packet.eth_type {
-        EtherType::Ipv4 => {
-            let event = parsed_packet.into_ipv4_event();
-            if defence::ipv4_is_attack(&event) {
-                return Ok(xdp_action::XDP_DROP);
-            }
-        }
-        EtherType::Ipv6 => {
-            let event = parsed_packet.into_ipv6_event();
-            if defence::ipv6_is_attack(&event) {
-                return Ok(xdp_action::XDP_DROP);
-            }
-        }
-        _ => Err(())?
-    }
     if PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() {
         error!(&ctx, "Tail call failed");
     }
     Err(())
 }
+
+// #[xdp]
+// pub fn defence(ctx: XdpContext) -> u32 {
+//     match unsafe { try_defence(ctx) } {
+//         Ok(ret) => ret,
+//         Err(_) => xdp_action::XDP_PASS,
+//     }
+// }
+//
+// unsafe fn try_defence(ctx: XdpContext) -> Result<u32, ()> {
+//     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
+//     let parsed_packet = ptr.read();
+//     match parsed_packet.eth_type {
+//         EtherType::Ipv4 => {
+//             let event = parsed_packet.into_ipv4_event();
+//             if defence::ipv4_is_attack(&event) {
+//                 return Ok(xdp_action::XDP_DROP);
+//             }
+//         }
+//         EtherType::Ipv6 => {
+//             let event = parsed_packet.into_ipv6_event();
+//             if defence::ipv6_is_attack(&event) {
+//                 return Ok(xdp_action::XDP_DROP);
+//             }
+//         }
+//         _ => Err(())?
+//     }
+//     if PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() {
+//         error!(&ctx, "Tail call failed");
+//     }
+//     Err(())
+// }
 
 #[xdp]
 pub fn sampling(ctx: XdpContext) -> u32 {

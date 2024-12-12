@@ -18,4 +18,4 @@ pub const MAX_RULES: u32 = 1000;
 /// efficient rule processing.
 pub const MAX_RULES_PORT: usize = 32;
 
-pub const MAX_PORT_ACCESS: usize = 36;
+pub const MAX_PORT_ACCESS: usize = 12;

@@ -53,7 +53,7 @@ impl System {
         let mut program_array = ProgramArray::try_from(ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
         Self::load_program(&mut ebpf, &mut program_array, "access_control", 0)?;
         Self::load_program(&mut ebpf, &mut program_array, "service", 1)?;
-        Self::load_program(&mut ebpf, &mut program_array, "defence", 2)?;
+        // Self::load_program(&mut ebpf, &mut program_array, "defence", 2)?;
         Self::load_program(&mut ebpf, &mut program_array, "sampling", 3)?;
         Self::load_program(&mut ebpf, &mut program_array, "monitor", 4)?;
         let program: &mut Xdp = ebpf.program_mut("net_guardia").unwrap().try_into()?;
