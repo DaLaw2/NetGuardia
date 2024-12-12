@@ -4,5 +4,4 @@ pub mod http_method;
 pub mod ip_address;
 pub mod packet_status;
 pub mod placeholder;
-pub mod port_accesses;
 pub mod pseudo_header;

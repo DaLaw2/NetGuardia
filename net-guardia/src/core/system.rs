@@ -8,21 +8,20 @@ use crate::web::api::{control, default, misc, monitor};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
-use aya::maps::{Array, MapData, ProgramArray};
+use aya::maps::{MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use std::sync::OnceLock;
-use std::time::Duration;
 use sysinfo::System as SystemInfo;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
 pub struct System {
     pub ebpf: Ebpf,
     pub boot_time: u64,
+    #[allow(dead_code)]
     program_array: ProgramArray<MapData>,
 }
 
@@ -52,9 +51,11 @@ impl System {
             warn!("{}", EbpfEntry::LoggerInitializeFailed);
         }
         let mut program_array = ProgramArray::try_from(ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut ebpf, &mut program_array, "blocking", 0)?;
+        Self::load_program(&mut ebpf, &mut program_array, "access_control", 0)?;
         Self::load_program(&mut ebpf, &mut program_array, "service", 1)?;
-        Self::load_program(&mut ebpf, &mut program_array, "monitor", 2)?;
+        Self::load_program(&mut ebpf, &mut program_array, "defence", 2)?;
+        Self::load_program(&mut ebpf, &mut program_array, "sampling", 3)?;
+        Self::load_program(&mut ebpf, &mut program_array, "monitor", 4)?;
         let program: &mut Xdp = ebpf.program_mut("net_guardia").unwrap().try_into()?;
         program.load()?;
         program

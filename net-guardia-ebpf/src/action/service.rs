@@ -16,7 +16,7 @@ static IPV4_HTTP_SERVICE: HashMap<EbpfAddrPortV4, EbpfHttpMethod> =
 static IPV6_HTTP_SERVICE: HashMap<EbpfAddrPortV6, EbpfHttpMethod> =
     HashMap::with_max_entries(MAX_RULES, 0);
 #[map]
-static SSH_WHITE_LIST_ONLY: Array<PlaceHolder> = Array::with_max_entries(1, 0);
+static SSH_WHITE_LIST_ENABLE: Array<PlaceHolder> = Array::with_max_entries(1, 0);
 #[map]
 static IPV4_SSH_SERVICE: HashMap<EbpfAddrPortV4, PlaceHolder> =
     HashMap::with_max_entries(MAX_RULES, 0);
@@ -55,28 +55,30 @@ fn ipv4_http_service_violation(
     protocol: &IpProto,
     destination: &EbpfAddrPortV4,
 ) -> bool {
-    match protocol {
-        IpProto::Tcp => unsafe {
-            let offset = size_of::<EthHdr>() + size_of::<Ipv4Hdr>();
-            if start + offset + size_of::<TcpHdr>() > end {
-                return false
-            }
-            let tcp_header = &*((start + offset) as *const TcpHdr);
-            if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
+    match IPV4_HTTP_SERVICE.get_ptr_mut(destination) {
+        Some(allow_method) => {
+            if !matches!(protocol, IpProto::Tcp) {
                 return false;
             }
-            if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
-                return false;
-            }
-            match IPV4_HTTP_SERVICE.get_ptr_mut(destination) {
-                Some(allow_method) => match get_http_request_method(start, end, offset) {
+            unsafe {
+                let offset = size_of::<EthHdr>() + size_of::<Ipv4Hdr>();
+                if start + offset + size_of::<TcpHdr>() > end {
+                    return false;
+                }
+                let tcp_header = &*((start + offset) as *const TcpHdr);
+                if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
+                    return false;
+                }
+                if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
+                    return false;
+                }
+                match get_http_request_method(start, end, offset) {
                     Some(http_method) => *allow_method & http_method == 0,
                     None => true,
-                },
-                None => false,
+                }
             }
-        },
-        _ => false,
+        }
+        None => false,
     }
 }
 
@@ -87,28 +89,30 @@ fn ipv6_http_service_violation(
     protocol: &IpProto,
     destination: &EbpfAddrPortV6,
 ) -> bool {
-    match protocol {
-        IpProto::Tcp => unsafe {
-            let offset = size_of::<EthHdr>() + size_of::<Ipv6Hdr>();
-            if start + offset + size_of::<TcpHdr>() > end {
+    match IPV6_HTTP_SERVICE.get_ptr_mut(destination) {
+        Some(allow_method) => {
+            if !matches!(protocol, IpProto::Tcp) {
                 return false;
             }
-            let tcp_header = &*((start + offset) as *const TcpHdr);
-            if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
-                return false;
-            }
-            if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
-                return false;
-            }
-            match IPV6_HTTP_SERVICE.get_ptr_mut(destination) {
-                Some(allow_method) => match get_http_request_method(start, end, offset) {
+            unsafe {
+                let offset = size_of::<EthHdr>() + size_of::<Ipv6Hdr>();
+                if start + offset + size_of::<TcpHdr>() > end {
+                    return false;
+                }
+                let tcp_header = &*((start + offset) as *const TcpHdr);
+                if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
+                    return false;
+                }
+                if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
+                    return false;
+                }
+                match get_http_request_method(start, end, offset) {
                     Some(http_method) => *allow_method & http_method == 0,
                     None => true,
-                },
-                None => false,
+                }
             }
-        },
-        _ => false,
+        }
+        None => false,
     }
 }
 
@@ -136,7 +140,7 @@ fn get_http_request_method(start: usize, end: usize, offset: usize) -> Option<Eb
 fn ipv4_ssh_service_violation(source: &EbpfAddrPortV4, destination: &EbpfAddrPortV4) -> bool {
     unsafe {
         if IPV4_SSH_SERVICE.get(destination).is_some() {
-            if SSH_WHITE_LIST_ONLY.get(0).is_some() {
+            if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
                 IPV4_SSH_WHITE_LIST.get(&source[0]).is_none()
             } else {
                 IPV4_SSH_BLACK_LIST.get(&source[0]).is_some()
@@ -151,7 +155,7 @@ fn ipv4_ssh_service_violation(source: &EbpfAddrPortV4, destination: &EbpfAddrPor
 fn ipv6_ssh_service_violation(source_ip: &EbpfAddrPortV6, destination: &EbpfAddrPortV6) -> bool {
     unsafe {
         if IPV6_SSH_SERVICE.get(destination).is_some() {
-            if SSH_WHITE_LIST_ONLY.get(0).is_some() {
+            if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
                 IPV6_SSH_WHITE_LIST.get(&source_ip[0]).is_none()
             } else {
                 IPV6_SSH_BLACK_LIST.get(&source_ip[0]).is_some()

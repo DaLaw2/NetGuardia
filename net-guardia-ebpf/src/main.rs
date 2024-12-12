@@ -4,18 +4,17 @@ mod action;
 mod utils;
 
 use crate::action::{defence, service};
-use crate::utils::{parsing, validate_ipv4_bounds, validate_ipv6_bounds, validate_packet_bounds};
-use action::{blocking, monitor};
-use aya_ebpf::helpers::bpf_tail_call;
+use crate::utils::parsing;
+use action::{access_control, monitor};
 use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{Array, PerCpuArray, ProgramArray};
+use aya_ebpf::maps::{PerCpuArray, ProgramArray};
 use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
-use aya_log_ebpf::{error, info};
+use aya_log_ebpf::error;
 use net_guardia_common::model::event::Event;
 use network_types::eth::EtherType;
 
 #[map]
-static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(4, 0);
+static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 
@@ -41,28 +40,32 @@ unsafe fn parsing(ctx: XdpContext) -> Result<u32, ()> {
 }
 
 #[xdp]
-pub fn blocking(ctx: XdpContext) -> u32 {
-    match unsafe { try_blocking(ctx) } {
+pub fn access_control(ctx: XdpContext) -> u32 {
+    match unsafe { try_access_control(ctx) } {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_PASS,
     }
 }
 
-unsafe fn try_blocking(ctx: XdpContext) -> Result<u32, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
+unsafe fn try_access_control(ctx: XdpContext) -> Result<u32, ()> {
     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read_unaligned();
+    let parsed_packet = ptr.read();
     match parsed_packet.eth_type {
         EtherType::Ipv4 => {
             let event = parsed_packet.into_ipv4_event();
-            if blocking::ipv4_should_block(&event) {
+            if access_control::ipv4_is_whitelisted(&event) {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            if access_control::ipv4_is_blacklisted(&event) {
                 return Ok(xdp_action::XDP_DROP);
             }
         }
         EtherType::Ipv6 => {
             let event = parsed_packet.into_ipv6_event();
-            if blocking::ipv6_should_block(&event) {
+            if access_control::ipv6_is_whitelisted(&event) {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            if access_control::ipv6_is_blacklisted(&event) {
                 return Ok(xdp_action::XDP_DROP);
             }
         }
@@ -86,7 +89,7 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
     let start = ctx.data();
     let end = ctx.data_end();
     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read_unaligned();
+    let parsed_packet = ptr.read();
     match parsed_packet.eth_type {
         EtherType::Ipv4 => {
             let event = parsed_packet.into_ipv4_event();
@@ -103,7 +106,54 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
         _ => Err(())?,
     }
     if PROGRAM_ARRAY.tail_call(&ctx, 2).is_err() {
-        error!(&ctx, "Fail call monitor function");
+        error!(&ctx, "Tail call failed");
+    }
+    Err(())
+}
+
+#[xdp]
+pub fn defence(ctx: XdpContext) -> u32 {
+    match unsafe { try_defence(ctx) } {
+        Ok(ret) => ret,
+        Err(_) => xdp_action::XDP_PASS,
+    }
+}
+
+unsafe fn try_defence(ctx: XdpContext) -> Result<u32, ()> {
+    let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
+    let parsed_packet = ptr.read();
+    match parsed_packet.eth_type {
+        EtherType::Ipv4 => {
+            let event = parsed_packet.into_ipv4_event();
+            if defence::ipv4_is_attack(&event) {
+                return Ok(xdp_action::XDP_DROP);
+            }
+        }
+        EtherType::Ipv6 => {
+            let event = parsed_packet.into_ipv6_event();
+            if defence::ipv6_is_attack(&event) {
+                return Ok(xdp_action::XDP_DROP);
+            }
+        }
+        _ => Err(())?
+    }
+    if PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() {
+        error!(&ctx, "Tail call failed");
+    }
+    Err(())
+}
+
+#[xdp]
+pub fn sampling(ctx: XdpContext) -> u32 {
+    match unsafe { try_sampling(ctx) } {
+        Ok(ret) => ret,
+        Err(_) => xdp_action::XDP_PASS,
+    }
+}
+
+unsafe fn try_sampling(ctx: XdpContext) -> Result<u32, ()> {
+    if PROGRAM_ARRAY.tail_call(&ctx, 4).is_err() {
+        error!(&ctx, "Tail call failed");
     }
     Err(())
 }
@@ -118,7 +168,7 @@ pub fn monitor(ctx: XdpContext) -> u32 {
 
 unsafe fn try_monitor(_: XdpContext) -> Result<u32, ()> {
     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read_unaligned();
+    let parsed_packet = ptr.read();
     match parsed_packet.eth_type {
         EtherType::Ipv4 => {
             let event = parsed_packet.into_ipv4_event();
