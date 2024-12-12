@@ -1,8 +1,12 @@
 use crate::core::system::System;
+use crate::model::direction::Direction;
+use crate::model::ip_address::IpAddressType;
+use crate::model::list_type::ListType;
 use crate::utils::ip_address::convert_ports_to_vec;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
+use aya::Pod;
 use net_guardia_common::model::ip_address::{IPv4, IPv6, Port};
 use net_guardia_common::MAX_RULES_PORT;
 use std::collections::HashMap as StdHashMap;
@@ -14,48 +18,56 @@ use tracing::info;
 static ACCESS_LIST: OnceLock<RwLock<AccessList>> = OnceLock::new();
 
 pub struct AccessList {
-    ipv4_src_white_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
-    ipv6_src_white_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
-    ipv4_dst_white_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
-    ipv6_dst_white_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
-    ipv4_src_black_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
-    ipv6_src_black_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
-    ipv4_dst_black_list: AyaHashMap<MapData, IPv4, [Port; MAX_RULES_PORT]>,
-    ipv6_dst_black_list: AyaHashMap<MapData, IPv6, [Port; MAX_RULES_PORT]>,
+    ipv4_maps: StdHashMap<(Direction, ListType), AccessMap<IPv4>>,
+    ipv6_maps: StdHashMap<(Direction, ListType), AccessMap<IPv6>>,
 }
 
 impl AccessList {
+    const MAP_CONFIGS: [((Direction, ListType), (&'static str, &'static str)); 4] = [
+        (
+            (Direction::Source, ListType::White),
+            ("IPV4_SRC_WHITELIST", "IPV6_SRC_WHITELIST"),
+        ),
+        (
+            (Direction::Source, ListType::Black),
+            ("IPV4_SRC_BLACKLIST", "IPV6_SRC_BLACKLIST"),
+        ),
+        (
+            (Direction::Destination, ListType::White),
+            ("IPV4_DST_WHITELIST", "IPV6_DST_WHITELIST"),
+        ),
+        (
+            (Direction::Destination, ListType::Black),
+            ("IPV4_DST_BLACKLIST", "IPV6_DST_BLACKLIST"),
+        ),
+    ];
+
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ebpf;
-        let access_list = AccessList {
-            ipv4_src_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SRC_WHITELIST").unwrap(),
-            )?,
-            ipv6_src_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SRC_WHITELIST").unwrap(),
-            )?,
-            ipv4_dst_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_DST_WHITELIST").unwrap(),
-            )?,
-            ipv6_dst_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_DST_WHITELIST").unwrap(),
-            )?,
-            ipv4_src_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SRC_BLACKLIST").unwrap(),
-            )?,
-            ipv6_src_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SRC_BLACKLIST").unwrap(),
-            )?,
-            ipv4_dst_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_DST_BLACKLIST").unwrap(),
-            )?,
-            ipv6_dst_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_DST_BLACKLIST").unwrap(),
-            )?,
-        };
-        ACCESS_LIST.get_or_init(|| RwLock::new(access_list));
+        let mut ipv4_maps = StdHashMap::new();
+        let mut ipv6_maps = StdHashMap::new();
+        for (key, (ipv4_name, ipv6_name)) in Self::MAP_CONFIGS {
+            ipv4_maps.insert(
+                key,
+                AccessMap {
+                    map: AyaHashMap::try_from(ebpf.take_map(ipv4_name).unwrap())?,
+                },
+            );
+            ipv6_maps.insert(
+                key,
+                AccessMap {
+                    map: AyaHashMap::try_from(ebpf.take_map(ipv6_name).unwrap())?,
+                },
+            );
+        }
+        ACCESS_LIST.get_or_init(|| {
+            RwLock::new(AccessList {
+                ipv4_maps,
+                ipv6_maps,
+            })
+        });
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
@@ -72,34 +84,109 @@ impl AccessList {
         once_lock.write().await
     }
 
-    pub async fn get_ipv4_src_white_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
+    pub async fn get_ipv4_list(
+        direction: Direction,
+        list_type: ListType,
+    ) -> StdHashMap<Ipv4Addr, Vec<Port>> {
         let access_list = AccessList::instance().await;
         access_list
-            .ipv4_src_white_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
+            .ipv4_maps
+            .get(&(direction, list_type))
+            .map(|map| map.get_list())
+            .unwrap()
     }
 
-    pub async fn get_ipv6_src_white_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
+    pub async fn get_ipv6_list(
+        direction: Direction,
+        list_type: ListType,
+    ) -> StdHashMap<Ipv6Addr, Vec<Port>> {
         let access_list = AccessList::instance().await;
         access_list
-            .ipv6_src_white_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
+            .ipv6_maps
+            .get(&(direction, list_type))
+            .map(|map| map.get_list())
+            .unwrap()
     }
 
-    pub async fn add_ipv4_src_white_list(address: SocketAddrV4) -> anyhow::Result<()> {
+    pub async fn add_ipv4_list(
+        direction: Direction,
+        list_type: ListType,
+        address: SocketAddrV4,
+    ) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut access_list = AccessList::instance_mut().await;
+        let map = access_list
+            .ipv4_maps
+            .get_mut(&(direction, list_type))
+            .unwrap();
+        map.add(ip, port)
+    }
+
+    pub async fn add_ipv6_list(
+        direction: Direction,
+        list_type: ListType,
+        address: SocketAddrV6,
+    ) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let mut access_list = AccessList::instance_mut().await;
+        let map = access_list
+            .ipv6_maps
+            .get_mut(&(direction, list_type))
+            .unwrap();
+        map.add(ip, port)
+    }
+
+    pub async fn remove_ipv4_list(
+        direction: Direction,
+        list_type: ListType,
+        address: SocketAddrV4,
+    ) -> anyhow::Result<()> {
+        let ip: u32 = (*address.ip()).into();
+        let port = address.port();
+        let mut access_list = AccessList::instance_mut().await;
+        let map = access_list
+            .ipv4_maps
+            .get_mut(&(direction, list_type))
+            .unwrap();
+        map.remove(ip, port)
+    }
+
+    pub async fn remove_ipv6_list(
+        direction: Direction,
+        list_type: ListType,
+        address: SocketAddrV6,
+    ) -> anyhow::Result<()> {
+        let ip: u128 = (*address.ip()).into();
+        let port = address.port();
+        let mut access_list = AccessList::instance_mut().await;
+        let map = access_list
+            .ipv6_maps
+            .get_mut(&(direction, list_type))
+            .unwrap();
+        map.remove(ip, port)
+    }
+}
+
+struct AccessMap<T> {
+    map: AyaHashMap<MapData, T, [Port; MAX_RULES_PORT]>,
+}
+
+impl<T: IpAddressType + Pod> AccessMap<T> {
+    fn get_list(&self) -> StdHashMap<T::Native, Vec<Port>> {
+        self.map
+            .iter()
+            .filter_map(Result::ok)
+            .map(|(key, value)| (key.into_native(), convert_ports_to_vec(value)))
+            .collect()
+    }
+
+    fn add(&mut self, ip: T, port: Port) -> anyhow::Result<()> {
         let mut new_ports = [0_u16; MAX_RULES_PORT];
         if port == 0 {
             new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv4_src_white_list.get(&ip, 0) {
+        } else if let Ok(ports) = self.map.get(&ip, 0) {
             if ports[0] == 0 {
                 return Ok(());
             }
@@ -120,588 +207,33 @@ impl AccessList {
         } else {
             new_ports[0] = port;
         }
-        access_list
-            .ipv4_src_white_list
+        self.map
             .insert(ip, new_ports, 0)
             .map_err(|_| EbpfEntry::MapOperationError)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_src_white_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv6_src_white_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv6_src_white_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv4_src_white_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv4_src_white_list.get(&ip, 0) {
+    fn remove(&mut self, ip: T, port: Port) -> anyhow::Result<()> {
+        if let Ok(mut ports) = self.map.get(&ip, 0) {
             if port == 0 {
-                access_list
-                    .ipv4_src_white_list
+                self.map
                     .remove(&ip)
                     .map_err(|_| EbpfEntry::MapOperationError)?;
                 return Ok(());
             }
+
             if let Some(index) = ports.iter().position(|&x| x == port) {
                 for i in index..(MAX_RULES_PORT - 1) {
                     ports[i] = ports[i + 1];
                 }
                 ports[MAX_RULES_PORT - 1] = 0;
+
                 if ports[0] == 0 {
-                    access_list
-                        .ipv4_src_white_list
+                    self.map
                         .remove(&ip)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 } else {
-                    access_list
-                        .ipv4_src_white_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn remove_ipv6_src_white_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv6_src_white_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv6_src_white_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv6_src_white_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv6_src_white_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn get_ipv4_dst_white_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv4_dst_white_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn get_ipv6_dst_white_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv6_dst_white_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn add_ipv4_dst_white_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv4_dst_white_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv4_dst_white_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn add_ipv6_dst_white_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv6_dst_white_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv6_dst_white_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv4_dst_white_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv4_dst_white_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv4_dst_white_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv4_dst_white_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv4_dst_white_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn remove_ipv6_dst_white_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv6_dst_white_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv6_dst_white_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv6_dst_white_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv6_dst_white_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn get_ipv4_src_black_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv4_src_black_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn get_ipv6_src_black_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv6_src_black_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn add_ipv4_src_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv4_src_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv4_src_black_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn add_ipv6_src_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv6_src_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv6_src_black_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv4_src_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv4_src_black_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv4_src_black_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv4_src_black_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv4_src_black_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn remove_ipv6_src_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv6_src_black_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv6_src_black_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv6_src_black_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv6_src_black_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn get_ipv4_dst_black_list() -> StdHashMap<Ipv4Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv4_dst_black_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv4Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn get_ipv6_dst_black_list() -> StdHashMap<Ipv6Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
-        access_list
-            .ipv6_dst_black_list
-            .iter()
-            .filter_map(Result::ok)
-            .map(|(key, value)| (Ipv6Addr::from(key), convert_ports_to_vec(value)))
-            .collect()
-    }
-
-    pub async fn add_ipv4_dst_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv4_dst_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv4_dst_black_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn add_ipv6_dst_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
-        if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = access_list.ipv6_dst_black_list.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
-        }
-        access_list
-            .ipv6_dst_black_list
-            .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv4_dst_black_list(address: SocketAddrV4) -> anyhow::Result<()> {
-        let ip: u32 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv4_dst_black_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv4_dst_black_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv4_dst_black_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv4_dst_black_list
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfEntry::IpDoesNotExist)?
-        }
-    }
-
-    pub async fn remove_ipv6_dst_black_list(address: SocketAddrV6) -> anyhow::Result<()> {
-        let ip: u128 = (*address.ip()).into();
-        let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
-        if let Ok(mut ports) = access_list.ipv6_dst_black_list.get(&ip, 0) {
-            if port == 0 {
-                access_list
-                    .ipv6_dst_black_list
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
-                return Ok(());
-            }
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-                if ports[0] == 0 {
-                    access_list
-                        .ipv6_dst_black_list
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
-                } else {
-                    access_list
-                        .ipv6_dst_black_list
+                    self.map
                         .insert(ip, ports, 0)
                         .map_err(|_| EbpfEntry::MapOperationError)?;
                 }
