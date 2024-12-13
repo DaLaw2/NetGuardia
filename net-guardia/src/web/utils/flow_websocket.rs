@@ -1,12 +1,12 @@
 use crate::core::config_manager::ConfigManager;
 use crate::core::statistics::Statistics;
-use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
+use crate::model::flow_type::FlowType;
 use actix::prelude::*;
 use actix_web_actors::ws;
 use std::time::Duration;
 
 pub struct IPv4FlowWebSocket {
-    pub flow_type: IPv4FlowType,
+    pub flow_type: FlowType,
     pub interval: Option<SpawnHandle>,
 }
 
@@ -18,9 +18,7 @@ impl Actor for IPv4FlowWebSocket {
         let refresh_interval = Duration::from_secs(config.refresh_interval);
         let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
             let flow_type = actor.flow_type.clone();
-            let future = async move {
-                Statistics::get_ipv4_flow_data(flow_type).await
-            };
+            let future = async move { Statistics::get_ipv4_flow_data(flow_type).await };
             ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
                 if let Ok(json) = serde_json::to_string(&flow_data) {
                     ctx.text(json);
@@ -52,7 +50,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for IPv4FlowWebSocket
 }
 
 pub struct IPv6FlowWebSocket {
-    pub flow_type: IPv6FlowType,
+    pub flow_type: FlowType,
     pub interval: Option<SpawnHandle>,
 }
 
@@ -64,9 +62,7 @@ impl Actor for IPv6FlowWebSocket {
         let refresh_interval = Duration::from_secs(config.refresh_interval);
         let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
             let flow_type = actor.flow_type.clone();
-            let future = async move {
-                Statistics::get_ipv6_flow_data(flow_type).await
-            };
+            let future = async move { Statistics::get_ipv6_flow_data(flow_type).await };
             ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
                 if let Ok(json) = serde_json::to_string(&flow_data) {
                     ctx.text(json);

@@ -1,6 +1,6 @@
 use crate::core::system::System;
 use crate::model::flow_stats::FlowStats;
-use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
+use crate::model::flow_type::FlowType;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
@@ -134,17 +134,15 @@ impl Statistics {
         }
     }
 
-    pub async fn get_ipv4_flow_data(
-        ipv4_flow_type: IPv4FlowType,
-    ) -> StdHashMap<SocketAddrV4, FlowStats> {
+    pub async fn get_ipv4_flow_data(flow_type: FlowType) -> StdHashMap<SocketAddrV4, FlowStats> {
         let monitor = Statistics::instance().await;
-        let iter = match ipv4_flow_type {
-            IPv4FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
-            IPv4FlowType::Src10Min => monitor.ipv4_src_10min.iter(),
-            IPv4FlowType::Src1Hour => monitor.ipv4_src_1hour.iter(),
-            IPv4FlowType::Dst1Min => monitor.ipv4_dst_1min.iter(),
-            IPv4FlowType::Dst10Min => monitor.ipv4_dst_10min.iter(),
-            IPv4FlowType::Dst1Hour => monitor.ipv4_dst_1hour.iter(),
+        let iter = match flow_type {
+            FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
+            FlowType::Src10Min => monitor.ipv4_src_10min.iter(),
+            FlowType::Src1Hour => monitor.ipv4_src_1hour.iter(),
+            FlowType::Dst1Min => monitor.ipv4_dst_1min.iter(),
+            FlowType::Dst10Min => monitor.ipv4_dst_10min.iter(),
+            FlowType::Dst1Hour => monitor.ipv4_dst_1hour.iter(),
         };
         iter.filter_map(Result::ok)
             .map(|(key, value)| {
@@ -155,17 +153,15 @@ impl Statistics {
             .collect()
     }
 
-    pub async fn get_ipv6_flow_data(
-        ipv6_flow_type: IPv6FlowType,
-    ) -> StdHashMap<SocketAddrV6, FlowStats> {
+    pub async fn get_ipv6_flow_data(flow_type: FlowType) -> StdHashMap<SocketAddrV6, FlowStats> {
         let monitor = Statistics::instance().await;
-        let iter = match ipv6_flow_type {
-            IPv6FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
-            IPv6FlowType::Src10Min => monitor.ipv6_src_10min.iter(),
-            IPv6FlowType::Src1Hour => monitor.ipv6_src_1hour.iter(),
-            IPv6FlowType::Dst1Min => monitor.ipv6_dst_1min.iter(),
-            IPv6FlowType::Dst10Min => monitor.ipv6_dst_10min.iter(),
-            IPv6FlowType::Dst1Hour => monitor.ipv6_dst_1hour.iter(),
+        let iter = match flow_type {
+            FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
+            FlowType::Src10Min => monitor.ipv6_src_10min.iter(),
+            FlowType::Src1Hour => monitor.ipv6_src_1hour.iter(),
+            FlowType::Dst1Min => monitor.ipv6_dst_1min.iter(),
+            FlowType::Dst10Min => monitor.ipv6_dst_10min.iter(),
+            FlowType::Dst1Hour => monitor.ipv6_dst_1hour.iter(),
         };
         iter.filter_map(Result::ok)
             .map(|(key, value)| {
