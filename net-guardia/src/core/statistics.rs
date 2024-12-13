@@ -1,6 +1,8 @@
 use crate::core::system::System;
+use crate::model::direction::Direction;
 use crate::model::flow_stats::FlowStats;
-use crate::model::flow_type::FlowType;
+use crate::model::ip_address::SocketAddressType;
+use crate::model::time_type::TimeType;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
@@ -16,39 +18,62 @@ static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
 
 pub struct Statistics {
     terminate: bool,
-    ipv4_src_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv4_src_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv4_src_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv6_src_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    ipv6_src_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    ipv6_src_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    ipv4_dst_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv4_dst_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv4_dst_1hour: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
-    ipv6_dst_1min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    ipv6_dst_10min: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
-    ipv6_dst_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
+    ipv4_maps: StdHashMap<(Direction, TimeType), FlowMap<EbpfAddrPortV4>>,
+    ipv6_maps: StdHashMap<(Direction, TimeType), FlowMap<EbpfAddrPortV6>>,
 }
 
 impl Statistics {
+    const MAP_CONFIGS: [((Direction, TimeType), (&'static str, &'static str)); 6] = [
+        (
+            (Direction::Source, TimeType::_1Min),
+            ("IPV4_SRC_1MIN", "IPV6_SRC_1MIN"),
+        ),
+        (
+            (Direction::Source, TimeType::_10Min),
+            ("IPV4_SRC_10MIN", "IPV6_SRC_10MIN"),
+        ),
+        (
+            (Direction::Source, TimeType::_1Hour),
+            ("IPV4_SRC_1HOUR", "IPV6_SRC_1HOUR"),
+        ),
+        (
+            (Direction::Destination, TimeType::_1Min),
+            ("IPV4_DST_1MIN", "IPV6_DST_1MIN"),
+        ),
+        (
+            (Direction::Destination, TimeType::_10Min),
+            ("IPV4_DST_10MIN", "IPV6_DST_10MIN"),
+        ),
+        (
+            (Direction::Destination, TimeType::_1Hour),
+            ("IPV4_DST_1HOUR", "IPV6_DST_1HOUR"),
+        ),
+    ];
+
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ebpf;
+        let mut ipv4_maps = StdHashMap::new();
+        let mut ipv6_maps = StdHashMap::new();
+        for (key, (ipv4_name, ipv6_name)) in Self::MAP_CONFIGS {
+            ipv4_maps.insert(
+                key,
+                FlowMap {
+                    map: AyaHashMap::try_from(ebpf.take_map(ipv4_name).unwrap())?,
+                },
+            );
+            ipv6_maps.insert(
+                key,
+                FlowMap {
+                    map: AyaHashMap::try_from(ebpf.take_map(ipv6_name).unwrap())?,
+                },
+            );
+        }
         let monitor = Statistics {
             terminate: false,
-            ipv4_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1MIN").unwrap())?,
-            ipv4_src_10min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_10MIN").unwrap())?,
-            ipv4_src_1hour: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1HOUR").unwrap())?,
-            ipv6_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_1MIN").unwrap())?,
-            ipv6_src_10min: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_10MIN").unwrap())?,
-            ipv6_src_1hour: AyaHashMap::try_from(ebpf.take_map("IPV6_SRC_1HOUR").unwrap())?,
-            ipv4_dst_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_1MIN").unwrap())?,
-            ipv4_dst_10min: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_10MIN").unwrap())?,
-            ipv4_dst_1hour: AyaHashMap::try_from(ebpf.take_map("IPV4_DST_1HOUR").unwrap())?,
-            ipv6_dst_1min: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_1MIN").unwrap())?,
-            ipv6_dst_10min: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_10MIN").unwrap())?,
-            ipv6_dst_1hour: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_1HOUR").unwrap())?,
+            ipv4_maps,
+            ipv6_maps,
         };
         STATISTICS.get_or_init(|| RwLock::new(monitor));
         info!("{}", SystemEntry::InitializeComplete);
@@ -86,89 +111,72 @@ impl Statistics {
     }
 
     pub async fn cleanup_expired_flows() {
-        const ONE_MIN: u64 = 60 * 1_000_000_000;
-        const TEN_MIN: u64 = 10 * ONE_MIN;
-        const ONE_HOUR: u64 = 60 * ONE_MIN;
-
         let mut monitor = Statistics::instance_mut().await;
+        let boot_time = System::boot_time().await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-
-        Statistics::cleanup_map(&mut monitor.ipv4_src_1min, now, ONE_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv4_dst_1min, now, ONE_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv4_src_10min, now, TEN_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv4_dst_10min, now, TEN_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv4_src_1hour, now, ONE_HOUR).await;
-        Statistics::cleanup_map(&mut monitor.ipv4_dst_1hour, now, ONE_HOUR).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_src_1min, now, ONE_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_dst_1min, now, ONE_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_src_10min, now, TEN_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_dst_10min, now, TEN_MIN).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_src_1hour, now, ONE_HOUR).await;
-        Statistics::cleanup_map(&mut monitor.ipv6_dst_1hour, now, ONE_HOUR).await;
+        monitor
+            .ipv4_maps
+            .iter_mut()
+            .for_each(|((_, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
+        monitor
+            .ipv6_maps
+            .iter_mut()
+            .for_each(|((_, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
     }
 
-    async fn cleanup_map<K>(map: &mut AyaHashMap<MapData, K, EbpfFlowStats>, now: u64, window: u64)
-    where
-        K: Pod,
-    {
-        let boot_time = System::boot_time().await;
-        let expired_keys: Vec<K> = map
+    pub async fn get_ipv4_flow_data(
+        direction: Direction,
+        time_type: TimeType,
+    ) -> StdHashMap<SocketAddrV4, FlowStats> {
+        let monitor = Statistics::instance().await;
+        monitor
+            .ipv4_maps
+            .get(&(direction, time_type))
+            .map(|map| map.get_map())
+            .unwrap()
+    }
+
+    pub async fn get_ipv6_flow_data(
+        direction: Direction,
+        time_type: TimeType,
+    ) -> StdHashMap<SocketAddrV6, FlowStats> {
+        let monitor = Statistics::instance().await;
+        monitor
+            .ipv6_maps
+            .get(&(direction, time_type))
+            .map(|map| map.get_map())
+            .unwrap()
+    }
+}
+
+struct FlowMap<T> {
+    map: AyaHashMap<MapData, T, EbpfFlowStats>,
+}
+
+impl<T: SocketAddressType + Pod> FlowMap<T> {
+    fn get_map(&self) -> StdHashMap<T::Native, FlowStats> {
+        self.map
+            .iter()
+            .filter_map(Result::ok)
+            .map(|(key, value)| (key.into_native(), FlowStats::from(value)))
+            .collect()
+    }
+
+    fn cleanup(&mut self, boot_time: u64, now: u64, window: u64) {
+        let expired_keys: Vec<T> = self
+            .map
             .iter()
             .filter_map(|result| {
-                if let Ok((key, stats)) = result {
-                    if now - stats[2] - boot_time > window {
-                        Some(key)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+                result
+                    .ok()
+                    .and_then(|(key, stats)| (now - stats[2] - boot_time > window).then_some(key))
             })
             .collect();
-        for key in expired_keys {
-            let _ = map.remove(&key);
-        }
-    }
-
-    pub async fn get_ipv4_flow_data(flow_type: FlowType) -> StdHashMap<SocketAddrV4, FlowStats> {
-        let monitor = Statistics::instance().await;
-        let iter = match flow_type {
-            FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
-            FlowType::Src10Min => monitor.ipv4_src_10min.iter(),
-            FlowType::Src1Hour => monitor.ipv4_src_1hour.iter(),
-            FlowType::Dst1Min => monitor.ipv4_dst_1min.iter(),
-            FlowType::Dst10Min => monitor.ipv4_dst_10min.iter(),
-            FlowType::Dst1Hour => monitor.ipv4_dst_1hour.iter(),
-        };
-        iter.filter_map(Result::ok)
-            .map(|(key, value)| {
-                let ip = Ipv4Addr::from(key[0]);
-                let port = key[1] as u16;
-                (SocketAddrV4::new(ip, port), FlowStats::from(value))
-            })
-            .collect()
-    }
-
-    pub async fn get_ipv6_flow_data(flow_type: FlowType) -> StdHashMap<SocketAddrV6, FlowStats> {
-        let monitor = Statistics::instance().await;
-        let iter = match flow_type {
-            FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
-            FlowType::Src10Min => monitor.ipv6_src_10min.iter(),
-            FlowType::Src1Hour => monitor.ipv6_src_1hour.iter(),
-            FlowType::Dst1Min => monitor.ipv6_dst_1min.iter(),
-            FlowType::Dst10Min => monitor.ipv6_dst_10min.iter(),
-            FlowType::Dst1Hour => monitor.ipv6_dst_1hour.iter(),
-        };
-        iter.filter_map(Result::ok)
-            .map(|(key, value)| {
-                let ip = Ipv6Addr::from(key[0]);
-                let port = key[1] as u16;
-                (SocketAddrV6::new(ip, port, 0, 0), FlowStats::from(value))
-            })
-            .collect()
+        expired_keys.iter().for_each(|key| {
+            let _ = self.map.remove(key);
+        });
     }
 }
