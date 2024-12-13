@@ -15,14 +15,14 @@ use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::info;
 
-static ACCESS_LIST: OnceLock<RwLock<AccessList>> = OnceLock::new();
+static ACCESS_CONTROL: OnceLock<RwLock<AccessControl>> = OnceLock::new();
 
-pub struct AccessList {
+pub struct AccessControl {
     ipv4_maps: StdHashMap<(Direction, ListType), AccessMap<IPv4>>,
     ipv6_maps: StdHashMap<(Direction, ListType), AccessMap<IPv6>>,
 }
 
-impl AccessList {
+impl AccessControl {
     const MAP_CONFIGS: [((Direction, ListType), (&'static str, &'static str)); 4] = [
         (
             (Direction::Source, ListType::White),
@@ -62,8 +62,8 @@ impl AccessList {
                 },
             );
         }
-        ACCESS_LIST.get_or_init(|| {
-            RwLock::new(AccessList {
+        ACCESS_CONTROL.get_or_init(|| {
+            RwLock::new(AccessControl {
                 ipv4_maps,
                 ipv6_maps,
             })
@@ -73,14 +73,14 @@ impl AccessList {
     }
 
     #[inline(always)]
-    pub async fn instance() -> RwLockReadGuard<'static, AccessList> {
-        let once_lock = ACCESS_LIST.get().unwrap();
+    pub async fn instance() -> RwLockReadGuard<'static, AccessControl> {
+        let once_lock = ACCESS_CONTROL.get().unwrap();
         once_lock.read().await
     }
 
     #[inline(always)]
-    pub async fn instance_mut() -> RwLockWriteGuard<'static, AccessList> {
-        let once_lock = ACCESS_LIST.get().unwrap();
+    pub async fn instance_mut() -> RwLockWriteGuard<'static, AccessControl> {
+        let once_lock = ACCESS_CONTROL.get().unwrap();
         once_lock.write().await
     }
 
@@ -88,7 +88,7 @@ impl AccessList {
         direction: Direction,
         list_type: ListType,
     ) -> StdHashMap<Ipv4Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
+        let access_list = AccessControl::instance().await;
         access_list
             .ipv4_maps
             .get(&(direction, list_type))
@@ -100,7 +100,7 @@ impl AccessList {
         direction: Direction,
         list_type: ListType,
     ) -> StdHashMap<Ipv6Addr, Vec<Port>> {
-        let access_list = AccessList::instance().await;
+        let access_list = AccessControl::instance().await;
         access_list
             .ipv6_maps
             .get(&(direction, list_type))
@@ -115,7 +115,7 @@ impl AccessList {
     ) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
+        let mut access_list = AccessControl::instance_mut().await;
         let map = access_list
             .ipv4_maps
             .get_mut(&(direction, list_type))
@@ -130,7 +130,7 @@ impl AccessList {
     ) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
+        let mut access_list = AccessControl::instance_mut().await;
         let map = access_list
             .ipv6_maps
             .get_mut(&(direction, list_type))
@@ -145,7 +145,7 @@ impl AccessList {
     ) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
+        let mut access_list = AccessControl::instance_mut().await;
         let map = access_list
             .ipv4_maps
             .get_mut(&(direction, list_type))
@@ -160,7 +160,7 @@ impl AccessList {
     ) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let mut access_list = AccessList::instance_mut().await;
+        let mut access_list = AccessControl::instance_mut().await;
         let map = access_list
             .ipv6_maps
             .get_mut(&(direction, list_type))

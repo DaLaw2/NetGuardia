@@ -1,5 +1,5 @@
 use crate::core::config_manager::ConfigManager;
-use crate::core::monitor::Monitor;
+use crate::core::statistics::Statistics;
 use crate::model::flow_type::{IPv4FlowType, IPv6FlowType};
 use actix::prelude::*;
 use actix_web_actors::ws;
@@ -19,7 +19,7 @@ impl Actor for IPv4FlowWebSocket {
         let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
             let flow_type = actor.flow_type.clone();
             let future = async move {
-                Monitor::get_ipv4_flow_data(flow_type).await
+                Statistics::get_ipv4_flow_data(flow_type).await
             };
             ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
                 if let Ok(json) = serde_json::to_string(&flow_data) {
@@ -65,7 +65,7 @@ impl Actor for IPv6FlowWebSocket {
         let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
             let flow_type = actor.flow_type.clone();
             let future = async move {
-                Monitor::get_ipv6_flow_data(flow_type).await
+                Statistics::get_ipv6_flow_data(flow_type).await
             };
             ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
                 if let Ok(json) = serde_json::to_string(&flow_data) {

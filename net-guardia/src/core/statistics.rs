@@ -12,9 +12,9 @@ use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::info;
 
-static MONITOR: OnceLock<RwLock<Monitor>> = OnceLock::new();
+static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
 
-pub struct Monitor {
+pub struct Statistics {
     terminate: bool,
     ipv4_src_1min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
     ipv4_src_10min: AyaHashMap<MapData, EbpfAddrPortV4, EbpfFlowStats>,
@@ -30,12 +30,12 @@ pub struct Monitor {
     ipv6_dst_1hour: AyaHashMap<MapData, EbpfAddrPortV6, EbpfFlowStats>,
 }
 
-impl Monitor {
+impl Statistics {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ebpf;
-        let monitor = Monitor {
+        let monitor = Statistics {
             terminate: false,
             ipv4_src_1min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_1MIN").unwrap())?,
             ipv4_src_10min: AyaHashMap::try_from(ebpf.take_map("IPV4_SRC_10MIN").unwrap())?,
@@ -50,23 +50,23 @@ impl Monitor {
             ipv6_dst_10min: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_10MIN").unwrap())?,
             ipv6_dst_1hour: AyaHashMap::try_from(ebpf.take_map("IPV6_DST_1HOUR").unwrap())?,
         };
-        MONITOR.get_or_init(|| RwLock::new(monitor));
+        STATISTICS.get_or_init(|| RwLock::new(monitor));
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
 
     #[inline(always)]
-    pub async fn instance() -> RwLockReadGuard<'static, Monitor> {
+    pub async fn instance() -> RwLockReadGuard<'static, Statistics> {
         // Initialization has been ensured
-        let once_lock = MONITOR.get().unwrap();
+        let once_lock = STATISTICS.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
         once_lock.read().await
     }
 
     #[inline(always)]
-    pub async fn instance_mut() -> RwLockWriteGuard<'static, Monitor> {
+    pub async fn instance_mut() -> RwLockWriteGuard<'static, Statistics> {
         // Initialization has been ensured
-        let once_lock = MONITOR.get().unwrap();
+        let once_lock = STATISTICS.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
         once_lock.write().await
     }
@@ -74,14 +74,14 @@ impl Monitor {
     pub async fn run() {
         tokio::spawn(async {
             loop {
-                Monitor::cleanup_expired_flows().await;
+                Statistics::cleanup_expired_flows().await;
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         });
     }
 
     pub async fn terminate() {
-        let mut monitor = Monitor::instance_mut().await;
+        let mut monitor = Statistics::instance_mut().await;
         monitor.terminate = true;
     }
 
@@ -90,24 +90,24 @@ impl Monitor {
         const TEN_MIN: u64 = 10 * ONE_MIN;
         const ONE_HOUR: u64 = 60 * ONE_MIN;
 
-        let mut monitor = Monitor::instance_mut().await;
+        let mut monitor = Statistics::instance_mut().await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
 
-        Monitor::cleanup_map(&mut monitor.ipv4_src_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv4_dst_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv4_src_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv4_dst_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv4_src_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.ipv4_dst_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_src_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_dst_1min, now, ONE_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_src_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_dst_10min, now, TEN_MIN).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_src_1hour, now, ONE_HOUR).await;
-        Monitor::cleanup_map(&mut monitor.ipv6_dst_1hour, now, ONE_HOUR).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_src_1min, now, ONE_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_dst_1min, now, ONE_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_src_10min, now, TEN_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_dst_10min, now, TEN_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_src_1hour, now, ONE_HOUR).await;
+        Statistics::cleanup_map(&mut monitor.ipv4_dst_1hour, now, ONE_HOUR).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_src_1min, now, ONE_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_dst_1min, now, ONE_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_src_10min, now, TEN_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_dst_10min, now, TEN_MIN).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_src_1hour, now, ONE_HOUR).await;
+        Statistics::cleanup_map(&mut monitor.ipv6_dst_1hour, now, ONE_HOUR).await;
     }
 
     async fn cleanup_map<K>(map: &mut AyaHashMap<MapData, K, EbpfFlowStats>, now: u64, window: u64)
@@ -137,7 +137,7 @@ impl Monitor {
     pub async fn get_ipv4_flow_data(
         ipv4_flow_type: IPv4FlowType,
     ) -> StdHashMap<SocketAddrV4, FlowStats> {
-        let monitor = Monitor::instance().await;
+        let monitor = Statistics::instance().await;
         let iter = match ipv4_flow_type {
             IPv4FlowType::Src1Min => monitor.ipv4_src_1min.iter(),
             IPv4FlowType::Src10Min => monitor.ipv4_src_10min.iter(),
@@ -158,7 +158,7 @@ impl Monitor {
     pub async fn get_ipv6_flow_data(
         ipv6_flow_type: IPv6FlowType,
     ) -> StdHashMap<SocketAddrV6, FlowStats> {
-        let monitor = Monitor::instance().await;
+        let monitor = Statistics::instance().await;
         let iter = match ipv6_flow_type {
             IPv6FlowType::Src1Min => monitor.ipv6_src_1min.iter(),
             IPv6FlowType::Src10Min => monitor.ipv6_src_10min.iter(),

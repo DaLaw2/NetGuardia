@@ -1,10 +1,10 @@
 use crate::core::config_manager::ConfigManager;
 use crate::core::control::Control;
-use crate::core::monitor::Monitor;
+use crate::core::statistics::Statistics;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, misc, monitor};
+use crate::web::api::{control, default, misc, statistics};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
@@ -31,7 +31,7 @@ impl System {
         info!("{}", SystemEntry::Initializing);
         ConfigManager::initialization().await?;
         System::ebpf_initialize().await?;
-        Monitor::initialize().await?;
+        Statistics::initialize().await?;
         Control::initialize().await?;
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
@@ -55,7 +55,7 @@ impl System {
         Self::load_program(&mut ebpf, &mut program_array, "service", 1)?;
         // Self::load_program(&mut ebpf, &mut program_array, "defence", 2)?;
         Self::load_program(&mut ebpf, &mut program_array, "sampling", 3)?;
-        Self::load_program(&mut ebpf, &mut program_array, "monitor", 4)?;
+        Self::load_program(&mut ebpf, &mut program_array, "statistics", 4)?;
         let program: &mut Xdp = ebpf.program_mut("net_guardia").unwrap().try_into()?;
         program.load()?;
         program
@@ -98,7 +98,7 @@ impl System {
 
     pub async fn run() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Online);
-        Monitor::run().await;
+        Statistics::run().await;
         let config = ConfigManager::now().await;
         HttpServer::new(|| {
             let cors = actix_cors::Cors::default()
@@ -108,7 +108,7 @@ impl System {
                 .max_age(3600);
             App::new()
                 .wrap(cors)
-                .service(monitor::initialize())
+                .service(statistics::initialize())
                 .service(control::initialize())
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
@@ -121,7 +121,7 @@ impl System {
 
     pub async fn terminate() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Terminating);
-        Monitor::terminate().await;
+        Statistics::terminate().await;
         info!("{}", SystemEntry::TerminateComplete);
         Ok(())
     }

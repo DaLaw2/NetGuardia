@@ -3,15 +3,14 @@
 mod action;
 mod utils;
 
-use crate::action::{defence, service};
-use crate::utils::parsing;
-use action::{access_control, monitor};
+use action::{access_control, defence, statistics, service};
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{PerCpuArray, ProgramArray};
 use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
 use aya_log_ebpf::error;
 use net_guardia_common::model::event::Event;
 use network_types::eth::EtherType;
+use utils::parsing;
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
@@ -159,24 +158,24 @@ unsafe fn try_sampling(ctx: XdpContext) -> Result<u32, ()> {
 }
 
 #[xdp]
-pub fn monitor(ctx: XdpContext) -> u32 {
-    match unsafe { try_monitor(ctx) } {
+pub fn statistics(ctx: XdpContext) -> u32 {
+    match unsafe { try_statistics(ctx) } {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_PASS,
     }
 }
 
-unsafe fn try_monitor(_: XdpContext) -> Result<u32, ()> {
+unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
     let parsed_packet = ptr.read();
     match parsed_packet.eth_type {
         EtherType::Ipv4 => {
             let event = parsed_packet.into_ipv4_event();
-            monitor::ipv4_update_stats(&event);
+            statistics::ipv4_update_stats(&event);
         }
         EtherType::Ipv6 => {
             let event = parsed_packet.into_ipv6_event();
-            monitor::ipv6_update_stats(&event);
+            statistics::ipv6_update_stats(&event);
         }
         _ => Err(())?,
     }
