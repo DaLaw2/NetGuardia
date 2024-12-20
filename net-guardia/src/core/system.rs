@@ -19,10 +19,13 @@ use tracing::{error, info, warn};
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
 pub struct System {
-    pub ebpf: Ebpf,
+    pub ingress_ebpf: Ebpf,
+    pub egress_ebpf: Ebpf,
     pub boot_time: u64,
     #[allow(dead_code)]
-    program_array: ProgramArray<MapData>,
+    ingress_program_array: ProgramArray<MapData>,
+    #[allow(dead_code)]
+    egress_program_array: ProgramArray<MapData>,
 }
 
 impl System {
@@ -39,32 +42,50 @@ impl System {
 
     async fn ebpf_initialize() -> anyhow::Result<()> {
         let config = ConfigManager::now().await;
-        let interface = config.ingress_ifindex;
+        let ingress_interface = config.ingress_ifindex;
+        let egress_interface = config.egress_ifindex;
         let boot_time = SystemInfo::boot_time() * 1_000_000_000;
         Self::set_memory_limit()?;
-        let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
+        let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
             env!("OUT_DIR"),
-            "/net-guardia"
+            "/net-guardia-ingress"
         )))?;
-        if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
+        let mut egress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
+            env!("OUT_DIR"),
+            "/net-guardia-egress"
+        )))?;
+        if let Err(e) = aya_log::EbpfLogger::init(&mut ingress_ebpf) {
             error!("{}", e);
             warn!("{}", EbpfEntry::LoggerInitializeFailed);
         }
-        let mut program_array = ProgramArray::try_from(ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut ebpf, &mut program_array, "access_control", 0)?;
-        Self::load_program(&mut ebpf, &mut program_array, "service", 1)?;
-        // Self::load_program(&mut ebpf, &mut program_array, "defence", 2)?;
-        Self::load_program(&mut ebpf, &mut program_array, "sampling", 3)?;
-        Self::load_program(&mut ebpf, &mut program_array, "statistics", 4)?;
-        let program: &mut Xdp = ebpf.program_mut("net_guardia").unwrap().try_into()?;
-        program.load()?;
-        program
-            .attach(&interface, XdpFlags::default())
+        if let Err(e) = aya_log::EbpfLogger::init(&mut egress_ebpf) {
+            error!("{}", e);
+            warn!("{}", EbpfEntry::LoggerInitializeFailed);
+        }
+        let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
+        // Self::load_program(&mut ebpf, &mut ingress_program_array, "defence", 2)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "sampling", 3)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 4)?;
+        let ingress_program: &mut Xdp = ingress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
+        let mut egress_program_array = ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut egress_ebpf, &mut egress_program_array, "statistics", 0)?;
+        let egress_program: &mut Xdp = egress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
+        ingress_program.load()?;
+        ingress_program
+            .attach(&ingress_interface, XdpFlags::default())
+            .context(EbpfEntry::AttachProgramFailed)?;
+        egress_program.load()?;
+        egress_program
+            .attach(&egress_interface, XdpFlags::default())
             .context(EbpfEntry::AttachProgramFailed)?;
         let system = System {
-            ebpf,
+            ingress_ebpf,
+            egress_ebpf,
             boot_time,
-            program_array,
+            ingress_program_array,
+            egress_program_array,
         };
         SYSTEM.get_or_init(|| RwLock::new(system));
         info!("{}", EbpfEntry::AttachProgramSuccess);

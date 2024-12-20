@@ -1,5 +1,5 @@
 [package]
-name = "net-guardia-ebpf"
+name = "net-guardia-egress-ebpf"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,5 +14,5 @@ network-types = "0.0.7"
 which = { workspace = true }
 
 [[bin]]
-name = "net-guardia"
+name = "net-guardia-egress"
 path = "src/main.rs"

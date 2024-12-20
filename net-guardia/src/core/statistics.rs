@@ -9,7 +9,7 @@ use aya::Pod;
 use net_guardia_common::model::flow_stats::EbpfFlowStats;
 use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use std::collections::HashMap as StdHashMap;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::info;
@@ -23,7 +23,7 @@ pub struct Statistics {
 }
 
 impl Statistics {
-    const MAP_CONFIGS: [((Direction, TimeType), (&'static str, &'static str)); 6] = [
+    const INGRESS_MAPS: [((Direction, TimeType), (&'static str, &'static str)); 3] = [
         (
             (Direction::Source, TimeType::_1Min),
             ("IPV4_SRC_1MIN", "IPV6_SRC_1MIN"),
@@ -36,6 +36,9 @@ impl Statistics {
             (Direction::Source, TimeType::_1Hour),
             ("IPV4_SRC_1HOUR", "IPV6_SRC_1HOUR"),
         ),
+    ];
+
+    const EGRESS_MAPS: [((Direction, TimeType), (&'static str, &'static str)); 3] = [
         (
             (Direction::Destination, TimeType::_1Min),
             ("IPV4_DST_1MIN", "IPV6_DST_1MIN"),
@@ -53,20 +56,35 @@ impl Statistics {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
-        let ebpf = &mut system.ebpf;
         let mut ipv4_maps = StdHashMap::new();
         let mut ipv6_maps = StdHashMap::new();
-        for (key, (ipv4_name, ipv6_name)) in Self::MAP_CONFIGS {
+        let ingress_ebpf = &mut system.ingress_ebpf;
+        for (key, (ipv4_name, ipv6_name)) in Self::INGRESS_MAPS {
             ipv4_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(ebpf.take_map(ipv4_name).unwrap())?,
+                    map: AyaHashMap::try_from(ingress_ebpf.take_map(ipv4_name).unwrap())?,
                 },
             );
             ipv6_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(ebpf.take_map(ipv6_name).unwrap())?,
+                    map: AyaHashMap::try_from(ingress_ebpf.take_map(ipv6_name).unwrap())?,
+                },
+            );
+        }
+        let egress_ebpf = &mut system.egress_ebpf;
+        for (key, (ipv4_name, ipv6_name)) in Self::EGRESS_MAPS {
+            ipv4_maps.insert(
+                key,
+                FlowMap {
+                    map: AyaHashMap::try_from(egress_ebpf.take_map(ipv4_name).unwrap())?,
+                },
+            );
+            ipv6_maps.insert(
+                key,
+                FlowMap {
+                    map: AyaHashMap::try_from(egress_ebpf.take_map(ipv6_name).unwrap())?,
                 },
             );
         }

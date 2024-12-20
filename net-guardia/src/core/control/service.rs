@@ -32,7 +32,7 @@ impl Service {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
-        let ebpf = &mut system.ebpf;
+        let ebpf = &mut system.ingress_ebpf;
         let mut service = Service {
             ipv4_http_service: AyaHashMap::try_from(ebpf.take_map("IPV4_HTTP_SERVICE").unwrap())?,
             ipv6_http_service: AyaHashMap::try_from(ebpf.take_map("IPV6_HTTP_SERVICE").unwrap())?,

@@ -45,7 +45,7 @@ impl AccessControl {
     pub async fn initialize() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let mut system = System::instance_mut().await;
-        let ebpf = &mut system.ebpf;
+        let ebpf = &mut system.ingress_ebpf;
         let mut ipv4_maps = StdHashMap::new();
         let mut ipv6_maps = StdHashMap::new();
         for (key, (ipv4_name, ipv6_name)) in Self::MAP_CONFIGS {

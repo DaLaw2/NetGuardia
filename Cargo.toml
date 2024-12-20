@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["net-guardia", "net-guardia-common", "net-guardia-ebpf"]
+members = ["net-guardia", "net-guardia-common", "net-guardia-ingress-ebpf", "net-guardia-egress-ebpf"]
 default-members = ["net-guardia", "net-guardia-common"]
 
 [workspace.dependencies]
@@ -26,12 +26,16 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-opt-level = 3
-lto = true
-strip = true
-debug = false
-overflow-checks = false
+#opt-level = 3
+#lto = true
+#strip = true
+#debug = false
+#overflow-checks = false
 
-[profile.release.package.net-guardia-ebpf]
+[profile.release.package.net-guardia-ingress-ebpf]
+debug = 2
+codegen-units = 1
+
+[profile.release.package.net-guardia-egress-ebpf]
 debug = 2
 codegen-units = 1

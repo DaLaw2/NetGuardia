@@ -1232,7 +1232,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "net-guardia-ebpf"
+name = "net-guardia-egress-ebpf"
+version = "0.1.0"
+dependencies = [
+ "aya-ebpf",
+ "aya-log-ebpf",
+ "net-guardia-common",
+ "network-types",
+ "which",
+]
+
+[[package]]
+name = "net-guardia-ingress-ebpf"
 version = "0.1.0"
 dependencies = [
  "aya-ebpf",
