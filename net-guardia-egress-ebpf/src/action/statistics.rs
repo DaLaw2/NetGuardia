@@ -7,31 +7,53 @@ use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use net_guardia_common::MAX_STATS;
 
 #[map]
-static IPV4_DST_1MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+static IPV4_EGRESS_SRC_1MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static IPV4_DST_10MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+static IPV4_EGRESS_SRC_10MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static IPV4_DST_1HOUR: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+static IPV4_EGRESS_SRC_1HOUR: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static IPV6_DST_1MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+static IPV6_EGRESS_SRC_1MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static IPV6_DST_10MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+static IPV6_EGRESS_SRC_10MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 #[map]
-static IPV6_DST_1HOUR: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+static IPV6_EGRESS_SRC_1HOUR: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV4_EGRESS_DST_1MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV4_EGRESS_DST_10MIN: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV4_EGRESS_DST_1HOUR: LruHashMap<EbpfAddrPortV4, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV6_EGRESS_DST_1MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV6_EGRESS_DST_10MIN: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
+    LruHashMap::with_max_entries(MAX_STATS, 0);
+#[map]
+static IPV6_EGRESS_DST_1HOUR: LruHashMap<EbpfAddrPortV6, EbpfFlowStats> =
     LruHashMap::with_max_entries(MAX_STATS, 0);
 
 pub fn ipv4_update_stats(event: &IPv4Event) {
     unsafe {
         let now = bpf_ktime_get_ns();
         let source = [event.source_ip, event.source_port as u32];
-        ipv4_update_flow_stats(&IPV4_DST_1MIN, &source, event, now);
-        ipv4_update_flow_stats(&IPV4_DST_10MIN, &source, event, now);
-        ipv4_update_flow_stats(&IPV4_DST_1HOUR, &source, event, now);
+        let destination = [event.destination_ip, event.destination_port as u32];
+        ipv4_update_flow_stats(&IPV4_EGRESS_SRC_1MIN, &source, event, now);
+        ipv4_update_flow_stats(&IPV4_EGRESS_SRC_10MIN, &source, event, now);
+        ipv4_update_flow_stats(&IPV4_EGRESS_SRC_1HOUR, &source, event, now);
+        ipv4_update_flow_stats(&IPV4_EGRESS_DST_1MIN, &destination, event, now);
+        ipv4_update_flow_stats(&IPV4_EGRESS_DST_10MIN, &destination, event, now);
+        ipv4_update_flow_stats(&IPV4_EGRESS_DST_1HOUR, &destination, event, now);
     }
 }
 
@@ -39,9 +61,13 @@ pub fn ipv6_update_stats(event: &IPv6Event) {
     unsafe {
         let now = bpf_ktime_get_ns();
         let source = [event.source_ip, event.source_port as u128];
-        ipv6_update_flow_status(&IPV6_DST_1MIN, &source, event, now);
-        ipv6_update_flow_status(&IPV6_DST_10MIN, &source, event, now);
-        ipv6_update_flow_status(&IPV6_DST_1HOUR, &source, event, now);
+        let destination = [event.destination_ip, event.destination_port as u128];
+        ipv6_update_flow_status(&IPV6_EGRESS_SRC_1MIN, &source, event, now);
+        ipv6_update_flow_status(&IPV6_EGRESS_SRC_10MIN, &source, event, now);
+        ipv6_update_flow_status(&IPV6_EGRESS_SRC_1HOUR, &source, event, now);
+        ipv6_update_flow_status(&IPV6_EGRESS_DST_1MIN, &destination, event, now);
+        ipv6_update_flow_status(&IPV6_EGRESS_DST_10MIN, &destination, event, now);
+        ipv6_update_flow_status(&IPV6_EGRESS_DST_1HOUR, &destination, event, now);
     }
 }
 

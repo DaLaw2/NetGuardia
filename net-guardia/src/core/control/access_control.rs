@@ -1,6 +1,6 @@
 use crate::core::system::System;
-use crate::model::direction::Direction;
-use crate::model::ip_address::IpAddressType;
+use crate::model::direction::FlowDirection;
+use crate::model::ip_address::IntoNative;
 use crate::model::list_type::ListType;
 use crate::utils::ip_address::convert_ports_to_vec;
 use crate::utils::log_entry::ebpf::EbpfEntry;
@@ -18,26 +18,26 @@ use tracing::info;
 static ACCESS_CONTROL: OnceLock<RwLock<AccessControl>> = OnceLock::new();
 
 pub struct AccessControl {
-    ipv4_maps: StdHashMap<(Direction, ListType), AccessMap<IPv4>>,
-    ipv6_maps: StdHashMap<(Direction, ListType), AccessMap<IPv6>>,
+    ipv4_maps: StdHashMap<(FlowDirection, ListType), AccessMap<IPv4>>,
+    ipv6_maps: StdHashMap<(FlowDirection, ListType), AccessMap<IPv6>>,
 }
 
 impl AccessControl {
-    const MAP_CONFIGS: [((Direction, ListType), (&'static str, &'static str)); 4] = [
+    const MAP_CONFIGS: [((FlowDirection, ListType), (&'static str, &'static str)); 4] = [
         (
-            (Direction::Source, ListType::White),
+            (FlowDirection::Source, ListType::White),
             ("IPV4_SRC_WHITELIST", "IPV6_SRC_WHITELIST"),
         ),
         (
-            (Direction::Source, ListType::Black),
+            (FlowDirection::Source, ListType::Black),
             ("IPV4_SRC_BLACKLIST", "IPV6_SRC_BLACKLIST"),
         ),
         (
-            (Direction::Destination, ListType::White),
+            (FlowDirection::Destination, ListType::White),
             ("IPV4_DST_WHITELIST", "IPV6_DST_WHITELIST"),
         ),
         (
-            (Direction::Destination, ListType::Black),
+            (FlowDirection::Destination, ListType::Black),
             ("IPV4_DST_BLACKLIST", "IPV6_DST_BLACKLIST"),
         ),
     ];
@@ -85,7 +85,7 @@ impl AccessControl {
     }
 
     pub async fn get_ipv4_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
     ) -> StdHashMap<Ipv4Addr, Vec<Port>> {
         let access_list = AccessControl::instance().await;
@@ -97,7 +97,7 @@ impl AccessControl {
     }
 
     pub async fn get_ipv6_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
     ) -> StdHashMap<Ipv6Addr, Vec<Port>> {
         let access_list = AccessControl::instance().await;
@@ -109,7 +109,7 @@ impl AccessControl {
     }
 
     pub async fn add_ipv4_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
     ) -> anyhow::Result<()> {
@@ -124,7 +124,7 @@ impl AccessControl {
     }
 
     pub async fn add_ipv6_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
     ) -> anyhow::Result<()> {
@@ -139,7 +139,7 @@ impl AccessControl {
     }
 
     pub async fn remove_ipv4_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
     ) -> anyhow::Result<()> {
@@ -154,7 +154,7 @@ impl AccessControl {
     }
 
     pub async fn remove_ipv6_list(
-        direction: Direction,
+        direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
     ) -> anyhow::Result<()> {
@@ -173,7 +173,7 @@ struct AccessMap<T> {
     map: AyaHashMap<MapData, T, [Port; MAX_RULES_PORT]>,
 }
 
-impl<T: IpAddressType + Pod> AccessMap<T> {
+impl<T: IntoNative + Pod> AccessMap<T> {
     fn get_list(&self) -> StdHashMap<T::Native, Vec<Port>> {
         self.map
             .iter()

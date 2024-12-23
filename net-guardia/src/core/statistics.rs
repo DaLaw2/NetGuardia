@@ -1,7 +1,7 @@
 use crate::core::system::System;
-use crate::model::direction::Direction;
+use crate::model::direction::{Direction, FlowDirection};
 use crate::model::flow_stats::FlowStats;
-use crate::model::ip_address::SocketAddressType;
+use crate::model::ip_address::IntoNative;
 use crate::model::time_type::TimeType;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
@@ -18,38 +18,62 @@ static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
 
 pub struct Statistics {
     terminate: bool,
-    ipv4_maps: StdHashMap<(Direction, TimeType), FlowMap<EbpfAddrPortV4>>,
-    ipv6_maps: StdHashMap<(Direction, TimeType), FlowMap<EbpfAddrPortV6>>,
+    ipv4_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<EbpfAddrPortV4>>,
+    ipv6_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<EbpfAddrPortV6>>,
 }
 
 impl Statistics {
-    const INGRESS_MAPS: [((Direction, TimeType), (&'static str, &'static str)); 3] = [
+    const INGRESS_MAPS: [((Direction, FlowDirection, TimeType), (&'static str, &'static str)); 6] = [
         (
-            (Direction::Source, TimeType::_1Min),
-            ("IPV4_SRC_1MIN", "IPV6_SRC_1MIN"),
+            (Direction::Ingress, FlowDirection::Source, TimeType::_1Min),
+            ("IPV4_INGRESS_SRC_1MIN", "IPV6_INGRESS_SRC_1MIN"),
         ),
         (
-            (Direction::Source, TimeType::_10Min),
-            ("IPV4_SRC_10MIN", "IPV6_SRC_10MIN"),
+            (Direction::Ingress, FlowDirection::Source, TimeType::_10Min),
+            ("IPV4_INGRESS_SRC_10MIN", "IPV6_INGRESS_SRC_10MIN"),
         ),
         (
-            (Direction::Source, TimeType::_1Hour),
-            ("IPV4_SRC_1HOUR", "IPV6_SRC_1HOUR"),
+            (Direction::Ingress, FlowDirection::Source, TimeType::_1Hour),
+            ("IPV4_INGRESS_SRC_1HOUR", "IPV6_INGRESS_SRC_1HOUR"),
+        ),
+        (
+            (Direction::Ingress, FlowDirection::Destination, TimeType::_1Min),
+            ("IPV4_INGRESS_DST_1MIN", "IPV6_INGRESS_DST_1MIN"),
+        ),
+        (
+            (Direction::Ingress, FlowDirection::Destination, TimeType::_10Min),
+            ("IPV4_INGRESS_DST_10MIN", "IPV6_INGRESS_DST_10MIN"),
+        ),
+        (
+            (Direction::Ingress, FlowDirection::Destination, TimeType::_1Hour),
+            ("IPV4_INGRESS_DST_1HOUR", "IPV6_INGRESS_DST_1HOUR"),
         ),
     ];
 
-    const EGRESS_MAPS: [((Direction, TimeType), (&'static str, &'static str)); 3] = [
+    const EGRESS_MAPS: [((Direction, FlowDirection, TimeType), (&'static str, &'static str)); 6] = [
         (
-            (Direction::Destination, TimeType::_1Min),
-            ("IPV4_DST_1MIN", "IPV6_DST_1MIN"),
+            (Direction::Egress, FlowDirection::Source, TimeType::_1Min),
+            ("IPV4_EGRESS_SRC_1MIN", "IPV6_EGRESS_SRC_1MIN"),
         ),
         (
-            (Direction::Destination, TimeType::_10Min),
-            ("IPV4_DST_10MIN", "IPV6_DST_10MIN"),
+            (Direction::Egress, FlowDirection::Source, TimeType::_10Min),
+            ("IPV4_EGRESS_SRC_10MIN", "IPV6_EGRESS_SRC_10MIN"),
         ),
         (
-            (Direction::Destination, TimeType::_1Hour),
-            ("IPV4_DST_1HOUR", "IPV6_DST_1HOUR"),
+            (Direction::Egress, FlowDirection::Source, TimeType::_1Hour),
+            ("IPV4_EGRESS_SRC_1HOUR", "IPV6_EGRESS_SRC_1HOUR"),
+        ),
+        (
+            (Direction::Egress, FlowDirection::Destination, TimeType::_1Min),
+            ("IPV4_EGRESS_DST_1MIN", "IPV6_EGRESS_DST_1MIN"),
+        ),
+        (
+            (Direction::Egress, FlowDirection::Destination, TimeType::_10Min),
+            ("IPV4_EGRESS_DST_10MIN", "IPV6_EGRESS_DST_10MIN"),
+        ),
+        (
+            (Direction::Egress, FlowDirection::Destination, TimeType::_1Hour),
+            ("IPV4_EGRESS_DST_1HOUR", "IPV6_EGRESS_DST_1HOUR"),
         ),
     ];
 
@@ -88,12 +112,12 @@ impl Statistics {
                 },
             );
         }
-        let monitor = Statistics {
+        let statistics = Statistics {
             terminate: false,
             ipv4_maps,
             ipv6_maps,
         };
-        STATISTICS.get_or_init(|| RwLock::new(monitor));
+        STATISTICS.get_or_init(|| RwLock::new(statistics));
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
@@ -124,47 +148,49 @@ impl Statistics {
     }
 
     pub async fn terminate() {
-        let mut monitor = Statistics::instance_mut().await;
-        monitor.terminate = true;
+        let mut statistics = Statistics::instance_mut().await;
+        statistics.terminate = true;
     }
 
     pub async fn cleanup_expired_flows() {
-        let mut monitor = Statistics::instance_mut().await;
+        let mut statistics = Statistics::instance_mut().await;
         let boot_time = System::boot_time().await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        monitor
+        statistics
             .ipv4_maps
             .iter_mut()
-            .for_each(|((_, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
-        monitor
+            .for_each(|((_, _, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
+        statistics
             .ipv6_maps
             .iter_mut()
-            .for_each(|((_, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
+            .for_each(|((_, _, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
     }
 
     pub async fn get_ipv4_flow_data(
         direction: Direction,
+        flow_direction: FlowDirection,
         time_type: TimeType,
     ) -> StdHashMap<SocketAddrV4, FlowStats> {
-        let monitor = Statistics::instance().await;
-        monitor
+        let statistics = Statistics::instance().await;
+        statistics
             .ipv4_maps
-            .get(&(direction, time_type))
+            .get(&(direction, flow_direction, time_type))
             .map(|map| map.get_map())
             .unwrap()
     }
 
     pub async fn get_ipv6_flow_data(
         direction: Direction,
+        flow_direction: FlowDirection,
         time_type: TimeType,
     ) -> StdHashMap<SocketAddrV6, FlowStats> {
-        let monitor = Statistics::instance().await;
-        monitor
+        let statistics = Statistics::instance().await;
+        statistics
             .ipv6_maps
-            .get(&(direction, time_type))
+            .get(&(direction, flow_direction, time_type))
             .map(|map| map.get_map())
             .unwrap()
     }
@@ -174,7 +200,7 @@ struct FlowMap<T> {
     map: AyaHashMap<MapData, T, EbpfFlowStats>,
 }
 
-impl<T: SocketAddressType + Pod> FlowMap<T> {
+impl<T: IntoNative + Pod> FlowMap<T> {
     fn get_map(&self) -> StdHashMap<T::Native, FlowStats> {
         self.map
             .iter()

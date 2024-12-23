@@ -23,25 +23,23 @@ impl ConfigManager {
     }
 
     fn load_config() -> anyhow::Result<Config> {
-        match fs::read_to_string("./config.toml") {
-            Ok(toml_string) => match toml::from_str::<ConfigTable>(&toml_string) {
-                Ok(config_table) => {
-                    let config = config_table.config;
-                    if !Self::validate(&config) {
-                        error!("{}", SystemEntry::InvalidConfig);
-                        Err(anyhow!(SystemEntry::InvalidConfig))
-                    } else {
-                        Ok(config)
-                    }
-                }
-                Err(_) => {
-                    error!("{}", SystemEntry::InvalidConfig);
-                    Err(anyhow!(SystemEntry::InvalidConfig))
-                }
-            },
-            Err(_) => {
-                error!("{}", SystemEntry::ConfigNotFound);
+        let parse_result = (|| {
+            let toml_string = fs::read_to_string("./config.toml")
+                .map_err(|_| anyhow!(SystemEntry::ConfigNotFound))?;
+            let config_table = toml::from_str::<ConfigTable>(&toml_string)
+                .map_err(|_| anyhow!(SystemEntry::InvalidConfig))?;
+            let config = config_table.config;
+            if !Self::validate(&config) {
                 Err(anyhow!(SystemEntry::InvalidConfig))
+            } else {
+                Ok(config)
+            }
+        })();
+        match parse_result {
+            Ok(config) => Ok(config),
+            Err(err) => {
+                error!("{}", SystemEntry::InvalidConfig);
+                Err(err)
             }
         }
     }
@@ -60,6 +58,7 @@ impl ConfigManager {
         once_lock.read().await.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn update(config: Config) {
         // Initialization has been ensured
         let lock = SYNC_CONFIG.get().unwrap();

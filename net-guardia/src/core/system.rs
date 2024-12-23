@@ -46,31 +46,9 @@ impl System {
         let egress_interface = config.egress_ifindex;
         let boot_time = SystemInfo::boot_time() * 1_000_000_000;
         Self::set_memory_limit()?;
-        let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/net-guardia-ingress"
-        )))?;
-        let mut egress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/net-guardia-egress"
-        )))?;
-        if let Err(e) = aya_log::EbpfLogger::init(&mut ingress_ebpf) {
-            error!("{}", e);
-            warn!("{}", EbpfEntry::LoggerInitializeFailed);
-        }
-        if let Err(e) = aya_log::EbpfLogger::init(&mut egress_ebpf) {
-            error!("{}", e);
-            warn!("{}", EbpfEntry::LoggerInitializeFailed);
-        }
-        let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
-        // Self::load_program(&mut ebpf, &mut ingress_program_array, "defence", 2)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "sampling", 3)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 4)?;
+        let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
         let ingress_program: &mut Xdp = ingress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
-        let mut egress_program_array = ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut egress_ebpf, &mut egress_program_array, "statistics", 0)?;
+        let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let egress_program: &mut Xdp = egress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
         ingress_program.load()?;
         ingress_program
@@ -90,6 +68,38 @@ impl System {
         SYSTEM.get_or_init(|| RwLock::new(system));
         info!("{}", EbpfEntry::AttachProgramSuccess);
         Ok(())
+    }
+
+    fn get_ingress_ebpf() -> anyhow::Result<(Ebpf, ProgramArray<MapData>)> {
+        let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
+            env!("OUT_DIR"),
+            "/net-guardia-ingress"
+        )))?;
+        if let Err(e) = aya_log::EbpfLogger::init(&mut ingress_ebpf) {
+            error!("{}", e);
+            warn!("{}", EbpfEntry::LoggerInitializeFailed);
+        }
+        let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
+        // Self::load_program(&mut ebpf, &mut ingress_program_array, "defence", 2)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "sampling", 3)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 4)?;
+        Ok((ingress_ebpf, ingress_program_array))
+    }
+
+    fn get_egress_ebpf() -> anyhow::Result<(Ebpf, ProgramArray<MapData>)> {
+        let mut egress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
+            env!("OUT_DIR"),
+            "/net-guardia-egress"
+        )))?;
+        if let Err(e) = aya_log::EbpfLogger::init(&mut egress_ebpf) {
+            error!("{}", e);
+            warn!("{}", EbpfEntry::LoggerInitializeFailed);
+        }
+        let mut egress_program_array = ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut egress_ebpf, &mut egress_program_array, "statistics", 0)?;
+        Ok((egress_ebpf, egress_program_array))
     }
 
     fn set_memory_limit() -> anyhow::Result<()> {
