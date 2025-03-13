@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod config;
 pub mod direction;
 pub mod flow_stats;
