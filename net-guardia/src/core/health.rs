@@ -168,7 +168,6 @@ impl SystemHealth {
             })
             .collect();
 
-        // 系統負載 (如果可用)
         let load_average = System::load_average();
         let load_average = if load_average.one != 0.0 || load_average.five != 0.0 || load_average.fifteen != 0.0 {
             Some(LoadAverage {
@@ -180,7 +179,6 @@ impl SystemHealth {
             None
         };
 
-        // CPU 溫度 (如果可用)
         let temperature = components
             .iter()
             .find(|component| {
