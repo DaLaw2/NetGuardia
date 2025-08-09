@@ -5,7 +5,7 @@ use crate::core::statistics::Statistics;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{ai, control, default, misc, statistics};
+use crate::web::api::{ai, control, default, misc, statistics, health};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
@@ -16,6 +16,8 @@ use std::sync::OnceLock;
 use sysinfo::System as SystemInfo;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info, warn};
+use crate::core::health::SystemHealth;
+use std::time::Duration;
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
@@ -33,11 +35,16 @@ impl System {
     pub async fn initialize() -> anyhow::Result<()> {
         Logging::initialize().await?;
         info!("{}", SystemEntry::Initializing);
+        
         ConfigManager::initialization().await?;
+        
+        SystemHealth::initialize(Duration::from_secs(5)).await;
+        
         System::ebpf_initialize().await?;
         AI::initialize().await;
         Statistics::initialize().await?;
         Control::initialize().await?;
+        
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
@@ -147,7 +154,9 @@ impl System {
 
     pub async fn run() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Online);
+        
         Statistics::run().await;
+        
         let config = ConfigManager::now().await;
         HttpServer::new(|| {
             let cors = actix_cors::Cors::default()
@@ -161,6 +170,7 @@ impl System {
                 .service(statistics::initialize())
                 .service(control::initialize())
                 .service(misc::initialize())
+                .service(health::initialize())
                 .default_service(route().to(default::default_route))
         })
         .bind(format!("0.0.0.0:{}", config.http_server_bind_port))?
@@ -171,8 +181,11 @@ impl System {
 
     pub async fn terminate() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Terminating);
+        
         AI::terminate().await;
         Statistics::terminate().await;
+        SystemHealth::shutdown().await;
+        
         info!("{}", SystemEntry::TerminateComplete);
         Ok(())
     }
