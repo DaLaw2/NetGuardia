@@ -1,4 +1,3 @@
-// src/core/health.rs
 use crate::core::config_manager::ConfigManager;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -27,7 +26,7 @@ pub struct SystemHealthMetrics {
     pub timestamp: u64,
     pub boot_time: u64,
     pub uptime_seconds: u64,
-    pub cpu_usage: f32,
+    pub system_info: SystemInfo,
     pub cpu_details: CpuDetails,
     pub memory_usage: MemoryUsage,
     pub network_stats: ConfiguredNetworkStats,
@@ -36,9 +35,19 @@ pub struct SystemHealthMetrics {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SystemInfo {
+    pub kernel_version: Option<String>,
+    pub os_name: Option<String>,
+    pub os_version: Option<String>,
+    pub architecture: String,
+    pub total_processes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CpuDetails {
-    pub core_count: usize,
     pub cpu_brand: String,
+    pub core_count: usize,
+    pub cpu_usage: f32,
     pub cpu_frequency: u64,
     pub cores: Vec<CpuCoreInfo>,
 }
@@ -201,8 +210,7 @@ impl SystemHealth {
         let boot_time = System::boot_time();
         let uptime_seconds = timestamp - boot_time;
 
-        let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() 
-            / system.cpus().len() as f32;
+        let system_info = Self::collect_system_info(system);
 
         let cpu_details = Self::collect_cpu_details(system);
 
@@ -245,7 +253,7 @@ impl SystemHealth {
             timestamp,
             boot_time,
             uptime_seconds,
-            cpu_usage,
+            system_info,
             cpu_details,
             memory_usage,
             network_stats,
@@ -254,8 +262,21 @@ impl SystemHealth {
         }
     }
 
+    fn collect_system_info(system: &System) -> SystemInfo {
+        SystemInfo {
+            kernel_version: System::kernel_version(),
+            os_name: System::name(),
+            os_version: System::os_version(),
+            architecture: std::env::consts::ARCH.to_string(),
+            total_processes: system.processes().len(),
+        }
+    }
+
     fn collect_cpu_details(system: &System) -> CpuDetails {
         let cpus = system.cpus();
+    
+        let cpu_usage = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() 
+            / cpus.len() as f32;
         
         let cores: Vec<CpuCoreInfo> = cpus
             .iter()
@@ -279,8 +300,9 @@ impl SystemHealth {
         };
 
         CpuDetails {
-            core_count: cores.len(),
             cpu_brand,
+            core_count: cores.len(),
+            cpu_usage,
             cpu_frequency: avg_frequency,
             cores,
         }
@@ -361,11 +383,11 @@ impl SystemHealth {
             warnings: Vec::new(),
         };
 
-        if metrics.cpu_usage > 90.0 {
+        if metrics.cpu_details.cpu_usage > 90.0 {
             status.overall_healthy = false;
-            status.issues.push(format!("High CPU usage: {:.1}%", metrics.cpu_usage));
-        } else if metrics.cpu_usage > 75.0 {
-            status.warnings.push(format!("Moderate CPU usage: {:.1}%", metrics.cpu_usage));
+            status.issues.push(format!("High CPU usage: {:.1}%", metrics.cpu_details.cpu_usage));
+        } else if metrics.cpu_details.cpu_usage > 75.0 {
+            status.warnings.push(format!("Moderate CPU usage: {:.1}%", metrics.cpu_details.cpu_usage));
         }
 
         if metrics.memory_usage.usage_percent > 95.0 {
