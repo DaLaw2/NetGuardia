@@ -17,7 +17,6 @@ pub struct SystemHealth {
     components: Components,
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     shutdown_tx: mpsc::UnboundedSender<()>,
-    // 新增：儲存設定的網卡名稱
     ingress_interface: String,
     egress_interface: String,
     management_interface: String,
