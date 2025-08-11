@@ -17,6 +17,7 @@ pub struct SystemHealth {
     components: Components,
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     shutdown_tx: mpsc::UnboundedSender<()>,
+    // 新增：儲存設定的網卡名稱
     ingress_interface: String,
     egress_interface: String,
     management_interface: String,
@@ -25,11 +26,29 @@ pub struct SystemHealth {
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemHealthMetrics {
     pub timestamp: u64,
+    pub boot_time: u64,
+    pub uptime_seconds: u64,
     pub cpu_usage: f32,
+    pub cpu_details: CpuDetails,
     pub memory_usage: MemoryUsage,
     pub network_stats: ConfiguredNetworkStats,
     pub load_average: Option<LoadAverage>,
     pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuDetails {
+    pub core_count: usize,
+    pub cpu_brand: String,
+    pub cpu_frequency: u64,
+    pub cores: Vec<CpuCoreInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuCoreInfo {
+    pub core_id: usize,
+    pub usage_percent: f32,
+    pub frequency: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,8 +199,13 @@ impl SystemHealth {
             .unwrap()
             .as_secs();
 
+        let boot_time = System::boot_time();
+        let uptime_seconds = timestamp - boot_time;
+
         let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() 
             / system.cpus().len() as f32;
+
+        let cpu_details = Self::collect_cpu_details(system);
 
         let memory_usage = MemoryUsage {
             total: system.total_memory(),
@@ -220,11 +244,46 @@ impl SystemHealth {
             
         SystemHealthMetrics {
             timestamp,
+            boot_time,
+            uptime_seconds,
             cpu_usage,
+            cpu_details,
             memory_usage,
             network_stats,
             load_average,
             temperature,
+        }
+    }
+
+    fn collect_cpu_details(system: &System) -> CpuDetails {
+        let cpus = system.cpus();
+        
+        let cores: Vec<CpuCoreInfo> = cpus
+            .iter()
+            .enumerate()
+            .map(|(index, cpu)| CpuCoreInfo {
+                core_id: index,
+                usage_percent: cpu.cpu_usage(),
+                frequency: cpu.frequency(),
+            })
+            .collect();
+
+        let cpu_brand = cpus
+            .first()
+            .map(|cpu| cpu.brand().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let avg_frequency = if !cores.is_empty() {
+            cores.iter().map(|core| core.frequency).sum::<u64>() / cores.len() as u64
+        } else {
+            0
+        };
+
+        CpuDetails {
+            core_count: cores.len(),
+            cpu_brand,
+            cpu_frequency: avg_frequency,
+            cores,
         }
     }
 
