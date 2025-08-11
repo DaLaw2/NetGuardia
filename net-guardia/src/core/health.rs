@@ -1,11 +1,13 @@
+// src/core/health.rs
+use crate::core::config_manager::ConfigManager;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use sysinfo::{ Components, Disks, Networks, System};
+use sysinfo::{Components, Networks, System};
 use tokio::sync::{broadcast, mpsc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::time::interval;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 static SYSTEM_HEALTH_INSTANCE: OnceLock<RwLock<SystemHealth>> = OnceLock::new();
 
@@ -15,7 +17,9 @@ pub struct SystemHealth {
     components: Components,
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     shutdown_tx: mpsc::UnboundedSender<()>,
-    monitoring_interval: Duration,
+    ingress_interface: String,
+    egress_interface: String,
+    management_interface: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,8 +27,7 @@ pub struct SystemHealthMetrics {
     pub timestamp: u64,
     pub cpu_usage: f32,
     pub memory_usage: MemoryUsage,
-
-    pub network_stats: Vec<NetworkStats>,
+    pub network_stats: ConfiguredNetworkStats,
     pub load_average: Option<LoadAverage>,
     pub temperature: Option<f32>,
 }
@@ -37,6 +40,13 @@ pub struct MemoryUsage {
     pub usage_percent: f32,
     pub swap_total: u64,
     pub swap_used: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfiguredNetworkStats {
+    pub ingress: Option<NetworkStats>,
+    pub egress: Option<NetworkStats>,
+    pub management: Option<NetworkStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,28 +79,46 @@ impl SystemHealth {
         let (broadcast_tx, _) = broadcast::channel(100);
         let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
         
+        let config = ConfigManager::now().await;
+        
         let system_health = SystemHealth {
             system: System::new_all(),
             networks: Networks::new_with_refreshed_list(),
             components: Components::new_with_refreshed_list(),
             broadcast_tx: broadcast_tx.clone(),
             shutdown_tx,
-            monitoring_interval,
+            ingress_interface: config.ingress_ifindex.clone(),
+            egress_interface: config.egress_ifindex.clone(),
+            management_interface: config.management_ifindex.clone(),
         };
         
         SYSTEM_HEALTH_INSTANCE.get_or_init(|| RwLock::new(system_health));
         
+        let ingress_interface = config.ingress_ifindex;
+        let egress_interface = config.egress_ifindex;
+        let management_interface = config.management_ifindex;
+        
         tokio::spawn(async move {
-            Self::monitoring_loop(broadcast_tx, shutdown_rx, monitoring_interval).await;
+            Self::monitoring_loop(
+                broadcast_tx, 
+                shutdown_rx, 
+                monitoring_interval,
+                ingress_interface,
+                egress_interface,
+                management_interface,
+            ).await;
         });
         
-        info!("System health monitoring initialized");
+        info!("System health monitoring initialized with configured interfaces");
     }
 
     async fn monitoring_loop(
         broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
         mut shutdown_rx: mpsc::UnboundedReceiver<()>,
         monitoring_interval: Duration,
+        ingress_interface: String,
+        egress_interface: String,
+        management_interface: String,
     ) {
         let mut system = System::new_all();
         let mut networks = Networks::new_with_refreshed_list();
@@ -108,7 +136,14 @@ impl SystemHealth {
                     networks.refresh(true); 
                     components.refresh(true);
                     
-                    let metrics = Self::collect_metrics(&system, &networks, &components);
+                    let metrics = Self::collect_metrics(
+                        &system, 
+                        &networks, 
+                        &components,
+                        &ingress_interface,
+                        &egress_interface,
+                        &management_interface,
+                    );
                     
                     if broadcast_tx.receiver_count() > 0 {
                         if let Err(e) = broadcast_tx.send(metrics) {
@@ -136,6 +171,9 @@ impl SystemHealth {
         system: &System,
         networks: &Networks,
         components: &Components,
+        ingress_interface: &str,
+        egress_interface: &str,
+        management_interface: &str,
     ) -> SystemHealthMetrics {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -154,19 +192,12 @@ impl SystemHealth {
             swap_used: system.used_swap(),
         };
 
-        // 網路統計
-        let network_stats = networks
-            .iter()
-            .map(|(interface_name, network)| NetworkStats {
-                interface: interface_name.clone(),
-                bytes_received: network.total_received(),
-                bytes_transmitted: network.total_transmitted(),
-                packets_received: network.total_packets_received(),
-                packets_transmitted: network.total_packets_transmitted(),
-                errors_received: network.total_errors_on_received(),
-                errors_transmitted: network.total_errors_on_transmitted(),
-            })
-            .collect();
+        let network_stats = Self::collect_configured_network_stats(
+            networks,
+            ingress_interface,
+            egress_interface,
+            management_interface,
+        );
 
         let load_average = System::load_average();
         let load_average = if load_average.one != 0.0 || load_average.five != 0.0 || load_average.fifteen != 0.0 {
@@ -197,12 +228,59 @@ impl SystemHealth {
         }
     }
 
+    fn collect_configured_network_stats(
+        networks: &Networks,
+        ingress_interface: &str,
+        egress_interface: &str,
+        management_interface: &str,
+    ) -> ConfiguredNetworkStats {
+        let create_network_stats = |interface_name: &str| -> Option<NetworkStats> {
+            networks.get(interface_name).map(|network| NetworkStats {
+                interface: interface_name.to_string(),
+                bytes_received: network.total_received(),
+                bytes_transmitted: network.total_transmitted(),
+                packets_received: network.total_packets_received(),
+                packets_transmitted: network.total_packets_transmitted(),
+                errors_received: network.total_errors_on_received(),
+                errors_transmitted: network.total_errors_on_transmitted(),
+            })
+        };
+
+        let ingress = create_network_stats(ingress_interface);
+        let egress = create_network_stats(egress_interface);
+        let management = create_network_stats(management_interface);
+
+        if ingress.is_none() {
+            warn!("Ingress interface '{}' not found", ingress_interface);
+        }
+        if egress.is_none() {
+            warn!("Egress interface '{}' not found", egress_interface);
+        }
+        if management.is_none() {
+            warn!("Management interface '{}' not found", management_interface);
+        }
+
+        ConfiguredNetworkStats {
+            ingress,
+            egress,
+            management,
+        }
+    }
+
     pub async fn get_current_metrics() -> SystemHealthMetrics {
         let mut instance = Self::instance_mut().await;
         instance.system.refresh_all();
         instance.networks.refresh(true);
         instance.components.refresh(true);
-        Self::collect_metrics(&instance.system, &instance.networks, &instance.components)
+        
+        Self::collect_metrics(
+            &instance.system, 
+            &instance.networks, 
+            &instance.components,
+            &instance.ingress_interface,
+            &instance.egress_interface,
+            &instance.management_interface,
+        )
     }
 
     pub async fn subscribe_to_metrics() -> broadcast::Receiver<SystemHealthMetrics> {
@@ -225,7 +303,6 @@ impl SystemHealth {
             warnings: Vec::new(),
         };
 
-        // CPU 使用率檢查
         if metrics.cpu_usage > 90.0 {
             status.overall_healthy = false;
             status.issues.push(format!("High CPU usage: {:.1}%", metrics.cpu_usage));
@@ -233,7 +310,6 @@ impl SystemHealth {
             status.warnings.push(format!("Moderate CPU usage: {:.1}%", metrics.cpu_usage));
         }
 
-        // 記憶體使用率檢查
         if metrics.memory_usage.usage_percent > 95.0 {
             status.overall_healthy = false;
             status.issues.push(format!("Critical memory usage: {:.1}%", metrics.memory_usage.usage_percent));
@@ -241,7 +317,6 @@ impl SystemHealth {
             status.warnings.push(format!("High memory usage: {:.1}%", metrics.memory_usage.usage_percent));
         }
 
-        // 溫度檢查
         if let Some(temp) = metrics.temperature {
             if temp > 80.0 {
                 status.overall_healthy = false;
@@ -251,7 +326,18 @@ impl SystemHealth {
             }
         }
 
+        if metrics.network_stats.ingress.is_none() {
+            status.overall_healthy = false;
+            status.issues.push("Ingress interface not available".to_string());
+        }
+        if metrics.network_stats.egress.is_none() {
+            status.overall_healthy = false;
+            status.issues.push("Egress interface not available".to_string());
+        }
+        if metrics.network_stats.management.is_none() {
+            status.warnings.push("Management interface not available".to_string());
+        }
+
         status
     }
-
 }
