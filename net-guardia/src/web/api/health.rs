@@ -5,7 +5,7 @@ use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
 use actix_web_actors::ws::start;
 
 pub fn initialize() -> Scope {
-    web::scope("/system_health")
+    web::scope("/health")
         .service(get_current_metrics)
         .service(get_health_status)
         .service(websocket_metrics)
@@ -23,7 +23,7 @@ async fn get_health_status() -> impl Responder {
     HttpResponse::Ok().json(status)
 }
 
-#[get("/websocket")]
+#[get("/websocket/system_health")]
 async fn websocket_metrics(req: HttpRequest, stream: web::Payload) -> impl Responder {
     let broadcast_rx = SystemHealth::subscribe_to_metrics().await;
     let websocket = SystemHealthWebSocket {
