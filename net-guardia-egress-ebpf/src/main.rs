@@ -26,16 +26,18 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn parsing(ctx: XdpContext) -> Result<u32, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
-    let event = parsing::parse_packet(start, end)?;
-    let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
-    let parsed_packet = ptr.as_mut().ok_or(())?;
-    *parsed_packet = event;
-    if PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() {
-        error!(&ctx, "Tail call failed");
+    unsafe {
+        let start = ctx.data();
+        let end = ctx.data_end();
+        let event = parsing::parse_packet(start, end)?;
+        let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
+        let parsed_packet = ptr.as_mut().ok_or(())?;
+        *parsed_packet = event;
+        if PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() {
+            error!(&ctx, "Tail call failed");
+        }
+        Err(())
     }
-    Err(())
 }
 
 #[xdp]
@@ -47,22 +49,25 @@ pub fn statistics(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
-    let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read();
-    match parsed_packet.eth_type {
-        EtherType::Ipv4 => {
-            let event = parsed_packet.into_ipv4_event();
-            statistics::ipv4_update_stats(&event);
+    unsafe { 
+        let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
+        let parsed_packet = ptr.read();
+        match parsed_packet.eth_type {
+            EtherType::Ipv4 => {
+                let event = parsed_packet.into_ipv4_event();
+                statistics::ipv4_update_stats(&event);
+            }
+            EtherType::Ipv6 => {
+                let event = parsed_packet.into_ipv6_event();
+                statistics::ipv6_update_stats(&event);
+            }
+            _ => Err(())?,
         }
-        EtherType::Ipv6 => {
-            let event = parsed_packet.into_ipv6_event();
-            statistics::ipv6_update_stats(&event);
-        }
-        _ => Err(())?,
+        Ok(xdp_action::XDP_PASS)
     }
-    Ok(xdp_action::XDP_PASS)
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }

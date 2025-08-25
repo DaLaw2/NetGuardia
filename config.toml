@@ -1,7 +1,7 @@
 [Config]
-ingress_ifindex = "enp1s0f0" # nic name
-egress_ifindex = "enp1s0f1" # nic name
-management_ifindex = "wlan0" # nic name
+ingress_ifindex = "enp6s18" # nic name
+egress_ifindex = "enp6s19" # nic name
+management_ifindex = "enp6s19" # nic name
 alert_path = "/tmp/alert"
 http_server_bind_port = 8080 # port
 refresh_interval = 1 # seconds

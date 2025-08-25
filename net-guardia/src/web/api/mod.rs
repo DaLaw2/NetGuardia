@@ -3,3 +3,4 @@ pub mod control;
 pub mod default;
 pub mod misc;
 pub mod statistics;
+pub mod health;

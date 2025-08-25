@@ -78,13 +78,15 @@ unsafe fn ipv4_update_flow_stats(
     event: &IPv4Event,
     now: u64,
 ) {
-    if let Some(status) = map.get_ptr_mut(key) {
-        (*status)[0] += event.len as u64;
-        (*status)[1] += 1;
-        (*status)[2] = now;
-    } else {
-        let new_stats = [event.len as u64, 1, now];
-        let _ = map.insert(key, &new_stats, 0);
+    unsafe {
+        if let Some(status) = map.get_ptr_mut(key) {
+            (*status)[0] += event.len as u64;
+            (*status)[1] += 1;
+            (*status)[2] = now;
+        } else {
+            let new_stats = [event.len as u64, 1, now];
+            let _ = map.insert(key, &new_stats, 0);
+        }
     }
 }
 
@@ -95,12 +97,14 @@ unsafe fn ipv6_update_flow_status(
     event: &IPv6Event,
     now: u64,
 ) {
-    if let Some(status) = map.get_ptr_mut(key) {
-        (*status)[0] += event.len as u64;
-        (*status)[1] += 1;
-        (*status)[2] = now;
-    } else {
-        let new_stats = [event.len as u64, 1, now];
-        let _ = map.insert(key, &new_stats, 0);
+    unsafe {
+        if let Some(status) = map.get_ptr_mut(key) {
+            (*status)[0] += event.len as u64;
+            (*status)[1] += 1;
+            (*status)[2] = now;
+        } else {
+            let new_stats = [event.len as u64, 1, now];
+            let _ = map.insert(key, &new_stats, 0);
+        }
     }
 }
