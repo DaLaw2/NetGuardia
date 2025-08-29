@@ -3,14 +3,17 @@
 mod action;
 mod utils;
 
-use action::{access_control, defence, statistics, service};
-use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{PerCpuArray, ProgramArray};
-use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
+use crate::action::{access_control, service, statistics};
+use crate::utils::parsing;
+use aya_ebpf::{
+    bindings::xdp_action,
+    macros::{map, xdp},
+    maps::{PerCpuArray, ProgramArray},
+    programs::XdpContext,
+};
 use aya_log_ebpf::error;
 use net_guardia_common::model::event::Event;
 use network_types::eth::EtherType;
-use utils::parsing;
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
@@ -116,47 +119,15 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
     }
 }
 
-// #[xdp]
-// pub fn defence(ctx: XdpContext) -> u32 {
-//     match unsafe { try_defence(ctx) } {
-//         Ok(ret) => ret,
-//         Err(_) => xdp_action::XDP_PASS,
-//     }
-// }
-//
-// unsafe fn try_defence(ctx: XdpContext) -> Result<u32, ()> {
-//     let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-//     let parsed_packet = ptr.read();
-//     match parsed_packet.eth_type {
-//         EtherType::Ipv4 => {
-//             let event = parsed_packet.into_ipv4_event();
-//             if defence::ipv4_is_attack(&event) {
-//                 return Ok(xdp_action::XDP_DROP);
-//             }
-//         }
-//         EtherType::Ipv6 => {
-//             let event = parsed_packet.into_ipv6_event();
-//             if defence::ipv6_is_attack(&event) {
-//                 return Ok(xdp_action::XDP_DROP);
-//             }
-//         }
-//         _ => Err(())?
-//     }
-//     if PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() {
-//         error!(&ctx, "Tail call failed");
-//     }
-//     Err(())
-// }
-
 #[xdp]
-pub fn sampling(ctx: XdpContext) -> u32 {
-    match unsafe { try_sampling(ctx) } {
+pub fn transmission(ctx: XdpContext) -> u32 {
+    match unsafe { try_transmission(ctx) } {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_PASS,
     }
 }
 
-unsafe fn try_sampling(ctx: XdpContext) -> Result<u32, ()> {
+unsafe fn try_transmission(ctx: XdpContext) -> Result<u32, ()> {
     if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 4).is_err() } {
         error!(&ctx, "Tail call failed");
     }

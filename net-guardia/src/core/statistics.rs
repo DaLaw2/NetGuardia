@@ -1,13 +1,12 @@
 use crate::core::system::System;
 use crate::model::direction::{Direction, FlowDirection};
-use crate::model::flow_stats::FlowStats;
 use crate::model::ip_address::IntoNative;
 use crate::model::time_type::TimeType;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
-use net_guardia_common::model::flow_stats::EbpfFlowStats;
-use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
+use net_guardia_common::model::flow_stats::FlowStats;
+use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
 use std::collections::HashMap as StdHashMap;
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
@@ -18,8 +17,8 @@ static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
 
 pub struct Statistics {
     terminate: bool,
-    ipv4_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<EbpfAddrPortV4>>,
-    ipv6_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<EbpfAddrPortV6>>,
+    ipv4_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<AddrPortV4>>,
+    ipv6_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<AddrPortV6>>,
 }
 
 impl Statistics {
@@ -197,7 +196,7 @@ impl Statistics {
 }
 
 struct FlowMap<T> {
-    map: AyaHashMap<MapData, T, EbpfFlowStats>,
+    map: AyaHashMap<MapData, T, FlowStats>,
 }
 
 impl<T: IntoNative + Pod> FlowMap<T> {
@@ -216,7 +215,7 @@ impl<T: IntoNative + Pod> FlowMap<T> {
             .filter_map(|result| {
                 result
                     .ok()
-                    .and_then(|(key, stats)| (now - stats[2] - boot_time > window).then_some(key))
+                    .and_then(|(key, stats)| (now - stats.last_seen - boot_time > window).then_some(key))
             })
             .collect();
         expired_keys.iter().for_each(|key| {

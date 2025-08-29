@@ -5,11 +5,12 @@ edition = "2024"
 
 [features]
 default = []
-user = ["aya"]
+user = ["aya", "serde"]
 
 [dependencies]
 aya = { workspace = true, optional = true }
-network-types = "0.0.7"
+serde = { workspace = true, optional = true }
+network-types = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

@@ -1,4 +1,4 @@
-use net_guardia_common::model::ip_address::{IPv4, IPv6, EbpfAddrPortV4, EbpfAddrPortV6};
+use net_guardia_common::model::ip_address::*;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
@@ -23,18 +23,18 @@ impl IntoNative for IPv6 {
     }
 }
 
-impl IntoNative for EbpfAddrPortV4 {
+impl IntoNative for AddrPortV4 {
     type Native = SocketAddrV4;
 
     fn into_native(self) -> Self::Native {
-        SocketAddrV4::new(Ipv4Addr::from(self[0]), self[1] as u16)
+        SocketAddrV4::new(Ipv4Addr::from(self.ip), self.port)
     }
 }
 
-impl IntoNative for EbpfAddrPortV6 {
+impl IntoNative for AddrPortV6 {
     type Native = SocketAddrV6;
 
     fn into_native(self) -> Self::Native {
-        SocketAddrV6::new(Ipv6Addr::from(self[0]), self[1] as u16, 0, 0)
+        SocketAddrV6::new(Ipv6Addr::from(self.ip), self.port, 0, 0)
     }
 }

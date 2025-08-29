@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(feature = "user")]
+extern crate std;
+
 pub mod model;
 
 /// Maximum number of statistics entries that can be stored
