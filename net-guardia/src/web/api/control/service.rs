@@ -1,7 +1,7 @@
 use crate::core::control::service::Service;
-use crate::model::http_method::HttpMethod;
 use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use net_guardia_common::model::http_method::HttpMethod;
 
 pub fn initialize() -> Scope {
     web::scope("/service")

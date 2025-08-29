@@ -15,7 +15,7 @@ pub fn parse_packet(start: usize, end: usize) -> Result<Event, ()> {
     match eth.ether_type {
         EtherType::Ipv4 => parse_ipv4_packet(start, end),
         EtherType::Ipv6 => parse_ipv6_packet(start, end),
-        _ => Err(())
+        _ => Err(()),
     }
 }
 
@@ -83,24 +83,22 @@ pub fn parse_ipv6_packet(start: usize, end: usize) -> Result<Event, ()> {
 
 #[inline(always)]
 fn parse_tcp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
-    let tcp: *const TcpHdr = (start + offset) as *const TcpHdr;
-    if start + offset + size_of::<TcpHdr>() > end {
-        return Err(());
+    unsafe {
+        let tcp: *const TcpHdr = (start + offset) as *const TcpHdr;
+        if start + offset + size_of::<TcpHdr>() > end {
+            return Err(());
+        }
+        Ok(((*tcp).source, (*tcp).dest))
     }
-    Ok((
-        u16::from_be(unsafe { (*tcp).source }),
-        u16::from_be(unsafe { (*tcp).dest }),
-    ))
 }
 
 #[inline(always)]
 fn parse_udp_port(start: usize, end: usize, offset: usize) -> Result<(u16, u16), ()> {
-    let udp: *const UdpHdr = (start + offset) as *const UdpHdr;
-    if start + offset + size_of::<UdpHdr>() > end {
-        return Err(());
+    unsafe {
+        let udp: *const UdpHdr = (start + offset) as *const UdpHdr;
+        if start + offset + size_of::<UdpHdr>() > end {
+            return Err(());
+        }
+        Ok(((*udp).source, (*udp).dest))
     }
-    Ok((
-        u16::from_be(unsafe { (*udp).source }),
-        u16::from_be(unsafe { (*udp).dest }),
-    ))
 }

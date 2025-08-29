@@ -20,6 +20,8 @@ libc = { version = "0.2.159", default-features = false }
 log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "7.0.0", default-features = false }
+serde = { version = "1.0.215", features = ["derive"] }
+network-types = "0.0.7"
 
 [profile.dev]
 panic = "abort"

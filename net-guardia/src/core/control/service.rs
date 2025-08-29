@@ -1,25 +1,25 @@
 use crate::core::system::System;
-use crate::model::http_method::HttpMethod;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
-use net_guardia_common::model::http_method::EbpfHttpMethod;
-use net_guardia_common::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6, IPv4, IPv6};
+use net_guardia_common::model::http_method::{HttpMethod, HttpMethodBitmap};
+use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
 use net_guardia_common::model::placeholder::PlaceHolder;
 use std::collections::HashMap as StdHashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info};
+use crate::model::ip_address::IntoNative;
 
 static SERVICE: OnceLock<RwLock<Service>> = OnceLock::new();
 
 pub struct Service {
-    ipv4_http_service: AyaHashMap<MapData, EbpfAddrPortV4, EbpfHttpMethod>,
-    ipv6_http_service: AyaHashMap<MapData, EbpfAddrPortV6, EbpfHttpMethod>,
+    ipv4_http_service: AyaHashMap<MapData, AddrPortV4, HttpMethodBitmap>,
+    ipv6_http_service: AyaHashMap<MapData, AddrPortV6, HttpMethodBitmap>,
     ssh_white_list_enable: AyaArray<MapData, PlaceHolder>,
-    ipv4_ssh_service: AyaHashMap<MapData, EbpfAddrPortV4, PlaceHolder>,
-    ipv6_ssh_service: AyaHashMap<MapData, EbpfAddrPortV6, PlaceHolder>,
+    ipv4_ssh_service: AyaHashMap<MapData, AddrPortV4, PlaceHolder>,
+    ipv6_ssh_service: AyaHashMap<MapData, AddrPortV6, PlaceHolder>,
     ipv4_ssh_white_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
     ipv6_ssh_white_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
     ipv4_ssh_black_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
@@ -83,11 +83,11 @@ impl Service {
             .iter()
             .filter_map(Result::ok)
             .map(|(key, value)| {
-                let address = Ipv4Addr::from(key[0]);
-                let port = key[1] as u16;
+                let address = Ipv4Addr::from(key.ip);
+                let port = key.port;
                 (
                     SocketAddrV4::new(address, port),
-                    HttpMethod::convert_from_ebpf(value),
+                    HttpMethod::convert_from_bitmap(value),
                 )
             })
             .collect()
@@ -100,11 +100,11 @@ impl Service {
             .iter()
             .filter_map(Result::ok)
             .map(|(key, value)| {
-                let address = Ipv6Addr::from(key[0]);
-                let port = key[1] as u16;
+                let address = Ipv6Addr::from(key.ip);
+                let port = key.port;
                 (
                     SocketAddrV6::new(address, port, 0, 0),
-                    HttpMethod::convert_from_ebpf(value),
+                    HttpMethod::convert_from_bitmap(value),
                 )
             })
             .collect()
@@ -116,8 +116,8 @@ impl Service {
     ) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u32];
-        let ebpf_method = HttpMethod::convert_to_ebpf(http_method);
+        let addr_port = AddrPortV4::new(ip, port);
+        let ebpf_method = HttpMethod::convert_to_bitmap(http_method);
         let mut service = Service::instance_mut().await;
         service
             .ipv4_http_service
@@ -132,8 +132,8 @@ impl Service {
     ) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u128];
-        let ebpf_method = HttpMethod::convert_to_ebpf(http_method);
+        let addr_port = AddrPortV6::new(ip, port);
+        let ebpf_method = HttpMethod::convert_to_bitmap(http_method);
         let mut service = Service::instance_mut().await;
         service
             .ipv6_http_service
@@ -148,10 +148,10 @@ impl Service {
     ) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u32];
+        let addr_port = AddrPortV4::new(ip, port);
         let mut service = Service::instance_mut().await;
         if let Ok(current_http_method) = service.ipv4_http_service.get(&addr_port, 0) {
-            let mut http_method = HttpMethod::convert_from_ebpf(current_http_method);
+            let mut http_method = HttpMethod::convert_from_bitmap(current_http_method);
             http_method.retain(|method| !removed_http_method.contains(method));
             if http_method.is_empty() {
                 service
@@ -159,7 +159,7 @@ impl Service {
                     .remove(&addr_port)
                     .map_err(|_| EbpfEntry::MapOperationError)?;
             } else {
-                let new_http_method = HttpMethod::convert_to_ebpf(http_method);
+                let new_http_method = HttpMethod::convert_to_bitmap(http_method);
                 service
                     .ipv4_http_service
                     .insert(&addr_port, new_http_method, 0)
@@ -177,10 +177,10 @@ impl Service {
     ) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u128];
+        let addr_port = AddrPortV6::new(ip, port);
         let mut service = Service::instance_mut().await;
         if let Ok(current_http_method) = service.ipv6_http_service.get(&addr_port, 0) {
-            let mut http_method = HttpMethod::convert_from_ebpf(current_http_method);
+            let mut http_method = HttpMethod::convert_from_bitmap(current_http_method);
             http_method.retain(|method| !removed_http_method.contains(method));
             if http_method.is_empty() {
                 service
@@ -188,7 +188,7 @@ impl Service {
                     .remove(&addr_port)
                     .map_err(|_| EbpfEntry::MapOperationError)?;
             } else {
-                let new_http_method = HttpMethod::convert_to_ebpf(http_method);
+                let new_http_method = HttpMethod::convert_to_bitmap(http_method);
                 service
                     .ipv6_http_service
                     .insert(&addr_port, new_http_method, 0)
@@ -238,7 +238,7 @@ impl Service {
             .ipv4_ssh_service
             .keys()
             .filter_map(Result::ok)
-            .map(|key| SocketAddrV4::new(Ipv4Addr::from(key[0]), key[1] as u16))
+            .map(|key| key.into_native())
             .collect()
     }
 
@@ -248,14 +248,14 @@ impl Service {
             .ipv6_ssh_service
             .keys()
             .filter_map(Result::ok)
-            .map(|key| SocketAddrV6::new(Ipv6Addr::from(key[0]), key[1] as u16, 0, 0))
+            .map(|key| key.into_native())
             .collect()
     }
 
     pub async fn add_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u32];
+        let addr_port = AddrPortV4::new(ip, port);
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_service
@@ -267,7 +267,7 @@ impl Service {
     pub async fn add_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u128];
+        let addr_port = AddrPortV6::new(ip, port);
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_service
@@ -279,7 +279,7 @@ impl Service {
     pub async fn remove_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u32];
+        let addr_port = AddrPortV4::new(ip, port);
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_service
@@ -291,7 +291,7 @@ impl Service {
     pub async fn remove_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
-        let addr_port = [ip, port as u128];
+        let addr_port = AddrPortV6::new(ip, port);
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_service

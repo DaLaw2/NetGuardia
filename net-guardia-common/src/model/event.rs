@@ -1,5 +1,5 @@
+use crate::model::ip_address::{AddrPortV4, AddrPortV6};
 use network_types::eth::EtherType;
-use crate::model::ip_address::{EbpfAddrPortV4, EbpfAddrPortV6};
 use network_types::ip::IpProto;
 
 pub struct Event {
@@ -10,7 +10,7 @@ pub struct Event {
     pub source_port: u16,
     pub destination_port: u16,
     pub len: u32,
-    pub timestamp: u64
+    pub timestamp: u64,
 }
 
 impl Event {
@@ -74,18 +74,24 @@ pub struct IPv4Event {
     pub source_port: u16,
     pub destination_port: u16,
     pub len: u32,
-    pub timestamp: u64
+    pub timestamp: u64,
 }
 
 impl IPv4Event {
     #[inline(always)]
-    pub fn get_source(&self) -> EbpfAddrPortV4 {
-        [self.source_ip, self.source_port as u32]
+    pub fn get_source(&self) -> AddrPortV4 {
+        AddrPortV4 {
+            ip: self.source_ip,
+            port: self.source_port,
+        }
     }
 
     #[inline(always)]
-    pub fn get_destination(&self) -> EbpfAddrPortV4 {
-        [self.destination_ip, self.destination_port as u32]
+    pub fn get_destination(&self) -> AddrPortV4 {
+        AddrPortV4 {
+            ip: self.destination_ip,
+            port: self.destination_port,
+        }
     }
 }
 
@@ -96,17 +102,23 @@ pub struct IPv6Event {
     pub source_port: u16,
     pub destination_port: u16,
     pub len: u32,
-    pub timestamp: u64
+    pub timestamp: u64,
 }
 
 impl IPv6Event {
     #[inline(always)]
-    pub fn get_source(&self) -> EbpfAddrPortV6 {
-        [self.source_ip, self.source_port as u128]
+    pub fn get_source(&self) -> AddrPortV6 {
+        AddrPortV6 {
+            ip: self.source_ip,
+            port: self.source_port,
+        }
     }
 
     #[inline(always)]
-    pub fn get_destination(&self) -> EbpfAddrPortV6 {
-        [self.destination_ip, self.destination_port as u128]
+    pub fn get_destination(&self) -> AddrPortV6 {
+        AddrPortV6 {
+            ip: self.destination_ip,
+            port: self.destination_port,
+        }
     }
 }
