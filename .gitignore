@@ -10,3 +10,5 @@ target/
 
 .idea
 logs
+.env
+net-guardia/static/web

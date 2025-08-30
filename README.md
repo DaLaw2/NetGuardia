@@ -13,21 +13,21 @@
 ## 🧩 功能模組
 
 ### 📊 儀表板總覽 (Dashboard)
-![儀表板介面](./github/dashboard.png)
+![儀表板介面](.github/images/dashboard.png)
 - 即時網路流量監控與視覺化統計
 - 近期流量大小統計與趨勢圖
 
 ### 📈 詳細流量統計 (Statistics)
-![流量統計介面](./github/statistics.png)
+![流量統計介面](.github/images/statistics.png)
 - 各 IP 位址詳細流量使用情況
 
 ### 🔒 網路存取控制 (Access Control)
-![存取控制介面](./github/accessControl.png)
+![存取控制介面](.github/images/accessControl.png)
 - IPv4/IPv6 黑白名單管理
 - 精確的連接埠層級存取控制
 
 ### 🤖 AI 攻擊偵測 (AI Detection)
-![AI 攻擊偵測介面](./github/aiDetection.png)
+![AI 攻擊偵測介面](.github/images/aiDetection.png)
 - 基於 AI 的攻擊偵測引擎
 
 ## ✨ 系統特色
