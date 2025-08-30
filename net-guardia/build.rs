@@ -28,7 +28,7 @@ fn build_ingress_ebpf() {
     let Metadata { packages, .. } = MetadataCommand::new().no_deps().exec().unwrap();
     let ebpf_package = packages
         .into_iter()
-        .find(|Package { name, .. }| name == "net-guardia-ingress-ebpf")
+        .find(|Package { name, .. }| **name == "net-guardia-ingress-ebpf")
         .unwrap();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
@@ -98,7 +98,7 @@ fn build_ingress_ebpf() {
         let stderr = std::thread::spawn(move || {
             for line in stderr.lines() {
                 let line = line.unwrap();
-                println!("cargo:warning={line}");
+                println!("{line}");
             }
         });
 
@@ -119,11 +119,11 @@ fn build_ingress_ebpf() {
                 }
                 Message::CompilerMessage(CompilerMessage { message, .. }) => {
                     for line in message.rendered.unwrap_or_default().split('\n') {
-                        println!("cargo:warning={line}");
+                        println!("{line}");
                     }
                 }
                 Message::TextLine(line) => {
-                    println!("cargo:warning={line}");
+                    println!("{line}");
                 }
                 _ => {}
             }
@@ -168,7 +168,7 @@ fn build_egress_ebpf() {
     let Metadata { packages, .. } = MetadataCommand::new().no_deps().exec().unwrap();
     let ebpf_package = packages
         .into_iter()
-        .find(|Package { name, .. }| name == "net-guardia-egress-ebpf")
+        .find(|Package { name, .. }| **name == "net-guardia-egress-ebpf")
         .unwrap();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
@@ -214,6 +214,7 @@ fn build_egress_ebpf() {
         ]);
 
         cmd.env("CARGO_CFG_BPF_TARGET_ARCH", arch);
+        cmd.env("CARGO_TERM_COLOR", "always");
 
         // Workaround to make sure that the rust-toolchain.toml is respected.
         for key in ["RUSTUP_TOOLCHAIN", "RUSTC", "RUSTC_WORKSPACE_WRAPPER"] {
@@ -238,7 +239,7 @@ fn build_egress_ebpf() {
         let stderr = std::thread::spawn(move || {
             for line in stderr.lines() {
                 let line = line.unwrap();
-                println!("cargo:warning={line}");
+                println!("{line}");
             }
         });
 
@@ -259,11 +260,11 @@ fn build_egress_ebpf() {
                 }
                 Message::CompilerMessage(CompilerMessage { message, .. }) => {
                     for line in message.rendered.unwrap_or_default().split('\n') {
-                        println!("cargo:warning={line}");
+                        println!("{line}");
                     }
                 }
                 Message::TextLine(line) => {
-                    println!("cargo:warning={line}");
+                    println!("{line}");
                 }
                 _ => {}
             }

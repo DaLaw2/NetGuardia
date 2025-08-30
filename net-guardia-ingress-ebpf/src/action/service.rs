@@ -4,9 +4,9 @@ use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use net_guardia_common::model::http_method::HttpMethodBitmap;
 use net_guardia_common::model::ip_address::*;
 use net_guardia_common::model::placeholder::PlaceHolder;
+use net_guardia_common::utils::offset_define::*;
 use net_guardia_common::MAX_RULES;
-use network_types::eth::EthHdr;
-use network_types::ip::{IpProto, Ipv4Hdr, Ipv6Hdr};
+use network_types::ip::IpProto;
 use network_types::tcp::TcpHdr;
 
 #[map]
@@ -45,30 +45,26 @@ pub fn ipv6_service_rule_violation(start: usize, end: usize, event: &IPv6Event) 
 }
 
 #[inline(always)]
-fn ipv4_http_service_violation(
-    start: usize,
-    end: usize,
-    protocol: &IpProto,
-    destination: &AddrPortV4,
-) -> bool {
+fn ipv4_http_service_violation(start: usize, end: usize, protocol: &IpProto, destination: &AddrPortV4) -> bool {
     match IPV4_HTTP_SERVICE.get_ptr_mut(destination) {
         Some(allow_method) => {
             if !matches!(protocol, IpProto::Tcp) {
                 return false;
             }
             unsafe {
-                let offset = size_of::<EthHdr>() + size_of::<Ipv4Hdr>();
-                if start + offset + size_of::<TcpHdr>() > end {
+                if start + IPV4_TCP_HEADER_END > end {
                     return false;
                 }
-                let tcp_header = &*((start + offset) as *const TcpHdr);
+                let tcp_header = &*((start + IPV4_TCP_HEADER_START) as *const TcpHdr);
                 if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
                     return false;
                 }
                 if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                     return false;
                 }
-                match get_http_request_method(start, end, offset) {
+                let tcp_header_len = (tcp_header.doff() * 4) as usize;
+                let tcp_payload_start = IPV4_TCP_HEADER_END + tcp_header_len;
+                match get_http_request_method(start, end, tcp_payload_start) {
                     Some(http_method) => *allow_method & http_method == 0,
                     None => true,
                 }
@@ -79,30 +75,26 @@ fn ipv4_http_service_violation(
 }
 
 #[inline(always)]
-fn ipv6_http_service_violation(
-    start: usize,
-    end: usize,
-    protocol: &IpProto,
-    destination: &AddrPortV6,
-) -> bool {
+fn ipv6_http_service_violation(start: usize, end: usize, protocol: &IpProto, destination: &AddrPortV6) -> bool {
     match IPV6_HTTP_SERVICE.get_ptr_mut(destination) {
         Some(allow_method) => {
             if !matches!(protocol, IpProto::Tcp) {
                 return false;
             }
             unsafe {
-                let offset = size_of::<EthHdr>() + size_of::<Ipv6Hdr>();
-                if start + offset + size_of::<TcpHdr>() > end {
+                if start + IPV6_TCP_HEADER_END > end {
                     return false;
                 }
-                let tcp_header = &*((start + offset) as *const TcpHdr);
+                let tcp_header = &*((start + IPV6_TCP_HEADER_START) as *const TcpHdr);
                 if tcp_header.syn() != 0 || tcp_header.rst() != 0 || tcp_header.fin() != 0 {
                     return false;
                 }
                 if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                     return false;
                 }
-                match get_http_request_method(start, end, offset) {
+                let tcp_header_len = (tcp_header.doff() * 4) as usize;
+                let tcp_payload_start = IPV6_TCP_HEADER_END + tcp_header_len;
+                match get_http_request_method(start, end, tcp_payload_start) {
                     Some(http_method) => *allow_method & http_method == 0,
                     None => true,
                 }

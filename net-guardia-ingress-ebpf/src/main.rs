@@ -1,10 +1,9 @@
 #![no_std]
 #![no_main]
 mod action;
-mod utils;
 
 use crate::action::{access_control, service, statistics};
-use crate::utils::parsing;
+use net_guardia_common::ebpf::parsing;
 use aya_ebpf::{
     bindings::xdp_action,
     macros::{map, xdp},
@@ -112,7 +111,7 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
             }
             _ => Err(())?,
         }
-        if PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() {
+        if PROGRAM_ARRAY.tail_call(&ctx, 2).is_err() {
             error!(&ctx, "Tail call failed");
         }
         Err(())
@@ -128,7 +127,7 @@ pub fn transmission(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn try_transmission(ctx: XdpContext) -> Result<u32, ()> {
-    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 4).is_err() } {
+    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() } {
         error!(&ctx, "Tail call failed");
     }
     Err(())

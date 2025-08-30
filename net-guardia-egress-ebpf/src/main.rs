@@ -1,16 +1,15 @@
 #![no_std]
 #![no_main]
 mod action;
-mod utils;
 
 use action::statistics;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{PerCpuArray, ProgramArray};
 use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
 use aya_log_ebpf::error;
+use net_guardia_common::ebpf::parsing;
 use net_guardia_common::model::event::Event;
 use network_types::eth::EtherType;
-use utils::parsing;
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
@@ -49,7 +48,7 @@ pub fn statistics(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
-    unsafe { 
+    unsafe {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
         let parsed_packet = ptr.read();
         match parsed_packet.eth_type {

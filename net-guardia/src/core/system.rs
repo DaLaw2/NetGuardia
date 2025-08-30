@@ -1,11 +1,12 @@
 use crate::core::ai::AI;
 use crate::core::config_manager::ConfigManager;
 use crate::core::control::Control;
+use crate::core::health::SystemHealth;
 use crate::core::statistics::Statistics;
 use crate::utils::log_entry::ebpf::EbpfEntry;
 use crate::utils::log_entry::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{ai, control, default, misc, statistics, health};
+use crate::web::api::{ai, control, default, health, misc, statistics};
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
 use anyhow::Context;
@@ -13,11 +14,10 @@ use aya::maps::{MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use std::sync::OnceLock;
+use std::time::Duration;
 use sysinfo::System as SystemInfo;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info, warn};
-use crate::core::health::SystemHealth;
-use std::time::Duration;
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
@@ -35,16 +35,16 @@ impl System {
     pub async fn initialize() -> anyhow::Result<()> {
         Logging::initialize().await?;
         info!("{}", SystemEntry::Initializing);
-        
+
         ConfigManager::initialization().await?;
-        
+
         SystemHealth::initialize(Duration::from_secs(5)).await;
-        
+
         System::ebpf_initialize().await?;
         AI::initialize().await;
         Statistics::initialize().await?;
         Control::initialize().await?;
-        
+
         info!("{}", SystemEntry::InitializeComplete);
         Ok(())
     }
@@ -56,13 +56,9 @@ impl System {
         let boot_time = SystemInfo::boot_time() * 1_000_000_000;
         Self::set_memory_limit()?;
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
-        let ingress_program: &mut Xdp = ingress_ebpf
-            .program_mut("net_guardia")
-            .unwrap()
-            .try_into()?;
+        let ingress_program: &mut Xdp = ingress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
-        let egress_program: &mut Xdp =
-            egress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
+        let egress_program: &mut Xdp = egress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
         ingress_program.load()?;
         ingress_program
             .attach(&ingress_interface, XdpFlags::default())
@@ -92,23 +88,11 @@ impl System {
             error!("{}", e);
             warn!("{}", EbpfEntry::LoggerInitializeFailed);
         }
-        let mut ingress_program_array =
-            ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(
-            &mut ingress_ebpf,
-            &mut ingress_program_array,
-            "access_control",
-            0,
-        )?;
+        let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
         Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
-        // Self::load_program(&mut ebpf, &mut ingress_program_array, "defence", 2)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "sampling", 3)?;
-        Self::load_program(
-            &mut ingress_ebpf,
-            &mut ingress_program_array,
-            "statistics",
-            4,
-        )?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "transmission", 3)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 4)?;
         Ok((ingress_ebpf, ingress_program_array))
     }
 
@@ -121,8 +105,7 @@ impl System {
             error!("{}", e);
             warn!("{}", EbpfEntry::LoggerInitializeFailed);
         }
-        let mut egress_program_array =
-            ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
+        let mut egress_program_array = ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
         Self::load_program(&mut egress_ebpf, &mut egress_program_array, "statistics", 0)?;
         Ok((egress_ebpf, egress_program_array))
     }
@@ -154,9 +137,9 @@ impl System {
 
     pub async fn run() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Online);
-        
+
         Statistics::run().await;
-        
+
         let config = ConfigManager::now().await;
         HttpServer::new(|| {
             let cors = actix_cors::Cors::default()
@@ -181,11 +164,11 @@ impl System {
 
     pub async fn terminate() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Terminating);
-        
+
         AI::terminate().await;
         Statistics::terminate().await;
         SystemHealth::shutdown().await;
-        
+
         info!("{}", SystemEntry::TerminateComplete);
         Ok(())
     }
