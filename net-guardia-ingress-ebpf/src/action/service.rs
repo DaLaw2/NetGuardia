@@ -4,31 +4,31 @@ use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use net_guardia_common::model::http_method::HttpMethodBitmap;
 use net_guardia_common::model::ip_address::*;
 use net_guardia_common::model::placeholder::PlaceHolder;
-use net_guardia_common::utils::offset_define::*;
-use net_guardia_common::MAX_RULES;
+use net_guardia_common::define::offset::*;
+use net_guardia_common::define::setting::MAX_RULES;
 use network_types::ip::IpProto;
 use network_types::tcp::TcpHdr;
 
 #[map]
-static IPV4_HTTP_SERVICE: HashMap<AddrPortV4, HttpMethodBitmap> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_HTTP_SERVICE: HashMap<AddrPortV4, HttpMethodBitmap> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_HTTP_SERVICE: HashMap<AddrPortV6, HttpMethodBitmap> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_HTTP_SERVICE: HashMap<AddrPortV6, HttpMethodBitmap> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
 static SSH_WHITE_LIST_ENABLE: Array<PlaceHolder> = Array::with_max_entries(1, 0);
 #[map]
-static IPV4_SSH_SERVICE: HashMap<AddrPortV4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_SSH_SERVICE: HashMap<AddrPortV4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_SERVICE: HashMap<AddrPortV6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_SSH_SERVICE: HashMap<AddrPortV6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_SSH_WHITE_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_SSH_WHITE_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_WHITE_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_SSH_WHITE_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_SSH_BLACK_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_SSH_BLACK_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_BLACK_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_SSH_BLACK_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 
-pub fn ipv4_service_rule_violation(start: usize, end: usize, event: &IPv4Event) -> bool {
+pub fn ipv4_service_rule_violation(start: usize, end: usize, event: IPv4Event) -> bool {
     let protocol = event.protocol;
     let source = event.get_source();
     let destination = event.get_destination();
@@ -36,7 +36,7 @@ pub fn ipv4_service_rule_violation(start: usize, end: usize, event: &IPv4Event) 
         || ipv4_ssh_service_violation(&source, &destination)
 }
 
-pub fn ipv6_service_rule_violation(start: usize, end: usize, event: &IPv6Event) -> bool {
+pub fn ipv6_service_rule_violation(start: usize, end: usize, event: IPv6Event) -> bool {
     let protocol = event.protocol;
     let source = event.get_source();
     let destination = event.get_destination();

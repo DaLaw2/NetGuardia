@@ -1,5 +1,5 @@
 use crate::model::event::Event;
-use crate::utils::offset_define::*;
+use crate::define::offset::*;
 use aya_ebpf::helpers::bpf_ktime_get_ns;
 use network_types::{
     eth::{EthHdr, EtherType},

@@ -2,8 +2,7 @@
 #![no_main]
 mod action;
 
-use crate::action::{access_control, service, statistics};
-use net_guardia_common::ebpf::parsing;
+use crate::action::{access_control, service, statistics, transmission};
 use aya_ebpf::{
     bindings::xdp_action,
     macros::{map, xdp},
@@ -11,6 +10,7 @@ use aya_ebpf::{
     programs::XdpContext,
 };
 use aya_log_ebpf::error;
+use net_guardia_common::ebpf::parsing;
 use net_guardia_common::model::event::Event;
 use network_types::eth::EtherType;
 
@@ -99,13 +99,13 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
         match parsed_packet.eth_type {
             EtherType::Ipv4 => {
                 let event = parsed_packet.into_ipv4_event();
-                if service::ipv4_service_rule_violation(start, end, &event) {
+                if service::ipv4_service_rule_violation(start, end, event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
             EtherType::Ipv6 => {
                 let event = parsed_packet.into_ipv6_event();
-                if service::ipv6_service_rule_violation(start, end, &event) {
+                if service::ipv6_service_rule_violation(start, end, event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
@@ -127,6 +127,11 @@ pub fn transmission(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn try_transmission(ctx: XdpContext) -> Result<u32, ()> {
+    let start = ctx.data();
+    let end = ctx.data_end();
+    let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
+    let parsed_packet = ptr.read();
+    transmission::transmission(start, end, parsed_packet)?;
     if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() } {
         error!(&ctx, "Tail call failed");
     }

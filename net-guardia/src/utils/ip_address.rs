@@ -1,4 +1,4 @@
-use net_guardia_common::MAX_RULES_PORT;
+use net_guardia_common::define::setting::MAX_RULES_PORT;
 use net_guardia_common::model::ip_address::Port;
 
 pub fn convert_ports_to_vec(ports: [u16; MAX_RULES_PORT]) -> Vec<Port> {

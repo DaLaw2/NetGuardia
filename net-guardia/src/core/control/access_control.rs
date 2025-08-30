@@ -8,7 +8,7 @@ use crate::utils::log_entry::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
 use net_guardia_common::model::ip_address::{IPv4, IPv6, Port};
-use net_guardia_common::MAX_RULES_PORT;
+use net_guardia_common::define::setting::MAX_RULES_PORT;
 use std::collections::HashMap as StdHashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;

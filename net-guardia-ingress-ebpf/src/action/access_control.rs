@@ -1,33 +1,25 @@
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::HashMap;
+use net_guardia_common::define::setting::{MAX_RULES, MAX_RULES_PORT};
 use net_guardia_common::model::event::{IPv4Event, IPv6Event};
 use net_guardia_common::model::ip_address::{IPv4, IPv6, Port};
-use net_guardia_common::{MAX_RULES, MAX_RULES_PORT};
 
 #[map]
-static IPV4_SRC_WHITELIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_SRC_WHITELIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SRC_WHITELIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_SRC_WHITELIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_DST_WHITELIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_DST_WHITELIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_DST_WHITELIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_DST_WHITELIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_SRC_BLACKLIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_SRC_BLACKLIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SRC_BLACKLIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_SRC_BLACKLIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_DST_BLACKLIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV4_DST_BLACKLIST: HashMap<IPv4, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_DST_BLACKLIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> =
-    HashMap::with_max_entries(MAX_RULES, 0);
+static IPV6_DST_BLACKLIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 
 pub fn ipv4_is_whitelisted(event: &IPv4Event) -> bool {
     unsafe {
