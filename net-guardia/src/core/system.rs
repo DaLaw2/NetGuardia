@@ -91,8 +91,7 @@ impl System {
         let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
         Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
         Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "transmission", 3)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 4)?;
+        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 2)?;
         Ok((ingress_ebpf, ingress_program_array))
     }
 

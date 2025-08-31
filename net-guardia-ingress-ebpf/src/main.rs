@@ -12,7 +12,6 @@ use aya_ebpf::{
 use aya_log_ebpf::error;
 use net_guardia_common::ebpf::parsing;
 use net_guardia_common::model::event::Event;
-use network_types::eth::EtherType;
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
@@ -21,59 +20,51 @@ static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
-    match unsafe { parsing(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
+    unsafe {
+        packet_intake(ctx).unwrap_or(xdp_action::XDP_PASS)
     }
 }
 
-unsafe fn parsing(ctx: XdpContext) -> Result<u32, ()> {
-    unsafe {
-        let start = ctx.data();
-        let end = ctx.data_end();
-        let event = parsing::parse_packet(start, end)?;
-        let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
-        let parsed_packet = ptr.as_mut().ok_or(())?;
-        *parsed_packet = event;
-        if PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() {
-            error!(&ctx, "Tail call failed");
-        }
-        Err(())
+unsafe fn packet_intake(ctx: XdpContext) -> Result<u32, ()> {
+    let start = ctx.data();
+    let end = ctx.data_end();
+    let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
+    parsing::parse_packet(start, end, ptr)?;
+    transmission::transmission(start, end, ptr)?;
+    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() } {
+        error!(&ctx, "Tail call failed");
     }
+    Ok(xdp_action::XDP_PASS)
 }
 
 #[xdp]
 pub fn access_control(ctx: XdpContext) -> u32 {
-    match unsafe { try_access_control(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
+    unsafe {
+        try_access_control(ctx).unwrap_or(xdp_action::XDP_PASS)
     }
 }
 
 unsafe fn try_access_control(ctx: XdpContext) -> Result<u32, ()> {
     unsafe {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = ptr.read();
-        match parsed_packet.eth_type {
-            EtherType::Ipv4 => {
-                let event = parsed_packet.into_ipv4_event();
-                if access_control::ipv4_is_whitelisted(&event) {
+        let parsed_packet = &*ptr;
+        match parsed_packet {
+            Event::IPv4(event) => {
+                if access_control::ipv4_is_whitelisted(event) {
                     return Ok(xdp_action::XDP_PASS);
                 }
-                if access_control::ipv4_is_blacklisted(&event) {
+                if access_control::ipv4_is_blacklisted(event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            EtherType::Ipv6 => {
-                let event = parsed_packet.into_ipv6_event();
-                if access_control::ipv6_is_whitelisted(&event) {
+            Event::IPv6(event) => {
+                if access_control::ipv6_is_whitelisted(event) {
                     return Ok(xdp_action::XDP_PASS);
                 }
-                if access_control::ipv6_is_blacklisted(&event) {
+                if access_control::ipv6_is_blacklisted(event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            _ => Err(())?,
         }
         if PROGRAM_ARRAY.tail_call(&ctx, 1).is_err() {
             error!(&ctx, "Tail call failed");
@@ -84,9 +75,8 @@ unsafe fn try_access_control(ctx: XdpContext) -> Result<u32, ()> {
 
 #[xdp]
 pub fn service(ctx: XdpContext) -> u32 {
-    match unsafe { try_service(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
+    unsafe {
+        try_service(ctx).unwrap_or(xdp_action::XDP_PASS)
     }
 }
 
@@ -95,21 +85,18 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
         let start = ctx.data();
         let end = ctx.data_end();
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = ptr.read();
-        match parsed_packet.eth_type {
-            EtherType::Ipv4 => {
-                let event = parsed_packet.into_ipv4_event();
+        let parsed_packet = &*ptr;
+        match parsed_packet {
+            Event::IPv4(event) => {
                 if service::ipv4_service_rule_violation(start, end, event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            EtherType::Ipv6 => {
-                let event = parsed_packet.into_ipv6_event();
+            Event::IPv6(event) => {
                 if service::ipv6_service_rule_violation(start, end, event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            _ => Err(())?,
         }
         if PROGRAM_ARRAY.tail_call(&ctx, 2).is_err() {
             error!(&ctx, "Tail call failed");
@@ -119,47 +106,23 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
 }
 
 #[xdp]
-pub fn transmission(ctx: XdpContext) -> u32 {
-    match unsafe { try_transmission(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
-    }
-}
-
-unsafe fn try_transmission(ctx: XdpContext) -> Result<u32, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
-    let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-    let parsed_packet = ptr.read();
-    transmission::transmission(start, end, parsed_packet)?;
-    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 3).is_err() } {
-        error!(&ctx, "Tail call failed");
-    }
-    Err(())
-}
-
-#[xdp]
 pub fn statistics(ctx: XdpContext) -> u32 {
-    match unsafe { try_statistics(ctx) } {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_PASS,
+    unsafe {
+        try_statistics(ctx).unwrap_or(xdp_action::XDP_PASS)
     }
 }
 
 unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
     unsafe {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = ptr.read();
-        match parsed_packet.eth_type {
-            EtherType::Ipv4 => {
-                let event = parsed_packet.into_ipv4_event();
+        let parsed_packet = &*ptr;
+        match parsed_packet {
+            Event::IPv4(event) => {
                 statistics::ipv4_update_stats(&event);
             }
-            EtherType::Ipv6 => {
-                let event = parsed_packet.into_ipv6_event();
+            Event::IPv6(event) => {
                 statistics::ipv6_update_stats(&event);
             }
-            _ => Err(())?,
         }
         Ok(xdp_action::XDP_PASS)
     }

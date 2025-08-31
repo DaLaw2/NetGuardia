@@ -32,8 +32,8 @@ static IPV6_INGRESS_DST_1HOUR: LruHashMap<AddrPortV6, FlowStats> = LruHashMap::w
 
 pub fn ipv4_update_stats(event: &IPv4Event) {
     unsafe {
-        let source = event.get_source();
-        let destination = event.get_destination();
+        let source = event.source_addr();
+        let destination = event.destination_addr();
         ipv4_update_flow_stats(&IPV4_INGRESS_SRC_1MIN, &source, event);
         ipv4_update_flow_stats(&IPV4_INGRESS_SRC_10MIN, &source, event);
         ipv4_update_flow_stats(&IPV4_INGRESS_SRC_1HOUR, &source, event);
@@ -45,8 +45,8 @@ pub fn ipv4_update_stats(event: &IPv4Event) {
 
 pub fn ipv6_update_stats(event: &IPv6Event) {
     unsafe {
-        let source = event.get_source();
-        let destination = event.get_destination();
+        let source = event.source_addr();
+        let destination = event.destination_addr();
         ipv6_update_flow_status(&IPV6_INGRESS_SRC_1MIN, &source, event);
         ipv6_update_flow_status(&IPV6_INGRESS_SRC_10MIN, &source, event);
         ipv6_update_flow_status(&IPV6_INGRESS_SRC_1HOUR, &source, event);
