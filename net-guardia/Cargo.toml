@@ -26,6 +26,10 @@ tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
+actix-ws = "0.3.0"
+tokio-stream = "0.1.15"
+futures-util = "0.3.30"
+
 [build-dependencies]
 cargo_metadata = { workspace = true }
 dotenvy = "0.15.7"

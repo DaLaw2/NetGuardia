@@ -1,7 +1,6 @@
 use crate::core::ai::AI;
-use crate::web::utils::alert_websocket::AlertWebSocket;
-use actix_web::{get, web, HttpRequest, Responder, Scope};
-use actix_web_actors::ws::start;
+use crate::web::utils::alert_websocket;
+use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
 
 pub fn initialize() -> Scope {
     web::scope("/ai")
@@ -11,9 +10,10 @@ pub fn initialize() -> Scope {
 #[get("/websocket/alert")]
 async fn websocket_alert(req: HttpRequest, stream: web::Payload) -> impl Responder {
     let broadcast_rx = AI::subscribe().await;
-    let websocket = AlertWebSocket {
-        handle: None,
-        broadcast_rx,
-    };
-    start(websocket, &req, stream)
+    match alert_websocket::websocket_alert(req, stream, broadcast_rx).await {
+        Ok(response) => response,
+        Err(err) => {
+            HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err))
+        }
+    }
 }

@@ -2,106 +2,182 @@ use crate::core::config_manager::ConfigManager;
 use crate::core::statistics::Statistics;
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::time_type::TimeType;
-use actix::prelude::*;
-use actix_web_actors::ws;
-use std::time::Duration;
+use futures_util::StreamExt;
+use tokio::time::{interval, Duration};
+use actix_ws::{handle, Message, MessageStream, Session};
+use actix_web::{web, HttpRequest, HttpResponse, Result};
+use tracing::{error, warn};
 
-pub struct IPv4FlowWebSocket {
-    pub direction: Direction,
-    pub flow_direction: FlowDirection,
-    pub time_type: TimeType,
-    pub interval: Option<SpawnHandle>,
+pub async fn websocket_ipv4_flow(
+    req: HttpRequest,
+    body: web::Payload,
+    path: web::Path<(Direction, FlowDirection, TimeType)>,
+) -> Result<HttpResponse> {
+    let (direction, flow_direction, time_type) = path.into_inner();
+    let (response, session, msg_stream) = handle(&req, body)?;
+
+    actix_web::rt::spawn(async move {
+        handle_ipv4_flow_connection(session, msg_stream, direction, flow_direction, time_type).await;
+    });
+
+    Ok(response)
 }
 
-impl Actor for IPv4FlowWebSocket {
-    type Context = ws::WebsocketContext<Self>;
+pub async fn websocket_ipv6_flow(
+    req: HttpRequest,
+    body: web::Payload,
+    path: web::Path<(Direction, FlowDirection, TimeType)>,
+) -> Result<HttpResponse> {
+    let (direction, flow_direction, time_type) = path.into_inner();
+    let (response, session, msg_stream) = handle(&req, body)?;
 
-    fn started(&mut self, ctx: &mut Self::Context) {
-        let config = ConfigManager::now_blocking();
-        let refresh_interval = Duration::from_secs(config.refresh_interval);
-        let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
-            let direction = actor.direction.clone();
-            let flow_direction = actor.flow_direction.clone();
-            let time_type = actor.time_type.clone();
-            let future = async move {
-                Statistics::get_ipv4_flow_data(direction, flow_direction, time_type).await
-            };
-            ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
-                if let Ok(json) = serde_json::to_string(&flow_data) {
-                    ctx.text(json);
+    actix_web::rt::spawn(async move {
+        handle_ipv6_flow_connection(session, msg_stream, direction, flow_direction, time_type).await;
+    });
+
+    Ok(response)
+}
+
+async fn handle_ipv4_flow_connection(
+    mut session: Session,
+    mut msg_stream: MessageStream,
+    direction: Direction,
+    flow_direction: FlowDirection,
+    time_type: TimeType,
+) {
+    let config = ConfigManager::now_blocking();
+    let refresh_interval = Duration::from_secs(config.refresh_interval);
+    let mut data_interval = interval(refresh_interval);
+    let mut ping_interval = interval(Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            msg_result = msg_stream.next() => {
+                if !handle_client_message(&mut session, msg_result).await {
+                    break;
                 }
-            }));
-        });
-        self.interval = Some(interval);
-    }
-
-    fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
-        if let Some(interval) = self.interval.take() {
-            ctx.cancel_future(interval);
-        }
-        Running::Stop
-    }
-}
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for IPv4FlowWebSocket {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match msg {
-            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Pong(_)) => (),
-            Ok(ws::Message::Text(text)) => ctx.text(text),
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
-            Ok(ws::Message::Close(reason)) => ctx.close(reason),
-            _ => (),
-        }
-    }
-}
-
-pub struct IPv6FlowWebSocket {
-    pub direction: Direction,
-    pub flow_direction: FlowDirection,
-    pub time_type: TimeType,
-    pub interval: Option<SpawnHandle>,
-}
-
-impl Actor for IPv6FlowWebSocket {
-    type Context = ws::WebsocketContext<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        let config = ConfigManager::now_blocking();
-        let refresh_interval = Duration::from_secs(config.refresh_interval);
-        let interval = ctx.run_interval(refresh_interval, |actor, ctx| {
-            let direction = actor.direction.clone();
-            let flow_direction = actor.flow_direction.clone();
-            let time_type = actor.time_type.clone();
-            let future = async move {
-                Statistics::get_ipv6_flow_data(direction, flow_direction, time_type).await
-            };
-            ctx.wait(future.into_actor(actor).map(|flow_data, _, ctx| {
-                if let Ok(json) = serde_json::to_string(&flow_data) {
-                    ctx.text(json);
+            },
+            _ = data_interval.tick() => {
+                if !send_ipv4_flow_data(&mut session, direction, flow_direction, time_type).await {
+                    break;
                 }
-            }));
-        });
-        self.interval = Some(interval);
+            },
+            _ = ping_interval.tick() => {
+                if session.ping(b"heartbeat").await.is_err() {
+                    break;
+                }
+            }
+        }
     }
 
-    fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
-        if let Some(interval) = self.interval.take() {
-            ctx.cancel_future(interval);
+    let _ = session.close(None).await;
+}
+
+async fn handle_ipv6_flow_connection(
+    mut session: Session,
+    mut msg_stream: MessageStream,
+    direction: Direction,
+    flow_direction: FlowDirection,
+    time_type: TimeType,
+) {
+    let config = ConfigManager::now_blocking();
+    let refresh_interval = Duration::from_secs(config.refresh_interval);
+    let mut data_interval = interval(refresh_interval);
+    let mut ping_interval = interval(Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            msg_result = msg_stream.next() => {
+                if !handle_client_message(&mut session, msg_result).await {
+                    break;
+                }
+            },
+            _ = data_interval.tick() => {
+                if !send_ipv6_flow_data(&mut session, direction, flow_direction, time_type).await {
+                    break;
+                }
+            },
+            _ = ping_interval.tick() => {
+                if session.ping(b"heartbeat").await.is_err() {
+                    break;
+                }
+            }
         }
-        Running::Stop
+    }
+
+    let _ = session.close(None).await;
+}
+
+async fn handle_client_message(
+    session: &mut Session,
+    msg_result: Option<Result<Message, actix_ws::ProtocolError>>,
+) -> bool {
+    match msg_result {
+        Some(Ok(Message::Text(text))) => {
+            let text = text.trim();
+            match text {
+                "ping" => {
+                    session.text("pong").await.is_ok()
+                },
+                _ => {
+                    let error_msg = serde_json::json!({
+                        "available_commands": ["ping"]
+                    });
+                    match serde_json::to_string(&error_msg) {
+                        Ok(error_json) => session.text(error_json).await.is_ok(),
+                        Err(_) => true 
+                    }
+                }
+            }
+        },
+        Some(Ok(Message::Ping(bytes))) => {
+            session.pong(&bytes).await.is_ok()
+        },
+        Some(Ok(Message::Close(reason))) => {
+            let _ = (session.clone()).close(reason).await;
+            false
+        },
+        Some(Err(err)) => {
+            error!("WebSocket error: {}", err);
+            false
+        },
+        None => {
+            false
+        },
+        _ => {
+            true 
+        }
     }
 }
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for IPv6FlowWebSocket {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match msg {
-            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Pong(_)) => (),
-            Ok(ws::Message::Text(text)) => ctx.text(text),
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
-            Ok(ws::Message::Close(reason)) => ctx.close(reason),
-            _ => (),
+async fn send_ipv4_flow_data(
+    session: &mut Session,
+    direction: Direction,
+    flow_direction: FlowDirection,
+    time_type: TimeType,
+) -> bool {
+    let flow_data = Statistics::get_ipv4_flow_data(direction, flow_direction, time_type).await;
+    match serde_json::to_string(&flow_data) {
+        Ok(json) => session.text(json).await.is_ok(),
+        Err(err) => {
+            error!("Failed to serialize IPv4 flow data: {}", err);
+            true 
+        }
+    }
+}
+
+async fn send_ipv6_flow_data(
+    session: &mut Session,
+    direction: Direction,
+    flow_direction: FlowDirection,
+    time_type: TimeType,
+) -> bool {
+    let flow_data = Statistics::get_ipv6_flow_data(direction, flow_direction, time_type).await;
+    match serde_json::to_string(&flow_data) {
+        Ok(json) => session.text(json).await.is_ok(),
+        Err(err) => {
+            error!("Failed to serialize IPv6 flow data: {}", err);
+            true 
         }
     }
 }

@@ -1,8 +1,7 @@
 // src/web/api/system_health.rs
 use crate::core::health::SystemHealth;
-use crate::web::utils::health_websocket::SystemHealthWebSocket;
+use crate::web::utils::health_websocket;
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
-use actix_web_actors::ws::start;
 
 pub fn initialize() -> Scope {
     web::scope("/health")
@@ -24,11 +23,12 @@ async fn get_health_status() -> impl Responder {
 }
 
 #[get("/websocket/system_health")]
-async fn websocket_metrics(req: HttpRequest, stream: web::Payload) -> impl Responder {
+async fn websocket_metrics(req: HttpRequest, body: web::Payload) -> impl Responder {
     let broadcast_rx = SystemHealth::subscribe_to_metrics().await;
-    let websocket = SystemHealthWebSocket {
-        handle: None,
-        broadcast_rx,
-    };
-    start(websocket, &req, stream)
+    match health_websocket::websocket_system_health(req, body, broadcast_rx).await {
+        Ok(response) => response,
+        Err(err) => {
+            HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err))
+        }
+    }
 }
