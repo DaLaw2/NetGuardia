@@ -28,18 +28,18 @@ static IPV4_SSH_BLACK_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entri
 #[map]
 static IPV6_SSH_BLACK_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 
-pub fn ipv4_service_rule_violation(start: usize, end: usize, event: IPv4Event) -> bool {
+pub fn ipv4_service_rule_violation(start: usize, end: usize, event: &IPv4Event) -> bool {
     let protocol = event.protocol;
-    let source = event.get_source();
-    let destination = event.get_destination();
+    let source = event.source_addr();
+    let destination = event.destination_addr();
     ipv4_http_service_violation(start, end, &protocol, &destination)
         || ipv4_ssh_service_violation(&source, &destination)
 }
 
-pub fn ipv6_service_rule_violation(start: usize, end: usize, event: IPv6Event) -> bool {
+pub fn ipv6_service_rule_violation(start: usize, end: usize, event: &IPv6Event) -> bool {
     let protocol = event.protocol;
-    let source = event.get_source();
-    let destination = event.get_destination();
+    let source = event.source_addr();
+    let destination = event.destination_addr();
     ipv6_http_service_violation(start, end, &protocol, &destination)
         || ipv6_ssh_service_violation(&source, &destination)
 }
