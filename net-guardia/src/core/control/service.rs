@@ -1,6 +1,6 @@
 use crate::core::system::System;
-use crate::utils::log_entry::ebpf::EbpfEntry;
-use crate::utils::log_entry::system::SystemEntry;
+use crate::utils::log::ebpf::EbpfEntry;
+use crate::utils::log::system::SystemEntry;
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use net_guardia_common::model::http_method::{HttpMethod, HttpMethodBitmap};
 use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};

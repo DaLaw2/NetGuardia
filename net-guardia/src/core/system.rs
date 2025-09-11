@@ -1,10 +1,10 @@
 use crate::core::ai::AI;
-use crate::core::config_manager::ConfigManager;
+use crate::core::app_config::AppConfig;
 use crate::core::control::Control;
 use crate::core::health::SystemHealth;
 use crate::core::statistics::Statistics;
-use crate::utils::log_entry::ebpf::EbpfEntry;
-use crate::utils::log_entry::system::SystemEntry;
+use crate::utils::log::ebpf::EbpfEntry;
+use crate::utils::log::system::SystemEntry;
 use crate::utils::logging::Logging;
 use crate::web::api::{ai, control, default, health, misc, statistics};
 use actix_web::web::route;
@@ -36,7 +36,7 @@ impl System {
         Logging::initialize().await?;
         info!("{}", SystemEntry::Initializing);
 
-        ConfigManager::initialization().await?;
+        AppConfig::initialization().await?;
 
         SystemHealth::initialize(Duration::from_secs(5)).await;
 
@@ -50,7 +50,7 @@ impl System {
     }
 
     async fn ebpf_initialize() -> anyhow::Result<()> {
-        let config = ConfigManager::now().await;
+        let config = AppConfig::now().await;
         let ingress_interface = config.ingress_ifindex;
         let egress_interface = config.egress_ifindex;
         let boot_time = SystemInfo::boot_time() * 1_000_000_000;
@@ -139,7 +139,7 @@ impl System {
 
         Statistics::run().await;
 
-        let config = ConfigManager::now().await;
+        let config = AppConfig::now().await;
         HttpServer::new(|| {
             let cors = actix_cors::Cors::default()
                 .allow_any_origin()

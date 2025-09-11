@@ -1,4 +1,4 @@
-use crate::core::config_manager::ConfigManager;
+use crate::core::app_config::AppConfig;
 use crate::core::statistics::Statistics;
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::time_type::TimeType;
@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use tokio::time::{interval, Duration};
 use actix_ws::{handle, Message, MessageStream, Session};
 use actix_web::{web, HttpRequest, HttpResponse, Result};
-use tracing::{error, warn};
+use tracing::error;
 
 pub async fn websocket_ipv4_flow(
     req: HttpRequest,
@@ -45,7 +45,7 @@ async fn handle_ipv4_flow_connection(
     flow_direction: FlowDirection,
     time_type: TimeType,
 ) {
-    let config = ConfigManager::now_blocking();
+    let config = AppConfig::now_blocking();
     let refresh_interval = Duration::from_secs(config.refresh_interval);
     let mut data_interval = interval(refresh_interval);
     let mut ping_interval = interval(Duration::from_secs(30));
@@ -80,7 +80,7 @@ async fn handle_ipv6_flow_connection(
     flow_direction: FlowDirection,
     time_type: TimeType,
 ) {
-    let config = ConfigManager::now_blocking();
+    let config = AppConfig::now_blocking();
     let refresh_interval = Duration::from_secs(config.refresh_interval);
     let mut data_interval = interval(refresh_interval);
     let mut ping_interval = interval(Duration::from_secs(30));

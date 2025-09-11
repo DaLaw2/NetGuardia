@@ -1,6 +1,6 @@
-use crate::core::config_manager::ConfigManager;
+use crate::core::app_config::AppConfig;
 use crate::model::alert::Alert;
-use crate::utils::log_entry::system::SystemEntry;
+use crate::utils::log::system::SystemEntry;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
@@ -48,7 +48,7 @@ impl AI {
         broadcast: broadcast::Sender<Alert>,
         mut shutdown: mpsc::UnboundedReceiver<()>,
     ) {
-        let config = ConfigManager::now().await;
+        let config = AppConfig::now().await;
         let alert_path = config.alert_path.clone();
         let refresh_interval = Duration::from_secs(config.refresh_interval);
 

@@ -1,6 +1,6 @@
 use crate::core::statistics::Statistics;
 use crate::web::utils::flow_websocket;
-use actix_web::{get, web, Error, HttpRequest, HttpResponse, Responder, Scope};
+use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::time_type::TimeType;
 

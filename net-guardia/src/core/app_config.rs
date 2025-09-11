@@ -1,5 +1,5 @@
 use crate::model::config::{Config, ConfigTable};
-use crate::utils::log_entry::system::SystemEntry;
+use crate::utils::log::system::SystemEntry;
 use std::sync::OnceLock;
 use std::fs;
 use std::sync::RwLock as SyncRwLock;
@@ -10,9 +10,9 @@ use tracing::{error, info};
 static SYNC_CONFIG: OnceLock<SyncRwLock<Config>> = OnceLock::new();
 static ASYNC_CONFIG: OnceLock<AsyncRwLock<Config>> = OnceLock::new();
 
-pub struct ConfigManager;
+pub struct AppConfig;
 
-impl ConfigManager {
+impl AppConfig {
     pub async fn initialization() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Initializing);
         let config = Self::load_config()?;
@@ -56,17 +56,6 @@ impl ConfigManager {
         let once_lock = ASYNC_CONFIG.get().unwrap();
         // There is no lock acquired multiple times, so this is safe
         once_lock.read().await.clone()
-    }
-
-    #[allow(dead_code)]
-    pub async fn update(config: Config) {
-        // Initialization has been ensured
-        let lock = SYNC_CONFIG.get().unwrap();
-        // There is no lock acquired multiple times, so this is safe
-        *lock.write().unwrap() = config.clone();
-        // Initialization has been ensured
-        let lock = ASYNC_CONFIG.get().unwrap();
-        *lock.write().await = config;
     }
 
     fn validate(config: &Config) -> bool {

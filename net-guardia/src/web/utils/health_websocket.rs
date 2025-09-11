@@ -1,4 +1,4 @@
-use crate::core::health::SystemHealthMetrics;
+use crate::model::healthy::SystemHealthMetrics;
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use actix_ws::{handle, Message, Session};
 use futures_util::StreamExt;

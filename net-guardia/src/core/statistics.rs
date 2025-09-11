@@ -2,7 +2,7 @@ use crate::core::system::System;
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::ip_address::IntoNative;
 use crate::model::time_type::TimeType;
-use crate::utils::log_entry::system::SystemEntry;
+use crate::utils::log::system::SystemEntry;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::Pod;
 use net_guardia_common::model::flow_stats::FlowStats;
