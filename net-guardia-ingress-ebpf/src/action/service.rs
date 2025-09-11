@@ -62,7 +62,11 @@ fn ipv4_http_service_violation(start: usize, end: usize, protocol: &IpProto, des
                 if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                     return false;
                 }
-                let tcp_header_len = (tcp_header.doff() * 4) as usize;
+                let doff = tcp_header.doff();
+                if doff < 5 || doff > 15 {
+                    return false;
+                }
+                let tcp_header_len = (doff * 4) as usize;
                 let tcp_payload_start = IPV4_TCP_HEADER_END + tcp_header_len;
                 match get_http_request_method(start, end, tcp_payload_start) {
                     Some(http_method) => *allow_method & http_method == 0,
@@ -92,7 +96,11 @@ fn ipv6_http_service_violation(start: usize, end: usize, protocol: &IpProto, des
                 if tcp_header.psh() == 0 || tcp_header.ack() == 0 {
                     return false;
                 }
-                let tcp_header_len = (tcp_header.doff() * 4) as usize;
+                let doff = tcp_header.doff();
+                if doff < 5 || doff > 15 {
+                    return false;
+                }
+                let tcp_header_len = (doff * 4) as usize;
                 let tcp_payload_start = IPV6_TCP_HEADER_END + tcp_header_len;
                 match get_http_request_method(start, end, tcp_payload_start) {
                     Some(http_method) => *allow_method & http_method == 0,

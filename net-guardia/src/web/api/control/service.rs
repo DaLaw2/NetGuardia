@@ -32,10 +32,6 @@ pub fn initialize() -> Scope {
         .service(add_ipv6_ssh_black_list)
         .service(remove_ipv4_ssh_black_list)
         .service(remove_ipv6_ssh_black_list)
-        .service(get_ipv4_scanner_list)
-        .service(get_ipv6_scanner_list)
-        .service(remove_ipv4_scanner_list)
-        .service(remove_ipv6_scanner_list)
 }
 
 
@@ -244,34 +240,6 @@ async fn remove_ipv4_ssh_black_list(ip_addr: web::Json<Ipv4Addr>) -> impl Respon
 #[delete("/ipv6/ssh_black_list")]
 async fn remove_ipv6_ssh_black_list(ip_addr: web::Json<Ipv6Addr>) -> impl Responder {
     match Service::remove_ipv6_ssh_black_list(ip_addr.into_inner()).await {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
-    }
-}
-
-#[get("/ipv4/scanner_list")]
-async fn get_ipv4_scanner_list() -> impl Responder {
-    let list = Service::get_ipv4_scanner_list().await;
-    HttpResponse::Ok().json(web::Json(list))
-}
-
-#[get("/ipv6/scanner_list")]
-async fn get_ipv6_scanner_list() -> impl Responder {
-    let list = Service::get_ipv6_scanner_list().await;
-    HttpResponse::Ok().json(web::Json(list))
-}
-
-#[delete("/ipv4/scanner_list")]
-async fn remove_ipv4_scanner_list(ip_addr: web::Json<Ipv4Addr>) -> impl Responder {
-    match Service::remove_ipv4_scanner_list(ip_addr.into_inner()).await {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
-    }
-}
-
-#[delete("/ipv6/scanner_list")]
-async fn remove_ipv6_scanner_list(ip_addr: web::Json<Ipv6Addr>) -> impl Responder {
-    match Service::remove_ipv6_scanner_list(ip_addr.into_inner()).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }

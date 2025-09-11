@@ -24,8 +24,6 @@ pub struct Service {
     ipv6_ssh_white_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
     ipv4_ssh_black_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
     ipv6_ssh_black_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
-    ipv4_scanner_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
-    ipv6_scanner_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
 }
 
 impl Service {
@@ -53,8 +51,6 @@ impl Service {
             ipv6_ssh_black_list: AyaHashMap::try_from(
                 ebpf.take_map("IPV6_SSH_BLACK_LIST").unwrap(),
             )?,
-            ipv4_scanner_list: AyaHashMap::try_from(ebpf.take_map("IPV4_SCANNER_LIST").unwrap())?,
-            ipv6_scanner_list: AyaHashMap::try_from(ebpf.take_map("IPV6_SCANNER_LIST").unwrap())?,
         };
         if service.ssh_white_list_enable.set(0, 0_u8, 0).is_err() {
             error!(" ");
@@ -415,46 +411,6 @@ impl Service {
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_black_list
-            .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
-        Ok(())
-    }
-
-    pub async fn get_ipv4_scanner_list() -> Vec<Ipv4Addr> {
-        let service = Service::instance().await;
-        service
-            .ipv4_scanner_list
-            .keys()
-            .filter_map(Result::ok)
-            .map(|key| Ipv4Addr::from(key))
-            .collect()
-    }
-
-    pub async fn get_ipv6_scanner_list() -> Vec<Ipv6Addr> {
-        let service = Service::instance().await;
-        service
-            .ipv6_scanner_list
-            .keys()
-            .filter_map(Result::ok)
-            .map(|key| Ipv6Addr::from(key))
-            .collect()
-    }
-
-    pub async fn remove_ipv4_scanner_list(ip: Ipv4Addr) -> anyhow::Result<()> {
-        let ip: u32 = ip.into();
-        let mut service = Service::instance_mut().await;
-        service
-            .ipv4_scanner_list
-            .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv6_scanner_list(ip: Ipv6Addr) -> anyhow::Result<()> {
-        let ip: u128 = ip.into();
-        let mut service = Service::instance_mut().await;
-        service
-            .ipv6_scanner_list
             .remove(&ip)
             .map_err(|_| EbpfEntry::IpDoesNotExist)?;
         Ok(())
