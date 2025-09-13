@@ -1,12 +1,13 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use macros::log;
 use sysinfo::{Components, Networks, System};
 use tokio::sync::{broadcast, mpsc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::time::interval;
-use tracing::{error, info, warn};
 
 use crate::core::app_config::AppConfig;
+use crate::model::error::misc::MiscError;
 use crate::model::healthy::*;
 
 static SYSTEM_HEALTH_INSTANCE: OnceLock<RwLock<SystemHealth>> = OnceLock::new();
@@ -57,8 +58,6 @@ impl SystemHealth {
             )
             .await;
         });
-
-        info!("System health monitoring initialized with configured interfaces");
     }
 
     async fn monitoring_loop(
@@ -77,7 +76,6 @@ impl SystemHealth {
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    info!("System health monitoring shutdown requested");
                     break;
                 }
                 _ = interval_timer.tick() => {
@@ -95,15 +93,13 @@ impl SystemHealth {
                     );
 
                     if broadcast_tx.receiver_count() > 0 {
-                        if let Err(e) = broadcast_tx.send(metrics) {
-                            error!("Failed to broadcast system health metrics: {}", e);
+                        if let Err(err) = broadcast_tx.send(metrics) {
+                            log!(MiscError::SendMessageError(err))
                         }
                     }
                 }
             }
         }
-
-        info!("System health monitoring stopped");
     }
 
     pub async fn instance() -> RwLockReadGuard<'static, SystemHealth> {
@@ -248,13 +244,13 @@ impl SystemHealth {
         let management = create_network_stats(management_interface);
 
         if ingress.is_none() {
-            warn!("Ingress interface '{}' not found", ingress_interface);
+            log!(MiscError::NetworkInterfaceNotFound(ingress_interface));
         }
         if egress.is_none() {
-            warn!("Egress interface '{}' not found", egress_interface);
+            log!(MiscError::NetworkInterfaceNotFound(egress_interface));
         }
         if management.is_none() {
-            warn!("Management interface '{}' not found", management_interface);
+            log!(MiscError::NetworkInterfaceNotFound(management_interface));
         }
 
         ConfiguredNetworkStats {

@@ -1,3 +1,4 @@
+mod error_enum;
 mod log;
 mod loggable;
 mod traceable;

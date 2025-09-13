@@ -1,11 +1,14 @@
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use actix_ws::{handle, Message, Session};
 use futures_util::StreamExt;
+use macros::log;
 use tokio::sync::broadcast;
 use tokio::time::{interval, Duration};
-use tracing::{error, warn};
 
+use crate::model::error::http::HttpError;
+use crate::model::error::misc::MiscError;
 use crate::model::healthy::SystemHealthMetrics;
+use crate::model::log::http::HttpLog;
 
 pub async fn websocket_system_health(
     req: HttpRequest,
@@ -65,7 +68,7 @@ async fn handle_client_message(
                     match serde_json::to_string(&current_metrics) {
                         Ok(json) => session.text(json).await.is_ok(),
                         Err(err) => {
-                            error!("Failed to serialize current metrics: {}", err);
+                            log!(MiscError::SerializeError(err));
                             true
                         }
                     }
@@ -87,7 +90,7 @@ async fn handle_client_message(
             false
         }
         Some(Err(err)) => {
-            error!("WebSocket error: {}", err);
+            log!(HttpError::WebSocketError(err));
             false
         }
         None => false,
@@ -105,13 +108,13 @@ async fn handle_broadcast_message(
             match serde_json::to_string(&message) {
                 Ok(json) => session.text(json).await.is_ok(),
                 Err(err) => {
-                    error!("Failed to serialize health metrics: {}", err);
+                    log!(MiscError::SerializeError(err));
                     true
                 }
             }
         }
         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-            warn!("Health WebSocket lagged, skipped {} messages", skipped);
+            log!(HttpLog::WebSocketLaged(skipped));
             let lag_msg = serde_json::json!({
                 "message": format!("Connection lagged, skipped {} messages", skipped)
             });

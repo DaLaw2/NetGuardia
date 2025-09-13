@@ -1,10 +1,11 @@
-use cargo_metadata::{Artifact, CompilerMessage, Message, Metadata, MetadataCommand, Package, Target, TargetKind};
 use std::env;
 use std::fs;
 use std::io::{BufRead as _, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::SystemTime;
+
+use cargo_metadata::{Artifact, CompilerMessage, Message, Metadata, MetadataCommand, Package, Target, TargetKind};
 
 fn main() {
     build_ingress_ebpf();

@@ -5,12 +5,17 @@ use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::model::error::io::IOError;
+use crate::model::error::Error;
+
 pub struct Logging;
 
 impl Logging {
-    pub async fn initialize() -> anyhow::Result<()> {
+    pub async fn initialize() -> Result<(), Error> {
         let log_directory = "logs";
-        fs::create_dir_all(log_directory).await?;
+        fs::create_dir_all(log_directory)
+            .await
+            .map_err(|err| IOError::CreateDirectoryFailed(log_directory, err))?;
 
         let file_appender = RollingFileAppender::new(Rotation::DAILY, log_directory, "NetGuardia");
 

@@ -1,12 +1,14 @@
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use actix_ws::{handle, Message, MessageStream, Session};
 use futures_util::StreamExt;
+use macros::log;
 use tokio::time::{interval, Duration};
-use tracing::error;
 
 use crate::core::app_config::AppConfig;
 use crate::core::statistics::Statistics;
 use crate::model::direction::{Direction, FlowDirection};
+use crate::model::error::http::HttpError;
+use crate::model::error::misc::MiscError;
 use crate::model::time_type::TimeType;
 
 pub async fn websocket_ipv4_flow(
@@ -135,7 +137,7 @@ async fn handle_client_message(
             false
         }
         Some(Err(err)) => {
-            error!("WebSocket error: {}", err);
+            log!(HttpError::WebSocketError(err));
             false
         }
         None => false,
@@ -153,7 +155,7 @@ async fn send_ipv4_flow_data(
     match serde_json::to_string(&flow_data) {
         Ok(json) => session.text(json).await.is_ok(),
         Err(err) => {
-            error!("Failed to serialize IPv4 flow data: {}", err);
+            log!(MiscError::SerializeError(err));
             true
         }
     }
@@ -169,7 +171,7 @@ async fn send_ipv6_flow_data(
     match serde_json::to_string(&flow_data) {
         Ok(json) => session.text(json).await.is_ok(),
         Err(err) => {
-            error!("Failed to serialize IPv6 flow data: {}", err);
+            log!(MiscError::SerializeError(err));
             true
         }
     }

@@ -2,12 +2,13 @@ use std::fs;
 use std::sync::OnceLock;
 use std::sync::RwLock as SyncRwLock;
 
-use anyhow::anyhow;
+use macros::log;
 use tokio::sync::RwLock as AsyncRwLock;
-use tracing::{error, info};
 
 use crate::model::config::{Config, ConfigTable};
-use crate::utils::log::system::SystemEntry;
+use crate::model::error::system::SystemError;
+use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
 
 static SYNC_CONFIG: OnceLock<SyncRwLock<Config>> = OnceLock::new();
 static ASYNC_CONFIG: OnceLock<AsyncRwLock<Config>> = OnceLock::new();
@@ -15,33 +16,23 @@ static ASYNC_CONFIG: OnceLock<AsyncRwLock<Config>> = OnceLock::new();
 pub struct AppConfig;
 
 impl AppConfig {
-    pub async fn initialization() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Initializing);
+    pub async fn initialization() -> Result<(), Error> {
+        log!(SystemLog::Initializing);
         let config = Self::load_config()?;
         SYNC_CONFIG.get_or_init(|| SyncRwLock::new(config.clone()));
         ASYNC_CONFIG.get_or_init(move || AsyncRwLock::new(config));
-        info!("{}", SystemEntry::InitializeComplete);
+        log!(SystemLog::InitializeComplete);
         Ok(())
     }
 
-    fn load_config() -> anyhow::Result<Config> {
-        let parse_result = (|| {
-            let toml_string = fs::read_to_string("./config.toml").map_err(|_| anyhow!(SystemEntry::ConfigNotFound))?;
-            let config_table =
-                toml::from_str::<ConfigTable>(&toml_string).map_err(|_| anyhow!(SystemEntry::InvalidConfig))?;
-            let config = config_table.config;
-            if !Self::validate(&config) {
-                Err(anyhow!(SystemEntry::InvalidConfig))
-            } else {
-                Ok(config)
-            }
-        })();
-        match parse_result {
-            Ok(config) => Ok(config),
-            Err(err) => {
-                error!("{}", SystemEntry::InvalidConfig);
-                Err(err)
-            }
+    fn load_config() -> Result<Config, Error> {
+        let toml_string = fs::read_to_string("./config.toml").map_err(SystemError::ConfigNotFound)?;
+        let config_table = toml::from_str::<ConfigTable>(&toml_string).map_err(|_| SystemError::InvalidConfig)?;
+        let config = config_table.config;
+        if !Self::validate(&config) {
+            Err(SystemError::InvalidConfig)?
+        } else {
+            Ok(config)
         }
     }
 

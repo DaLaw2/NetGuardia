@@ -3,20 +3,24 @@ use std::time::Duration;
 
 use actix_web::web::route;
 use actix_web::{App, HttpServer};
-use anyhow::Context;
 use aya::maps::{MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
+use aya_log::EbpfLogger;
+use macros::log;
 use sysinfo::System as SystemInfo;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::{error, info, warn};
 
 use crate::core::app_config::AppConfig;
 use crate::core::control::Control;
 use crate::core::health::SystemHealth;
 use crate::core::statistics::Statistics;
-use crate::utils::log::ebpf::EbpfEntry;
-use crate::utils::log::system::SystemEntry;
+use crate::model::error::ebpf::EbpfError;
+use crate::model::error::http::HttpError;
+use crate::model::error::misc::MiscError;
+use crate::model::error::Error;
+use crate::model::log::ebpf::EbpfLog;
+use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, health, misc, statistics};
 
@@ -33,9 +37,9 @@ pub struct System {
 }
 
 impl System {
-    pub async fn initialize() -> anyhow::Result<()> {
+    pub async fn initialize() -> Result<(), Error> {
         Logging::initialize().await?;
-        info!("{}", SystemEntry::Initializing);
+        log!(SystemLog::Initializing);
 
         AppConfig::initialization().await?;
 
@@ -45,28 +49,36 @@ impl System {
         Statistics::initialize().await?;
         Control::initialize().await?;
 
-        info!("{}", SystemEntry::InitializeComplete);
+        log!(SystemLog::InitializeComplete);
         Ok(())
     }
 
-    async fn ebpf_initialize() -> anyhow::Result<()> {
+    async fn ebpf_initialize() -> Result<(), Error> {
         let config = AppConfig::now().await;
         let ingress_interface = config.ingress_ifindex;
         let egress_interface = config.egress_ifindex;
         let boot_time = SystemInfo::boot_time() * 1_000_000_000;
         Self::set_memory_limit()?;
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
-        let ingress_program: &mut Xdp = ingress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
+        let ingress_program: &mut Xdp = ingress_ebpf
+            .program_mut("net_guardia")
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::GetProgramFailed)?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
-        let egress_program: &mut Xdp = egress_ebpf.program_mut("net_guardia").unwrap().try_into()?;
-        ingress_program.load()?;
+        let egress_program: &mut Xdp = egress_ebpf
+            .program_mut("net_guardia")
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::GetProgramFailed)?;
+        ingress_program.load().map_err(EbpfError::LoadProgramFailed)?;
         ingress_program
             .attach(&ingress_interface, XdpFlags::default())
-            .context(EbpfEntry::AttachProgramFailed)?;
-        egress_program.load()?;
+            .map_err(EbpfError::AttachProgramFailed)?;
+        egress_program.load().map_err(EbpfError::LoadProgramFailed)?;
         egress_program
             .attach(&egress_interface, XdpFlags::default())
-            .context(EbpfEntry::AttachProgramFailed)?;
+            .map_err(EbpfError::AttachProgramFailed)?;
         let system = System {
             ingress_ebpf,
             egress_ebpf,
@@ -75,48 +87,46 @@ impl System {
             egress_program_array,
         };
         SYSTEM.get_or_init(|| RwLock::new(system));
-        info!("{}", EbpfEntry::AttachProgramSuccess);
+        log!(EbpfLog::AttachProgramSuccess);
         Ok(())
     }
 
-    fn get_ingress_ebpf() -> anyhow::Result<(Ebpf, ProgramArray<MapData>)> {
+    fn get_ingress_ebpf() -> Result<(Ebpf, ProgramArray<MapData>), Error> {
         let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
             env!("OUT_DIR"),
             "/net-guardia-ingress"
-        )))?;
-        if let Err(e) = aya_log::EbpfLogger::init(&mut ingress_ebpf) {
-            error!("{}", e);
-            warn!("{}", EbpfEntry::LoggerInitializeFailed);
-        }
-        let mut ingress_program_array = ProgramArray::try_from(ingress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "access_control", 0)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "service", 1)?;
-        Self::load_program(&mut ingress_ebpf, &mut ingress_program_array, "statistics", 2)?;
-        Ok((ingress_ebpf, ingress_program_array))
+        )))
+        .map_err(EbpfError::EbpfNotFound)?;
+        EbpfLogger::init(&mut ingress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
+        let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
+        let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", 0)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", 1)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", 2)?;
+        Ok((ingress_ebpf, program_array))
     }
 
-    fn get_egress_ebpf() -> anyhow::Result<(Ebpf, ProgramArray<MapData>)> {
+    fn get_egress_ebpf() -> Result<(Ebpf, ProgramArray<MapData>), Error> {
         let mut egress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
             env!("OUT_DIR"),
             "/net-guardia-egress"
-        )))?;
-        if let Err(e) = aya_log::EbpfLogger::init(&mut egress_ebpf) {
-            error!("{}", e);
-            warn!("{}", EbpfEntry::LoggerInitializeFailed);
-        }
-        let mut egress_program_array = ProgramArray::try_from(egress_ebpf.take_map("PROGRAM_ARRAY").unwrap())?;
-        Self::load_program(&mut egress_ebpf, &mut egress_program_array, "statistics", 0)?;
-        Ok((egress_ebpf, egress_program_array))
+        )))
+        .map_err(EbpfError::EbpfNotFound)?;
+        EbpfLogger::init(&mut egress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
+        let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
+        let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
+        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", 0)?;
+        Ok((egress_ebpf, program_array))
     }
 
-    fn set_memory_limit() -> anyhow::Result<()> {
+    fn set_memory_limit() -> Result<(), Error> {
         let rlim = libc::rlimit {
             rlim_cur: libc::RLIM_INFINITY,
             rlim_max: libc::RLIM_INFINITY,
         };
         let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
         if ret != 0 {
-            info!("Failed to remove limit on locked memory, ret is: {}", ret);
+            Err(MiscError::RamLimitUnlockError(ret))?
         }
         Ok(())
     }
@@ -126,16 +136,20 @@ impl System {
         program_array: &mut ProgramArray<MapData>,
         function_name: &str,
         index: u32,
-    ) -> anyhow::Result<()> {
-        let program: &mut Xdp = ebpf.program_mut(function_name).unwrap().try_into()?;
-        program.load()?;
-        let fd = program.fd()?;
-        program_array.set(index, fd, 0)?;
+    ) -> Result<(), Error> {
+        let program: &mut Xdp = ebpf
+            .program_mut(function_name)
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::MapOperationError)?;
+        program.load().map_err(EbpfError::AttachProgramFailed)?;
+        let fd = program.fd().map_err(|_| EbpfError::UnknownError)?;
+        program_array.set(index, fd, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
-    pub async fn run() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Online);
+    pub async fn run() -> Result<(), Error> {
+        log!(SystemLog::Online);
 
         Statistics::run().await;
 
@@ -154,19 +168,21 @@ impl System {
                 .service(health::initialize())
                 .default_service(route().to(default::default_route))
         })
-        .bind(format!("0.0.0.0:{}", config.http_server_bind_port))?
+        .bind(format!("0.0.0.0:{}", config.http_server_bind_port))
+        .map_err(HttpError::BindPortError)?
         .run()
-        .await?;
+        .await
+        .map_err(HttpError::ServerPanic)?;
         Ok(())
     }
 
-    pub async fn terminate() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Terminating);
+    pub async fn terminate() -> Result<(), Error> {
+        log!(SystemLog::Terminating);
 
         Statistics::terminate().await;
         SystemHealth::shutdown().await;
 
-        info!("{}", SystemEntry::TerminateComplete);
+        log!(SystemLog::TerminateComplete);
         Ok(())
     }
 
