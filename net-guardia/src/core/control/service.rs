@@ -1,16 +1,18 @@
-use crate::core::system::System;
-use crate::utils::log::ebpf::EbpfEntry;
-use crate::utils::log::system::SystemEntry;
-use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
-use net_guardia_common::model::http_method::{HttpMethod, HttpMethodBitmap};
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
-use net_guardia_common::model::placeholder::PlaceHolder;
 use std::collections::HashMap as StdHashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
+
+use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
+use common::model::http_method::{HttpMethod, HttpMethodBitmap};
+use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
+use common::model::placeholder::PlaceHolder;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::{error, info};
+
+use crate::core::system::System;
 use crate::model::ip_address::IntoNative;
+use crate::utils::log::ebpf::EbpfEntry;
+use crate::utils::log::system::SystemEntry;
 
 static SERVICE: OnceLock<RwLock<Service>> = OnceLock::new();
 
@@ -34,23 +36,13 @@ impl Service {
         let mut service = Service {
             ipv4_http_service: AyaHashMap::try_from(ebpf.take_map("IPV4_HTTP_SERVICE").unwrap())?,
             ipv6_http_service: AyaHashMap::try_from(ebpf.take_map("IPV6_HTTP_SERVICE").unwrap())?,
-            ssh_white_list_enable: AyaArray::try_from(
-                ebpf.take_map("SSH_WHITE_LIST_ENABLE").unwrap(),
-            )?,
+            ssh_white_list_enable: AyaArray::try_from(ebpf.take_map("SSH_WHITE_LIST_ENABLE").unwrap())?,
             ipv4_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV4_SSH_SERVICE").unwrap())?,
             ipv6_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV6_SSH_SERVICE").unwrap())?,
-            ipv4_ssh_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SSH_WHITE_LIST").unwrap(),
-            )?,
-            ipv6_ssh_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SSH_WHITE_LIST").unwrap(),
-            )?,
-            ipv4_ssh_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SSH_BLACK_LIST").unwrap(),
-            )?,
-            ipv6_ssh_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SSH_BLACK_LIST").unwrap(),
-            )?,
+            ipv4_ssh_white_list: AyaHashMap::try_from(ebpf.take_map("IPV4_SSH_WHITE_LIST").unwrap())?,
+            ipv6_ssh_white_list: AyaHashMap::try_from(ebpf.take_map("IPV6_SSH_WHITE_LIST").unwrap())?,
+            ipv4_ssh_black_list: AyaHashMap::try_from(ebpf.take_map("IPV4_SSH_BLACK_LIST").unwrap())?,
+            ipv6_ssh_black_list: AyaHashMap::try_from(ebpf.take_map("IPV6_SSH_BLACK_LIST").unwrap())?,
         };
         if service.ssh_white_list_enable.set(0, 0_u8, 0).is_err() {
             error!(" ");
@@ -81,10 +73,7 @@ impl Service {
             .map(|(key, value)| {
                 let address = Ipv4Addr::from(key.ip);
                 let port = key.port;
-                (
-                    SocketAddrV4::new(address, port),
-                    HttpMethod::convert_from_bitmap(value),
-                )
+                (SocketAddrV4::new(address, port), HttpMethod::convert_from_bitmap(value))
             })
             .collect()
     }
@@ -106,10 +95,7 @@ impl Service {
             .collect()
     }
 
-    pub async fn add_ipv4_http_service(
-        address: SocketAddrV4,
-        http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    pub async fn add_ipv4_http_service(address: SocketAddrV4, http_method: Vec<HttpMethod>) -> anyhow::Result<()> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV4::new(ip, port);
@@ -122,10 +108,7 @@ impl Service {
         Ok(())
     }
 
-    pub async fn add_ipv6_http_service(
-        address: SocketAddrV6,
-        http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    pub async fn add_ipv6_http_service(address: SocketAddrV6, http_method: Vec<HttpMethod>) -> anyhow::Result<()> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV6::new(ip, port);

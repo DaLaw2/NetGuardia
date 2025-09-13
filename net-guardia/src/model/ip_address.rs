@@ -1,6 +1,7 @@
-use net_guardia_common::model::ip_address::*;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+
+use common::model::ip_address::*;
 
 pub trait IntoNative: Copy {
     type Native: Eq + PartialEq + Hash;

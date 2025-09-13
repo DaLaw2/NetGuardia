@@ -1,4 +1,16 @@
-use crate::core::ai::AI;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use actix_web::web::route;
+use actix_web::{App, HttpServer};
+use anyhow::Context;
+use aya::maps::{MapData, ProgramArray};
+use aya::programs::{Xdp, XdpFlags};
+use aya::Ebpf;
+use sysinfo::System as SystemInfo;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tracing::{error, info, warn};
+
 use crate::core::app_config::AppConfig;
 use crate::core::control::Control;
 use crate::core::health::SystemHealth;
@@ -6,18 +18,7 @@ use crate::core::statistics::Statistics;
 use crate::utils::log::ebpf::EbpfEntry;
 use crate::utils::log::system::SystemEntry;
 use crate::utils::logging::Logging;
-use crate::web::api::{ai, control, default, health, misc, statistics};
-use actix_web::web::route;
-use actix_web::{App, HttpServer};
-use anyhow::Context;
-use aya::maps::{MapData, ProgramArray};
-use aya::programs::{Xdp, XdpFlags};
-use aya::Ebpf;
-use std::sync::OnceLock;
-use std::time::Duration;
-use sysinfo::System as SystemInfo;
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::{error, info, warn};
+use crate::web::api::{control, default, health, misc, statistics};
 
 static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
 
@@ -41,7 +42,6 @@ impl System {
         SystemHealth::initialize(Duration::from_secs(5)).await;
 
         System::ebpf_initialize().await?;
-        AI::initialize().await;
         Statistics::initialize().await?;
         Control::initialize().await?;
 
@@ -148,7 +148,6 @@ impl System {
                 .max_age(3600);
             App::new()
                 .wrap(cors)
-                .service(ai::initialize())
                 .service(statistics::initialize())
                 .service(control::initialize())
                 .service(misc::initialize())
@@ -164,7 +163,6 @@ impl System {
     pub async fn terminate() -> anyhow::Result<()> {
         info!("{}", SystemEntry::Terminating);
 
-        AI::terminate().await;
         Statistics::terminate().await;
         SystemHealth::shutdown().await;
 

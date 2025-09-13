@@ -1,7 +1,9 @@
-use crate::core::control::service::Service;
-use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
-use net_guardia_common::model::http_method::HttpMethod;
+
+use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
+use common::model::http_method::HttpMethod;
+
+use crate::core::control::service::Service;
 
 pub fn initialize() -> Scope {
     web::scope("/service")
@@ -34,7 +36,6 @@ pub fn initialize() -> Scope {
         .service(remove_ipv6_ssh_black_list)
 }
 
-
 #[get("/ipv4/http_service")]
 async fn get_ipv4_http_service() -> impl Responder {
     let list = Service::get_ipv4_http_service().await;
@@ -48,9 +49,7 @@ async fn get_ipv6_http_service() -> impl Responder {
 }
 
 #[put("/ipv4/http_service")]
-async fn add_ipv4_http_service(
-    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
-) -> impl Responder {
+async fn add_ipv4_http_service(payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     match Service::add_ipv4_http_service(addr, methods).await {
         Ok(_) => HttpResponse::Ok().finish(),
@@ -59,9 +58,7 @@ async fn add_ipv4_http_service(
 }
 
 #[put("/ipv6/http_service")]
-async fn add_ipv6_http_service(
-    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
-) -> impl Responder {
+async fn add_ipv6_http_service(payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     match Service::add_ipv6_http_service(addr, methods).await {
         Ok(_) => HttpResponse::Ok().finish(),
@@ -70,9 +67,7 @@ async fn add_ipv6_http_service(
 }
 
 #[delete("/ipv4/http_service")]
-async fn remove_ipv4_http_service(
-    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
-) -> impl Responder {
+async fn remove_ipv4_http_service(payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     match Service::remove_ipv4_http_service(addr, methods).await {
         Ok(_) => HttpResponse::Ok().finish(),
@@ -81,9 +76,7 @@ async fn remove_ipv4_http_service(
 }
 
 #[delete("/ipv6/http_service")]
-async fn remove_ipv6_http_service(
-    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
-) -> impl Responder {
+async fn remove_ipv6_http_service(payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     match Service::remove_ipv6_http_service(addr, methods).await {
         Ok(_) => HttpResponse::Ok().finish(),

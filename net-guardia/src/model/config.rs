@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -14,5 +15,5 @@ pub struct Config {
     pub management_ifindex: String,
     pub alert_path: PathBuf,
     pub refresh_interval: u64,
-    pub http_server_bind_port: u16
+    pub http_server_bind_port: u16,
 }

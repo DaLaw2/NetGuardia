@@ -1,11 +1,13 @@
-use crate::model::config::{Config, ConfigTable};
-use crate::utils::log::system::SystemEntry;
-use std::sync::OnceLock;
 use std::fs;
+use std::sync::OnceLock;
 use std::sync::RwLock as SyncRwLock;
+
 use anyhow::anyhow;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::{error, info};
+
+use crate::model::config::{Config, ConfigTable};
+use crate::utils::log::system::SystemEntry;
 
 static SYNC_CONFIG: OnceLock<SyncRwLock<Config>> = OnceLock::new();
 static ASYNC_CONFIG: OnceLock<AsyncRwLock<Config>> = OnceLock::new();
@@ -24,10 +26,9 @@ impl AppConfig {
 
     fn load_config() -> anyhow::Result<Config> {
         let parse_result = (|| {
-            let toml_string = fs::read_to_string("./config.toml")
-                .map_err(|_| anyhow!(SystemEntry::ConfigNotFound))?;
-            let config_table = toml::from_str::<ConfigTable>(&toml_string)
-                .map_err(|_| anyhow!(SystemEntry::InvalidConfig))?;
+            let toml_string = fs::read_to_string("./config.toml").map_err(|_| anyhow!(SystemEntry::ConfigNotFound))?;
+            let config_table =
+                toml::from_str::<ConfigTable>(&toml_string).map_err(|_| anyhow!(SystemEntry::InvalidConfig))?;
             let config = config_table.config;
             if !Self::validate(&config) {
                 Err(anyhow!(SystemEntry::InvalidConfig))

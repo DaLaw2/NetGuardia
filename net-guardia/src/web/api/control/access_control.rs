@@ -1,8 +1,10 @@
+use std::net::{SocketAddrV4, SocketAddrV6};
+
+use actix_web::{delete, get, put, web, HttpResponse, Responder, Scope};
+
 use crate::core::control::access_control::AccessControl;
 use crate::model::direction::FlowDirection;
 use crate::model::list_type::ListType;
-use actix_web::{delete, get, put, web, HttpResponse, Responder, Scope};
-use std::net::{SocketAddrV4, SocketAddrV6};
 
 pub fn initialize() -> Scope {
     web::scope("/access_control")
@@ -49,7 +51,10 @@ async fn add_ipv6_list(address: web::Json<SocketAddrV6>, path: web::Path<(FlowDi
 }
 
 #[delete("/ipv4/{direction}/{list_type}")]
-async fn remove_ipv4_list(address: web::Json<SocketAddrV4>, path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn remove_ipv4_list(
+    address: web::Json<SocketAddrV4>,
+    path: web::Path<(FlowDirection, ListType)>,
+) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
     match AccessControl::remove_ipv4_list(direction, list_type, address).await {
@@ -59,7 +64,10 @@ async fn remove_ipv4_list(address: web::Json<SocketAddrV4>, path: web::Path<(Flo
 }
 
 #[delete("/ipv6/{direction}/{list_type}")]
-async fn remove_ipv6_list(address: web::Json<SocketAddrV6>, path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn remove_ipv6_list(
+    address: web::Json<SocketAddrV6>,
+    path: web::Path<(FlowDirection, ListType)>,
+) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
     match AccessControl::remove_ipv6_list(direction, list_type, address).await {

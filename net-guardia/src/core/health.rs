@@ -1,13 +1,13 @@
-use std::{sync::OnceLock, time::Duration};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use sysinfo::{Components, Networks, System};
-use tokio::{
-    sync::{broadcast, mpsc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-    time::interval,
-};
+use tokio::sync::{broadcast, mpsc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::time::interval;
 use tracing::{error, info, warn};
 
-use crate::{core::app_config::AppConfig, model::healthy::*};
+use crate::core::app_config::AppConfig;
+use crate::model::healthy::*;
 
 static SYSTEM_HEALTH_INSTANCE: OnceLock<RwLock<SystemHealth>> = OnceLock::new();
 

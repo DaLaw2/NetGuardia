@@ -16,8 +16,4 @@ pub enum SystemEntry {
     InvalidConfig,
     #[error("Configuration not found")]
     ConfigNotFound,
-    #[error("Invalid alert {0}")]
-    InvalidAlert(String),
-    #[error("Failed to clear alert file")]
-    ClearAlertFailed,
 }
