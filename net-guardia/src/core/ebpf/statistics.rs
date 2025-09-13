@@ -1,28 +1,28 @@
-use std::collections::HashMap as StdHashMap;
+use std::collections::HashMap;
 use std::net::{SocketAddrV4, SocketAddrV6};
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 use aya::maps::{HashMap as AyaHashMap, MapData};
-use aya::Pod;
+use aya::{Ebpf, Pod};
 use common::model::flow_stats::FlowStats;
 use common::model::ip_address::{AddrPortV4, AddrPortV6};
-use macros::log;
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::select;
+use tokio::sync::{oneshot, RwLock};
+use tokio::time::{sleep, Duration};
 
-use crate::core::system::System;
+use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
-use crate::model::ip_address::IntoNative;
-use crate::model::log::system::SystemLog;
+use crate::model::ip_address::NativeConvert;
 use crate::model::time_type::TimeType;
-
-static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
+use crate::utils::boot_time::boot_time;
 
 pub struct Statistics {
-    terminate: bool,
-    ipv4_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<AddrPortV4>>,
-    ipv6_maps: StdHashMap<(Direction, FlowDirection, TimeType), FlowMap<AddrPortV6>>,
+    app_config: Arc<AppConfig>,
+    boot_time: u64,
+    ipv4_maps: HashMap<(Direction, FlowDirection, TimeType), RwLock<FlowMap<AddrPortV4>>>,
+    ipv6_maps: HashMap<(Direction, FlowDirection, TimeType), RwLock<FlowMap<AddrPortV6>>>,
 }
 
 impl Statistics {
@@ -80,126 +80,89 @@ impl Statistics {
         ),
     ];
 
-    pub async fn initialize() -> Result<(), Error> {
-        log!(SystemLog::Initializing);
-        let mut system = System::instance_mut().await;
-        let mut ipv4_maps = StdHashMap::new();
-        let mut ipv6_maps = StdHashMap::new();
-        let ingress_ebpf = &mut system.ingress_ebpf;
+    pub fn new(
+        app_config: Arc<AppConfig>,
+        ingress_ebpf: &mut Ebpf,
+        egress_ebpf: &mut Ebpf,
+    ) -> Result<Statistics, Error> {
+        let boot_time = boot_time();
+        let mut ipv4_maps = HashMap::new();
+        let mut ipv6_maps = HashMap::new();
         for (key, (ipv4_name, ipv6_name)) in Self::INGRESS_MAPS {
-            let ipv4_map = ingress_ebpf.take_map(ipv4_name).ok_or(EbpfError::MapNotFound)?;
-            let ipv6_map = ingress_ebpf.take_map(ipv6_name).ok_or(EbpfError::MapNotFound)?;
-            ipv4_maps.insert(
-                key,
-                FlowMap {
-                    map: AyaHashMap::try_from(ipv4_map).map_err(EbpfError::MapOperationError)?,
-                },
-            );
-            ipv6_maps.insert(
-                key,
-                FlowMap {
-                    map: AyaHashMap::try_from(ipv6_map).map_err(EbpfError::MapOperationError)?,
-                },
-            );
+            ipv4_maps.insert(key, RwLock::new(FlowMap::new(ingress_ebpf, ipv4_name)?));
+            ipv6_maps.insert(key, RwLock::new(FlowMap::new(ingress_ebpf, ipv6_name)?));
         }
-        let egress_ebpf = &mut system.egress_ebpf;
         for (key, (ipv4_name, ipv6_name)) in Self::EGRESS_MAPS {
-            let ipv4_map = egress_ebpf.take_map(ipv4_name).ok_or(EbpfError::MapNotFound)?;
-            let ipv6_map = egress_ebpf.take_map(ipv6_name).ok_or(EbpfError::MapNotFound)?;
-            ipv4_maps.insert(
-                key,
-                FlowMap {
-                    map: AyaHashMap::try_from(ipv4_map).map_err(EbpfError::MapOperationError)?,
-                },
-            );
-            ipv6_maps.insert(
-                key,
-                FlowMap {
-                    map: AyaHashMap::try_from(ipv6_map).map_err(EbpfError::MapOperationError)?,
-                },
-            );
+            ipv4_maps.insert(key, RwLock::new(FlowMap::new(egress_ebpf, ipv4_name)?));
+            ipv6_maps.insert(key, RwLock::new(FlowMap::new(egress_ebpf, ipv6_name)?));
         }
         let statistics = Statistics {
-            terminate: false,
+            app_config,
+            boot_time,
             ipv4_maps,
             ipv6_maps,
         };
-        STATISTICS.get_or_init(|| RwLock::new(statistics));
-        log!(SystemLog::InitializeComplete);
-        Ok(())
+        Ok(statistics)
     }
 
-    #[inline(always)]
-    pub async fn instance() -> RwLockReadGuard<'static, Statistics> {
-        // Initialization has been ensured
-        let once_lock = STATISTICS.get().unwrap();
-        // There is no lock acquired multiple times, so this is safe
-        once_lock.read().await
-    }
-
-    #[inline(always)]
-    pub async fn instance_mut() -> RwLockWriteGuard<'static, Statistics> {
-        // Initialization has been ensured
-        let once_lock = STATISTICS.get().unwrap();
-        // There is no lock acquired multiple times, so this is safe
-        once_lock.write().await
-    }
-
-    pub async fn run() {
-        tokio::spawn(async {
+    pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
+        let refresh_interval = self.app_config.refresh_interval;
+        let (sender, receiver) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut receiver = receiver;
             loop {
-                Statistics::cleanup_expired_flows().await;
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                select! {
+                    biased;
+                    _ = &mut receiver => break,
+                    _ = sleep(Duration::from_secs(refresh_interval)) => {
+                        self.cleanup_expired_flows().await;
+                    },
+                }
             }
         });
+        sender
     }
 
-    pub async fn terminate() {
-        let mut statistics = Statistics::instance_mut().await;
-        statistics.terminate = true;
-    }
-
-    pub async fn cleanup_expired_flows() {
-        let mut statistics = Statistics::instance_mut().await;
-        let boot_time = System::boot_time().await;
+    pub async fn cleanup_expired_flows(self: &Arc<Self>) {
+        let boot_time = self.boot_time;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        statistics
-            .ipv4_maps
-            .iter_mut()
-            .for_each(|((_, _, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
-        statistics
-            .ipv6_maps
-            .iter_mut()
-            .for_each(|((_, _, time_type), map)| map.cleanup(boot_time, now, time_type.duration()));
+        for ((_, _, time_type), map) in self.ipv4_maps.iter() {
+            map.write().await.cleanup(boot_time, now, time_type.duration())
+        }
+        for ((_, _, time_type), map) in self.ipv6_maps.iter() {
+            map.write().await.cleanup(boot_time, now, time_type.duration())
+        }
     }
 
     pub async fn get_ipv4_flow_data(
+        &self,
         direction: Direction,
         flow_direction: FlowDirection,
         time_type: TimeType,
-    ) -> StdHashMap<SocketAddrV4, FlowStats> {
-        let statistics = Statistics::instance().await;
-        statistics
-            .ipv4_maps
+    ) -> HashMap<SocketAddrV4, FlowStats> {
+        self.ipv4_maps
             .get(&(direction, flow_direction, time_type))
-            .map(|map| map.get_map())
             .unwrap()
+            .write()
+            .await
+            .get_map()
     }
 
     pub async fn get_ipv6_flow_data(
+        &self,
         direction: Direction,
         flow_direction: FlowDirection,
         time_type: TimeType,
-    ) -> StdHashMap<SocketAddrV6, FlowStats> {
-        let statistics = Statistics::instance().await;
-        statistics
-            .ipv6_maps
+    ) -> HashMap<SocketAddrV6, FlowStats> {
+        self.ipv6_maps
             .get(&(direction, flow_direction, time_type))
-            .map(|map| map.get_map())
             .unwrap()
+            .write()
+            .await
+            .get_map()
     }
 }
 
@@ -207,8 +170,14 @@ struct FlowMap<T> {
     map: AyaHashMap<MapData, T, FlowStats>,
 }
 
-impl<T: IntoNative + Pod> FlowMap<T> {
-    fn get_map(&self) -> StdHashMap<T::Native, FlowStats> {
+impl<T: NativeConvert + Pod> FlowMap<T> {
+    fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
+        let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
+        let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
+        Ok(Self { map })
+    }
+
+    fn get_map(&self) -> HashMap<T::Native, FlowStats> {
         self.map
             .iter()
             .filter_map(Result::ok)

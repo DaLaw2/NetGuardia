@@ -4,4 +4,4 @@ egress_ifindex = "enp2s0f1" # nic name
 management_ifindex = "enp4s0" # nic name
 alert_path = "/tmp/alert"
 http_server_bind_port = 8080 # port
-refresh_interval = 1 # seconds
+refresh_interval = 5 # seconds

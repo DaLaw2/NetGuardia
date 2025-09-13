@@ -12,6 +12,7 @@ actix-cors = "0.7.1"
 actix-web = "4.11.0"
 aya = { workspace = true }
 aya-log = { workspace = true }
+crossbeam = "0.8.4"
 libc = { workspace = true }
 mime_guess = "2.0.5"
 rust-embed = "8.7.2"

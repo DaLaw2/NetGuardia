@@ -1,13 +1,14 @@
 use actix_web::{get, web, HttpResponse, Responder, Scope};
 
-use crate::core::system::System;
+use crate::utils::boot_time::boot_time;
 
 pub fn initialize() -> Scope {
-    web::scope("/misc").service(boot_time)
+    web::scope("/misc")
+        .service(get_boot_time)
 }
 
 #[get("/boot_time")]
-async fn boot_time() -> impl Responder {
-    let boot_time = System::boot_time().await;
+async fn get_boot_time() -> impl Responder {
+    let boot_time = boot_time();
     HttpResponse::Ok().json(boot_time)
 }
