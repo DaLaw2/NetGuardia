@@ -1,16 +1,19 @@
-use crate::core::system::System;
-use crate::utils::log_entry::ebpf::EbpfEntry;
-use crate::utils::log_entry::system::SystemEntry;
-use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
-use net_guardia_common::model::http_method::{HttpMethod, HttpMethodBitmap};
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
-use net_guardia_common::model::placeholder::PlaceHolder;
 use std::collections::HashMap as StdHashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
+
+use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
+use common::model::http_method::{HttpMethod, HttpMethodBitmap};
+use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
+use common::model::placeholder::PlaceHolder;
+use macros::log;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::{error, info};
+
+use crate::core::system::System;
+use crate::model::error::ebpf::EbpfError;
+use crate::model::error::Error;
 use crate::model::ip_address::IntoNative;
+use crate::model::log::system::SystemLog;
 
 static SERVICE: OnceLock<RwLock<Service>> = OnceLock::new();
 
@@ -24,43 +27,49 @@ pub struct Service {
     ipv6_ssh_white_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
     ipv4_ssh_black_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
     ipv6_ssh_black_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
-    ipv4_scanner_list: AyaHashMap<MapData, IPv4, PlaceHolder>,
-    ipv6_scanner_list: AyaHashMap<MapData, IPv6, PlaceHolder>,
 }
 
 impl Service {
-    pub async fn initialize() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Initializing);
+    pub async fn initialize() -> Result<(), Error> {
+        log!(SystemLog::Initializing);
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ingress_ebpf;
         let mut service = Service {
-            ipv4_http_service: AyaHashMap::try_from(ebpf.take_map("IPV4_HTTP_SERVICE").unwrap())?,
-            ipv6_http_service: AyaHashMap::try_from(ebpf.take_map("IPV6_HTTP_SERVICE").unwrap())?,
+            ipv4_http_service: AyaHashMap::try_from(ebpf.take_map("IPV4_HTTP_SERVICE").ok_or(EbpfError::MapNotFound)?)
+                .map_err(EbpfError::MapOperationError)?,
+            ipv6_http_service: AyaHashMap::try_from(ebpf.take_map("IPV6_HTTP_SERVICE").ok_or(EbpfError::MapNotFound)?)
+                .map_err(EbpfError::MapOperationError)?,
             ssh_white_list_enable: AyaArray::try_from(
-                ebpf.take_map("SSH_WHITE_LIST_ENABLE").unwrap(),
-            )?,
-            ipv4_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV4_SSH_SERVICE").unwrap())?,
-            ipv6_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV6_SSH_SERVICE").unwrap())?,
+                ebpf.take_map("SSH_WHITE_LIST_ENABLE").ok_or(EbpfError::MapNotFound)?,
+            )
+            .map_err(EbpfError::MapOperationError)?,
+            ipv4_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV4_SSH_SERVICE").ok_or(EbpfError::MapNotFound)?)
+                .map_err(EbpfError::MapOperationError)?,
+            ipv6_ssh_service: AyaHashMap::try_from(ebpf.take_map("IPV6_SSH_SERVICE").ok_or(EbpfError::MapNotFound)?)
+                .map_err(EbpfError::MapOperationError)?,
             ipv4_ssh_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SSH_WHITE_LIST").unwrap(),
-            )?,
+                ebpf.take_map("IPV4_SSH_WHITE_LIST").ok_or(EbpfError::MapNotFound)?,
+            )
+            .map_err(EbpfError::MapOperationError)?,
             ipv6_ssh_white_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SSH_WHITE_LIST").unwrap(),
-            )?,
+                ebpf.take_map("IPV6_SSH_WHITE_LIST").ok_or(EbpfError::MapNotFound)?,
+            )
+            .map_err(EbpfError::MapOperationError)?,
             ipv4_ssh_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV4_SSH_BLACK_LIST").unwrap(),
-            )?,
+                ebpf.take_map("IPV4_SSH_BLACK_LIST").ok_or(EbpfError::MapNotFound)?,
+            )
+            .map_err(EbpfError::MapOperationError)?,
             ipv6_ssh_black_list: AyaHashMap::try_from(
-                ebpf.take_map("IPV6_SSH_BLACK_LIST").unwrap(),
-            )?,
-            ipv4_scanner_list: AyaHashMap::try_from(ebpf.take_map("IPV4_SCANNER_LIST").unwrap())?,
-            ipv6_scanner_list: AyaHashMap::try_from(ebpf.take_map("IPV6_SCANNER_LIST").unwrap())?,
+                ebpf.take_map("IPV6_SSH_BLACK_LIST").ok_or(EbpfError::MapNotFound)?,
+            )
+            .map_err(EbpfError::MapOperationError)?,
         };
-        if service.ssh_white_list_enable.set(0, 0_u8, 0).is_err() {
-            error!(" ");
-        }
+        service
+            .ssh_white_list_enable
+            .set(0, 0_u8, 0)
+            .map_err(EbpfError::MapOperationError)?;
         SERVICE.get_or_init(|| RwLock::new(service));
-        info!("{}", SystemEntry::InitializeComplete);
+        log!(SystemLog::InitializeComplete);
         Ok(())
     }
 
@@ -85,10 +94,7 @@ impl Service {
             .map(|(key, value)| {
                 let address = Ipv4Addr::from(key.ip);
                 let port = key.port;
-                (
-                    SocketAddrV4::new(address, port),
-                    HttpMethod::convert_from_bitmap(value),
-                )
+                (SocketAddrV4::new(address, port), HttpMethod::convert_from_bitmap(value))
             })
             .collect()
     }
@@ -110,10 +116,7 @@ impl Service {
             .collect()
     }
 
-    pub async fn add_ipv4_http_service(
-        address: SocketAddrV4,
-        http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    pub async fn add_ipv4_http_service(address: SocketAddrV4, http_method: Vec<HttpMethod>) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV4::new(ip, port);
@@ -122,14 +125,11 @@ impl Service {
         service
             .ipv4_http_service
             .insert(addr_port, ebpf_method, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_http_service(
-        address: SocketAddrV6,
-        http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    pub async fn add_ipv6_http_service(address: SocketAddrV6, http_method: Vec<HttpMethod>) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV6::new(ip, port);
@@ -138,14 +138,14 @@ impl Service {
         service
             .ipv6_http_service
             .insert(addr_port, ebpf_method, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
     pub async fn remove_ipv4_http_service(
         address: SocketAddrV4,
         removed_http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV4::new(ip, port);
@@ -157,24 +157,24 @@ impl Service {
                 service
                     .ipv4_http_service
                     .remove(&addr_port)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                    .map_err(EbpfError::MapOperationError)?;
             } else {
                 let new_http_method = HttpMethod::convert_to_bitmap(http_method);
                 service
                     .ipv4_http_service
                     .insert(&addr_port, new_http_method, 0)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                    .map_err(EbpfError::MapOperationError)?;
             }
             Ok(())
         } else {
-            Err(EbpfEntry::IpDoesNotExist)?
+            Err(EbpfError::IpDoesNotExist)?
         }
     }
 
     pub async fn remove_ipv6_http_service(
         address: SocketAddrV6,
         removed_http_method: Vec<HttpMethod>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV6::new(ip, port);
@@ -186,17 +186,17 @@ impl Service {
                 service
                     .ipv6_http_service
                     .remove(&addr_port)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                    .map_err(EbpfError::MapOperationError)?;
             } else {
                 let new_http_method = HttpMethod::convert_to_bitmap(http_method);
                 service
                     .ipv6_http_service
                     .insert(&addr_port, new_http_method, 0)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                    .map_err(EbpfError::MapOperationError)?;
             }
             Ok(())
         } else {
-            Err(EbpfEntry::IpDoesNotExist)?
+            Err(EbpfError::IpDoesNotExist)?
         }
     }
 
@@ -214,21 +214,21 @@ impl Service {
         }
     }
 
-    pub async fn enable_ssh_white_list() -> anyhow::Result<()> {
+    pub async fn enable_ssh_white_list() -> Result<(), Error> {
         let mut service = Service::instance_mut().await;
         service
             .ssh_white_list_enable
             .set(0, 1_u8, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
-    pub async fn disable_ssh_white_list() -> anyhow::Result<()> {
+    pub async fn disable_ssh_white_list() -> Result<(), Error> {
         let mut service = Service::instance_mut().await;
         service
             .ssh_white_list_enable
             .set(0, 0_u8, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
@@ -252,7 +252,7 @@ impl Service {
             .collect()
     }
 
-    pub async fn add_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
+    pub async fn add_ipv4_ssh_service(address: SocketAddrV4) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV4::new(ip, port);
@@ -260,11 +260,11 @@ impl Service {
         service
             .ipv4_ssh_service
             .insert(&addr_port, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
+    pub async fn add_ipv6_ssh_service(address: SocketAddrV6) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV6::new(ip, port);
@@ -272,11 +272,11 @@ impl Service {
         service
             .ipv6_ssh_service
             .insert(&addr_port, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn remove_ipv4_ssh_service(address: SocketAddrV4) -> anyhow::Result<()> {
+    pub async fn remove_ipv4_ssh_service(address: SocketAddrV4) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV4::new(ip, port);
@@ -284,11 +284,11 @@ impl Service {
         service
             .ipv4_ssh_service
             .remove(&addr_port)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 
-    pub async fn remove_ipv6_ssh_service(address: SocketAddrV6) -> anyhow::Result<()> {
+    pub async fn remove_ipv6_ssh_service(address: SocketAddrV6) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let addr_port = AddrPortV6::new(ip, port);
@@ -296,7 +296,7 @@ impl Service {
         service
             .ipv6_ssh_service
             .remove(&addr_port)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -320,43 +320,43 @@ impl Service {
             .collect()
     }
 
-    pub async fn add_ipv4_ssh_white_list(ip: Ipv4Addr) -> anyhow::Result<()> {
+    pub async fn add_ipv4_ssh_white_list(ip: Ipv4Addr) -> Result<(), Error> {
         let ip: u32 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_white_list
             .insert(ip, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_ssh_white_list(ip: Ipv6Addr) -> anyhow::Result<()> {
+    pub async fn add_ipv6_ssh_white_list(ip: Ipv6Addr) -> Result<(), Error> {
         let ip: u128 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_white_list
             .insert(ip, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn remove_ipv4_ssh_white_list(ip: Ipv4Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv4_ssh_white_list(ip: Ipv4Addr) -> Result<(), Error> {
         let ip: u32 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_white_list
             .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 
-    pub async fn remove_ipv6_ssh_white_list(ip: Ipv6Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv6_ssh_white_list(ip: Ipv6Addr) -> Result<(), Error> {
         let ip: u128 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_white_list
             .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 
@@ -380,83 +380,43 @@ impl Service {
             .collect()
     }
 
-    pub async fn add_ipv4_ssh_black_list(ip: Ipv4Addr) -> anyhow::Result<()> {
+    pub async fn add_ipv4_ssh_black_list(ip: Ipv4Addr) -> Result<(), Error> {
         let ip: u32 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_black_list
             .insert(ip, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn add_ipv6_ssh_black_list(ip: Ipv6Addr) -> anyhow::Result<()> {
+    pub async fn add_ipv6_ssh_black_list(ip: Ipv6Addr) -> Result<(), Error> {
         let ip: u128 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_black_list
             .insert(ip, 0_u8, 0)
-            .map_err(|_| EbpfEntry::RuleReachLimit)?;
+            .map_err(|_| EbpfError::RuleReachLimit)?;
         Ok(())
     }
 
-    pub async fn remove_ipv4_ssh_black_list(ip: Ipv4Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv4_ssh_black_list(ip: Ipv4Addr) -> Result<(), Error> {
         let ip: u32 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv4_ssh_black_list
             .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 
-    pub async fn remove_ipv6_ssh_black_list(ip: Ipv6Addr) -> anyhow::Result<()> {
+    pub async fn remove_ipv6_ssh_black_list(ip: Ipv6Addr) -> Result<(), Error> {
         let ip: u128 = ip.into();
         let mut service = Service::instance_mut().await;
         service
             .ipv6_ssh_black_list
             .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
-        Ok(())
-    }
-
-    pub async fn get_ipv4_scanner_list() -> Vec<Ipv4Addr> {
-        let service = Service::instance().await;
-        service
-            .ipv4_scanner_list
-            .keys()
-            .filter_map(Result::ok)
-            .map(|key| Ipv4Addr::from(key))
-            .collect()
-    }
-
-    pub async fn get_ipv6_scanner_list() -> Vec<Ipv6Addr> {
-        let service = Service::instance().await;
-        service
-            .ipv6_scanner_list
-            .keys()
-            .filter_map(Result::ok)
-            .map(|key| Ipv6Addr::from(key))
-            .collect()
-    }
-
-    pub async fn remove_ipv4_scanner_list(ip: Ipv4Addr) -> anyhow::Result<()> {
-        let ip: u32 = ip.into();
-        let mut service = Service::instance_mut().await;
-        service
-            .ipv4_scanner_list
-            .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
-        Ok(())
-    }
-
-    pub async fn remove_ipv6_scanner_list(ip: Ipv6Addr) -> anyhow::Result<()> {
-        let ip: u128 = ip.into();
-        let mut service = Service::instance_mut().await;
-        service
-            .ipv6_scanner_list
-            .remove(&ip)
-            .map_err(|_| EbpfEntry::IpDoesNotExist)?;
+            .map_err(|_| EbpfError::IpDoesNotExist)?;
         Ok(())
     }
 }

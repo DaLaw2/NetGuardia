@@ -1,9 +1,9 @@
 use actix_web::{get, web, HttpResponse, Responder, Scope};
+
 use crate::core::system::System;
 
 pub fn initialize() -> Scope {
-    web::scope("/misc")
-        .service(boot_time)
+    web::scope("/misc").service(boot_time)
 }
 
 #[get("/boot_time")]

@@ -1,8 +1,9 @@
+use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
+
 use crate::core::statistics::Statistics;
-use crate::web::utils::flow_websocket;
-use actix_web::{get, web, Error, HttpRequest, HttpResponse, Responder, Scope};
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::time_type::TimeType;
+use crate::web::websocket::flow_websocket;
 
 pub fn initialize() -> Scope {
     web::scope("/statistics")
@@ -32,12 +33,9 @@ async fn websocket_ipv4(
     stream: web::Payload,
     path: web::Path<(Direction, FlowDirection, TimeType)>,
 ) -> impl Responder {
-
     match flow_websocket::websocket_ipv4_flow(req, stream, path).await {
         Ok(response) => response,
-        Err(err) => {
-            HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err))
-        }
+        Err(err) => HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err)),
     }
 }
 
@@ -47,11 +45,8 @@ async fn websocket_ipv6(
     stream: web::Payload,
     path: web::Path<(Direction, FlowDirection, TimeType)>,
 ) -> impl Responder {
-
     match flow_websocket::websocket_ipv6_flow(req, stream, path).await {
         Ok(response) => response,
-        Err(err) => {
-            HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err))
-        }
+        Err(err) => HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err)),
     }
 }

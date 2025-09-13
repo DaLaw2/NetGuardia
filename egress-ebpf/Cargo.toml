@@ -1,0 +1,18 @@
+[package]
+name = "egress-ebpf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common = { path = "../common", features = ["kernel"] }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+network-types = { workspace = true }
+
+[build-dependencies]
+which = "8.0.0"
+
+[[bin]]
+name = "net-guardia-egress"
+path = "src/main.rs"

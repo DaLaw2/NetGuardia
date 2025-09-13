@@ -1,19 +1,22 @@
-use crate::core::system::System;
-use crate::model::direction::FlowDirection;
-use crate::model::ip_address::IntoNative;
-use crate::model::list_type::ListType;
-use crate::utils::ip_address::convert_ports_to_vec;
-use crate::utils::log_entry::ebpf::EbpfEntry;
-use crate::utils::log_entry::system::SystemEntry;
-use aya::maps::{HashMap as AyaHashMap, MapData};
-use aya::Pod;
-use net_guardia_common::model::ip_address::{IPv4, IPv6, Port};
-use net_guardia_common::define::setting::MAX_RULES_PORT;
 use std::collections::HashMap as StdHashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
+
+use aya::maps::{HashMap as AyaHashMap, MapData};
+use aya::Pod;
+use common::define::setting::MAX_RULES_PORT;
+use common::model::ip_address::{IPv4, IPv6, Port};
+use macros::log;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::info;
+
+use crate::core::system::System;
+use crate::model::direction::FlowDirection;
+use crate::model::error::ebpf::EbpfError;
+use crate::model::error::Error;
+use crate::model::ip_address::IntoNative;
+use crate::model::list_type::ListType;
+use crate::model::log::system::SystemLog;
+use crate::utils::ip_address::convert_ports_to_vec;
 
 static ACCESS_CONTROL: OnceLock<RwLock<AccessControl>> = OnceLock::new();
 
@@ -42,33 +45,30 @@ impl AccessControl {
         ),
     ];
 
-    pub async fn initialize() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Initializing);
+    pub async fn initialize() -> Result<(), Error> {
+        log!(SystemLog::Initializing);
         let mut system = System::instance_mut().await;
         let ebpf = &mut system.ingress_ebpf;
         let mut ipv4_maps = StdHashMap::new();
         let mut ipv6_maps = StdHashMap::new();
         for (key, (ipv4_name, ipv6_name)) in Self::MAP_CONFIGS {
+            let ipv4_map = ebpf.take_map(ipv4_name).ok_or(EbpfError::MapNotFound)?;
+            let ipv6_map = ebpf.take_map(ipv6_name).ok_or(EbpfError::MapNotFound)?;
             ipv4_maps.insert(
                 key,
                 AccessMap {
-                    map: AyaHashMap::try_from(ebpf.take_map(ipv4_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv4_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
             ipv6_maps.insert(
                 key,
                 AccessMap {
-                    map: AyaHashMap::try_from(ebpf.take_map(ipv6_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv6_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
         }
-        ACCESS_CONTROL.get_or_init(|| {
-            RwLock::new(AccessControl {
-                ipv4_maps,
-                ipv6_maps,
-            })
-        });
-        info!("{}", SystemEntry::InitializeComplete);
+        ACCESS_CONTROL.get_or_init(|| RwLock::new(AccessControl { ipv4_maps, ipv6_maps }));
+        log!(SystemLog::InitializeComplete);
         Ok(())
     }
 
@@ -84,10 +84,7 @@ impl AccessControl {
         once_lock.write().await
     }
 
-    pub async fn get_ipv4_list(
-        direction: FlowDirection,
-        list_type: ListType,
-    ) -> StdHashMap<Ipv4Addr, Vec<Port>> {
+    pub async fn get_ipv4_list(direction: FlowDirection, list_type: ListType) -> StdHashMap<Ipv4Addr, Vec<Port>> {
         let access_list = AccessControl::instance().await;
         access_list
             .ipv4_maps
@@ -96,10 +93,7 @@ impl AccessControl {
             .unwrap()
     }
 
-    pub async fn get_ipv6_list(
-        direction: FlowDirection,
-        list_type: ListType,
-    ) -> StdHashMap<Ipv6Addr, Vec<Port>> {
+    pub async fn get_ipv6_list(direction: FlowDirection, list_type: ListType) -> StdHashMap<Ipv6Addr, Vec<Port>> {
         let access_list = AccessControl::instance().await;
         access_list
             .ipv6_maps
@@ -112,14 +106,11 @@ impl AccessControl {
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut access_list = AccessControl::instance_mut().await;
-        let map = access_list
-            .ipv4_maps
-            .get_mut(&(direction, list_type))
-            .unwrap();
+        let map = access_list.ipv4_maps.get_mut(&(direction, list_type)).unwrap();
         map.add(ip, port)
     }
 
@@ -127,14 +118,11 @@ impl AccessControl {
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut access_list = AccessControl::instance_mut().await;
-        let map = access_list
-            .ipv6_maps
-            .get_mut(&(direction, list_type))
-            .unwrap();
+        let map = access_list.ipv6_maps.get_mut(&(direction, list_type)).unwrap();
         map.add(ip, port)
     }
 
@@ -142,14 +130,11 @@ impl AccessControl {
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u32 = (*address.ip()).into();
         let port = address.port();
         let mut access_list = AccessControl::instance_mut().await;
-        let map = access_list
-            .ipv4_maps
-            .get_mut(&(direction, list_type))
-            .unwrap();
+        let map = access_list.ipv4_maps.get_mut(&(direction, list_type)).unwrap();
         map.remove(ip, port)
     }
 
@@ -157,14 +142,11 @@ impl AccessControl {
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         let ip: u128 = (*address.ip()).into();
         let port = address.port();
         let mut access_list = AccessControl::instance_mut().await;
-        let map = access_list
-            .ipv6_maps
-            .get_mut(&(direction, list_type))
-            .unwrap();
+        let map = access_list.ipv6_maps.get_mut(&(direction, list_type)).unwrap();
         map.remove(ip, port)
     }
 }
@@ -182,7 +164,7 @@ impl<T: IntoNative + Pod> AccessMap<T> {
             .collect()
     }
 
-    fn add(&mut self, ip: T, port: Port) -> anyhow::Result<()> {
+    fn add(&mut self, ip: T, port: Port) -> Result<(), Error> {
         let mut new_ports = [0_u16; MAX_RULES_PORT];
         if port == 0 {
             new_ports[0] = 0;
@@ -200,7 +182,7 @@ impl<T: IntoNative + Pod> AccessMap<T> {
                 }
             }
             if index.is_none() {
-                return Err(EbpfEntry::RuleReachLimit.into());
+                Err(EbpfError::RuleReachLimit)?;
             }
             new_ports.copy_from_slice(&ports);
             new_ports[index.unwrap()] = port;
@@ -209,16 +191,14 @@ impl<T: IntoNative + Pod> AccessMap<T> {
         }
         self.map
             .insert(ip, new_ports, 0)
-            .map_err(|_| EbpfEntry::MapOperationError)?;
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
-    fn remove(&mut self, ip: T, port: Port) -> anyhow::Result<()> {
+    fn remove(&mut self, ip: T, port: Port) -> Result<(), Error> {
         if let Ok(mut ports) = self.map.get(&ip, 0) {
             if port == 0 {
-                self.map
-                    .remove(&ip)
-                    .map_err(|_| EbpfEntry::MapOperationError)?;
+                self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
                 return Ok(());
             }
 
@@ -229,18 +209,14 @@ impl<T: IntoNative + Pod> AccessMap<T> {
                 ports[MAX_RULES_PORT - 1] = 0;
 
                 if ports[0] == 0 {
-                    self.map
-                        .remove(&ip)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                    self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
                 } else {
-                    self.map
-                        .insert(ip, ports, 0)
-                        .map_err(|_| EbpfEntry::MapOperationError)?;
+                    self.map.insert(ip, ports, 0).map_err(EbpfError::MapOperationError)?;
                 }
             }
             Ok(())
         } else {
-            Err(EbpfEntry::IpDoesNotExist)?
+            Err(EbpfError::IpDoesNotExist)?
         }
     }
 }

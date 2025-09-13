@@ -1,17 +1,21 @@
-use crate::core::system::System;
-use crate::model::direction::{Direction, FlowDirection};
-use crate::model::ip_address::IntoNative;
-use crate::model::time_type::TimeType;
-use crate::utils::log_entry::system::SystemEntry;
-use aya::maps::{HashMap as AyaHashMap, MapData};
-use aya::Pod;
-use net_guardia_common::model::flow_stats::FlowStats;
-use net_guardia_common::model::ip_address::{AddrPortV4, AddrPortV6};
 use std::collections::HashMap as StdHashMap;
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::OnceLock;
+
+use aya::maps::{HashMap as AyaHashMap, MapData};
+use aya::Pod;
+use common::model::flow_stats::FlowStats;
+use common::model::ip_address::{AddrPortV4, AddrPortV6};
+use macros::log;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::info;
+
+use crate::core::system::System;
+use crate::model::direction::{Direction, FlowDirection};
+use crate::model::error::ebpf::EbpfError;
+use crate::model::error::Error;
+use crate::model::ip_address::IntoNative;
+use crate::model::log::system::SystemLog;
+use crate::model::time_type::TimeType;
 
 static STATISTICS: OnceLock<RwLock<Statistics>> = OnceLock::new();
 
@@ -76,38 +80,42 @@ impl Statistics {
         ),
     ];
 
-    pub async fn initialize() -> anyhow::Result<()> {
-        info!("{}", SystemEntry::Initializing);
+    pub async fn initialize() -> Result<(), Error> {
+        log!(SystemLog::Initializing);
         let mut system = System::instance_mut().await;
         let mut ipv4_maps = StdHashMap::new();
         let mut ipv6_maps = StdHashMap::new();
         let ingress_ebpf = &mut system.ingress_ebpf;
         for (key, (ipv4_name, ipv6_name)) in Self::INGRESS_MAPS {
+            let ipv4_map = ingress_ebpf.take_map(ipv4_name).ok_or(EbpfError::MapNotFound)?;
+            let ipv6_map = ingress_ebpf.take_map(ipv6_name).ok_or(EbpfError::MapNotFound)?;
             ipv4_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(ingress_ebpf.take_map(ipv4_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv4_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
             ipv6_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(ingress_ebpf.take_map(ipv6_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv6_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
         }
         let egress_ebpf = &mut system.egress_ebpf;
         for (key, (ipv4_name, ipv6_name)) in Self::EGRESS_MAPS {
+            let ipv4_map = egress_ebpf.take_map(ipv4_name).ok_or(EbpfError::MapNotFound)?;
+            let ipv6_map = egress_ebpf.take_map(ipv6_name).ok_or(EbpfError::MapNotFound)?;
             ipv4_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(egress_ebpf.take_map(ipv4_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv4_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
             ipv6_maps.insert(
                 key,
                 FlowMap {
-                    map: AyaHashMap::try_from(egress_ebpf.take_map(ipv6_name).unwrap())?,
+                    map: AyaHashMap::try_from(ipv6_map).map_err(EbpfError::MapOperationError)?,
                 },
             );
         }
@@ -117,7 +125,7 @@ impl Statistics {
             ipv6_maps,
         };
         STATISTICS.get_or_init(|| RwLock::new(statistics));
-        info!("{}", SystemEntry::InitializeComplete);
+        log!(SystemLog::InitializeComplete);
         Ok(())
     }
 
