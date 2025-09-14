@@ -10,7 +10,6 @@ use macros::log;
 
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
-// use crate::core::infrastructure::system_health::SystemHealth;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
@@ -21,7 +20,6 @@ use crate::web::api::{control, default, misc};
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
-    // pub health: Arc<SystemHealth>,
     pub ebpf_services: Arc<EbpfServices>,
 
     pub ingress_ebpf: Ebpf,
@@ -37,7 +35,6 @@ impl System {
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
-        // let system_health = Arc::new(SystemHealth::new()?);
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
@@ -56,9 +53,10 @@ impl System {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
-        Logging::initialize().await?;
+        Logging::initialize()?;
         log!(SystemLog::Initializing);
-        self.attach_ebpf().await?;
+        self.aya_log_init()?;
+        self.attach_ebpf()?;
         log!(SystemLog::InitializeComplete);
         ebpf_services.run().await;
         self.run_http_server().await?;
@@ -73,35 +71,13 @@ impl System {
         Ok(())
     }
 
-    pub async fn run_http_server(&self) -> Result<(), Error> {
-        let access_control = self.ebpf_services.access_control.clone();
-        let service = self.ebpf_services.service.clone();
-        let statistics = self.ebpf_services.statistics.clone();
-        let port = self.app_config.http_server_bind_port;
-        HttpServer::new(move || {
-            let cors = actix_cors::Cors::default()
-                .allow_any_origin()
-                .allow_any_method()
-                .allow_any_header()
-                .max_age(3600);
-            App::new()
-                .wrap(cors)
-                .app_data(web::Data::from(access_control.clone()))
-                .app_data(web::Data::from(service.clone()))
-                .app_data(web::Data::from(statistics.clone()))
-                .service(control::initialize())
-                .service(misc::initialize())
-                .default_service(route().to(default::default_route))
-        })
-        .bind(format!("0.0.0.0:{}", port))
-        .map_err(HttpError::BindPortError)?
-        .run()
-        .await
-        .map_err(HttpError::ServerPanic)?;
+    fn aya_log_init(&mut self) -> Result<(), Error> {
+        EbpfLogger::init(&mut self.ingress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
+        EbpfLogger::init(&mut self.egress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
         Ok(())
     }
 
-    async fn attach_ebpf(&mut self) -> Result<(), Error> {
+    fn attach_ebpf(&mut self) -> Result<(), Error> {
         let config = self.app_config.config.clone();
         let ingress_interface = config.ingress_ifindex;
         let egress_interface = config.egress_ifindex;
@@ -129,13 +105,40 @@ impl System {
         Ok(())
     }
 
+    async fn run_http_server(&self) -> Result<(), Error> {
+        let access_control = self.ebpf_services.access_control.clone();
+        let service = self.ebpf_services.service.clone();
+        let statistics = self.ebpf_services.statistics.clone();
+        let port = self.app_config.http_server_bind_port;
+        HttpServer::new(move || {
+            let cors = actix_cors::Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header()
+                .max_age(3600);
+            App::new()
+                .wrap(cors)
+                .app_data(web::Data::from(access_control.clone()))
+                .app_data(web::Data::from(service.clone()))
+                .app_data(web::Data::from(statistics.clone()))
+                .service(control::initialize())
+                .service(misc::initialize())
+                .default_service(route().to(default::default_route))
+        })
+        .bind(format!("0.0.0.0:{}", port))
+        .map_err(HttpError::BindPortError)?
+        .run()
+        .await
+        .map_err(HttpError::ServerPanic)?;
+        Ok(())
+    }
+
     fn get_ingress_ebpf() -> Result<(Ebpf, ProgramArray<MapData>), Error> {
         let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
             env!("OUT_DIR"),
             "/net-guardia-ingress"
         )))
         .map_err(EbpfError::EbpfNotFound)?;
-        EbpfLogger::init(&mut ingress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", 0)?;
@@ -150,7 +153,6 @@ impl System {
             "/net-guardia-egress"
         )))
         .map_err(EbpfError::EbpfNotFound)?;
-        EbpfLogger::init(&mut egress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", 0)?;

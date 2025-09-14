@@ -29,7 +29,7 @@ pub struct EbpfServices {
 
 impl EbpfServices {
     pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
-        let ring_buffer = RingBuffer::new()?;
+        let ring_buffer = RingBuffer::new(ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let service = Service::new(ingress_ebpf)?;
         let statistics = Statistics::new(app_config, ingress_ebpf, egress_ebpf)?;
@@ -44,8 +44,11 @@ impl EbpfServices {
     }
 
     pub async fn run(self: Arc<Self>) {
+        let ring_buffer = self.ring_buffer.clone();
         let statistics = self.statistics.clone();
+        let ring_buffer_shutdown = ring_buffer.run();
         let statistics_shutdown = statistics.run().await;
+        self.shutdowns.push(ring_buffer_shutdown);
         self.shutdowns.push(statistics_shutdown);
     }
 
