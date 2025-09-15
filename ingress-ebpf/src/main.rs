@@ -4,18 +4,23 @@ mod action;
 
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{PerCpuArray, ProgramArray};
+use aya_ebpf::maps::{PerCpuArray, ProgramArray, RingBuf};
 use aya_ebpf::programs::XdpContext;
 use aya_log_ebpf::error;
+use common::define::other::STANDARD_MTU;
+use common::define::setting::MAX_BUFFERED_PACKETS;
 use common::ebpf::parsing;
 use common::model::event::Event;
+use common::model::packet::Packet;
 
-use crate::action::{access_control, service, statistics, transmission};
+use crate::action::{access_control, service, statistics};
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+#[map]
+static PACKET_RING: RingBuf = RingBuf::with_byte_size((MAX_BUFFERED_PACKETS * STANDARD_MTU) as u32, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
@@ -23,15 +28,31 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 }
 
 unsafe fn packet_intake(ctx: XdpContext) -> Result<u32, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
-    let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
-    parsing::parse_packet(start, end, ptr)?;
-    transmission::transmission(start, end, ptr)?;
-    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() } {
-        error!(&ctx, "Tail call failed");
+    unsafe {
+        let start = ctx.data();
+        let end = ctx.data_end();
+        let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
+        parsing::parse_packet(start, end, ptr)?;
+        let copy_size = (end - start).min(STANDARD_MTU);
+        if copy_size == 0 {
+            error!(&ctx, "Packet size is 0");
+        }
+        if let Some(mut entry) = PACKET_RING.reserve::<Packet>(0) {
+            let ring_ptr = entry.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(
+                ptr as *const u8,
+                &mut (*ring_ptr).event as *mut Event as *mut u8,
+                size_of::<Event>(),
+            );
+            core::ptr::copy_nonoverlapping(start as *const u8, (*ring_ptr).raw_data.as_mut_ptr(), copy_size);
+            entry.submit(0);
+        } else {
+            error!(&ctx, "Ring buffer");
+            Err(())?
+        }
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, 0);
+        Err(())
     }
-    Ok(xdp_action::XDP_PASS)
 }
 
 #[xdp]
@@ -61,9 +82,7 @@ unsafe fn try_access_control(ctx: XdpContext) -> Result<u32, ()> {
                 }
             }
         }
-        if PROGRAM_ARRAY.tail_call(&ctx, 1).is_err() {
-            error!(&ctx, "Tail call failed");
-        }
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, 1);
         Err(())
     }
 }
@@ -91,9 +110,7 @@ unsafe fn try_service(ctx: XdpContext) -> Result<u32, ()> {
                 }
             }
         }
-        if PROGRAM_ARRAY.tail_call(&ctx, 2).is_err() {
-            error!(&ctx, "Tail call failed");
-        }
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, 2);
         Err(())
     }
 }
