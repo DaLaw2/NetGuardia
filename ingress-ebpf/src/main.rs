@@ -33,23 +33,23 @@ unsafe fn packet_intake(ctx: XdpContext) -> Result<u32, ()> {
         let end = ctx.data_end();
         let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
         parsing::parse_packet(start, end, ptr)?;
-        let copy_size = (end - start).min(STANDARD_MTU);
-        if copy_size == 0 {
-            error!(&ctx, "Packet size is 0");
-        }
-        if let Some(mut entry) = PACKET_RING.reserve::<Packet>(0) {
-            let ring_ptr = entry.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(
-                ptr as *const u8,
-                &mut (*ring_ptr).event as *mut Event as *mut u8,
-                size_of::<Event>(),
-            );
-            core::ptr::copy_nonoverlapping(start as *const u8, (*ring_ptr).raw_data.as_mut_ptr(), copy_size);
-            entry.submit(0);
-        } else {
-            error!(&ctx, "Ring buffer");
-            Err(())?
-        }
+        // let copy_size = (end - start).min(STANDARD_MTU);
+        // if copy_size == 0 {
+        //     error!(&ctx, "Packet size is 0");
+        // }
+        // if let Some(mut entry) = PACKET_RING.reserve::<Packet>(0) {
+        //     let ring_ptr = entry.as_mut_ptr();
+        //     core::ptr::copy_nonoverlapping(
+        //         ptr as *const u8,
+        //         &mut (*ring_ptr).event as *mut Event as *mut u8,
+        //         size_of::<Event>(),
+        //     );
+        //     core::ptr::copy_nonoverlapping(start as *const u8, (*ring_ptr).raw_data.as_mut_ptr(), copy_size);
+        //     entry.submit(0);
+        // } else {
+        //     error!(&ctx, "Ring buffer");
+        //     Err(())?
+        // }
         let _ = PROGRAM_ARRAY.tail_call(&ctx, 0);
         Err(())
     }

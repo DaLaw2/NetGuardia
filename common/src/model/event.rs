@@ -22,18 +22,12 @@ pub struct IPv4Event {
 impl IPv4Event {
     #[inline(always)]
     pub fn source_addr(&self) -> AddrPortV4 {
-        AddrPortV4 {
-            ip: self.source_ip,
-            port: self.source_port,
-        }
+        AddrPortV4::new(self.source_ip, self.source_port)
     }
 
     #[inline(always)]
     pub fn destination_addr(&self) -> AddrPortV4 {
-        AddrPortV4 {
-            ip: self.destination_ip,
-            port: self.destination_port,
-        }
+        AddrPortV4::new(self.destination_ip, self.destination_port)
     }
 }
 
@@ -51,17 +45,11 @@ pub struct IPv6Event {
 impl IPv6Event {
     #[inline(always)]
     pub fn source_addr(&self) -> AddrPortV6 {
-        AddrPortV6 {
-            ip: self.source_ip,
-            port: self.source_port,
-        }
+        AddrPortV6::new(self.source_ip, self.source_port)
     }
 
     #[inline(always)]
     pub fn destination_addr(&self) -> AddrPortV6 {
-        AddrPortV6 {
-            ip: self.destination_ip,
-            port: self.destination_port,
-        }
+        AddrPortV6::new(self.destination_ip, self.destination_port)
     }
 }
