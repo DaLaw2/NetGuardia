@@ -106,6 +106,7 @@ impl System {
     }
 
     async fn run_http_server(&self) -> Result<(), Error> {
+        let app_config = self.app_config.clone();
         let access_control = self.ebpf_services.access_control.clone();
         let service = self.ebpf_services.service.clone();
         let statistics = self.ebpf_services.statistics.clone();
@@ -118,6 +119,7 @@ impl System {
                 .max_age(3600);
             App::new()
                 .wrap(cors)
+                .app_data(web::Data::from(app_config.clone()))
                 .app_data(web::Data::from(access_control.clone()))
                 .app_data(web::Data::from(service.clone()))
                 .app_data(web::Data::from(statistics.clone()))

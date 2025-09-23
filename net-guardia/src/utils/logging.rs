@@ -33,10 +33,16 @@ impl Logging {
             .with_ansi(false)
             .with_writer(file_appender);
 
+        let level = if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        };
+
         tracing_subscriber::registry()
             .with(stdout_layer)
             .with(file_layer)
-            .with(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
+            .with(EnvFilter::from_default_env().add_directive(level.into()))
             .init();
 
         Ok(())
