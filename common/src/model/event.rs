@@ -3,12 +3,14 @@ use network_types::ip::IpProto;
 use crate::model::ip_address::{AddrPortV4, AddrPortV6};
 
 #[repr(C, align(8))]
+#[derive(Clone)]
 pub enum Event {
     IPv4(IPv4Event),
     IPv6(IPv6Event),
 }
 
 #[repr(C, align(8))]
+#[derive(Clone)]
 pub struct IPv4Event {
     pub protocol: IpProto,
     pub source_ip: u32,
@@ -32,6 +34,7 @@ impl IPv4Event {
 }
 
 #[repr(C, align(8))]
+#[derive(Clone)]
 pub struct IPv6Event {
     pub protocol: IpProto,
     pub source_ip: u128,
