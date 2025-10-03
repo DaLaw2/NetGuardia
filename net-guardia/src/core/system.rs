@@ -56,9 +56,9 @@ impl System {
         Logging::initialize()?;
         log!(SystemLog::Initializing);
         self.aya_log_init()?;
-        self.attach_ebpf()?;
         log!(SystemLog::InitializeComplete);
         ebpf_services.run().await;
+        self.attach_ebpf()?;
         self.run_http_server().await?;
         Ok(())
     }
@@ -79,8 +79,8 @@ impl System {
 
     fn attach_ebpf(&mut self) -> Result<(), Error> {
         let config = self.app_config.config.clone();
-        let ingress_interface = config.ingress_ifindex;
-        let egress_interface = config.egress_ifindex;
+        let ingress_ifname = config.ingress_ifname;
+        let egress_ifname = config.egress_ifname;
         Self::set_memory_limit()?;
         let ingress_xdp: &mut Xdp = self
             .ingress_ebpf
@@ -96,11 +96,11 @@ impl System {
             .map_err(EbpfError::GetProgramFailed)?;
         ingress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
         ingress_xdp
-            .attach(&ingress_interface, XdpFlags::default())
+            .attach(&ingress_ifname, XdpFlags::SKB_MODE)
             .map_err(EbpfError::AttachProgramFailed)?;
         egress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
         egress_xdp
-            .attach(&egress_interface, XdpFlags::default())
+            .attach(&egress_ifname, XdpFlags::default())
             .map_err(EbpfError::AttachProgramFailed)?;
         Ok(())
     }

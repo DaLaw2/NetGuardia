@@ -6,6 +6,9 @@ use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{PerCpuArray, ProgramArray, XskMap};
 use aya_ebpf::programs::XdpContext;
+#[allow(unused_imports)]
+use aya_log_ebpf::info;
+use common::define::program_array::*;
 use common::ebpf::parsing;
 use common::model::event::Event;
 
@@ -22,7 +25,7 @@ static XSKS_MAP: XskMap = XskMap::with_max_entries(64, 0);
 pub fn net_guardia(ctx: XdpContext) -> u32 {
     unsafe {
         let _ = packet_intake(&ctx);
-        let _ = PROGRAM_ARRAY.tail_call(&ctx, 3);
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
         xdp_action::XDP_PASS
     }
 }
@@ -34,7 +37,7 @@ unsafe fn packet_intake(ctx: &XdpContext) -> Result<u32, ()> {
         let end = ctx.data_end();
         let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
         parsing::parse_packet(start, end, ptr)?;
-        let _ = PROGRAM_ARRAY.tail_call(ctx, 0);
+        let _ = PROGRAM_ARRAY.tail_call(ctx, ACCESS_CONTROL);
         Err(())
     }
 }
@@ -42,9 +45,13 @@ unsafe fn packet_intake(ctx: &XdpContext) -> Result<u32, ()> {
 #[xdp]
 pub fn access_control(ctx: XdpContext) -> u32 {
     unsafe {
-        let _ = try_access_control(&ctx);
-        let _ = PROGRAM_ARRAY.tail_call(&ctx, 3);
-        xdp_action::XDP_PASS
+        match try_access_control(&ctx) {
+            Ok(action) => action,
+            Err(_) => {
+                let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
+                xdp_action::XDP_PASS
+            }
+        }
     }
 }
 
@@ -56,7 +63,8 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
         match parsed_packet {
             Event::IPv4(event) => {
                 if access_control::ipv4_is_whitelisted(event) {
-                    let _ = PROGRAM_ARRAY.tail_call(ctx, 2);
+                    let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
+                    return Err(());
                 }
                 if access_control::ipv4_is_blacklisted(event) {
                     return Ok(xdp_action::XDP_DROP);
@@ -64,14 +72,15 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
             }
             Event::IPv6(event) => {
                 if access_control::ipv6_is_whitelisted(event) {
-                    let _ = PROGRAM_ARRAY.tail_call(ctx, 2);
+                    let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
+                    return Err(());
                 }
                 if access_control::ipv6_is_blacklisted(event) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
         }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, 1);
+        let _ = PROGRAM_ARRAY.tail_call(ctx, SERVICE);
         Err(())
     }
 }
@@ -79,9 +88,13 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
 #[xdp]
 pub fn service(ctx: XdpContext) -> u32 {
     unsafe {
-        let _ = try_service(&ctx);
-        let _ = PROGRAM_ARRAY.tail_call(&ctx, 3);
-        xdp_action::XDP_PASS
+        match try_service(&ctx) {
+            Ok(action) => action,
+            Err(_) => {
+                let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
+                xdp_action::XDP_PASS
+            }
+        }
     }
 }
 
@@ -104,7 +117,7 @@ unsafe fn try_service(ctx: &XdpContext) -> Result<u32, ()> {
                 }
             }
         }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, 2);
+        let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
         Err(())
     }
 }
@@ -130,7 +143,7 @@ unsafe fn try_statistics(ctx: &XdpContext) -> Result<u32, ()> {
                 statistics::ipv6_update_stats(&event);
             }
         }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, 3);
+        let _ = PROGRAM_ARRAY.tail_call(ctx, TRANSMISSION);
         Err(())
     }
 }

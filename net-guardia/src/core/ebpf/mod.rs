@@ -1,7 +1,7 @@
 pub mod access_control;
-pub mod ring_buffer;
 pub mod service;
 pub mod statistics;
+pub mod xdp_socket;
 
 use std::sync::Arc;
 
@@ -11,16 +11,15 @@ use macros::log;
 use tokio::sync::oneshot;
 
 use crate::core::ebpf::access_control::AccessControl;
-use crate::core::ebpf::ring_buffer::RingBuffer;
 use crate::core::ebpf::service::Service;
 use crate::core::ebpf::statistics::Statistics;
+use crate::core::ebpf::xdp_socket::XskManager;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
 
 pub struct EbpfServices {
-    #[allow(dead_code)]
-    pub ring_buffer: Arc<RingBuffer>,
+    pub xsk_manager: Arc<XskManager>,
     pub access_control: Arc<AccessControl>,
     pub service: Arc<Service>,
     pub statistics: Arc<Statistics>,
@@ -29,12 +28,12 @@ pub struct EbpfServices {
 
 impl EbpfServices {
     pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
-        let ring_buffer = RingBuffer::new(ingress_ebpf)?;
+        let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let service = Service::new(ingress_ebpf)?;
         let statistics = Statistics::new(app_config, ingress_ebpf, egress_ebpf)?;
         let ebpf_services = Self {
-            ring_buffer: Arc::new(ring_buffer),
+            xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
             service: Arc::new(service),
             statistics: Arc::new(statistics),
@@ -44,15 +43,15 @@ impl EbpfServices {
     }
 
     pub async fn run(self: Arc<Self>) {
-        let ring_buffer = self.ring_buffer.clone();
+        let xsk_manager = self.xsk_manager.clone();
         let statistics = self.statistics.clone();
-        let ring_buffer_shutdown = ring_buffer.run();
+        xsk_manager.run();
         let statistics_shutdown = statistics.run().await;
-        self.shutdowns.push(ring_buffer_shutdown);
         self.shutdowns.push(statistics_shutdown);
     }
 
     pub fn terminate(self: Arc<Self>) {
+        self.xsk_manager.shutdown();
         while let Some(shutdown) = self.shutdowns.pop() {
             if shutdown.send(()).is_err() {
                 log!(SystemError::ShutdownSignalFailed);

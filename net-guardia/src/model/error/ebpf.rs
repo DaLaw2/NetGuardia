@@ -22,6 +22,18 @@ traceable! {
         #[error("Failed to attach the XDP program")]
         AttachProgramFailed => tracing::Level::ERROR,
 
+        #[error("Failed to set umem")]
+        UmemSetFailed => tracing::Level::ERROR,
+
+        #[error("Failed to set AF_XDP socket")]
+        SocketSetFailed => tracing::Level::ERROR,
+
+        #[error("Failed to set AF_XDP")]
+        AfXdpSetFailed => tracing::Level::ERROR,
+
+        #[error("Failed to wakeup TX")]
+        WakeupTXFailed => tracing::Level::ERROR,
+
         #[no_source]
         #[error("Map not found")]
         MapNotFound => tracing::Level::ERROR,
