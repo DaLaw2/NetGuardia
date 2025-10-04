@@ -8,6 +8,7 @@ use aya::maps::{MapData, XskMap};
 use aya::Ebpf;
 use crossbeam::queue::SegQueue;
 use macros::log;
+use parking_lot::Mutex;
 use tokio::select;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
@@ -22,37 +23,35 @@ use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
 
 pub struct XskManager {
-    xsks: SegQueue<Xsk>,
+    app_config: Arc<AppConfig>,
+    xsk_map: Mutex<XskMap<MapData>>,
     shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
 impl XskManager {
     pub fn new(app_config: Arc<AppConfig>, ebpf: &mut Ebpf) -> Result<Self, Error> {
-        let config = &app_config.config;
-        let combined_queue_count = config.combined_queue_count;
-
         let map = ebpf.take_map("XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
-        let mut xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
-
-        let xsks = SegQueue::new();
-        let shutdowns = SegQueue::new();
-
-        for queue_id in 0..combined_queue_count {
-            let socket = Xsk::new(config.clone(), &mut xsk_map, queue_id)?;
-            xsks.push(socket);
-        }
+        let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
 
         Ok(Self {
-            xsks,
-            shutdowns,
+            app_config,
+            xsk_map: Mutex::new(xsk_map),
+            shutdowns: SegQueue::new(),
         })
     }
 
-    pub fn run(&self) {
-        while let Some(xsk) = self.xsks.pop() {
+    pub fn run(&self) -> Result<(), Error> {
+        let config = self.app_config.config.clone();
+        let combined_queue_count = config.combined_queue_count;
+
+        let mut xsk_map = self.xsk_map.lock();
+        for queue_id in 0..combined_queue_count {
+            let xsk = Xsk::new(config.clone(), &mut xsk_map, queue_id)?;
             let shutdown = xsk.run();
             self.shutdowns.push(shutdown);
         }
+
+        Ok(())
     }
 
     pub fn shutdown(&self) {

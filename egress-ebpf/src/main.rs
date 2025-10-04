@@ -7,9 +7,10 @@ use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{PerCpuArray, ProgramArray};
 use aya_ebpf::programs::XdpContext;
-use aya_log_ebpf::error;
+#[allow(unused_imports)]
+use aya_log_ebpf::info;
+use common::define::program_array::egress::*;
 use common::{ebpf::parsing, model::event::Event};
-use network_types::eth::EtherType;
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
@@ -18,23 +19,29 @@ static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
-    unsafe { packet_intake(ctx).unwrap_or(xdp_action::XDP_PASS) }
+    unsafe {
+        let _ = packet_intake(ctx);
+        xdp_action::XDP_PASS
+    }
 }
 
 unsafe fn packet_intake(ctx: XdpContext) -> Result<u32, ()> {
-    let start = ctx.data();
-    let end = ctx.data_end();
-    let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
-    parsing::parse_packet(start, end, ptr)?;
-    if unsafe { PROGRAM_ARRAY.tail_call(&ctx, 0).is_err() } {
-        error!(&ctx, "Tail call failed");
+    unsafe {
+        let start = ctx.data();
+        let end = ctx.data_end();
+        let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
+        parsing::parse_packet(start, end, ptr)?;
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, STATISTICS);
+        Err(())
     }
-    Ok(xdp_action::XDP_PASS)
 }
 
 #[xdp]
 pub fn statistics(ctx: XdpContext) -> u32 {
-    unsafe { try_statistics(ctx).unwrap_or(xdp_action::XDP_PASS) }
+    unsafe {
+        let _ = try_statistics(ctx);
+        xdp_action::XDP_PASS
+    }
 }
 
 unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {

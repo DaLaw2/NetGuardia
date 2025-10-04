@@ -6,6 +6,7 @@ use aya::maps::{MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use aya_log::EbpfLogger;
+use common::define::program_array::*;
 use macros::log;
 
 use crate::core::ebpf::EbpfServices;
@@ -57,8 +58,8 @@ impl System {
         log!(SystemLog::Initializing);
         self.aya_log_init()?;
         log!(SystemLog::InitializeComplete);
-        ebpf_services.run().await;
         self.attach_ebpf()?;
+        ebpf_services.run().await?;
         self.run_http_server().await?;
         Ok(())
     }
@@ -96,11 +97,11 @@ impl System {
             .map_err(EbpfError::GetProgramFailed)?;
         ingress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
         ingress_xdp
-            .attach(&ingress_ifname, XdpFlags::SKB_MODE)
+            .attach(&ingress_ifname, XdpFlags::DRV_MODE)
             .map_err(EbpfError::AttachProgramFailed)?;
         egress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
         egress_xdp
-            .attach(&egress_ifname, XdpFlags::default())
+            .attach(&egress_ifname, XdpFlags::DRV_MODE)
             .map_err(EbpfError::AttachProgramFailed)?;
         Ok(())
     }
@@ -143,9 +144,10 @@ impl System {
         .map_err(EbpfError::EbpfNotFound)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", 0)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", 1)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", 2)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", ingress::ACCESS_CONTROL)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", ingress::SERVICE)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", ingress::STATISTICS)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "transmission", ingress::TRANSMISSION)?;
         Ok((ingress_ebpf, program_array))
     }
 
@@ -157,7 +159,7 @@ impl System {
         .map_err(EbpfError::EbpfNotFound)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", 0)?;
+        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;
         Ok((egress_ebpf, program_array))
     }
 

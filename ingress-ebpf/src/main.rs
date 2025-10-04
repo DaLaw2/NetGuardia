@@ -8,7 +8,7 @@ use aya_ebpf::maps::{PerCpuArray, ProgramArray, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
-use common::define::program_array::*;
+use common::define::program_array::ingress::*;
 use common::ebpf::parsing;
 use common::model::event::Event;
 

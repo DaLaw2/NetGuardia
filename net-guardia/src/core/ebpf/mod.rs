@@ -1,7 +1,7 @@
 pub mod access_control;
 pub mod service;
 pub mod statistics;
-pub mod xdp_socket;
+pub mod xdp_manager;
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::service::Service;
 use crate::core::ebpf::statistics::Statistics;
-use crate::core::ebpf::xdp_socket::XskManager;
+use crate::core::ebpf::xdp_manager::XskManager;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
@@ -42,12 +42,13 @@ impl EbpfServices {
         Ok(ebpf_services)
     }
 
-    pub async fn run(self: Arc<Self>) {
+    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
         let statistics = self.statistics.clone();
-        xsk_manager.run();
+        xsk_manager.run()?;
         let statistics_shutdown = statistics.run().await;
         self.shutdowns.push(statistics_shutdown);
+        Ok(())
     }
 
     pub fn terminate(self: Arc<Self>) {
