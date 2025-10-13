@@ -259,9 +259,17 @@ fn build_frontend() {
         panic!("FRONTEND_DIR environment variable is required but not set");
     };
 
+    let Some(node_bin_dir) = env::var_os("NODE_PATH") else {
+        panic!("NODE_BIN_DIR environment variable is required but not set");
+    };
+
     let project_root = env::var("CARGO_MANIFEST_DIR").unwrap();
     let static_dir = PathBuf::from(project_root).join("static").join("web");
     let frontend_dir = PathBuf::from(frontend_dir);
+    let node_bin_dir = PathBuf::from(node_bin_dir);
+
+    let npm_path = node_bin_dir.join("npm");
+    let npx_path = node_bin_dir.join("npx");
 
     if !frontend_dir.exists() {
         panic!("Frontend directory {:?} does not exist", frontend_dir);
@@ -292,14 +300,22 @@ fn build_frontend() {
     );
 
     let out_dir = frontend_dir.join("out");
-
     let need_build = needs_frontend_rebuild(&frontend_dir, &out_dir, &static_dir);
     if !need_build {
         return;
     }
 
-    let mut cmd = Command::new("npm");
-    cmd.arg("install").current_dir(&frontend_dir);
+    let current_path = env::var("PATH").unwrap_or_default();
+    let new_path = if current_path.is_empty() {
+        node_bin_dir.to_string_lossy().to_string()
+    } else {
+        format!("{}:{}", node_bin_dir.to_string_lossy(), current_path)
+    };
+
+    let mut cmd = Command::new(&npm_path);
+    cmd.arg("install")
+        .current_dir(&frontend_dir)
+        .env("PATH", &new_path);
 
     let status = cmd
         .status()
@@ -308,8 +324,10 @@ fn build_frontend() {
         panic!("npm install failed with exit code: {:?}", status.code());
     }
 
-    let mut cmd = Command::new("npx");
-    cmd.args(["next", "build"]).current_dir(&frontend_dir);
+    let mut cmd = Command::new(&npx_path);
+    cmd.args(["next", "build"])
+        .current_dir(&frontend_dir)
+        .env("PATH", &new_path);
 
     let status = cmd
         .status()

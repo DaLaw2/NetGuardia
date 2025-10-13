@@ -1,35 +1,30 @@
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::Arc;
 
 use actix_web::web::route;
-use actix_web::{App, HttpServer};
+use actix_web::{web, App, HttpServer};
 use aya::maps::{MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use aya_log::EbpfLogger;
+use common::define::program_array::*;
 use macros::log;
-use sysinfo::System as SystemInfo;
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::core::app_config::AppConfig;
-use crate::core::control::Control;
-use crate::core::health::SystemHealth;
-use crate::core::statistics::Statistics;
+use crate::core::ebpf::EbpfServices;
+use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
-use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, health, misc, statistics};
-
-static SYSTEM: OnceLock<RwLock<System>> = OnceLock::new();
+use crate::web::api::{control, default, misc};
 
 pub struct System {
+    pub app_config: Arc<AppConfig>,
+    pub ebpf_services: Arc<EbpfServices>,
+
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
-    pub boot_time: u64,
     #[allow(dead_code)]
     ingress_program_array: ProgramArray<MapData>,
     #[allow(dead_code)]
@@ -37,57 +32,107 @@ pub struct System {
 }
 
 impl System {
-    pub async fn initialize() -> Result<(), Error> {
-        Logging::initialize().await?;
-        log!(SystemLog::Initializing);
-
-        AppConfig::initialization().await?;
-
-        SystemHealth::initialize(Duration::from_secs(5)).await;
-
-        System::ebpf_initialize().await?;
-        Statistics::initialize().await?;
-        Control::initialize().await?;
-
-        log!(SystemLog::InitializeComplete);
-        Ok(())
-    }
-
-    async fn ebpf_initialize() -> Result<(), Error> {
-        let config = AppConfig::now().await;
-        let ingress_interface = config.ingress_ifindex;
-        let egress_interface = config.egress_ifindex;
-        let boot_time = SystemInfo::boot_time() * 1_000_000_000;
-        Self::set_memory_limit()?;
+    pub async fn new() -> Result<Self, Error> {
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
-        let ingress_program: &mut Xdp = ingress_ebpf
-            .program_mut("net_guardia")
-            .ok_or(EbpfError::ProgramNotFound)?
-            .try_into()
-            .map_err(EbpfError::GetProgramFailed)?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
-        let egress_program: &mut Xdp = egress_ebpf
-            .program_mut("net_guardia")
-            .ok_or(EbpfError::ProgramNotFound)?
-            .try_into()
-            .map_err(EbpfError::GetProgramFailed)?;
-        ingress_program.load().map_err(EbpfError::LoadProgramFailed)?;
-        ingress_program
-            .attach(&ingress_interface, XdpFlags::default())
-            .map_err(EbpfError::AttachProgramFailed)?;
-        egress_program.load().map_err(EbpfError::LoadProgramFailed)?;
-        egress_program
-            .attach(&egress_interface, XdpFlags::default())
-            .map_err(EbpfError::AttachProgramFailed)?;
+        let app_config = Arc::new(AppConfig::new()?);
+        let ebpf_services = Arc::new(EbpfServices::new(
+            app_config.clone(),
+            &mut ingress_ebpf,
+            &mut egress_ebpf,
+        )?);
         let system = System {
+            app_config,
+            ebpf_services,
             ingress_ebpf,
             egress_ebpf,
-            boot_time,
             ingress_program_array,
             egress_program_array,
         };
-        SYSTEM.get_or_init(|| RwLock::new(system));
-        log!(EbpfLog::AttachProgramSuccess);
+        Ok(system)
+    }
+
+    pub async fn run(&mut self) -> Result<(), Error> {
+        let ebpf_services = self.ebpf_services.clone();
+        Logging::initialize()?;
+        log!(SystemLog::Initializing);
+        self.aya_log_init()?;
+        log!(SystemLog::InitializeComplete);
+        self.attach_ebpf()?;
+        ebpf_services.run().await?;
+        self.run_http_server().await?;
+        Ok(())
+    }
+
+    pub async fn terminate(&self) -> Result<(), Error> {
+        let ebpf_services = self.ebpf_services.clone();
+        log!(SystemLog::Terminating);
+        ebpf_services.terminate();
+        log!(SystemLog::TerminateComplete);
+        Ok(())
+    }
+
+    fn aya_log_init(&mut self) -> Result<(), Error> {
+        EbpfLogger::init(&mut self.ingress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
+        EbpfLogger::init(&mut self.egress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
+        Ok(())
+    }
+
+    fn attach_ebpf(&mut self) -> Result<(), Error> {
+        let config = self.app_config.config.clone();
+        let ingress_ifname = config.ingress_ifname;
+        let egress_ifname = config.egress_ifname;
+        Self::set_memory_limit()?;
+        let ingress_xdp: &mut Xdp = self
+            .ingress_ebpf
+            .program_mut("net_guardia")
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::GetProgramFailed)?;
+        let egress_xdp: &mut Xdp = self
+            .egress_ebpf
+            .program_mut("net_guardia")
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::GetProgramFailed)?;
+        ingress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
+        ingress_xdp
+            .attach(&ingress_ifname, XdpFlags::DRV_MODE)
+            .map_err(EbpfError::AttachProgramFailed)?;
+        egress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
+        egress_xdp
+            .attach(&egress_ifname, XdpFlags::DRV_MODE)
+            .map_err(EbpfError::AttachProgramFailed)?;
+        Ok(())
+    }
+
+    async fn run_http_server(&self) -> Result<(), Error> {
+        let app_config = self.app_config.clone();
+        let access_control = self.ebpf_services.access_control.clone();
+        let service = self.ebpf_services.service.clone();
+        let statistics = self.ebpf_services.statistics.clone();
+        let port = self.app_config.http_server_bind_port;
+        HttpServer::new(move || {
+            let cors = actix_cors::Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header()
+                .max_age(3600);
+            App::new()
+                .wrap(cors)
+                .app_data(web::Data::from(app_config.clone()))
+                .app_data(web::Data::from(access_control.clone()))
+                .app_data(web::Data::from(service.clone()))
+                .app_data(web::Data::from(statistics.clone()))
+                .service(control::initialize())
+                .service(misc::initialize())
+                .default_service(route().to(default::default_route))
+        })
+        .bind(format!("0.0.0.0:{}", port))
+        .map_err(HttpError::BindPortError)?
+        .run()
+        .await
+        .map_err(HttpError::ServerPanic)?;
         Ok(())
     }
 
@@ -97,12 +142,12 @@ impl System {
             "/net-guardia-ingress"
         )))
         .map_err(EbpfError::EbpfNotFound)?;
-        EbpfLogger::init(&mut ingress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", 0)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", 1)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", 2)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", ingress::ACCESS_CONTROL)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", ingress::SERVICE)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", ingress::STATISTICS)?;
+        Self::load_program(&mut ingress_ebpf, &mut program_array, "transmission", ingress::TRANSMISSION)?;
         Ok((ingress_ebpf, program_array))
     }
 
@@ -112,23 +157,10 @@ impl System {
             "/net-guardia-egress"
         )))
         .map_err(EbpfError::EbpfNotFound)?;
-        EbpfLogger::init(&mut egress_ebpf).map_err(EbpfError::LoggerInitFailed)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", 0)?;
+        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;
         Ok((egress_ebpf, program_array))
-    }
-
-    fn set_memory_limit() -> Result<(), Error> {
-        let rlim = libc::rlimit {
-            rlim_cur: libc::RLIM_INFINITY,
-            rlim_max: libc::RLIM_INFINITY,
-        };
-        let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-        if ret != 0 {
-            Err(MiscError::RamLimitUnlockError(ret))?
-        }
-        Ok(())
     }
 
     fn load_program(
@@ -148,60 +180,15 @@ impl System {
         Ok(())
     }
 
-    pub async fn run() -> Result<(), Error> {
-        log!(SystemLog::Online);
-
-        Statistics::run().await;
-
-        let config = AppConfig::now().await;
-        HttpServer::new(|| {
-            let cors = actix_cors::Cors::default()
-                .allow_any_origin()
-                .allow_any_method()
-                .allow_any_header()
-                .max_age(3600);
-            App::new()
-                .wrap(cors)
-                .service(statistics::initialize())
-                .service(control::initialize())
-                .service(misc::initialize())
-                .service(health::initialize())
-                .default_service(route().to(default::default_route))
-        })
-        .bind(format!("0.0.0.0:{}", config.http_server_bind_port))
-        .map_err(HttpError::BindPortError)?
-        .run()
-        .await
-        .map_err(HttpError::ServerPanic)?;
+    fn set_memory_limit() -> Result<(), Error> {
+        let rlim = libc::rlimit {
+            rlim_cur: libc::RLIM_INFINITY,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+        if ret != 0 {
+            Err(MiscError::RamLimitUnlockError(ret))?
+        }
         Ok(())
-    }
-
-    pub async fn terminate() -> Result<(), Error> {
-        log!(SystemLog::Terminating);
-
-        Statistics::terminate().await;
-        SystemHealth::shutdown().await;
-
-        log!(SystemLog::TerminateComplete);
-        Ok(())
-    }
-
-    pub async fn instance() -> RwLockReadGuard<'static, System> {
-        // Initialization has been ensured
-        let once_lock = SYSTEM.get().unwrap();
-        // There is no lock acquired multiple times, so this is safe
-        once_lock.read().await
-    }
-
-    pub async fn instance_mut() -> RwLockWriteGuard<'static, System> {
-        // Initialization has been ensured
-        let once_lock = SYSTEM.get().unwrap();
-        // There is no lock acquired multiple times, so this is safe
-        once_lock.write().await
-    }
-
-    pub async fn boot_time() -> u64 {
-        let system = System::instance().await;
-        system.boot_time
     }
 }

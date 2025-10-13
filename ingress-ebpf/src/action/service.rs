@@ -137,9 +137,9 @@ fn ipv4_ssh_service_violation(source: &AddrPortV4, destination: &AddrPortV4) -> 
     unsafe {
         if IPV4_SSH_SERVICE.get(destination).is_some() {
             if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
-                IPV4_SSH_WHITE_LIST.get(&source.ip).is_none()
+                IPV4_SSH_WHITE_LIST.get(&source.ip()).is_none()
             } else {
-                IPV4_SSH_BLACK_LIST.get(&source.ip).is_some()
+                IPV4_SSH_BLACK_LIST.get(&source.ip()).is_some()
             }
         } else {
             false
@@ -152,9 +152,9 @@ fn ipv6_ssh_service_violation(source_ip: &AddrPortV6, destination: &AddrPortV6) 
     unsafe {
         if IPV6_SSH_SERVICE.get(destination).is_some() {
             if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
-                IPV6_SSH_WHITE_LIST.get(&source_ip.ip).is_none()
+                IPV6_SSH_WHITE_LIST.get(&source_ip.ip()).is_none()
             } else {
-                IPV6_SSH_BLACK_LIST.get(&source_ip.ip).is_some()
+                IPV6_SSH_BLACK_LIST.get(&source_ip.ip()).is_some()
             }
         } else {
             false

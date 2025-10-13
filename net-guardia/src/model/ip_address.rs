@@ -3,39 +3,56 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use common::model::ip_address::*;
 
-pub trait IntoNative: Copy {
+pub trait NativeConvert: Copy {
     type Native: Eq + PartialEq + Hash;
     fn into_native(self) -> Self::Native;
+    fn from_native(native: Self::Native) -> Self;
 }
 
-impl IntoNative for IPv4 {
+impl NativeConvert for IPv4 {
     type Native = Ipv4Addr;
 
     fn into_native(self) -> Self::Native {
         Ipv4Addr::from(self)
     }
+
+    fn from_native(native: Self::Native) -> Self {
+        native.to_bits()
+    }
 }
 
-impl IntoNative for IPv6 {
+impl NativeConvert for IPv6 {
     type Native = Ipv6Addr;
 
     fn into_native(self) -> Self::Native {
         Ipv6Addr::from(self)
     }
-}
 
-impl IntoNative for AddrPortV4 {
-    type Native = SocketAddrV4;
-
-    fn into_native(self) -> Self::Native {
-        SocketAddrV4::new(Ipv4Addr::from(self.ip), self.port)
+    fn from_native(native: Self::Native) -> Self {
+        native.to_bits()
     }
 }
 
-impl IntoNative for AddrPortV6 {
+impl NativeConvert for AddrPortV4 {
+    type Native = SocketAddrV4;
+
+    fn into_native(self) -> Self::Native {
+        SocketAddrV4::new(Ipv4Addr::from(self.ip()), self.port())
+    }
+
+    fn from_native(native: Self::Native) -> Self {
+        AddrPortV4::new((*native.ip()).to_bits(), native.port())
+    }
+}
+
+impl NativeConvert for AddrPortV6 {
     type Native = SocketAddrV6;
 
     fn into_native(self) -> Self::Native {
-        SocketAddrV6::new(Ipv6Addr::from(self.ip), self.port, 0, 0)
+        SocketAddrV6::new(Ipv6Addr::from(self.ip()), self.port(), 0, 0)
+    }
+
+    fn from_native(native: Self::Native) -> Self {
+        AddrPortV6::new((*native.ip()).to_bits(), native.port())
     }
 }

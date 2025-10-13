@@ -8,8 +8,8 @@ use crate::model::error::Error;
 
 #[actix_web::main]
 async fn main() -> Result<(), Error> {
-    System::initialize().await?;
-    System::run().await?;
-    System::terminate().await?;
+    let mut system = System::new().await?;
+    system.run().await?;
+    system.terminate().await?;
     Ok(())
 }

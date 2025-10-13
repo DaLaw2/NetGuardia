@@ -1,4 +1,4 @@
-use tokio::fs;
+use std::fs;
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
@@ -11,10 +11,9 @@ use crate::model::error::Error;
 pub struct Logging;
 
 impl Logging {
-    pub async fn initialize() -> Result<(), Error> {
+    pub fn initialize() -> Result<(), Error> {
         let log_directory = "logs";
         fs::create_dir_all(log_directory)
-            .await
             .map_err(|err| IOError::CreateDirectoryFailed(log_directory, err))?;
 
         let file_appender = RollingFileAppender::new(Rotation::DAILY, log_directory, "NetGuardia");
@@ -34,10 +33,16 @@ impl Logging {
             .with_ansi(false)
             .with_writer(file_appender);
 
+        let level = if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        };
+
         tracing_subscriber::registry()
             .with(stdout_layer)
             .with(file_layer)
-            .with(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
+            .with(EnvFilter::from_default_env().add_directive(level.into()))
             .init();
 
         Ok(())

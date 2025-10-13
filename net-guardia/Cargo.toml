@@ -10,10 +10,14 @@ macros = { path = "../macros" }
 actix = "0.13.5"
 actix-cors = "0.7.1"
 actix-web = "4.11.0"
+actix-ws = "0.3.0"
 aya = { workspace = true }
 aya-log = { workspace = true }
+crossbeam = "0.8.4"
+futures-util = "0.3.30"
 libc = { workspace = true }
 mime_guess = "2.0.5"
+parking_lot = "0.12.5"
 rust-embed = "8.7.2"
 serde = { workspace = true }
 serde_json = "1.0.143"
@@ -24,9 +28,7 @@ toml = "0.9.5"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-
-actix-ws = "0.3.0"
-futures-util = "0.3.30"
+xsk-rs = { workspace = true }
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

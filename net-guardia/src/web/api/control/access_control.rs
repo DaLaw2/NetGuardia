@@ -2,7 +2,7 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 
 use actix_web::{delete, get, put, web, HttpResponse, Responder, Scope};
 
-use crate::core::control::access_control::AccessControl;
+use crate::core::ebpf::access_control::AccessControl;
 use crate::model::direction::FlowDirection;
 use crate::model::list_type::ListType;
 
@@ -17,34 +17,48 @@ pub fn initialize() -> Scope {
 }
 
 #[get("/ipv4/{direction}/{list_type}")]
-async fn get_ipv4_list(path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn get_ipv4_list(
+    path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
+) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    let list = AccessControl::get_ipv4_list(direction, list_type).await;
+    let list = access_control.get_ipv4_list(direction, list_type).await;
     HttpResponse::Ok().json(list)
 }
 
 #[get("/ipv6/{direction}/{list_type}")]
-async fn get_ipv6_list(path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn get_ipv6_list(
+    path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
+) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    let list = AccessControl::get_ipv6_list(direction, list_type).await;
+    let list = access_control.get_ipv6_list(direction, list_type).await;
     HttpResponse::Ok().json(list)
 }
 
 #[put("/ipv4/{direction}/{list_type}")]
-async fn add_ipv4_list(address: web::Json<SocketAddrV4>, path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn add_ipv4_list(
+    address: web::Json<SocketAddrV4>,
+    path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
+) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
-    match AccessControl::add_ipv4_list(direction, list_type, address).await {
+    match access_control.add_ipv4_list(direction, list_type, address).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
 #[put("/ipv6/{direction}/{list_type}")]
-async fn add_ipv6_list(address: web::Json<SocketAddrV6>, path: web::Path<(FlowDirection, ListType)>) -> impl Responder {
+async fn add_ipv6_list(
+    address: web::Json<SocketAddrV6>,
+    path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
+) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
-    match AccessControl::add_ipv6_list(direction, list_type, address).await {
+    match access_control.add_ipv6_list(direction, list_type, address).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
@@ -54,10 +68,11 @@ async fn add_ipv6_list(address: web::Json<SocketAddrV6>, path: web::Path<(FlowDi
 async fn remove_ipv4_list(
     address: web::Json<SocketAddrV4>,
     path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
-    match AccessControl::remove_ipv4_list(direction, list_type, address).await {
+    match access_control.remove_ipv4_list(direction, list_type, address).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
@@ -67,10 +82,11 @@ async fn remove_ipv4_list(
 async fn remove_ipv6_list(
     address: web::Json<SocketAddrV6>,
     path: web::Path<(FlowDirection, ListType)>,
+    access_control: web::Data<AccessControl>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
-    match AccessControl::remove_ipv6_list(direction, list_type, address).await {
+    match access_control.remove_ipv6_list(direction, list_type, address).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
