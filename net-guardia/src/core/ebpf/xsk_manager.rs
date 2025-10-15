@@ -1,3 +1,4 @@
+use std::error::Error as StdError;
 use std::ffi::CString;
 use std::num::NonZero;
 use std::os::fd::AsRawFd;
@@ -12,7 +13,7 @@ use parking_lot::Mutex;
 use tokio::select;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
-use xsk_rs::config::{BindFlags, FrameSize, Interface, QueueSize, SocketConfig, UmemConfig};
+use xsk_rs::config::{BindFlags, FrameSize, Interface, QueueSize, SocketConfig, UmemConfig, LibbpfFlags};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
@@ -94,7 +95,8 @@ impl Xsk {
         let socket_config = SocketConfig::builder()
             .tx_queue_size(tx_queue_size)
             .rx_queue_size(rx_queue_size)
-            .bind_flags(BindFlags::empty())
+            .bind_flags(BindFlags::XDP_ZEROCOPY)
+            .libbpf_flags(LibbpfFlags::XSK_LIBBPF_FLAGS_INHIBIT_PROG_LOAD)
             .build();
 
         let interface = Interface::new(ifname);

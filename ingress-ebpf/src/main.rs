@@ -19,7 +19,7 @@ static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 #[map]
-static XSKS_MAP: XskMap = XskMap::with_max_entries(64, 0);
+static XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {

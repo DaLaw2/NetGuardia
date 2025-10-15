@@ -16,3 +16,6 @@ which = "8.0.0"
 [[bin]]
 name = "net-guardia-ingress"
 path = "src/main.rs"
+test = false
+doctest = false
+bench = false

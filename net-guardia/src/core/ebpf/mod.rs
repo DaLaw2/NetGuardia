@@ -1,7 +1,7 @@
 pub mod access_control;
 pub mod service;
 pub mod statistics;
-pub mod xdp_manager;
+pub mod xsk_manager;
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::service::Service;
 use crate::core::ebpf::statistics::Statistics;
-use crate::core::ebpf::xdp_manager::XskManager;
+use crate::core::ebpf::xsk_manager::XskManager;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
