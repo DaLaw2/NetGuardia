@@ -45,7 +45,7 @@
 
 ## System Requirements
 
-- RUbuntu-based operating system (Ubuntu 24.04 LTS or newer recommended)
+- Ubuntu-based operating system (Ubuntu 24.04 LTS or newer recommended)
 - Dual-port network interface card (Intel i350 T2 or compatible XDP-capable NIC)
 - Root/sudo access for eBPF program loading
 
