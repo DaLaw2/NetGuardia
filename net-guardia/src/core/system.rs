@@ -111,6 +111,7 @@ impl System {
         let access_control = self.ebpf_services.access_control.clone();
         let service = self.ebpf_services.service.clone();
         let statistics = self.ebpf_services.statistics.clone();
+        let health = self.ebpf_services.health.clone();
         let port = self.app_config.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -124,15 +125,16 @@ impl System {
                 .app_data(web::Data::from(access_control.clone()))
                 .app_data(web::Data::from(service.clone()))
                 .app_data(web::Data::from(statistics.clone()))
+                .app_data(web::Data::from(health.clone()))
                 .service(control::initialize())
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
         })
-        .bind(format!("0.0.0.0:{}", port))
-        .map_err(HttpError::BindPortError)?
-        .run()
-        .await
-        .map_err(HttpError::ServerPanic)?;
+            .bind(format!("0.0.0.0:{}", port))
+            .map_err(HttpError::BindPortError)?
+            .run()
+            .await
+            .map_err(HttpError::ServerPanic)?;
         Ok(())
     }
 

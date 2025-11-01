@@ -1,45 +1,60 @@
-# NetGuardia 🛡️
+# NetGuardia
 
-## 📌 專案簡介
+## Project Overview
 
-**NetGuardia** 是一個結合 eBPF XDP 與深度學習模型的實體網路防護裝置，運行於 Raspberry Pi 5 與 Intel i350 T2 網卡。本專案旨在提供高效能、低延遲的網路防護解決方案，適用於家庭與中小型企業環境。
+**NetGuardia** is a high-performance network security solution that combines eBPF XDP technology with deep learning models to provide advanced network protection. The system operates as a standalone network appliance that can run on any Ubuntu-based system with compatible network hardware.
 
-## 🔧 核心技術
+## Core Technologies
 
-- **eBPF XDP 技術** - 實現高效能網路封包處理，直接在資料連結層操作
-- **深度學習模型** - 識別與預測潛在網路攻擊，提供智慧化防護
-- **嵌入式硬體整合** - 結合 Raspberry Pi 5 與 Intel i350 T2，提供獨立且強大的網路防護功能
+- **eBPF XDP Technology** - Provides high-performance packet processing directly at the data link layer
+- **Deep Learning Models** - Identifies and predicts potential network attacks with intelligent threat detection
+- **Hardware Integration** - Designed to work with Intel i350 T2 and similar enterprise-grade network interface cards
 
-## 🧩 功能模組
+## Functional Modules
 
-### 📊 儀表板總覽 (Dashboard)
-![儀表板介面](.github/images/dashboard.png)
-- 即時網路流量監控與視覺化統計
-- 近期流量大小統計與趨勢圖
+### Resource Overview
+![Home](.github/images/index.png)
+- Real-time control system occupancy rate
 
-### 📈 詳細流量統計 (Statistics)
-![流量統計介面](.github/images/statistics.png)
-- 各 IP 位址詳細流量使用情況
+### Dashboard Overview
+![Dashboard](.github/images/dashboard.png)
+- Real-time network traffic monitoring and visualization
+- Recent traffic statistics and trend analysis
 
-### 🔒 網路存取控制 (Access Control)
-![存取控制介面](.github/images/accessControl.png)
-- IPv4/IPv6 黑白名單管理
-- 精確的連接埠層級存取控制
+### Detailed Traffic Statistics
+![Statistics](.github/images/statistics.png)
+- Detailed traffic usage information per IP address
 
-### 🤖 AI 攻擊偵測 (AI Detection)
-![AI 攻擊偵測介面](.github/images/aiDetection.png)
-- 基於 AI 的攻擊偵測引擎
+### Network Access Control
+![accessControl](.github/images/accessControl.png)
+- IPv4/IPv6 whitelist and blacklist management
+- Precise port-level access control
 
-## ✨ 系統特色
+[//]: # (### AI Attack Detection)
 
-- **⚡ 高效能** - 低延遲封包處理，最小化網路效能影響
-- **👥 易用性** - 跨平台 Web 管理介面，直覺操作
-- **🔄 可靠性** - 硬體加速處理，確保穩定運行
-- **📦 可擴展** - 模組化設計，支援功能擴展
+[//]: # (![AI 攻擊偵測介面]&#40;.github/images/aiDetection.png&#41;)
 
-## 💻 安裝需求
+[//]: # (- AI-based attack detection engine)
 
-- Raspberry Pi 5 (建議 8GB RAM 版本)
-- 雙孔網卡(能支援 XDP native/offload 更好)
-- 32GB 以上 microSD 卡 (建議 Class 10 以上)
-- 5V/3A 以上電源供應器
+## System Features
+
+- **High Performance** -  Low-latency packet processing with minimal network performance impact
+- **User-Friendly** - Cross-platform web management interface with intuitive operation
+- **Reliability** - Hardware-accelerated processing ensures stable operation
+- **Scalability** - Modular design supports functional expansion
+
+## System Requirements
+
+- Ubuntu-based operating system (Ubuntu 24.04 LTS or newer recommended)
+- Dual-port network interface card (Intel i350 T2 or compatible XDP-capable NIC)
+- Root/sudo access for eBPF program loading
+
+## Hardware Compatibility
+NetGuardia is designed to work on any Ubuntu-based system meeting the following requirements:
+
+- Network Interface: Any dual-port NIC supporting XDP native or offload mode (Intel i350 T2 recommended)
+- CPU: Multi-core processor recommended for optimal performance
+- Memory: 8GB RAM minimum, 16GB or more for high-traffic environments
+
+The system is not limited to embedded platforms and can be deployed on standard server hardware, virtual machines, or dedicated appliances running Ubuntu.
+
