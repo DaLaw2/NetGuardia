@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::core::ebpf::health::{SystemHealth, SystemHealthMetrics};
+use crate::core::infrastructure::health::{SystemHealth, SystemHealthMetrics};
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
@@ -86,7 +86,7 @@ async fn send_metrics(session: &mut Session, metrics: &SystemHealthMetrics) -> b
         Ok(json) => session.text(json).await.is_ok(),
         Err(err) => {
             log!(MiscError::SerializeError(err));
-            true
+            false
         }
     }
 }
