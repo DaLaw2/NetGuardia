@@ -66,7 +66,7 @@ impl AccessControl {
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error> {
-        let ip: u32 = (*address.ip()).into();
+        let ip: u32 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
             (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write().await,
@@ -83,7 +83,7 @@ impl AccessControl {
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error> {
-        let ip: u128 = (*address.ip()).into();
+        let ip: u128 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
             (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write().await,
@@ -100,7 +100,7 @@ impl AccessControl {
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error> {
-        let ip: u32 = (*address.ip()).into();
+        let ip: u32 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
             (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write().await,
@@ -117,7 +117,7 @@ impl AccessControl {
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error> {
-        let ip: u128 = (*address.ip()).into();
+        let ip: u128 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
             (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write().await,
