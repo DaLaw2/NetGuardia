@@ -44,12 +44,12 @@ impl System {
             tracing::info!("Initializing ML detection with inference URL: {}", ml_url);
             match DetectionManager::new(ml_url.clone(), DetectionConfig::default()).await {
                 Ok(manager) => {
-                    tracing::info!("✓ ML detection manager initialized successfully");
+                    tracing::info!("ML detection manager initialized successfully");
                     Some(Arc::new(manager))
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize ML detection manager: {}", e);
-                    tracing::warn!("⚠ Continuing without ML detection");
+                    tracing::warn!("Continuing without ML detection");
                     None
                 }
             }
@@ -89,7 +89,7 @@ impl System {
         if let Some(ref detection_manager) = self.detection_manager {
             tracing::info!("Starting ML detection tasks...");
             let _handles = detection_manager.start();
-            tracing::info!("✓ ML detection tasks started");
+            tracing::info!("ML detection tasks started");
         }
 
         ebpf_services.run().await?;

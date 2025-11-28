@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigTable {
@@ -10,6 +11,7 @@ pub struct ConfigTable {
 pub struct Config {
     pub ingress_ifname: String,
     pub egress_ifname: String,
+    pub geoip_db_path: PathBuf,
     pub combined_queue_count: u32,
     pub fill_queue_size: u32,
     pub comp_queue_size: u32,

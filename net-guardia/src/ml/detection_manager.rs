@@ -188,7 +188,7 @@ impl DetectionManager {
             if is_benign {
                 // BENIGN traffic - always log as info, even if is_anomaly is true
                 tracing::info!(
-                    "✓ Benign traffic: Flow: {} [{}], Confidence: {}",
+                    "Benign traffic: Flow: {} [{}], Confidence: {}",
                     result.flow_id,
                     flow_details,
                     confidence_str
@@ -197,7 +197,7 @@ impl DetectionManager {
                 // Actual anomaly/attack detected
                 if let Some(ref attack_type) = result.attack_type {
                     tracing::warn!(
-                        "🚨 ATTACK DETECTED! Type: {}, Flow: {} [{}], Confidence: {}",
+                        "ATTACK DETECTED! Type: {}, Flow: {} [{}], Confidence: {}",
                         attack_type,
                         result.flow_id,
                         flow_details,
@@ -205,7 +205,7 @@ impl DetectionManager {
                     );
                 } else {
                     tracing::warn!(
-                        "⚠️  ANOMALY DETECTED! Flow: {} [{}], Confidence: {}",
+                        "ANOMALY DETECTED! Flow: {} [{}], Confidence: {}",
                         result.flow_id,
                         flow_details,
                         confidence_str
@@ -214,7 +214,7 @@ impl DetectionManager {
             } else {
                 // Not anomaly and not explicitly benign
                 tracing::info!(
-                    "✓ Normal traffic: Flow: {} [{}], Confidence: {}",
+                    "Normal traffic: Flow: {} [{}], Confidence: {}",
                     result.flow_id,
                     flow_details,
                     confidence_str
