@@ -14,5 +14,8 @@ loggable! {
 
         #[error("No frames submit to queue")]
         NoFrameSubmit => tracing::Level::WARN,
+
+        #[error("Queue pair {queue_id} started successfully")]
+        QueuePairStarted { queue_id: u32 } => tracing::Level::INFO,
     }
 }

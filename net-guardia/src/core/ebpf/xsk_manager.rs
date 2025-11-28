@@ -1,43 +1,57 @@
-use std::error::Error as StdError;
+use std::collections::HashMap;
 use std::ffi::CString;
+use std::io::Write;
 use std::num::NonZero;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
-use aya::maps::{MapData, XskMap};
 use aya::Ebpf;
+use aya::maps::{MapData, XskMap};
+use crossbeam::channel::{Receiver, Sender, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
-use tokio::select;
 use tokio::sync::oneshot;
-use tokio::time::sleep;
-use xsk_rs::config::{BindFlags, FrameSize, Interface, QueueSize, SocketConfig, UmemConfig, LibbpfFlags};
+use xsk_rs::config::{BindFlags, FrameSize, Interface, LibbpfFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::ml::detection_manager::DetectionManager;
 use crate::model::config::Config;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
-use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
+use crate::utils::packet_parser;
+
+const CHANNEL_SIZE: usize = 4096;
+const ML_CHANNEL_SIZE: usize = 1024;
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
     xsk_map: Mutex<XskMap<MapData>>,
+    detection_manager: Option<Arc<DetectionManager>>,
     shutdowns: SegQueue<oneshot::Sender<()>>,
+    ml_shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
 impl XskManager {
-    pub fn new(app_config: Arc<AppConfig>, ebpf: &mut Ebpf) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<AppConfig>,
+        ebpf: &mut Ebpf,
+        detection_manager: Option<Arc<DetectionManager>>,
+    ) -> Result<Self, Error> {
         let map = ebpf.take_map("XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
         let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
 
         Ok(Self {
             app_config,
             xsk_map: Mutex::new(xsk_map),
+            detection_manager,
             shutdowns: SegQueue::new(),
+            ml_shutdowns: SegQueue::new(),
         })
     }
 
@@ -45,17 +59,61 @@ impl XskManager {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
 
-        let mut xsk_map = self.xsk_map.lock();
         for queue_id in 0..combined_queue_count {
-            let xsk = Xsk::new(config.clone(), &mut xsk_map, queue_id)?;
-            let shutdown = xsk.run();
-            self.shutdowns.push(shutdown);
+            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(CHANNEL_SIZE);
+            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(CHANNEL_SIZE);
+
+            let (ingress_xsk, ingress_ml_shutdown) = XskPair::new(
+                config.clone(),
+                queue_id,
+                &config.ingress_ifname,
+                &config.egress_ifname,
+                Direction::Ingress,
+                self.detection_manager.clone(),
+            )?;
+
+            let (egress_xsk, egress_ml_shutdown) = XskPair::new(
+                config.clone(),
+                queue_id,
+                &config.egress_ifname,
+                &config.ingress_ifname,
+                Direction::Egress,
+                self.detection_manager.clone(),
+            )?;
+
+            if let Some(shutdown) = ingress_ml_shutdown {
+                self.ml_shutdowns.push(shutdown);
+            }
+            if let Some(shutdown) = egress_ml_shutdown {
+                self.ml_shutdowns.push(shutdown);
+            }
+
+            let mut xsk_map = self.xsk_map.lock();
+            let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
+            xsk_map
+                .set(queue_id, ingress_fd, 0)
+                .map_err(EbpfError::AfXdpSetFailed)?;
+            drop(xsk_map);
+
+            let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx);
+            self.shutdowns.push(ingress_shutdown);
+
+            let egress_shutdown = egress_xsk.run(egress_to_ingress_tx, ingress_to_egress_rx);
+            self.shutdowns.push(egress_shutdown);
+
+            log!(EbpfLog::QueuePairStarted(queue_id));
         }
 
         Ok(())
     }
 
     pub fn shutdown(&self) {
+        while let Some(sender) = self.ml_shutdowns.pop() {
+            if sender.send(()).is_err() {
+                tracing::warn!("Failed to send ML shutdown signal");
+            }
+        }
+
         while let Some(sender) = self.shutdowns.pop() {
             if sender.send(()).is_err() {
                 log!(SystemError::ShutdownSignalFailed);
@@ -64,17 +122,34 @@ impl XskManager {
     }
 }
 
-pub struct Xsk {
-    umem: Umem,
+#[derive(Debug, Clone, Copy)]
+pub enum Direction {
+    Ingress,
+    Egress,
+}
+
+pub struct XskPair {
+    direction: Direction,
+    umem: Arc<Umem>,
     fill_queue: FillQueue,
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
+    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    ml_channel: Option<Sender<Vec<u8>>>,
 }
 
-impl Xsk {
-    pub fn new(config: Config, xsk_map: &mut XskMap<MapData>, queue_id: u32) -> Result<Self, Error> {
-        let ifname = CString::new(config.ingress_ifname.as_str()).map_err(|_| SystemError::UnknownError)?;
+impl XskPair {
+    pub fn new(
+        config: Config,
+        queue_id: u32,
+        rx_ifname: &str,
+        tx_ifname: &str,
+        direction: Direction,
+        detection_manager: Option<Arc<DetectionManager>>,
+    ) -> Result<(Self, Option<oneshot::Sender<()>>), Error> {
+        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
+
         let fill_queue_size = QueueSize::new(config.fill_queue_size).map_err(|_| SystemError::InvalidConfig)?;
         let comp_queue_size = QueueSize::new(config.comp_queue_size).map_err(|_| SystemError::InvalidConfig)?;
         let tx_queue_size = QueueSize::new(config.tx_queue_size).map_err(|_| SystemError::InvalidConfig)?;
@@ -99,161 +174,275 @@ impl Xsk {
             .libbpf_flags(LibbpfFlags::XSK_LIBBPF_FLAGS_INHIBIT_PROG_LOAD)
             .build();
 
-        let interface = Interface::new(ifname);
+        let interface = Interface::new(rx_ifname_c);
         let (tx, rx, queue) =
             Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)?;
 
         let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::UnknownError)?;
 
-        let socket_fd = rx.fd().as_raw_fd();
+        let total_frames = frame_descs.len();
+        let fill_frames_count = (total_frames / 2).min(config.fill_queue_size as usize);
 
-        xsk_map.set(queue_id, socket_fd, 0).map_err(EbpfError::AfXdpSetFailed)?;
+        let fill_frames: Vec<FrameDesc> = frame_descs.iter().take(fill_frames_count).copied().collect();
 
-        let frames: Vec<FrameDesc> = frame_descs
-            .iter()
-            .take(config.fill_queue_size as usize)
-            .copied()
-            .collect();
-
-        let submitted = unsafe { fill_queue.produce(&frames) };
-        if submitted != frames.len() {
+        let submitted = unsafe { fill_queue.produce(&fill_frames) };
+        if submitted != fill_frames.len() {
             log!(EbpfLog::QueueInitIncomplete);
         }
 
-        Ok(Self {
-            umem,
+        let pool_frames: Vec<FrameDesc> = frame_descs.iter().skip(fill_frames_count).copied().collect();
+
+        let (ml_channel, ml_shutdown) = if let Some(dm) = detection_manager {
+            let (ml_tx, ml_rx) = bounded::<Vec<u8>>(ML_CHANNEL_SIZE);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+            let dm_clone = dm.clone();
+            let dir = direction;
+            thread::Builder::new()
+                .name(format!("ml-processor-{:?}-{}", direction, queue_id))
+                .spawn(move || {
+                    let mut shutdown_rx = Some(shutdown_rx);
+                    let mut processed_count = 0u64;
+
+                    loop {
+                        if let Some(ref mut rx) = shutdown_rx {
+                            if rx.try_recv().is_ok() {
+                                tracing::info!(
+                                    "{:?} ML processor shutting down (processed {} packets)",
+                                    dir,
+                                    processed_count
+                                );
+                                break;
+                            }
+                        }
+
+                        match ml_rx.recv_timeout(Duration::from_millis(100)) {
+                            Ok(packet_data) => {
+                                if let Some(event) = packet_parser::parse_packet(&packet_data) {
+                                    dm_clone.process_event(&event);
+                                    processed_count += 1;
+                                }
+                            }
+                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                                // Timeout, continue looping to check shutdown
+                                continue;
+                            }
+                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                                tracing::warn!("{:?} ML channel disconnected", dir);
+                                break;
+                            }
+                        }
+                    }
+                })
+                .map_err(EbpfError::AfXdpSetFailed)?;
+
+            (Some(ml_tx), Some(shutdown_tx))
+        } else {
+            (None, None)
+        };
+
+        tracing::info!(
+            "{:?} queue {}: Initialized with {} total frames ({} for fill queue, {} for TX pool){}",
+            direction,
+            queue_id,
+            total_frames,
+            fill_frames_count,
+            pool_frames.len(),
+            if ml_channel.is_some() { " + ML processing" } else { "" }
+        );
+
+        let xsk_pair = Self {
+            direction,
+            umem: Arc::new(umem),
             fill_queue,
             comp_queue,
             tx,
             rx,
-        })
+            frame_pool: Arc::new(Mutex::new(pool_frames)),
+            ml_channel,
+        };
+
+        Ok((xsk_pair, ml_shutdown))
     }
 
-    pub fn run(mut self) -> oneshot::Sender<()> {
-        let (sender, receiver) = oneshot::channel();
-        tokio::spawn(async move {
-            let mut receiver = receiver;
-            loop {
-                select! {
-                    biased;
-                    _ = &mut receiver => break,
-                    _ = self.process_events() => {},
+    pub fn run(mut self, forward_tx: Sender<Vec<u8>>, forward_rx: Receiver<Vec<u8>>) -> oneshot::Sender<()> {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        thread::Builder::new()
+            .name(format!("xsk-{:?}", self.direction))
+            .spawn(move || {
+                let mut shutdown_rx = Some(shutdown_rx);
+
+                loop {
+                    if let Some(ref mut rx) = shutdown_rx {
+                        if rx.try_recv().is_ok() {
+                            break;
+                        }
+                    }
+
+                    let _ = self.process_comp_queue();
+
+                    let _ = self.process_rx_queue(&forward_tx);
+
+                    let _ = self.process_tx_queue(&forward_rx);
+
+                    thread::sleep(Duration::from_micros(1));
                 }
-            }
-        });
-        sender
+
+                tracing::info!("{:?} XSK thread shutting down", self.direction);
+            })
+            .expect("Failed to spawn XSK thread");
+
+        shutdown_tx
     }
 
-    async fn process_events(&mut self) {
-        let mut comp_descs = vec![FrameDesc::default(); 64];
-        let comp_count = unsafe { self.comp_queue.consume(&mut comp_descs) };
+    fn process_comp_queue(&mut self) -> Result<(), EbpfError> {
+        let mut comp_descs = vec![FrameDesc::default(); 256];
 
-        if comp_count > 0 {
-            let submitted = unsafe { self.fill_queue.produce(&comp_descs[..comp_count]) };
-            if submitted != comp_count {
-                log!(EbpfLog::QueueRefillIncomplete);
+        let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
+
+        if nb_completed > 0 {
+            let mut pool = self.frame_pool.lock();
+            let pool_size_before = pool.len();
+
+            for desc in comp_descs.iter().take(nb_completed) {
+                pool.push(*desc);
             }
+
+            tracing::trace!(
+                "{:?}: Recycled {} frames to pool (pool: {} -> {})",
+                self.direction,
+                nb_completed,
+                pool_size_before,
+                pool.len()
+            );
         }
 
-        let mut packet_count = 0;
-        let mut tx_descs = Vec::with_capacity(64);
-        let mut rx_descs = vec![FrameDesc::default(); 64];
+        Ok(())
+    }
 
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<(), EbpfError> {
+        let mut rx_descs = vec![FrameDesc::default(); 64];
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
-        for rx_desc in &rx_descs[..rx_count] {
-            let data = unsafe { self.umem.data(rx_desc) };
-            let packet_data = &data.contents()[..rx_desc.lengths().data()];
+        if rx_count > 0 {
+            for rx_desc in rx_descs.iter().take(rx_count) {
+                let lengths = rx_desc.lengths();
+                let packet_len = lengths.data() as usize;
 
-            let packet_copy = packet_data.to_vec();
+                let data = unsafe { self.umem.data(rx_desc) };
+                let packet_data = data.contents()[..packet_len].to_vec();
 
-            Self::print_packet_info(&packet_copy);
-
-            tx_descs.push(*rx_desc);
-            packet_count += 1;
-        }
-
-        if !tx_descs.is_empty() {
-            let tx_submitted = unsafe { self.tx.produce(&tx_descs) };
-            if tx_submitted != tx_descs.len() {
-                log!(EbpfLog::QueueRefillIncomplete);
-                for desc in &tx_descs[tx_submitted..] {
-                    unsafe {
-                        let _ = self.fill_queue.produce(&[*desc]);
+                if let Some(ref ml_tx) = self.ml_channel {
+                    match ml_tx.try_send(packet_data.clone()) {
+                        Ok(_) => {
+                            tracing::trace!("{:?}: Sent packet to ML channel", self.direction);
+                        }
+                        Err(crossbeam::channel::TrySendError::Full(_)) => {
+                            tracing::trace!("{:?}: ML channel full, skipping packet", self.direction);
+                        }
+                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                            tracing::warn!("{:?}: ML channel disconnected", self.direction);
+                        }
                     }
                 }
-            } else {
-                if let Err(err) = self.tx.wakeup() {
-                    log!(EbpfError::WakeupTXFailed(err))
+
+                if let Err(e) = forward_tx.send(packet_data) {
+                    tracing::warn!("{:?}: Failed to forward packet: {}", self.direction, e);
                 }
             }
+
+            unsafe {
+                self.fill_queue.produce(&rx_descs[..rx_count]);
+            }
+
+            tracing::debug!("{:?}: Received {} packets", self.direction, rx_count);
         }
 
-        if packet_count > 0 {
-            println!("Processed {} packets", packet_count);
-        }
-
-        if packet_count == 0 {
-            sleep(Duration::from_millis(1)).await;
-        }
+        Ok(())
     }
 
-    fn print_packet_info(packet_data: &[u8]) {
-        if packet_data.len() < 14 {
-            println!("Packet too small: {} bytes", packet_data.len());
-            return;
-        }
-
-        println!("Received packet: {} bytes", packet_data.len());
-
-        let print_len = std::cmp::min(64, packet_data.len());
-        print!("Data: ");
-        for i in 0..print_len {
-            print!("{:02x} ", packet_data[i]);
-            if (i + 1) % 16 == 0 {
-                print!("\n      ");
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<(), EbpfError> {
+        let mut packets_to_send = Vec::with_capacity(64);
+        while let Ok(packet) = forward_rx.try_recv() {
+            packets_to_send.push(packet);
+            if packets_to_send.len() >= 64 {
+                break;
             }
         }
-        println!();
 
-        let dst_mac = &packet_data[0..6];
-        let src_mac = &packet_data[6..12];
-        let eth_type = u16::from_be_bytes([packet_data[12], packet_data[13]]);
+        if packets_to_send.is_empty() {
+            return Ok(());
+        }
 
-        println!(
-            "Ethernet: src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, type=0x{:04x}",
-            src_mac[0],
-            src_mac[1],
-            src_mac[2],
-            src_mac[3],
-            src_mac[4],
-            src_mac[5],
-            dst_mac[0],
-            dst_mac[1],
-            dst_mac[2],
-            dst_mac[3],
-            dst_mac[4],
-            dst_mac[5],
-            eth_type
-        );
+        let _ = self.process_comp_queue();
 
-        match eth_type {
-            0x0800 => {
-                println!("  -> IPv4 packet");
-                if packet_data.len() >= 34 {
-                    let src_ip = &packet_data[26..30];
-                    let dst_ip = &packet_data[30..34];
-                    println!(
-                        "     IP: {}.{}.{}.{} -> {}.{}.{}.{}",
-                        src_ip[0], src_ip[1], src_ip[2], src_ip[3], dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]
-                    );
+        let pool_size = {
+            let pool = self.frame_pool.lock();
+            pool.len()
+        };
+
+        if pool_size == 0 {
+            tracing::warn!(
+                "{:?}: Frame pool exhausted! Pending TX: {} packets",
+                self.direction,
+                packets_to_send.len()
+            );
+            return Ok(());
+        }
+
+        let mut frames = Vec::with_capacity(packets_to_send.len());
+        {
+            let mut pool = self.frame_pool.lock();
+            let available = pool.len().min(packets_to_send.len());
+
+            for _ in 0..available {
+                if let Some(frame) = pool.pop() {
+                    frames.push(frame);
                 }
             }
-            0x86DD => println!("  -> IPv6 packet"),
-            0x0806 => println!("  -> ARP packet"),
-            _ => println!("  -> Unknown protocol"),
+
+            if frames.len() < packets_to_send.len() {
+                tracing::debug!(
+                    "{:?}: Pool has {} frames, requested {}, allocated {}",
+                    self.direction,
+                    pool_size,
+                    packets_to_send.len(),
+                    frames.len()
+                );
+            }
         }
 
-        println!("---");
+        if frames.is_empty() {
+            tracing::warn!("{:?}: No frames available for TX", self.direction);
+            return Ok(());
+        }
+
+        for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
+            unsafe {
+                self.umem
+                    .data_mut(frame)
+                    .cursor()
+                    .write_all(packet)
+                    .map_err(EbpfError::AfXdpSetFailed)?;
+            }
+        }
+
+        let nb_submitted = unsafe { self.tx.produce(&frames) };
+
+        tracing::debug!(
+            "{:?}: Submitted {}/{} packets to TX queue",
+            self.direction,
+            nb_submitted,
+            frames.len()
+        );
+
+        if let Err(e) = self.tx.wakeup() {
+            if e.kind() != std::io::ErrorKind::WouldBlock {
+                tracing::warn!("{:?}: TX wakeup failed: {}", self.direction, e);
+            }
+        }
+
+        Ok(())
     }
 }

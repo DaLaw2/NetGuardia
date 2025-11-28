@@ -11,6 +11,7 @@ use macros::log;
 
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::ml::detection_manager::{DetectionConfig, DetectionManager};
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
@@ -22,6 +23,7 @@ use crate::web::api::{control, default, misc};
 pub struct System {
     pub app_config: Arc<AppConfig>,
     pub ebpf_services: Arc<EbpfServices>,
+    pub detection_manager: Option<Arc<DetectionManager>>,
 
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
@@ -36,14 +38,37 @@ impl System {
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
+
+        // Initialize ML detection manager if configured
+        let detection_manager = if let Some(ref ml_url) = app_config.ml_inference_url {
+            tracing::info!("Initializing ML detection with inference URL: {}", ml_url);
+            match DetectionManager::new(ml_url.clone(), DetectionConfig::default()).await {
+                Ok(manager) => {
+                    tracing::info!("✓ ML detection manager initialized successfully");
+                    Some(Arc::new(manager))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize ML detection manager: {}", e);
+                    tracing::warn!("⚠ Continuing without ML detection");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("ML detection disabled (no ml_inference_url configured)");
+            None
+        };
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
             &mut egress_ebpf,
+            detection_manager.clone(),
         )?);
+
         let system = System {
             app_config,
             ebpf_services,
+            detection_manager,
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
@@ -59,6 +84,14 @@ impl System {
         self.aya_log_init()?;
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
+
+        // Start ML detection tasks if enabled
+        if let Some(ref detection_manager) = self.detection_manager {
+            tracing::info!("Starting ML detection tasks...");
+            let _handles = detection_manager.start();
+            tracing::info!("✓ ML detection tasks started");
+        }
+
         ebpf_services.run().await?;
         self.run_http_server().await?;
         Ok(())
@@ -67,6 +100,13 @@ impl System {
     pub async fn terminate(&self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
         log!(SystemLog::Terminating);
+
+        // Shutdown ML detection if enabled
+        if let Some(ref detection_manager) = self.detection_manager {
+            tracing::info!("Shutting down ML detection...");
+            detection_manager.shutdown().await;
+        }
+
         ebpf_services.terminate();
         log!(SystemLog::TerminateComplete);
         Ok(())
@@ -143,7 +183,7 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-ingress"
         )))
-        .map_err(EbpfError::EbpfNotFound)?;
+            .map_err(EbpfError::EbpfNotFound)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", ingress::ACCESS_CONTROL)?;
@@ -158,7 +198,7 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-egress"
         )))
-        .map_err(EbpfError::EbpfNotFound)?;
+            .map_err(EbpfError::EbpfNotFound)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;

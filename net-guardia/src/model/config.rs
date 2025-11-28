@@ -19,4 +19,5 @@ pub struct Config {
     pub frame_count: u32,
     pub refresh_interval: u64,
     pub http_server_bind_port: u16,
+    pub ml_inference_url: Option<String>,
 }

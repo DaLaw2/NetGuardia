@@ -1,4 +1,4 @@
-use macros::traceable;
+use macros::{loggable, traceable};
 use tracing;
 
 traceable! {
@@ -52,5 +52,24 @@ traceable! {
         #[no_source]
         #[error("Unknown error")]
         UnknownError => tracing::Level::ERROR,
+    }
+}
+
+loggable! {
+    EbpfLog {
+        #[error("Attach XDP program success")]
+        AttachProgramSuccess => tracing::Level::INFO,
+
+        #[error("Queue initialization incomplete")]
+        QueueInitIncomplete => tracing::Level::WARN,
+
+        #[error("Queue refill incomplete")]
+        QueueRefillIncomplete => tracing::Level::WARN,
+
+        #[error("No frames submit to queue")]
+        NoFrameSubmit => tracing::Level::WARN,
+
+        #[error("Queue pair {queue_id} started successfully")]
+        QueuePairStarted { queue_id: u32 } => tracing::Level::INFO,
     }
 }

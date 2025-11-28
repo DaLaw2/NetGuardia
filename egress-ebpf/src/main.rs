@@ -5,7 +5,7 @@ mod action;
 use action::statistics;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{PerCpuArray, ProgramArray};
+use aya_ebpf::maps::{PerCpuArray, ProgramArray, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
@@ -16,6 +16,8 @@ use common::{ebpf::parsing, model::event::Event};
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+#[map]
+static XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
