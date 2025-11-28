@@ -14,7 +14,7 @@ use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
-use xsk_rs::config::{BindFlags, FrameSize, Interface, LibbpfFlags, QueueSize, SocketConfig, UmemConfig};
+use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
@@ -171,12 +171,15 @@ impl XskPair {
             .tx_queue_size(tx_queue_size)
             .rx_queue_size(rx_queue_size)
             .bind_flags(BindFlags::XDP_ZEROCOPY)
-            .libbpf_flags(LibbpfFlags::XSK_LIBBPF_FLAGS_INHIBIT_PROG_LOAD)
+            .libxdp_flags(LibxdpFlags::XSK_LIBXDP_FLAGS_INHIBIT_PROG_LOAD)
             .build();
 
         let interface = Interface::new(rx_ifname_c);
-        let (tx, rx, queue) =
-            Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)?;
+
+        let (tx, rx, queue) = unsafe {
+            Socket::new(socket_config, &umem, &interface, queue_id)
+                .map_err(EbpfError::SocketSetFailed)?
+        };
 
         let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::UnknownError)?;
 

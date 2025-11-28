@@ -15,14 +15,14 @@ impl EventExt for Event {
     fn get_addresses(&self) -> (IpAddr, IpAddr, u16, u16) {
         match self {
             Event::IPv4(e) => (
-                IpAddr::V4(std::net::Ipv4Addr::from(e.source_ip.to_be())),
-                IpAddr::V4(std::net::Ipv4Addr::from(e.destination_ip.to_be())),
+                IpAddr::V4(std::net::Ipv4Addr::from(e.source_ip)),
+                IpAddr::V4(std::net::Ipv4Addr::from(e.destination_ip)),
                 e.source_port,
                 e.destination_port,
             ),
             Event::IPv6(e) => (
-                IpAddr::V6(std::net::Ipv6Addr::from(e.source_ip.to_be())),
-                IpAddr::V6(std::net::Ipv6Addr::from(e.destination_ip.to_be())),
+                IpAddr::V6(std::net::Ipv6Addr::from(e.source_ip)),
+                IpAddr::V6(std::net::Ipv6Addr::from(e.destination_ip)),
                 e.source_port,
                 e.destination_port,
             ),
@@ -186,7 +186,7 @@ impl FlowRecord {
         let timestamp = event.get_timestamp();
 
         let flow_id = format!(
-            "{}:{}-<>{}:{}:{}",
+            "{}:{} -> {}:{}:{}",
             src_ip, src_port, dst_ip, dst_port, protocol
         );
 
