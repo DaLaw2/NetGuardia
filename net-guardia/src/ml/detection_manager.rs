@@ -53,7 +53,7 @@ impl Default for DetectionConfig {
         Self {
             flow_timeout_secs: 120,
             max_flows: 100000,
-            export_interval_secs: 10,
+            export_interval_secs: 300,
             batch_size: 50,
             max_recent_alerts: 1000,
             ws_ping_interval_secs: 30,
