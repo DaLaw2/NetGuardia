@@ -810,7 +810,6 @@ dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",
  "common",
- "network-types",
  "which",
 ]
 

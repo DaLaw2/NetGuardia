@@ -254,9 +254,6 @@ impl DetectionManager {
 
     /// Shutdown and export all flows
     pub async fn shutdown(&self) {
-        tracing::info!("Shutting down detection manager...");
-
-        // Export all remaining flows
         let flows = self.flow_aggregator.export_all_flows();
         tracing::info!("Exported {} remaining flows", flows.len());
 

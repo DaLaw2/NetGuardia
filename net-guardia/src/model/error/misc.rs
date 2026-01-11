@@ -18,5 +18,8 @@ traceable! {
         #[no_source]
         #[error("Network interface '{interface}' not found")]
         NetworkInterfaceNotFound { interface: String } => tracing::Level::ERROR,
+
+        #[error("Invalid GeoIP configuration")]
+        InvalidGeoIPConfiguration => tracing::Level::ERROR,
     }
 }

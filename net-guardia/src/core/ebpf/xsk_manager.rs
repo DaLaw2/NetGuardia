@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::Write;
 use std::num::NonZero;
@@ -306,19 +305,10 @@ impl XskPair {
 
         if nb_completed > 0 {
             let mut pool = self.frame_pool.lock();
-            let pool_size_before = pool.len();
 
             for desc in comp_descs.iter().take(nb_completed) {
                 pool.push(*desc);
             }
-
-            tracing::trace!(
-                "{:?}: Recycled {} frames to pool (pool: {} -> {})",
-                self.direction,
-                nb_completed,
-                pool_size_before,
-                pool.len()
-            );
         }
 
         Ok(())
@@ -338,15 +328,10 @@ impl XskPair {
 
                 if let Some(ref ml_tx) = self.ml_channel {
                     match ml_tx.try_send(packet_data.clone()) {
-                        Ok(_) => {
-                            tracing::trace!("{:?}: Sent packet to ML channel", self.direction);
-                        }
-                        Err(crossbeam::channel::TrySendError::Full(_)) => {
-                            tracing::trace!("{:?}: ML channel full, skipping packet", self.direction);
-                        }
                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                             tracing::warn!("{:?}: ML channel disconnected", self.direction);
                         }
+                        _ => {},
                     }
                 }
 

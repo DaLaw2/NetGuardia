@@ -16,6 +16,7 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
+use crate::model::log::machine_learning::MachineLeraningLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
@@ -41,7 +42,7 @@ impl System {
 
         // Initialize ML detection manager if configured
         let detection_manager = if let Some(ref ml_url) = app_config.ml_inference_url {
-            tracing::info!("Initializing ML detection with inference URL: {}", ml_url);
+            log!(MachineLeraningLog::Initializing(ml_url));
             match DetectionManager::new(ml_url.clone(), DetectionConfig::default()).await {
                 Ok(manager) => {
                     tracing::info!("ML detection manager initialized successfully");
@@ -85,11 +86,10 @@ impl System {
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
 
-        // Start ML detection tasks if enabled
         if let Some(ref detection_manager) = self.detection_manager {
-            tracing::info!("Starting ML detection tasks...");
+            log!(MachineLeraningLog::Starting);
             let _handles = detection_manager.start();
-            tracing::info!("ML detection tasks started");
+            log!(MachineLeraningLog::Ready);
         }
 
         ebpf_services.run().await?;
@@ -101,9 +101,8 @@ impl System {
         let ebpf_services = self.ebpf_services.clone();
         log!(SystemLog::Terminating);
 
-        // Shutdown ML detection if enabled
         if let Some(ref detection_manager) = self.detection_manager {
-            tracing::info!("Shutting down ML detection...");
+            log!(MachineLeraningLog::Shutdown);
             detection_manager.shutdown().await;
         }
 

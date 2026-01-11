@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use actix_ws::{handle, Message, MessageStream, Session};
 use futures_util::StreamExt;

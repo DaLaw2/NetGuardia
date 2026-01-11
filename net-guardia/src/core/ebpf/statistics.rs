@@ -10,12 +10,13 @@ use common::model::ip_address::{AddrPortV4, AddrPortV6};
 use tokio::select;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::{sleep, Duration};
-
+use macros::log;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::infrastructure::geoip::GeoIpService;
 use crate::model::direction::{Direction, FlowDirection};
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
+use crate::model::error::misc::MiscError;
 use crate::model::ip_address::NativeConvert;
 use crate::model::time_type::TimeType;
 use crate::utils::boot_time::boot_time;
@@ -93,15 +94,9 @@ impl Statistics {
         let mut ipv4_maps = HashMap::new();
         let mut ipv6_maps = HashMap::new();
         let geo_ip = match GeoIpService::new(&app_config.geoip_db_path) {
-            Ok(service) => {
-                tracing::info!("GeoIP service initialized successfully");
-                Some(Arc::new(service))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "GeoIP database not found or invalid: {}. Geographic location features will be disabled.",
-                    e
-                );
+            Ok(service) => Some(Arc::new(service)),
+            Err(err) => {
+                log!(MiscError::InvalidGeoIPConfiguration(err));
                 None
             }
         };
@@ -180,7 +175,6 @@ impl Statistics {
                     }
                 })
                 .collect();
-
             join_all(futures).await.into_iter().collect()
         } else {
             flow_data
@@ -217,7 +211,6 @@ impl Statistics {
                     }
                 })
                 .collect();
-
             join_all(futures).await.into_iter().collect()
         } else {
             flow_data

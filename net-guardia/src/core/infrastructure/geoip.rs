@@ -58,7 +58,6 @@ impl GeoIpService {
             .await
             .map_err(|e| MaxMindDbError::InvalidDatabase(format!("Task join error: {}", e)))??;
 
-        // 寫入快取
         {
             let mut cache = self.cache.write().await;
             cache.put(ip, result.clone());
@@ -67,9 +66,8 @@ impl GeoIpService {
         Ok(result)
     }
 
-    // 改為靜態方法，因為在 spawn_blocking 中無法使用 &self
     fn lookup_from_db_blocking(
-        reader: &maxminddb::Reader<Vec<u8>>,
+        reader: &Reader<Vec<u8>>,
         ip: IpAddr,
     ) -> Result<Option<GeoLocation>, MaxMindDbError> {
         let city_option: Option<geoip2::City> = reader.lookup(ip)?;
@@ -114,11 +112,6 @@ impl GeoIpService {
                 timezone,
             }
         }))
-    }
-
-    pub async fn clear_cache(&self) {
-        let mut cache = self.cache.write().await;
-        cache.clear();
     }
 
     pub async fn cache_stats(&self) -> (usize, usize) {

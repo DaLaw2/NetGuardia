@@ -96,7 +96,6 @@ impl InferenceClient {
 
         let pending: Arc<RwLock<HashMap<String, tokio::sync::oneshot::Sender<DetectionResult>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let pending_write = pending.clone();
         let pending_read = pending.clone();
 
         let result_callback: Arc<RwLock<Option<Arc<dyn Fn(DetectionResult) + Send + Sync>>>> =
