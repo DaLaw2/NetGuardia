@@ -148,10 +148,7 @@ impl FlowAggregator {
             let mut interval = tokio::time::interval(export_interval);
             loop {
                 interval.tick().await;
-                let expired = self.export_expired_flows();
-                if !expired.is_empty() {
-                    tracing::debug!("Exported {} expired flows", expired.len());
-                }
+                self.export_expired_flows();
             }
         })
     }

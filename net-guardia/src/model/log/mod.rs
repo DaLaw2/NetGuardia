@@ -1,5 +1,5 @@
 pub mod ebpf;
 pub mod http;
-pub mod machine_learning;
+pub mod ml;
 pub mod system;
 mod misc;

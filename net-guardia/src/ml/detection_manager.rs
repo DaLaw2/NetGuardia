@@ -113,7 +113,6 @@ impl DetectionManager {
 
                 // Log current active flow count for debugging
                 let active_count = flow_agg.flow_count();
-                tracing::debug!("Active flows: {}, Expired flows: {}", active_count, expired.len());
 
                 if expired.is_empty() {
                     continue;

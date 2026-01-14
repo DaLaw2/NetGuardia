@@ -1,26 +1,27 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
-use futures::future::join_all;
 
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
 use common::model::flow_stats::FlowStats;
 use common::model::ip_address::{AddrPortV4, AddrPortV6};
-use tokio::select;
-use tokio::sync::{oneshot, RwLock};
-use tokio::time::{sleep, Duration};
+use futures::future::join_all;
 use macros::log;
+use tokio::select;
+use tokio::sync::{RwLock, oneshot};
+use tokio::time::{Duration, sleep};
+
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::infrastructure::geoip::GeoIpService;
 use crate::model::direction::{Direction, FlowDirection};
-use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
+use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
+use crate::model::flow_stats_with_geo::FlowStatsWithGeo;
 use crate::model::ip_address::NativeConvert;
 use crate::model::time_type::TimeType;
 use crate::utils::boot_time::boot_time;
-use crate::model::flow_stats_with_geo::FlowStatsWithGeo;
 
 pub struct Statistics {
     app_config: Arc<AppConfig>,
@@ -156,7 +157,8 @@ impl Statistics {
         flow_direction: FlowDirection,
         time_type: TimeType,
     ) -> HashMap<SocketAddrV4, FlowStatsWithGeo> {
-        let flow_data = self.ipv4_maps
+        let flow_data = self
+            .ipv4_maps
             .get(&(direction, flow_direction, time_type))
             .unwrap()
             .write()
@@ -179,9 +181,7 @@ impl Statistics {
         } else {
             flow_data
                 .into_iter()
-                .map(|(addr, stats)| {
-                    (addr, FlowStatsWithGeo { stats, geo: None })
-                })
+                .map(|(addr, stats)| (addr, FlowStatsWithGeo { stats, geo: None }))
                 .collect()
         }
     }
@@ -192,7 +192,8 @@ impl Statistics {
         flow_direction: FlowDirection,
         time_type: TimeType,
     ) -> HashMap<SocketAddrV6, FlowStatsWithGeo> {
-        let flow_data = self.ipv6_maps
+        let flow_data = self
+            .ipv6_maps
             .get(&(direction, flow_direction, time_type))
             .unwrap()
             .write()
@@ -215,9 +216,7 @@ impl Statistics {
         } else {
             flow_data
                 .into_iter()
-                .map(|(addr, stats)| {
-                    (addr, FlowStatsWithGeo { stats, geo: None })
-                })
+                .map(|(addr, stats)| (addr, FlowStatsWithGeo { stats, geo: None }))
                 .collect()
         }
     }

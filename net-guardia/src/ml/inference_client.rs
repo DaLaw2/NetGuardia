@@ -1,13 +1,18 @@
-use super::features::CicFeatures;
-use super::flow_record::FlowRecord;
-use futures_util::{SinkExt, StreamExt};
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+
+use futures_util::{SinkExt, StreamExt};
+use macros::log;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+use super::features::CicFeatures;
+use super::flow_record::FlowRecord;
+use crate::model::error::http::HttpError;
+use crate::model::error::misc::MiscError;
 
 /// Detection request message
 #[derive(Debug, Clone, Serialize)]
@@ -73,7 +78,7 @@ pub struct InferenceClient {
     tx: mpsc::UnboundedSender<Message>,
 
     /// Pending requests (flow_id -> callback)
-    pending: Arc<RwLock<HashMap<String, tokio::sync::oneshot::Sender<DetectionResult>>>>,
+    pending: Arc<RwLock<HashMap<String, oneshot::Sender<DetectionResult>>>>,
 
     /// Callback for detection results
     result_callback: Arc<RwLock<Option<Arc<dyn Fn(DetectionResult) + Send + Sync>>>>,
@@ -94,7 +99,7 @@ impl InferenceClient {
         // Create channels
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
-        let pending: Arc<RwLock<HashMap<String, tokio::sync::oneshot::Sender<DetectionResult>>>> =
+        let pending: Arc<RwLock<HashMap<String, oneshot::Sender<DetectionResult>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let pending_read = pending.clone();
 
@@ -109,8 +114,8 @@ impl InferenceClient {
         // Spawn write task
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                if let Err(e) = write.send(msg).await {
-                    tracing::error!("WebSocket write error: {}", e);
+                if let Err(err) = write.send(msg).await {
+                    log!(HttpError::WebSocketError(err));
                     *connected_write.write() = false;
                     break;
                 }
@@ -122,8 +127,7 @@ impl InferenceClient {
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
-                        if let Err(e) = Self::handle_message(&text, &pending_read, &callback_clone)
-                        {
+                        if let Err(err) = Self::handle_message(&text, &pending_read, &callback_clone) {
                             tracing::error!("Failed to handle message: {}", e);
                         }
                     }
@@ -132,8 +136,8 @@ impl InferenceClient {
                         *connected_read.write() = false;
                         break;
                     }
-                    Err(e) => {
-                        tracing::error!("WebSocket read error: {}", e);
+                    Err(err) => {
+                        log!(HttpError::WebSocketError(err));
                         *connected_read.write() = false;
                         break;
                     }
@@ -154,9 +158,7 @@ impl InferenceClient {
     /// Handle incoming message
     fn handle_message(
         text: &str,
-        pending: &Arc<
-            RwLock<HashMap<String, tokio::sync::oneshot::Sender<DetectionResult>>>,
-        >,
+        pending: &Arc<RwLock<HashMap<String, oneshot::Sender<DetectionResult>>>>,
         callback: &Arc<RwLock<Option<Arc<dyn Fn(DetectionResult) + Send + Sync>>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Try to parse as detection result
@@ -227,7 +229,7 @@ impl InferenceClient {
         let json = serde_json::to_string(&request)?;
 
         // Create oneshot channel for response
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.pending.write().insert(flow.flow_id.clone(), tx);
 
         // Send request
@@ -260,7 +262,7 @@ impl InferenceClient {
             flows: requests,
         };
 
-        let json = serde_json::to_string(&batch)?;
+        let json = serde_json::to_string(&batch).map_err(MiscError::SerializeError)?;
         self.tx.send(Message::Text(json.into()))?;
 
         Ok(())
@@ -283,16 +285,13 @@ impl InferenceClient {
     }
 
     /// Start periodic ping task
-    pub fn start_ping_task(
-        self: Arc<Self>,
-        interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn start_ping_task(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                if let Err(e) = self.ping() {
-                    tracing::error!("Failed to send ping: {}", e);
+                if let Err(err) = self.ping() {
+                    log!(HttpError::WebSocketError(err));
                 }
             }
         })

@@ -18,6 +18,8 @@ use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::ml::detection_manager::DetectionManager;
+use crate::model::log::ml::MLLog;
+use crate::model::direction::Direction;
 use crate::model::config::Config;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
@@ -107,24 +109,12 @@ impl XskManager {
     }
 
     pub fn shutdown(&self) {
-        while let Some(sender) = self.ml_shutdowns.pop() {
-            if sender.send(()).is_err() {
-                tracing::warn!("Failed to send ML shutdown signal");
-            }
-        }
-
         while let Some(sender) = self.shutdowns.pop() {
             if sender.send(()).is_err() {
                 log!(SystemError::ShutdownSignalFailed);
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Direction {
-    Ingress,
-    Egress,
 }
 
 pub struct XskPair {
@@ -226,7 +216,6 @@ impl XskPair {
                                 }
                             }
                             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                                // Timeout, continue looping to check shutdown
                                 continue;
                             }
                             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
@@ -243,15 +232,6 @@ impl XskPair {
             (None, None)
         };
 
-        tracing::info!(
-            "{:?} queue {}: Initialized with {} total frames ({} for fill queue, {} for TX pool){}",
-            direction,
-            queue_id,
-            total_frames,
-            fill_frames_count,
-            pool_frames.len(),
-            if ml_channel.is_some() { " + ML processing" } else { "" }
-        );
 
         let xsk_pair = Self {
             direction,
@@ -291,7 +271,7 @@ impl XskPair {
                     thread::sleep(Duration::from_micros(1));
                 }
 
-                tracing::info!("{:?} XSK thread shutting down", self.direction);
+                log!(EbpfLog::XSKShutdown);
             })
             .expect("Failed to spawn XSK thread");
 
@@ -329,22 +309,22 @@ impl XskPair {
                 if let Some(ref ml_tx) = self.ml_channel {
                     match ml_tx.try_send(packet_data.clone()) {
                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                            tracing::warn!("{:?}: ML channel disconnected", self.direction);
+                           log!(MLLog::ChannelDisconnected);
                         }
                         _ => {},
                     }
                 }
 
                 if let Err(e) = forward_tx.send(packet_data) {
-                    tracing::warn!("{:?}: Failed to forward packet: {}", self.direction, e);
+                    log!(MLLog::ForwardPacketFailed {
+                        error: e.to_string()
+                    });
                 }
             }
 
             unsafe {
                 self.fill_queue.produce(&rx_descs[..rx_count]);
             }
-
-            tracing::debug!("{:?}: Received {} packets", self.direction, rx_count);
         }
 
         Ok(())
@@ -371,10 +351,10 @@ impl XskPair {
         };
 
         if pool_size == 0 {
-            tracing::warn!(
-                "{:?}: Frame pool exhausted! Pending TX: {} packets",
-                self.direction,
-                packets_to_send.len()
+            log!(
+                EbpfLog::FramePoolExhausted {
+                    send_len: packets_to_send.len()
+                }
             );
             return Ok(());
         }
@@ -389,20 +369,10 @@ impl XskPair {
                     frames.push(frame);
                 }
             }
-
-            if frames.len() < packets_to_send.len() {
-                tracing::debug!(
-                    "{:?}: Pool has {} frames, requested {}, allocated {}",
-                    self.direction,
-                    pool_size,
-                    packets_to_send.len(),
-                    frames.len()
-                );
-            }
         }
 
         if frames.is_empty() {
-            tracing::warn!("{:?}: No frames available for TX", self.direction);
+            log!(EbpfLog::NoFramesAvailable);
             return Ok(());
         }
 
@@ -418,16 +388,9 @@ impl XskPair {
 
         let nb_submitted = unsafe { self.tx.produce(&frames) };
 
-        tracing::debug!(
-            "{:?}: Submitted {}/{} packets to TX queue",
-            self.direction,
-            nb_submitted,
-            frames.len()
-        );
-
         if let Err(e) = self.tx.wakeup() {
             if e.kind() != std::io::ErrorKind::WouldBlock {
-                tracing::warn!("{:?}: TX wakeup failed: {}", self.direction, e);
+                log!(EbpfLog::TXWakeupFailed {error: e.to_string()})
             }
         }
 
