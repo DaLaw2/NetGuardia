@@ -11,7 +11,6 @@ use macros::log;
 
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::ml::detection_manager::{DetectionConfig, DetectionManager};
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
@@ -25,7 +24,6 @@ use crate::web::api::{control, default, misc};
 pub struct System {
     pub app_config: Arc<AppConfig>,
     pub ebpf_services: Arc<EbpfServices>,
-    pub detection_manager: Option<Arc<DetectionManager>>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
@@ -40,35 +38,15 @@ impl System {
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
 
-        let detection_manager = if let Some(ref ml_url) = app_config.ml_inference_url {
-            log!(MLLog::Initializing(ml_url));
-            match DetectionManager::new(ml_url.clone(), DetectionConfig::default()).await {
-                Ok(manager) => {
-                    tracing::info!("ML detection manager initialized successfully");
-                    Some(Arc::new(manager))
-                }
-                Err(err) => {
-                    log!(MLError::InitializeFailed(err));
-                    log!(MLLog::Skiped);
-                    None
-                }
-            }
-        } else {
-            log!(MLLog::Disabled);
-            None
-        };
-
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
             &mut egress_ebpf,
-            detection_manager.clone(),
         )?);
 
         let system = System {
             app_config,
             ebpf_services,
-            detection_manager,
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
@@ -85,12 +63,6 @@ impl System {
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
 
-        if let Some(ref detection_manager) = self.detection_manager {
-            log!(MLLog::Starting);
-            let _handles = detection_manager.start();
-            log!(MLLog::Ready);
-        }
-
         ebpf_services.run().await?;
         self.run_http_server().await?;
         Ok(())
@@ -99,11 +71,6 @@ impl System {
     pub async fn terminate(&self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
         log!(SystemLog::Terminating);
-
-        if let Some(ref detection_manager) = self.detection_manager {
-            log!(MLLog::Shutdown);
-            detection_manager.shutdown().await;
-        }
 
         ebpf_services.terminate();
         log!(SystemLog::TerminateComplete);

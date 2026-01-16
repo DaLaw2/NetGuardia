@@ -18,7 +18,7 @@ use crate::model::direction::{Direction, FlowDirection};
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::flow_stats_with_geo::FlowStatsWithGeo;
+use crate::model::geo_stats::FlowStatsWithGeo;
 use crate::model::ip_address::NativeConvert;
 use crate::model::time_type::TimeType;
 use crate::utils::boot_time::boot_time;

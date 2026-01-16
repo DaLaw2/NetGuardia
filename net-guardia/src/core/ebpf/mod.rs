@@ -19,7 +19,6 @@ use crate::core::infrastructure::health::SystemHealth;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
-use crate::ml::detection_manager::DetectionManager;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
@@ -35,9 +34,8 @@ impl EbpfServices {
         app_config: Arc<AppConfig>,
         ingress_ebpf: &mut Ebpf,
         egress_ebpf: &mut Ebpf,
-        detection_manager: Option<Arc<DetectionManager>>,
     ) -> Result<Self, Error> {
-        let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, detection_manager)?;
+        let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let health = SystemHealth::new(&app_config)?;
         let service = Service::new(ingress_ebpf)?;

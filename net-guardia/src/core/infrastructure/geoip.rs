@@ -8,16 +8,8 @@ use tokio::sync::RwLock;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use tokio::task;
+use crate::model::geo_stats::GeoLocation;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeoLocation {
-    pub country: Option<String>,
-    pub country_code: Option<String>,
-    pub city: Option<String>,
-    pub latitude: Option<f64>,
-    pub longitude: Option<f64>,
-    pub timezone: Option<String>,
-}
 
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,

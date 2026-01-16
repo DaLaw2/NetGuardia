@@ -2,8 +2,8 @@
 ingress_ifname = "enp4s0f1"  # Ingress NIC Name
 egress_ifname = "enp4s0f0"   # Egress NIC Name
 geoip_db_path = "net-guardia/static/geo/GeoLite2-City.mmdb"
-ml_inference_url = "ws://localhost:8766/ws/detect"  # Uncomment to enable ML detection
 combined_queue_count = 8     # NIC Combined Queue Count (ethtool -l <NIC>)
+xsk_channel_size = 4096
 fill_queue_size = 4096       # Umem Used (Should not modify)
 comp_queue_size = 4096       # Umem Used (Should not modify)
 tx_queue_size = 4096         # Umem Used (Should not modify)
