@@ -1,6 +1,6 @@
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
 
-use crate::core::ebpf::health::SystemHealth;
+use crate::core::infrastructure::health::SystemHealth;
 use crate::web::websocket::health_websocket;
 
 pub fn initialize() -> Scope {

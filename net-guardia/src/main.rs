@@ -2,6 +2,7 @@ mod core;
 mod model;
 mod utils;
 mod web;
+mod ml;
 
 use crate::core::system::System;
 use crate::model::error::Error;

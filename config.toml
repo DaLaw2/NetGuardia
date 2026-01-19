@@ -1,12 +1,14 @@
 [Config]
-ingress_ifname = "enp4s0f0"  # Ingress NIC Name
-egress_ifname = "enp4s0f1"   # Egress NIC Name
+ingress_ifname = "enp4s0f1"  # Ingress NIC Name
+egress_ifname = "enp4s0f0"   # Egress NIC Name
+geoip_db_path = "net-guardia/static/geo/GeoLite2-City.mmdb"
 combined_queue_count = 8     # NIC Combined Queue Count (ethtool -l <NIC>)
-fill_queue_size = 2048       # Umem Used (Should not modify)
-comp_queue_size = 2048       # Umem Used (Should not modify)
-tx_queue_size = 2048         # Umem Used (Should not modify)
-rx_queue_size = 2048         # Umem Used (Should not modify)
-frame_size = 2048            # Umem Used (Should not modify)
-frame_count = 2048           # Umem Used (Should not modify)
+xsk_channel_size = 4096
+fill_queue_size = 4096       # Umem Used (Should not modify)
+comp_queue_size = 4096       # Umem Used (Should not modify)
+tx_queue_size = 4096         # Umem Used (Should not modify)
+rx_queue_size = 4096         # Umem Used (Should not modify)
+frame_size = 4096            # Umem Used (Should not modify)
+frame_count = 4096           # Umem Used (Should not modify)
 http_server_bind_port = 8080 # Http Server Listen Port
 refresh_interval = 5         # Statistics Refresh Time

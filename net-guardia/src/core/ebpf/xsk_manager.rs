@@ -1,26 +1,27 @@
-use std::error::Error as StdError;
 use std::ffi::CString;
+use std::io::Write;
 use std::num::NonZero;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
-use aya::maps::{MapData, XskMap};
 use aya::Ebpf;
+use aya::maps::{MapData, XskMap};
+use crossbeam::channel::{Receiver, Sender, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
-use tokio::select;
 use tokio::sync::oneshot;
-use tokio::time::sleep;
-use xsk_rs::config::{BindFlags, FrameSize, Interface, QueueSize, SocketConfig, UmemConfig, LibbpfFlags};
+use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::model::direction::Direction;
 use crate::model::config::Config;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
-use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
 
 pub struct XskManager {
@@ -30,7 +31,10 @@ pub struct XskManager {
 }
 
 impl XskManager {
-    pub fn new(app_config: Arc<AppConfig>, ebpf: &mut Ebpf) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<AppConfig>,
+        ebpf: &mut Ebpf,
+    ) -> Result<Self, Error> {
         let map = ebpf.take_map("XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
         let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
 
@@ -45,11 +49,40 @@ impl XskManager {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
 
-        let mut xsk_map = self.xsk_map.lock();
         for queue_id in 0..combined_queue_count {
-            let xsk = Xsk::new(config.clone(), &mut xsk_map, queue_id)?;
-            let shutdown = xsk.run();
-            self.shutdowns.push(shutdown);
+            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.xsk_channel_size);
+            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.xsk_channel_size);
+
+            let ingress_xsk = XskPair::new(
+                config.clone(),
+                queue_id,
+                &config.ingress_ifname,
+                &config.egress_ifname,
+                Direction::Ingress
+            )?;
+
+            let egress_xsk = XskPair::new(
+                config.clone(),
+                queue_id,
+                &config.egress_ifname,
+                &config.ingress_ifname,
+                Direction::Egress,
+            )?;
+
+            let mut xsk_map = self.xsk_map.lock();
+            let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
+            xsk_map
+                .set(queue_id, ingress_fd, 0)
+                .map_err(EbpfError::AfXdpSetFailed)?;
+            drop(xsk_map);
+
+            let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
+            self.shutdowns.push(ingress_shutdown);
+
+            let egress_shutdown = egress_xsk.run(egress_to_ingress_tx, ingress_to_egress_rx)?;
+            self.shutdowns.push(egress_shutdown);
+
+            log!(EbpfLog::QueuePairStarted(queue_id));
         }
 
         Ok(())
@@ -64,17 +97,26 @@ impl XskManager {
     }
 }
 
-pub struct Xsk {
-    umem: Umem,
+pub struct XskPair {
+    direction: Direction,
+    umem: Arc<Umem>,
     fill_queue: FillQueue,
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
+    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
 }
 
-impl Xsk {
-    pub fn new(config: Config, xsk_map: &mut XskMap<MapData>, queue_id: u32) -> Result<Self, Error> {
-        let ifname = CString::new(config.ingress_ifname.as_str()).map_err(|_| SystemError::UnknownError)?;
+impl XskPair {
+    pub fn new(
+        config: Config,
+        queue_id: u32,
+        rx_ifname: &str,
+        tx_ifname: &str,
+        direction: Direction,
+    ) -> Result<Self, Error> {
+        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
+
         let fill_queue_size = QueueSize::new(config.fill_queue_size).map_err(|_| SystemError::InvalidConfig)?;
         let comp_queue_size = QueueSize::new(config.comp_queue_size).map_err(|_| SystemError::InvalidConfig)?;
         let tx_queue_size = QueueSize::new(config.tx_queue_size).map_err(|_| SystemError::InvalidConfig)?;
@@ -96,164 +138,218 @@ impl Xsk {
             .tx_queue_size(tx_queue_size)
             .rx_queue_size(rx_queue_size)
             .bind_flags(BindFlags::XDP_ZEROCOPY)
-            .libbpf_flags(LibbpfFlags::XSK_LIBBPF_FLAGS_INHIBIT_PROG_LOAD)
+            .libxdp_flags(LibxdpFlags::XSK_LIBXDP_FLAGS_INHIBIT_PROG_LOAD)
             .build();
 
-        let interface = Interface::new(ifname);
-        let (tx, rx, queue) =
-            Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)?;
+        let interface = Interface::new(rx_ifname_c);
+
+        let (tx, rx, queue) = unsafe {
+            Socket::new(socket_config, &umem, &interface, queue_id)
+                .map_err(EbpfError::SocketSetFailed)?
+        };
 
         let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::UnknownError)?;
 
-        let socket_fd = rx.fd().as_raw_fd();
+        let total_frames = frame_descs.len();
+        let fill_frames_count = (total_frames / 2).min(config.fill_queue_size as usize);
 
-        xsk_map.set(queue_id, socket_fd, 0).map_err(EbpfError::AfXdpSetFailed)?;
+        let fill_frames: Vec<FrameDesc> = frame_descs.iter().take(fill_frames_count).copied().collect();
 
-        let frames: Vec<FrameDesc> = frame_descs
-            .iter()
-            .take(config.fill_queue_size as usize)
-            .copied()
-            .collect();
-
-        let submitted = unsafe { fill_queue.produce(&frames) };
-        if submitted != frames.len() {
+        let submitted = unsafe { fill_queue.produce(&fill_frames) };
+        if submitted != fill_frames.len() {
             log!(EbpfLog::QueueInitIncomplete);
         }
 
-        Ok(Self {
-            umem,
+        let pool_frames: Vec<FrameDesc> = frame_descs.iter().skip(fill_frames_count).copied().collect();
+
+        let xsk_pair = Self {
+            direction,
+            umem: Arc::new(umem),
             fill_queue,
             comp_queue,
             tx,
             rx,
-        })
+            frame_pool: Arc::new(Mutex::new(pool_frames)),
+        };
+
+        Ok(xsk_pair)
     }
 
-    pub fn run(mut self) -> oneshot::Sender<()> {
-        let (sender, receiver) = oneshot::channel();
-        tokio::spawn(async move {
-            let mut receiver = receiver;
-            loop {
-                select! {
-                    biased;
-                    _ = &mut receiver => break,
-                    _ = self.process_events() => {},
+    pub fn run(
+        mut self,
+        forward_tx: Sender<Vec<u8>>,
+        forward_rx: Receiver<Vec<u8>>,
+    ) -> Result<oneshot::Sender<()>, EbpfError> {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let thread_name = format!("xsk-{:?}", self.direction);
+
+        thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                let mut shutdown_rx = Some(shutdown_rx);
+
+                loop {
+                    if let Some(ref mut rx) = shutdown_rx {
+                        match rx.try_recv() {
+                            Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
+                                break;
+                            }
+                            Err(oneshot::error::TryRecvError::Empty) => {}
+                        }
+                    }
+
+                    if let Err(e) = self.process_comp_queue() {
+                        log!(EbpfLog::CompQueueError {
+                            error: format!("{:?}", e)
+                        });
+                    }
+
+                    if let Err(e) = self.process_rx_queue(&forward_tx) {
+                        log!(EbpfLog::RXQueueError {
+                            error: format!("{:?}", e)
+                        });
+                    }
+
+                    if let Err(e) = self.process_tx_queue(&forward_rx) {
+                        log!(EbpfLog::TXQueueError {
+                            error: format!("{:?}", e)
+                        });
+                    }
+
+                    thread::sleep(Duration::from_micros(1));
                 }
-            }
-        });
-        sender
+
+                log!(EbpfLog::XSKShutdown);
+            })
+            .map(|_| shutdown_tx)
+            .map_err(|e| {
+                log!(EbpfLog::ThreadSpawnFailed {
+                    thread_name: thread_name.clone(),
+                    error: e.to_string()
+                });
+                EbpfError::ThreadSpawnFailed(e)
+            })
     }
 
-    async fn process_events(&mut self) {
-        let mut comp_descs = vec![FrameDesc::default(); 64];
-        let comp_count = unsafe { self.comp_queue.consume(&mut comp_descs) };
+    fn process_comp_queue(&mut self) -> Result<(), EbpfError> {
+        let mut comp_descs = vec![FrameDesc::default(); 256];
 
-        if comp_count > 0 {
-            let submitted = unsafe { self.fill_queue.produce(&comp_descs[..comp_count]) };
-            if submitted != comp_count {
-                log!(EbpfLog::QueueRefillIncomplete);
+        let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
+
+        if nb_completed > 0 {
+            let mut pool = self.frame_pool.lock();
+
+            for desc in comp_descs.iter().take(nb_completed) {
+                pool.push(*desc);
             }
         }
 
-        let mut packet_count = 0;
-        let mut tx_descs = Vec::with_capacity(64);
-        let mut rx_descs = vec![FrameDesc::default(); 64];
+        Ok(())
+    }
 
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<(), EbpfError> {
+        let mut rx_descs = vec![FrameDesc::default(); 64];
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
-        for rx_desc in &rx_descs[..rx_count] {
-            let data = unsafe { self.umem.data(rx_desc) };
-            let packet_data = &data.contents()[..rx_desc.lengths().data()];
+        if rx_count > 0 {
+            for rx_desc in rx_descs.iter().take(rx_count) {
+                let lengths = rx_desc.lengths();
+                let packet_len = lengths.data() as usize;
 
-            let packet_copy = packet_data.to_vec();
+                let data = unsafe { self.umem.data(rx_desc) };
+                let packet_data = data.contents()[..packet_len].to_vec();
 
-            Self::print_packet_info(&packet_copy);
-
-            tx_descs.push(*rx_desc);
-            packet_count += 1;
-        }
-
-        if !tx_descs.is_empty() {
-            let tx_submitted = unsafe { self.tx.produce(&tx_descs) };
-            if tx_submitted != tx_descs.len() {
-                log!(EbpfLog::QueueRefillIncomplete);
-                for desc in &tx_descs[tx_submitted..] {
-                    unsafe {
-                        let _ = self.fill_queue.produce(&[*desc]);
+                if let Err(e) = forward_tx.try_send(packet_data) {
+                    match e {
+                        crossbeam::channel::TrySendError::Full(_) => {
+                            log!(EbpfLog::ForwardChannelFull);
+                        }
+                        crossbeam::channel::TrySendError::Disconnected(_) => {
+                            log!(EbpfLog::ForwardChannelDisconnected);
+                        }
                     }
                 }
-            } else {
-                if let Err(err) = self.tx.wakeup() {
-                    log!(EbpfError::WakeupTXFailed(err))
+            }
+
+            unsafe {
+                let produced = self.fill_queue.produce(&rx_descs[..rx_count]);
+                if produced != rx_count {
+                    log!(EbpfLog::FillQueueIncomplete {
+                        produced,
+                        expected: rx_count
+                    });
                 }
             }
         }
 
-        if packet_count > 0 {
-            println!("Processed {} packets", packet_count);
-        }
-
-        if packet_count == 0 {
-            sleep(Duration::from_millis(1)).await;
-        }
+        Ok(())
     }
 
-    fn print_packet_info(packet_data: &[u8]) {
-        if packet_data.len() < 14 {
-            println!("Packet too small: {} bytes", packet_data.len());
-            return;
-        }
-
-        println!("Received packet: {} bytes", packet_data.len());
-
-        let print_len = std::cmp::min(64, packet_data.len());
-        print!("Data: ");
-        for i in 0..print_len {
-            print!("{:02x} ", packet_data[i]);
-            if (i + 1) % 16 == 0 {
-                print!("\n      ");
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<(), EbpfError> {
+        let mut packets_to_send = Vec::with_capacity(64);
+        while let Ok(packet) = forward_rx.try_recv() {
+            packets_to_send.push(packet);
+            if packets_to_send.len() >= 64 {
+                break;
             }
         }
-        println!();
 
-        let dst_mac = &packet_data[0..6];
-        let src_mac = &packet_data[6..12];
-        let eth_type = u16::from_be_bytes([packet_data[12], packet_data[13]]);
+        if packets_to_send.is_empty() {
+            return Ok(());
+        }
 
-        println!(
-            "Ethernet: src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, type=0x{:04x}",
-            src_mac[0],
-            src_mac[1],
-            src_mac[2],
-            src_mac[3],
-            src_mac[4],
-            src_mac[5],
-            dst_mac[0],
-            dst_mac[1],
-            dst_mac[2],
-            dst_mac[3],
-            dst_mac[4],
-            dst_mac[5],
-            eth_type
-        );
+        let _ = self.process_comp_queue();
 
-        match eth_type {
-            0x0800 => {
-                println!("  -> IPv4 packet");
-                if packet_data.len() >= 34 {
-                    let src_ip = &packet_data[26..30];
-                    let dst_ip = &packet_data[30..34];
-                    println!(
-                        "     IP: {}.{}.{}.{} -> {}.{}.{}.{}",
-                        src_ip[0], src_ip[1], src_ip[2], src_ip[3], dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]
-                    );
+        let pool_size = {
+            let pool = self.frame_pool.lock();
+            pool.len()
+        };
+
+        if pool_size == 0 {
+            log!(EbpfLog::FramePoolExhausted {
+                send_len: packets_to_send.len()
+            });
+            return Ok(());
+        }
+
+        let mut frames = Vec::with_capacity(packets_to_send.len());
+        {
+            let mut pool = self.frame_pool.lock();
+            let available = pool.len().min(packets_to_send.len());
+
+            for _ in 0..available {
+                if let Some(frame) = pool.pop() {
+                    frames.push(frame);
                 }
             }
-            0x86DD => println!("  -> IPv6 packet"),
-            0x0806 => println!("  -> ARP packet"),
-            _ => println!("  -> Unknown protocol"),
         }
 
-        println!("---");
+        if frames.is_empty() {
+            log!(EbpfLog::NoFramesAvailable);
+            return Ok(());
+        }
+
+        for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
+            unsafe {
+                self.umem
+                    .data_mut(frame)
+                    .cursor()
+                    .write_all(packet)
+                    .map_err(EbpfError::AfXdpSetFailed)?;
+            }
+        }
+
+        let _nb_submitted = unsafe { self.tx.produce(&frames) };
+
+        if let Err(e) = self.tx.wakeup() {
+            if e.kind() != std::io::ErrorKind::WouldBlock {
+                log!(EbpfLog::TXWakeupFailed {
+                    error: e.to_string()
+                });
+            }
+        }
+
+        Ok(())
     }
 }

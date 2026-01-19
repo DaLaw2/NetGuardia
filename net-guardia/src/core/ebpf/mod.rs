@@ -2,7 +2,6 @@ pub mod access_control;
 pub mod service;
 pub mod statistics;
 pub mod xsk_manager;
-pub mod health;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +15,7 @@ use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::service::Service;
 use crate::core::ebpf::statistics::Statistics;
 use crate::core::ebpf::xsk_manager::XskManager;
-use crate::core::ebpf::health::SystemHealth;
+use crate::core::infrastructure::health::SystemHealth;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
@@ -31,7 +30,11 @@ pub struct EbpfServices {
 }
 
 impl EbpfServices {
-    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<AppConfig>,
+        ingress_ebpf: &mut Ebpf,
+        egress_ebpf: &mut Ebpf,
+    ) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let health = SystemHealth::new(&app_config)?;

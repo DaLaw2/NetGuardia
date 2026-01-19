@@ -1,19 +1,24 @@
 use std::collections::HashMap;
-use std::net::{SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
 use common::model::flow_stats::FlowStats;
 use common::model::ip_address::{AddrPortV4, AddrPortV6};
+use futures::future::join_all;
+use macros::log;
 use tokio::select;
-use tokio::sync::{oneshot, RwLock};
-use tokio::time::{sleep, Duration};
+use tokio::sync::{RwLock, oneshot};
+use tokio::time::{Duration, sleep};
 
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::core::infrastructure::geoip::GeoIpService;
 use crate::model::direction::{Direction, FlowDirection};
-use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
+use crate::model::error::ebpf::EbpfError;
+use crate::model::error::misc::MiscError;
+use crate::model::geo_stats::FlowStatsWithGeo;
 use crate::model::ip_address::NativeConvert;
 use crate::model::time_type::TimeType;
 use crate::utils::boot_time::boot_time;
@@ -21,6 +26,7 @@ use crate::utils::boot_time::boot_time;
 pub struct Statistics {
     app_config: Arc<AppConfig>,
     boot_time: u64,
+    geo_ip: Option<Arc<GeoIpService>>,
     ipv4_maps: HashMap<(Direction, FlowDirection, TimeType), RwLock<FlowMap<AddrPortV4>>>,
     ipv6_maps: HashMap<(Direction, FlowDirection, TimeType), RwLock<FlowMap<AddrPortV6>>>,
 }
@@ -88,6 +94,13 @@ impl Statistics {
         let boot_time = boot_time();
         let mut ipv4_maps = HashMap::new();
         let mut ipv6_maps = HashMap::new();
+        let geo_ip = match GeoIpService::new(&app_config.geoip_db_path) {
+            Ok(service) => Some(Arc::new(service)),
+            Err(err) => {
+                log!(MiscError::InvalidGeoIPConfiguration(err));
+                None
+            }
+        };
         for (key, (ipv4_name, ipv6_name)) in Self::INGRESS_MAPS {
             ipv4_maps.insert(key, RwLock::new(FlowMap::new(ingress_ebpf, ipv4_name)?));
             ipv6_maps.insert(key, RwLock::new(FlowMap::new(ingress_ebpf, ipv6_name)?));
@@ -99,6 +112,7 @@ impl Statistics {
         let statistics = Statistics {
             app_config,
             boot_time,
+            geo_ip,
             ipv4_maps,
             ipv6_maps,
         };
@@ -142,13 +156,34 @@ impl Statistics {
         direction: Direction,
         flow_direction: FlowDirection,
         time_type: TimeType,
-    ) -> HashMap<SocketAddrV4, FlowStats> {
-        self.ipv4_maps
+    ) -> HashMap<SocketAddrV4, FlowStatsWithGeo> {
+        let flow_data = self
+            .ipv4_maps
             .get(&(direction, flow_direction, time_type))
             .unwrap()
             .write()
             .await
-            .get_map()
+            .get_map();
+
+        if let Some(ref geo_ip) = self.geo_ip {
+            let futures: Vec<_> = flow_data
+                .into_iter()
+                .map(|(addr, stats)| {
+                    let geo_ip = geo_ip.clone();
+                    async move {
+                        let ip = IpAddr::V4(*addr.ip());
+                        let geo = geo_ip.lookup(ip).await.ok().flatten();
+                        (addr, FlowStatsWithGeo { stats, geo })
+                    }
+                })
+                .collect();
+            join_all(futures).await.into_iter().collect()
+        } else {
+            flow_data
+                .into_iter()
+                .map(|(addr, stats)| (addr, FlowStatsWithGeo { stats, geo: None }))
+                .collect()
+        }
     }
 
     pub async fn get_ipv6_flow_data(
@@ -156,13 +191,34 @@ impl Statistics {
         direction: Direction,
         flow_direction: FlowDirection,
         time_type: TimeType,
-    ) -> HashMap<SocketAddrV6, FlowStats> {
-        self.ipv6_maps
+    ) -> HashMap<SocketAddrV6, FlowStatsWithGeo> {
+        let flow_data = self
+            .ipv6_maps
             .get(&(direction, flow_direction, time_type))
             .unwrap()
             .write()
             .await
-            .get_map()
+            .get_map();
+
+        if let Some(ref geo_ip) = self.geo_ip {
+            let futures: Vec<_> = flow_data
+                .into_iter()
+                .map(|(addr, stats)| {
+                    let geo_ip = geo_ip.clone();
+                    async move {
+                        let ip = IpAddr::V6(*addr.ip());
+                        let geo = geo_ip.lookup(ip).await.ok().flatten();
+                        (addr, FlowStatsWithGeo { stats, geo })
+                    }
+                })
+                .collect();
+            join_all(futures).await.into_iter().collect()
+        } else {
+            flow_data
+                .into_iter()
+                .map(|(addr, stats)| (addr, FlowStatsWithGeo { stats, geo: None }))
+                .collect()
+        }
     }
 }
 

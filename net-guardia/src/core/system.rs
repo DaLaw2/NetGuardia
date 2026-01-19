@@ -15,6 +15,8 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
+use crate::model::error::ml::MLError;
+use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
@@ -22,7 +24,6 @@ use crate::web::api::{control, default, misc};
 pub struct System {
     pub app_config: Arc<AppConfig>,
     pub ebpf_services: Arc<EbpfServices>,
-
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
@@ -36,11 +37,13 @@ impl System {
         let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
             &mut egress_ebpf,
         )?);
+
         let system = System {
             app_config,
             ebpf_services,
@@ -59,6 +62,7 @@ impl System {
         self.aya_log_init()?;
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
+
         ebpf_services.run().await?;
         self.run_http_server().await?;
         Ok(())
@@ -67,6 +71,7 @@ impl System {
     pub async fn terminate(&self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
         log!(SystemLog::Terminating);
+
         ebpf_services.terminate();
         log!(SystemLog::TerminateComplete);
         Ok(())
@@ -143,7 +148,7 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-ingress"
         )))
-        .map_err(EbpfError::EbpfNotFound)?;
+            .map_err(EbpfError::EbpfNotFound)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", ingress::ACCESS_CONTROL)?;
@@ -158,7 +163,7 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-egress"
         )))
-        .map_err(EbpfError::EbpfNotFound)?;
+            .map_err(EbpfError::EbpfNotFound)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;

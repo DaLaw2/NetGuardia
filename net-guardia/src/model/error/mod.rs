@@ -2,6 +2,7 @@ pub mod ebpf;
 pub mod http;
 pub mod io;
 pub mod misc;
+pub mod ml;
 pub mod system;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::io::IOError;
 use crate::model::error::misc::MiscError;
+use crate::model::error::ml::MLError;
 use crate::model::error::system::SystemError;
 
 #[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
@@ -18,6 +20,8 @@ pub enum Error {
     Ebpf(EbpfError),
     #[error("{0}")]
     Http(HttpError),
+    #[error("{0}")]
+    ML(MLError),
     #[error("{0}")]
     IO(IOError),
     #[error("{0}")]

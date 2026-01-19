@@ -1,4 +1,4 @@
-use macros::traceable;
+use macros::{loggable, traceable};
 use tracing;
 
 traceable! {
@@ -52,5 +52,18 @@ traceable! {
         #[no_source]
         #[error("Unknown error")]
         UnknownError => tracing::Level::ERROR,
+
+        #[error("Failed to spawn XSK thread")]
+        ThreadSpawnFailed => tracing::Level::ERROR,
+
+        #[error("Completion queue processing failed")]
+        CompQueueError => tracing::Level::ERROR,
+
+        #[error("RX queue processing failed")]
+        RXQueueError => tracing::Level::ERROR,
+
+        #[error("TX queue processing failed")]
+        TXQueueError => tracing::Level::ERROR,
     }
 }
+
