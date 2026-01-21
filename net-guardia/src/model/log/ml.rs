@@ -41,5 +41,17 @@ loggable! {
 
         #[error("Queue pair {queue_id} started successfully")]
         QueuePairStarted { queue_id: u32 } => tracing::Level::INFO,
+
+        #[error("Loading ML models from directory: {path}")]
+        LoadingModels { path: String } => tracing::Level::INFO,
+
+        #[error("ML models loaded successfully")]
+        ModelsLoaded => tracing::Level::INFO,
+
+        #[error("Loading inference configuration: {path}")]
+        LoadingConfig { path: String } => tracing::Level::INFO,
+
+        #[error("Inference configuration loaded: {features} features, {attacks} attack types")]
+        ConfigLoaded { features: usize, attacks: usize } => tracing::Level::INFO,
     }
 }

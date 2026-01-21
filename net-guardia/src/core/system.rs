@@ -18,14 +18,18 @@ use crate::model::error::Error;
 use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
+use crate::model::inference_config::InferenceConfig;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
+use crate::ml::loader::MLModels;
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
+    pub ml_models: Arc<MLModels>,
+    pub inference_config: Arc<InferenceConfig>,
     #[allow(dead_code)]
     ingress_program_array: ProgramArray<MapData>,
     #[allow(dead_code)]
@@ -38,6 +42,19 @@ impl System {
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
 
+        let models_path = "./models";
+        log!(MLLog::LoadingModels { path: models_path.to_string() });
+        let ml_models = Arc::new(MLModels::load_from_dir(models_path)?);
+        log!(MLLog::ModelsLoaded);
+
+        let config_path = "./models/netguardia_inference.json";
+        log!(MLLog::LoadingConfig { path: config_path.to_string() });
+        let inference_config = Arc::new(InferenceConfig::load_from_file(config_path)?);
+        log!(MLLog::ConfigLoaded {
+            features: inference_config.num_features(),
+            attacks: inference_config.num_attack_types()
+        });
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
@@ -49,6 +66,8 @@ impl System {
             ebpf_services,
             ingress_ebpf,
             egress_ebpf,
+            ml_models,
+            inference_config,
             ingress_program_array,
             egress_program_array,
         };
@@ -117,6 +136,8 @@ impl System {
         let service = self.ebpf_services.service.clone();
         let statistics = self.ebpf_services.statistics.clone();
         let health = self.ebpf_services.health.clone();
+        let ml_models = self.ml_models.clone();
+        let inference_config = self.inference_config.clone();
         let port = self.app_config.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -131,6 +152,8 @@ impl System {
                 .app_data(web::Data::from(service.clone()))
                 .app_data(web::Data::from(statistics.clone()))
                 .app_data(web::Data::from(health.clone()))
+                .app_data(web::Data::from(ml_models.clone()))
+                .app_data(web::Data::from(inference_config.clone()))
                 .service(control::initialize())
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
