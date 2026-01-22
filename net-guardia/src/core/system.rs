@@ -42,18 +42,11 @@ impl System {
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
 
-        let models_path = "./models";
-        log!(MLLog::LoadingModels { path: models_path.to_string() });
+        let models_path = "models";
         let ml_models = Arc::new(MLModels::load_from_dir(models_path)?);
-        log!(MLLog::ModelsLoaded);
 
-        let config_path = "./models/netguardia_inference.json";
-        log!(MLLog::LoadingConfig { path: config_path.to_string() });
+        let config_path = "models/inference_config.json";
         let inference_config = Arc::new(InferenceConfig::load_from_file(config_path)?);
-        log!(MLLog::ConfigLoaded {
-            features: inference_config.num_features(),
-            attacks: inference_config.num_attack_types()
-        });
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),

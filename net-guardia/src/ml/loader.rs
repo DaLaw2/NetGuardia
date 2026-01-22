@@ -1,11 +1,11 @@
-use ort::session::Session;
-use std::path::{Path, PathBuf};
+use tract_onnx::prelude::*;
+use std::path::Path;
 use crate::model::error::ml::MLError;
 
 pub struct MLModels {
-    pub deep_autoencoder: Session,
-    pub random_forest: Session,
-    pub mlp: Session,
+    pub deep_autoencoder: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    pub random_forest: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    pub mlp: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
 }
 
 impl MLModels {
@@ -13,22 +13,70 @@ impl MLModels {
         let dir = models_dir.as_ref();
 
         let da_path = dir.join("deep_autoencoder.onnx");
-        let deep_autoencoder = Session::builder()
-            .map_err(|_| MLError::ModelLoadFailed { path: da_path.clone() })?
-            .commit_from_file(&da_path)
-            .map_err(|_| MLError::ModelLoadFailed { path: da_path })?;
+        let mut da_model = tract_onnx::onnx()
+            .model_for_path(&da_path)
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: da_path.clone() }
+            })?;
+
+        da_model.set_input_fact(0, f32::fact(&[1, 78]).into())
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: da_path.clone() }
+            })?;
+
+        let deep_autoencoder = da_model
+            .into_optimized()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: da_path.clone() }
+            })?
+            .into_runnable()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: da_path }
+            })?;
 
         let rf_path = dir.join("random_forest.onnx");
-        let random_forest = Session::builder()
-            .map_err(|_| MLError::ModelLoadFailed { path: rf_path.clone() })?
-            .commit_from_file(&rf_path)
-            .map_err(|_| MLError::ModelLoadFailed { path: rf_path })?;
+        let mut rf_model = tract_onnx::onnx()
+            .model_for_path(&rf_path)
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: rf_path.clone() }
+            })?;
+
+        rf_model.set_input_fact(0, f32::fact(&[1, 78]).into())
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: rf_path.clone() }
+            })?;
+
+        let random_forest = rf_model
+            .into_optimized()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: rf_path.clone() }
+            })?
+            .into_runnable()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: rf_path }
+            })?;
 
         let mlp_path = dir.join("mlp.onnx");
-        let mlp = Session::builder()
-            .map_err(|_| MLError::ModelLoadFailed { path: mlp_path.clone() })?
-            .commit_from_file(&mlp_path)
-            .map_err(|_| MLError::ModelLoadFailed { path: mlp_path })?;
+        let mut mlp_model = tract_onnx::onnx()
+            .model_for_path(&mlp_path)
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: mlp_path.clone() }
+            })?;
+
+        mlp_model.set_input_fact(0, f32::fact(&[1, 78]).into())
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: mlp_path.clone() }
+            })?;
+
+        let mlp = mlp_model
+            .into_optimized()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: mlp_path.clone() }
+            })?
+            .into_runnable()
+            .map_err(|_| {
+                MLError::ModelLoadFailed { path: mlp_path }
+            })?;
 
         Ok(Self {
             deep_autoencoder,
