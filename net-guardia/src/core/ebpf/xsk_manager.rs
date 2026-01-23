@@ -50,8 +50,8 @@ impl XskManager {
         let combined_queue_count = config.combined_queue_count;
 
         for queue_id in 0..combined_queue_count {
-            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.xsk_channel_size);
-            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.xsk_channel_size);
+            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.channel_size);
+            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.channel_size);
 
             let ingress_xsk = XskPair::new(
                 config.clone(),

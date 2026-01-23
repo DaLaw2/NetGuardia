@@ -18,10 +18,10 @@ use crate::model::error::Error;
 use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
-use crate::model::inference_config::InferenceConfig;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
-use crate::ml::loader::MLModels;
+use crate::ml::ml_loader::MLModels;
+use crate::ml::config_loader::InferenceConfig;
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
@@ -42,11 +42,9 @@ impl System {
         let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
         let app_config = Arc::new(AppConfig::new()?);
 
-        let models_path = "models";
-        let ml_models = Arc::new(MLModels::load_from_dir(models_path)?);
+        let inference_config = Arc::new(InferenceConfig::load_file(&app_config.models_config_name)?);
 
-        let config_path = "models/inference_config.json";
-        let inference_config = Arc::new(InferenceConfig::load_from_file(config_path)?);
+        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config.num_features())?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
@@ -71,6 +69,16 @@ impl System {
         let ebpf_services = self.ebpf_services.clone();
         Logging::initialize()?;
         log!(SystemLog::Initializing);
+
+        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("deep_autoencoder") });
+        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("random_forest") });
+        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("mlp") });
+
+        log!(MLLog::ConfigLoaded {
+            features: self.inference_config.num_features(),
+            attacks: self.inference_config.num_attack_types()
+        });
+
         self.aya_log_init()?;
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;

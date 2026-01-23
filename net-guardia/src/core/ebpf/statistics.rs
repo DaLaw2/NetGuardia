@@ -94,7 +94,7 @@ impl Statistics {
         let boot_time = boot_time();
         let mut ipv4_maps = HashMap::new();
         let mut ipv6_maps = HashMap::new();
-        let geo_ip = match GeoIpService::new(&app_config.geoip_db_path) {
+        let geo_ip = match GeoIpService::new(&app_config.geoip_db_name) {
             Ok(service) => Some(Arc::new(service)),
             Err(err) => {
                 log!(MiscError::InvalidGeoIPConfiguration(err));

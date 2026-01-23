@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maxminddb::{geoip2, MaxMindDbError, Reader};
@@ -16,7 +16,8 @@ pub struct GeoIpService {
 }
 
 impl GeoIpService {
-    pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, MaxMindDbError> {
+    pub fn new(db_name: &str) -> Result<Self, MaxMindDbError> {
+        let db_path = PathBuf::from("net-guardia/static/geo").join(db_name);
         Self::with_cache_size(db_path, 10000)
     }
 

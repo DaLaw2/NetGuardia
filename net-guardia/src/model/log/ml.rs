@@ -42,7 +42,10 @@ loggable! {
         #[error("Queue pair {queue_id} started successfully")]
         QueuePairStarted { queue_id: u32 } => tracing::Level::INFO,
 
-        #[error("ML models loaded successfully")]
-        ModelsLoaded => tracing::Level::INFO,
+        #[error("ML models loaded - {info}")]
+        ModelsLoaded { info: String } => tracing::Level::INFO,
+
+        #[error("Inference configuration loaded: {features} features, {attacks} attack types")]
+        ConfigLoaded { features: usize, attacks: usize } => tracing::Level::INFO,
     }
 }

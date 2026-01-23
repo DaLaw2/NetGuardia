@@ -1,26 +1,9 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 use crate::model::error::ml::MLError;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipParams {
-    pub lower: f64,
-    pub upper: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AENormalization {
-    pub min: f64,
-    pub max: f64,
-    pub mean: f64,
-    pub std: f64,
-    pub median: f64,
-    pub p90: f64,
-    pub p95: f64,
-    pub p99: f64,
-}
+use crate::model::ml_type::{AENormalization, ClipParams};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceConfig {
@@ -37,10 +20,10 @@ pub struct InferenceConfig {
 }
 
 impl InferenceConfig {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, MLError> {
-        let path_ref = path.as_ref();
-        let content = fs::read_to_string(path_ref)
-            .map_err(|_| MLError::ConfigLoadFailed { path: path_ref.to_path_buf() })?;
+    pub fn load_file(file: &str) -> Result<Self, MLError> {
+        let path = PathBuf::from("models").join(file);
+        let content = fs::read_to_string(&path)
+            .map_err(|_| MLError::ConfigLoadFailed { path: path.to_path_buf() })?;
         let config: InferenceConfig = serde_json::from_str(&content)
             .map_err(|e| MLError::ConfigParseFailed { reason: e.to_string() })?;
         Ok(config)

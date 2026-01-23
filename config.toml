@@ -1,9 +1,13 @@
 [Config]
 ingress_ifname = "enp4s0f1"  # Ingress NIC Name
 egress_ifname = "enp4s0f0"   # Egress NIC Name
-geoip_db_path = "net-guardia/static/geo/GeoLite2-City.mmdb"
+geoip_db_name = "GeoLite2-City.mmdb"
+deep_autoencoder_name = "deep_autoencoder.onnx"
+random_forest_name = "random_forest.onnx"
+mlp_name = "mlp.onnx"
+models_config_name = "inference_config.json"
 combined_queue_count = 8     # NIC Combined Queue Count (ethtool -l <NIC>)
-xsk_channel_size = 4096
+channel_size = 4096
 fill_queue_size = 4096       # Umem Used (Should not modify)
 comp_queue_size = 4096       # Umem Used (Should not modify)
 tx_queue_size = 4096         # Umem Used (Should not modify)

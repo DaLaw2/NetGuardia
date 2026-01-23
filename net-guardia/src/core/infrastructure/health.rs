@@ -102,7 +102,7 @@ pub struct SystemHealthStatus {
 }
 
 impl SystemHealth {
-    pub fn new(config: &Arc<AppConfig>) -> Result<Self, Error> {
+    pub fn new(config: Arc<AppConfig>) -> Result<Self, Error> {
         let (broadcast_tx, _) = broadcast::channel(100);
 
         let health = SystemHealth {

@@ -13,12 +13,10 @@ impl NativeConvert for IPv4 {
     type Native = Ipv4Addr;
 
     fn into_native(self) -> Self::Native {
-        // eBPF 儲存的是 big-endian，需要轉換成 host order
         Ipv4Addr::from(u32::from_be(self))
     }
 
     fn from_native(native: Self::Native) -> Self {
-        // 轉回 big-endian 給 eBPF
         native.to_bits().to_be()
     }
 }

@@ -37,9 +37,9 @@ impl EbpfServices {
     ) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
-        let health = SystemHealth::new(&app_config)?;
+        let health = SystemHealth::new(app_config.clone())?;
         let service = Service::new(ingress_ebpf)?;
-        let statistics = Statistics::new(app_config, ingress_ebpf, egress_ebpf)?;
+        let statistics = Statistics::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let ebpf_services = Self {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
