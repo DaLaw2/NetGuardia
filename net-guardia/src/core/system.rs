@@ -20,7 +20,7 @@ use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
-use crate::ml::ml_loader::MLModels;
+use crate::ml::model_loader::MLModels;
 use crate::ml::config_loader::InferenceConfig;
 
 pub struct System {
