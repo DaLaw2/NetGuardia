@@ -1,0 +1,3 @@
+[submodule "net-guardia-frontend"]
+	path = net-guardia-frontend
+	url = https://github.com/DaLaw2/NetGuardia-FrontEnd.git

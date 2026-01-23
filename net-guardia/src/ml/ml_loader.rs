@@ -21,7 +21,7 @@ impl MLModels {
     pub fn loader(model: &str, features: &usize) -> Result<RunnableModel, MLError> {
         let model_path = PathBuf::from("models").join(model);
 
-        let mut model = tract_onnx::onnx()
+        let mut model = onnx()
             .model_for_path(&model_path)
             .map_err(|_| {
                 MLError::ModelLoadFailed { path: model_path.clone() }
