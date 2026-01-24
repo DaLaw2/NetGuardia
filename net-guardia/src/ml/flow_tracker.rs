@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
-use crate::model::ml_detection::{PacketInfo};
+
+use crate::model::ml_detection::{BulkState, FlowKey, PacketData, PacketInfo};
 
 #[derive(Debug, Clone)]
 pub struct FlowData {

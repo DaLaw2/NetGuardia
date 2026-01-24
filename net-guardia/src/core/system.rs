@@ -22,6 +22,7 @@ use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
 use crate::ml::model_loader::MLModels;
 use crate::ml::config_loader::InferenceConfig;
+use crate::ml::engine::Engine;
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
@@ -30,6 +31,7 @@ pub struct System {
     pub egress_ebpf: Ebpf,
     pub ml_models: Arc<MLModels>,
     pub inference_config: Arc<InferenceConfig>,
+    pub ml_engine: Arc<Engine>,
     #[allow(dead_code)]
     ingress_program_array: ProgramArray<MapData>,
     #[allow(dead_code)]
@@ -52,6 +54,20 @@ impl System {
             &mut egress_ebpf,
         )?);
 
+        let ml_engine = Arc::new(Engine::new(
+            ml_models.clone(),
+            inference_config.clone(),
+            app_config.max_concurrent_flows,
+            app_config.min_packets_for_inference,
+            app_config.inference_interval_secs,
+        ));
+
+        log!(MLLog::EngineStarted {
+            max_flows: app_config.max_concurrent_flows,
+            min_packets: app_config.min_packets_for_inference,
+            interval_secs: app_config.inference_interval_secs
+        });
+
         let system = System {
             app_config,
             ebpf_services,
@@ -59,6 +75,7 @@ impl System {
             egress_ebpf,
             ml_models,
             inference_config,
+            ml_engine,
             ingress_program_array,
             egress_program_array,
         };
@@ -83,7 +100,10 @@ impl System {
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
 
-        ebpf_services.run().await?;
+
+        let _ml_handle = self.ml_engine.clone().start();
+
+        ebpf_services.run(self.ml_engine.clone()).await?;
         self.run_http_server().await?;
         Ok(())
     }

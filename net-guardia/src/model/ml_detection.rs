@@ -115,4 +115,51 @@ pub struct BulkState {
     pub in_bulk: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct DetectionResult {
+    pub flow_key: String,
+    pub is_malicious: bool,
+    pub attack_type: String,
+    pub confidence: f32,
+    pub ae_reconstruction_error: f32,
+    pub rf_prediction: usize,
+    pub mlp_prediction: usize,
+}
 
+/// Statistics about inference execution
+#[derive(Debug, Clone, Default)]
+pub struct InferenceStats {
+    pub total_flows: usize,
+    pub malicious_flows: usize,
+    pub benign_flows: usize,
+    pub inference_time_us: u64,
+    pub flows_per_second: f32,
+}
+
+impl InferenceStats {
+    pub fn from_results(results: &[DetectionResult], elapsed_us: u64) -> Self {
+        let total = results.len();
+        let malicious = results.iter().filter(|r| r.is_malicious).count();
+        let benign = total - malicious;
+
+        let fps = if elapsed_us > 0 {
+            (total as f64 / (elapsed_us as f64 / 1_000_000.0)) as f32
+        } else {
+            0.0
+        };
+
+        Self {
+            total_flows: total,
+            malicious_flows: malicious,
+            benign_flows: benign,
+            inference_time_us: elapsed_us,
+            flows_per_second: fps,
+        }
+    }
+}
+
+/// ML engine statistics
+#[derive(Debug, Clone)]
+pub struct EngineStats {
+    pub active_flows: usize,
+}

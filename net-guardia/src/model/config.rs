@@ -25,5 +25,8 @@ pub struct Config {
     pub frame_size: u32,
     pub frame_count: u32,
     pub refresh_interval: u64,
-    pub http_server_bind_port: u16
+    pub http_server_bind_port: u16,
+    pub max_concurrent_flows: usize,
+    pub min_packets_for_inference: usize,
+    pub inference_interval_secs: u64,
 }

@@ -16,3 +16,7 @@ frame_size = 4096            # Umem Used (Should not modify)
 frame_count = 4096           # Umem Used (Should not modify)
 http_server_bind_port = 8080 # Http Server Listen Port
 refresh_interval = 5         # Statistics Refresh Time
+
+max_concurrent_flows =  10000       # max_flows: track up to 10000 concurrent flows
+min_packets_for_inference =  10     # min_packets: minimum 10 packets per flow for inference
+inference_interval_secs = 5         # interval_secs: run inference every 5 seconds

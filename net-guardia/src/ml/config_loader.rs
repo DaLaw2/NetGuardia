@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+
 use crate::model::error::ml::MLError;
 use crate::model::ml_detection::{AENormalization, ClipParams};
 

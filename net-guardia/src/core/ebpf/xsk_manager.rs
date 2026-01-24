@@ -23,6 +23,7 @@ use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::log::ebpf::EbpfLog;
+use crate::ml::engine::{Engine, PacketProcessor};
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
@@ -45,9 +46,11 @@ impl XskManager {
         })
     }
 
-    pub fn run(&self) -> Result<(), Error> {
+    pub fn run(&self, ml_engine: Option<Arc<Engine>>) -> Result<(), Error> {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
+
+        let packet_processor = ml_engine.map(|engine| Arc::new(PacketProcessor::new(engine)));
 
         for queue_id in 0..combined_queue_count {
             let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.channel_size);
@@ -58,7 +61,8 @@ impl XskManager {
                 queue_id,
                 &config.ingress_ifname,
                 &config.egress_ifname,
-                Direction::Ingress
+                Direction::Ingress,
+                packet_processor.clone(),
             )?;
 
             let egress_xsk = XskPair::new(
@@ -67,6 +71,7 @@ impl XskManager {
                 &config.egress_ifname,
                 &config.ingress_ifname,
                 Direction::Egress,
+                None,  // Don't process egress packets for ML
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
@@ -105,6 +110,7 @@ pub struct XskPair {
     tx: TxQueue,
     rx: RxQueue,
     frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    packet_processor: Option<Arc<PacketProcessor>>,
 }
 
 impl XskPair {
@@ -114,6 +120,7 @@ impl XskPair {
         rx_ifname: &str,
         tx_ifname: &str,
         direction: Direction,
+        packet_processor: Option<Arc<PacketProcessor>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
 
@@ -170,6 +177,7 @@ impl XskPair {
             tx,
             rx,
             frame_pool: Arc::new(Mutex::new(pool_frames)),
+            packet_processor,
         };
 
         Ok(xsk_pair)
@@ -259,6 +267,10 @@ impl XskPair {
 
                 let data = unsafe { self.umem.data(rx_desc) };
                 let packet_data = data.contents()[..packet_len].to_vec();
+
+                if let Some(ref processor) = self.packet_processor {
+                    processor.process(&packet_data);
+                }
 
                 if let Err(e) = forward_tx.try_send(packet_data) {
                     match e {
