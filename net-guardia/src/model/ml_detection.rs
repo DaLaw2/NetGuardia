@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
-use network_types::ip::IpProto;
+use common::model::event::{Event, TcpFlags};
+use crate::utils::packet_parser::{format_ipv4, format_ipv6};
 
 pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
@@ -22,49 +23,6 @@ pub struct AENormalization {
     pub p99: f64,
 }
 
-#[derive(Debug, Clone)]
-pub struct PacketInfo {
-    pub protocol: IpProto,
-    pub src_ip: String,
-    pub dst_ip: String,
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub packet_length: u32,
-    pub payload_length: u32,
-    pub header_length: u16,
-    pub timestamp_us: u64,
-    pub tcp_flags: TcpFlags,
-    pub tcp_window_size: u16,
-    pub is_forward: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TcpFlags {
-    pub fin: bool,
-    pub syn: bool,
-    pub rst: bool,
-    pub psh: bool,
-    pub ack: bool,
-    pub urg: bool,
-    pub ece: bool,
-    pub cwr: bool,
-}
-
-impl TcpFlags {
-    pub fn from_byte(flags: u8) -> Self {
-        Self {
-            fin: (flags & 0x01) != 0,
-            syn: (flags & 0x02) != 0,
-            rst: (flags & 0x04) != 0,
-            psh: (flags & 0x08) != 0,
-            ack: (flags & 0x10) != 0,
-            urg: (flags & 0x20) != 0,
-            ece: (flags & 0x40) != 0,
-            cwr: (flags & 0x80) != 0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct FlowKey {
     pub src_ip: String,
@@ -75,13 +33,22 @@ pub struct FlowKey {
 }
 
 impl FlowKey {
-    pub fn from_packet(packet: &PacketInfo) -> Self {
-        Self {
-            src_ip: packet.src_ip.clone(),
-            dst_ip: packet.dst_ip.clone(),
-            src_port: packet.src_port,
-            dst_port: packet.dst_port,
-            protocol: packet.protocol as u8,
+    pub fn from_packet(packet: &Event) -> Self {
+        match packet {
+            Event::IPv4(ipv4) => Self {
+                src_ip: format_ipv4(ipv4.src_ip),
+                dst_ip: format_ipv4(ipv4.dst_ip),
+                src_port: ipv4.src_port,
+                dst_port: ipv4.dst_port,
+                protocol: ipv4.protocol as u8,
+            },
+            Event::IPv6(ipv6) => Self {
+                src_ip: format_ipv6(ipv6.src_ip),
+                dst_ip: format_ipv6(ipv6.dst_ip),
+                src_port: ipv6.src_port,
+                dst_port: ipv6.dst_port,
+                protocol: ipv6.protocol as u8,
+            },
         }
     }
 
@@ -126,7 +93,6 @@ pub struct DetectionResult {
     pub mlp_prediction: usize,
 }
 
-/// Statistics about inference execution
 #[derive(Debug, Clone, Default)]
 pub struct InferenceStats {
     pub total_flows: usize,
@@ -158,7 +124,6 @@ impl InferenceStats {
     }
 }
 
-/// ML engine statistics
 #[derive(Debug, Clone)]
 pub struct EngineStats {
     pub active_flows: usize,

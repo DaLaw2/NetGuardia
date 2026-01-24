@@ -70,9 +70,12 @@ loggable! {
         InferenceResults { size: usize, len: usize } => tracing::Level::INFO,
 
         #[error("{model} inference failed: {error}")]
-        InferenceFailed { model: String, error: String } => tracing::Level::ERROR,
+        InferenceFailed { model: String, error: String } => tracing::Level::INFO,
 
         #[error("Failed to parse packet (length: {len})")]
-        ParsePacketFailed { len: usize } => tracing::Level::ERROR,
+        ParsePacketFailed { len: usize } => tracing::Level::INFO,
+
+        #[error("Packet counts: {counts}")]
+        PacketCounts { counts: String } => tracing::Level::DEBUG,
     }
 }

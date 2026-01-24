@@ -1,12 +1,16 @@
+use std::cmp;
 use std::sync::Arc;
+
 use tract_onnx::prelude::*;
 use macros::log;
-use crate::model::log::ml::MLLog;
+
+use super::flow_tracker::FlowData;
 use super::config_loader::InferenceConfig;
 use super::feature_extractor::FlowFeatures;
 use super::model_loader::MLModels;
+
 use crate::model::ml_detection::{DetectionResult};
-use super::flow_tracker::FlowData;
+use crate::model::log::ml::MLLog;
 
 pub struct Inference {
     models: Arc<MLModels>,
@@ -127,7 +131,7 @@ impl Inference {
         let prediction = output
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(cmp::Ordering::Equal))
             .map(|(idx, _)| idx)
             .unwrap_or(0);
 

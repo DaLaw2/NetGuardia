@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time;
 
-use crate::model::ml_detection::{BulkState, FlowKey, PacketData, PacketInfo};
+use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
+use common::model::event::Event;
 
 #[derive(Debug, Clone)]
 pub struct FlowData {
@@ -32,11 +34,11 @@ pub struct FlowData {
 }
 
 impl FlowData {
-    pub fn new(flow_key: FlowKey, first_packet: &PacketInfo) -> Self {
+    pub fn new(flow_key: FlowKey, first_packet: &Event) -> Self {
         Self {
             flow_key,
-            start_time_us: first_packet.timestamp_us,
-            last_time_us: first_packet.timestamp_us,
+            start_time_us: first_packet.timestamp_us(),
+            last_time_us: first_packet.timestamp_us(),
             fwd_packets: Vec::new(),
             fwd_total_bytes: 0,
             fwd_header_bytes: 0,
@@ -51,59 +53,59 @@ impl FlowData {
             urg_count: 0,
             cwe_count: 0,
             ece_count: 0,
-            init_win_bytes_fwd: if first_packet.is_forward {
-                first_packet.tcp_window_size
+            init_win_bytes_fwd: if first_packet.is_forward() {
+                first_packet.tcp_window_size()
             } else {
                 0
             },
-            init_win_bytes_bwd: if !first_packet.is_forward {
-                first_packet.tcp_window_size
+            init_win_bytes_bwd: if !first_packet.is_forward() {
+                first_packet.tcp_window_size()
             } else {
                 0
             },
             active_periods: Vec::new(),
             idle_periods: Vec::new(),
-            last_packet_time: first_packet.timestamp_us,
+            last_packet_time: first_packet.timestamp_us(),
             fwd_bulk_state: BulkState::default(),
             bwd_bulk_state: BulkState::default(),
         }
     }
 
-    pub fn add_packet(&mut self, packet: &PacketInfo) {
+    pub fn add_packet(&mut self, packet: &Event) {
         let packet_data = PacketData {
-            timestamp_us: packet.timestamp_us,
-            length: packet.packet_length,
-            header_length: packet.header_length,
-            payload_length: packet.payload_length,
-            flags: packet.tcp_flags.clone(),
+            timestamp_us: packet.timestamp_us(),
+            length: packet.packet_length(),
+            header_length: packet.header_length(),
+            payload_length: packet.payload_length(),
+            flags: packet.tcp_flags().clone(),
         };
 
-        if packet.tcp_flags.fin {
+        if packet.tcp_flags().fin {
             self.fin_count += 1;
         }
-        if packet.tcp_flags.syn {
+        if packet.tcp_flags().syn {
             self.syn_count += 1;
         }
-        if packet.tcp_flags.rst {
+        if packet.tcp_flags().rst {
             self.rst_count += 1;
         }
-        if packet.tcp_flags.psh {
+        if packet.tcp_flags().psh {
             self.psh_count += 1;
         }
-        if packet.tcp_flags.ack {
+        if packet.tcp_flags().ack {
             self.ack_count += 1;
         }
-        if packet.tcp_flags.urg {
+        if packet.tcp_flags().urg {
             self.urg_count += 1;
         }
-        if packet.tcp_flags.cwr {
+        if packet.tcp_flags().cwr {
             self.cwe_count += 1;
         }
-        if packet.tcp_flags.ece {
+        if packet.tcp_flags().ece {
             self.ece_count += 1;
         }
 
-        let iat = packet.timestamp_us.saturating_sub(self.last_packet_time);
+        let iat = packet.timestamp_us().saturating_sub(self.last_packet_time);
         const IDLE_THRESHOLD_US: u64 = 1_000_000;
 
         if iat > IDLE_THRESHOLD_US {
@@ -112,26 +114,26 @@ impl FlowData {
             self.active_periods.push(iat);
         }
 
-        self.last_packet_time = packet.timestamp_us;
-        self.last_time_us = packet.timestamp_us;
+        self.last_packet_time = packet.timestamp_us();
+        self.last_time_us = packet.timestamp_us();
 
-        if packet.is_forward {
+        if packet.is_forward() {
             self.fwd_packets.push(packet_data.clone());
-            self.fwd_total_bytes += packet.packet_length as u64;
-            self.fwd_header_bytes += packet.header_length as u64;
+            self.fwd_total_bytes += packet.packet_length() as u64;
+            self.fwd_header_bytes += packet.header_length() as u64;
 
             if self.init_win_bytes_fwd == 0 {
-                self.init_win_bytes_fwd = packet.tcp_window_size;
+                self.init_win_bytes_fwd = packet.tcp_window_size();
             }
 
             Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
         } else {
             self.bwd_packets.push(packet_data.clone());
-            self.bwd_total_bytes += packet.packet_length as u64;
-            self.bwd_header_bytes += packet.header_length as u64;
+            self.bwd_total_bytes += packet.packet_length() as u64;
+            self.bwd_header_bytes += packet.header_length() as u64;
 
             if self.init_win_bytes_bwd == 0 {
-                self.init_win_bytes_bwd = packet.tcp_window_size;
+                self.init_win_bytes_bwd = packet.tcp_window_size();
             }
 
             Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
@@ -188,7 +190,7 @@ impl FlowTracker {
         }
     }
 
-    pub fn process_packet(&self, mut packet: PacketInfo) {
+    pub fn process_packet(&self, mut packet: Event) {
         let flow_key = FlowKey::from_packet(&packet);
         let reverse_key = flow_key.reverse();
 
@@ -202,7 +204,7 @@ impl FlowTracker {
             (flow_key, true)
         };
 
-        packet.is_forward = is_forward;
+        packet.set_is_forward(is_forward);
 
         let flow = flows.entry(actual_key.clone()).or_insert_with(|| {
             FlowData::new(actual_key, &packet)
@@ -232,8 +234,8 @@ impl FlowTracker {
     }
 
     pub fn cleanup_old_flows(&self, max_age_us: u64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
 

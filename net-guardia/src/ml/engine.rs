@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use macros::log;
 use tokio::time::interval;
@@ -8,8 +8,8 @@ use super::config_loader::InferenceConfig;
 use super::flow_tracker::FlowTracker;
 use super::inference::Inference;
 use super::model_loader::MLModels;
-use super::packet_info::parse_packet;
 
+use crate::utils::packet_parser::parse_packet;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{EngineStats, InferenceStats};
 
@@ -55,7 +55,7 @@ impl Engine {
         loop {
             ticker.tick().await;
 
-            let start = std::time::Instant::now();
+            let start = Instant::now();
 
             let total_flows = self.flow_tracker.flow_count();
             let all_flows = self.flow_tracker.get_flows_snapshot();
@@ -74,6 +74,7 @@ impl Engine {
 
             if !all_flows.is_empty() {
                 let packet_counts: Vec<usize> = all_flows.iter().map(|f| f.packet_count()).collect();
+                log!(MLLog::PacketCounts { counts: format!("{:?}", packet_counts) });
             }
 
             if flows.is_empty() {
