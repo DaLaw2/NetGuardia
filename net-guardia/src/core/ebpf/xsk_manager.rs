@@ -71,7 +71,7 @@ impl XskManager {
                 &config.egress_ifname,
                 &config.ingress_ifname,
                 Direction::Egress,
-                None,  // Don't process egress packets for ML
+                None,
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
@@ -196,6 +196,7 @@ impl XskPair {
             .name(thread_name.clone())
             .spawn(move || {
                 let mut shutdown_rx = Some(shutdown_rx);
+                let mut idle_count: u32 = 0;
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -207,25 +208,42 @@ impl XskPair {
                         }
                     }
 
-                    if let Err(e) = self.process_comp_queue() {
-                        log!(EbpfLog::CompQueueError {
+                    let mut total_activity = 0;
+
+                    match self.process_comp_queue() {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::CompQueueError {
                             error: format!("{:?}", e)
-                        });
+                        }),
                     }
 
-                    if let Err(e) = self.process_rx_queue(&forward_tx) {
-                        log!(EbpfLog::RXQueueError {
+                    match self.process_rx_queue(&forward_tx) {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::RXQueueError {
                             error: format!("{:?}", e)
-                        });
+                        }),
                     }
 
-                    if let Err(e) = self.process_tx_queue(&forward_rx) {
-                        log!(EbpfLog::TXQueueError {
+                    match self.process_tx_queue(&forward_rx) {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::TXQueueError {
                             error: format!("{:?}", e)
-                        });
+                        }),
                     }
 
-                    thread::sleep(Duration::from_micros(1));
+                    if total_activity == 0 {
+                        idle_count = idle_count.saturating_add(1);
+                    } else {
+                        idle_count = 0;
+                    }
+
+                    let sleep_us = match idle_count {
+                        0..=10 => 1,
+                        11..=100 => 10,
+                        _ => 100,
+                    };
+
+                    thread::sleep(Duration::from_micros(sleep_us));
                 }
 
                 log!(EbpfLog::XSKShutdown);
@@ -240,7 +258,7 @@ impl XskPair {
             })
     }
 
-    fn process_comp_queue(&mut self) -> Result<(), EbpfError> {
+    fn process_comp_queue(&mut self) -> Result<usize, EbpfError> {
         let mut comp_descs = vec![FrameDesc::default(); 256];
 
         let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
@@ -253,10 +271,10 @@ impl XskPair {
             }
         }
 
-        Ok(())
+        Ok(nb_completed)
     }
 
-    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<(), EbpfError> {
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut rx_descs = vec![FrameDesc::default(); 64];
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
@@ -295,10 +313,10 @@ impl XskPair {
             }
         }
 
-        Ok(())
+        Ok(rx_count)
     }
 
-    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<(), EbpfError> {
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut packets_to_send = Vec::with_capacity(64);
         while let Ok(packet) = forward_rx.try_recv() {
             packets_to_send.push(packet);
@@ -308,7 +326,7 @@ impl XskPair {
         }
 
         if packets_to_send.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let _ = self.process_comp_queue();
@@ -322,7 +340,7 @@ impl XskPair {
             log!(EbpfLog::FramePoolExhausted {
                 send_len: packets_to_send.len()
             });
-            return Ok(());
+            return Ok(0);
         }
 
         let mut frames = Vec::with_capacity(packets_to_send.len());
@@ -339,7 +357,7 @@ impl XskPair {
 
         if frames.is_empty() {
             log!(EbpfLog::NoFramesAvailable);
-            return Ok(());
+            return Ok(0);
         }
 
         for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
@@ -352,7 +370,7 @@ impl XskPair {
             }
         }
 
-        let _nb_submitted = unsafe { self.tx.produce(&frames) };
+        let nb_submitted = unsafe { self.tx.produce(&frames) };
 
         if let Err(e) = self.tx.wakeup() {
             if e.kind() != std::io::ErrorKind::WouldBlock {
@@ -362,6 +380,6 @@ impl XskPair {
             }
         }
 
-        Ok(())
+        Ok(nb_submitted)
     }
 }

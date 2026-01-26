@@ -111,12 +111,14 @@ impl Engine {
             });
 
             for result in &results {
-                if result.is_malicious {
+                if result.is_attack {
                     log!(MLLog::ThreatDetected {
                         flow: result.flow_key.clone(),
-                        attack_type: result.attack_type.clone(),
+                        attack_type: result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
                         confidence: result.confidence,
-                        ae_error: result.ae_reconstruction_error,
+                        ae_score: result.ae_score,
+                        rf_score: result.rf_score,
+                        ensemble_score: result.ensemble_score,
                     });
                 }
             }

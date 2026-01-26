@@ -1,4 +1,3 @@
-use std::cmp;
 use std::sync::Arc;
 
 use tract_onnx::prelude::*;
@@ -9,7 +8,7 @@ use super::config_loader::InferenceConfig;
 use super::feature_extractor::FlowFeatures;
 use super::model_loader::MLModels;
 
-use crate::model::ml_detection::{DetectionResult};
+use crate::model::ml_detection::DetectionResult;
 use crate::model::log::ml::MLLog;
 
 pub struct Inference {
@@ -30,45 +29,44 @@ impl Inference {
     }
 
     pub fn infer_single(&self, flow: &FlowData) -> Option<DetectionResult> {
-        let mut features = FlowFeatures::extract(flow, self.config.num_features());
+        // extract
+        let mut features = FlowFeatures::extract(
+            flow,
+            &self.config.feature_names
+        );
 
+        // pre-process
+        features.winsorize(&self.config.clip_params, &self.config.feature_names);
         features.normalize(&self.config.scaler_mean, &self.config.scaler_std);
-
         features.clip(self.config.post_clip_min, self.config.post_clip_max);
 
+        // input tensor
         let input = tract_ndarray::Array2::from_shape_fn((1, self.config.num_features()), |(_, j)| {
             features.features[j] as f32
         });
 
-        let ae_error = match self.run_autoencoder(&input) {
-            Ok(err) => err,
+        // Deep Autoencoder
+        let ae_score = match self.run_autoencoder(&input) {
+            Ok(score) => score,
             Err(e) => {
                 log!(MLLog::InferenceFailed { model: "DeepAutoEncoder".to_string(), error: e.to_string() });
                 return None;
             }
         };
 
-        let rf_prediction = match self.run_random_forest(&input) {
-            Ok(pred) => pred,
+        // Random Forest
+        let rf_score = match self.run_random_forest(&input) {
+            Ok(score) => score,
             Err(e) => {
                 log!(MLLog::InferenceFailed { model: "RandomForest".to_string(), error: e.to_string() });
                 return None;
             }
         };
 
-        let mlp_prediction = match self.run_mlp(&input) {
-            Ok(pred) => pred,
-            Err(e) => {
-                log!(MLLog::InferenceFailed { model: "MLP".to_string(), error: e.to_string() });
-                return None;
-            }
-        };
+        // Ensemble score
+        let ensemble_score = self.compute_ensemble_score(ae_score, rf_score);
 
-        let is_malicious = self.is_attack(ae_error, rf_prediction, mlp_prediction);
-
-        let attack_type = self.get_attack_label(mlp_prediction);
-
-        let confidence = self.compute_confidence(ae_error, rf_prediction, mlp_prediction);
+        let is_anomaly = ensemble_score > self.config.threshold as f32;
 
         let flow_key = format!(
             "{}:{} -> {}:{} (proto {})",
@@ -79,15 +77,39 @@ impl Inference {
             flow.flow_key.protocol
         );
 
-        Some(DetectionResult {
-            flow_key,
-            is_malicious,
-            attack_type,
-            confidence,
-            ae_reconstruction_error: ae_error,
-            rf_prediction,
-            mlp_prediction,
-        })
+        if is_anomaly {
+            // MLP
+            let (mut attack_type, mut confidence) = match self.run_mlp(&input) {
+                Ok((attack_type, conf)) => (attack_type, conf),
+                Err(e) => {
+                    log!(MLLog::InferenceFailed {
+                    model: "MLP".to_string(),
+                    error: e.to_string()
+                });
+                    ("UNKNOWN".to_string(), ensemble_score)
+                }
+            };
+
+            Some(DetectionResult {
+                flow_key,
+                is_attack: true,
+                attack_type: Some(attack_type),
+                confidence,
+                ae_score,
+                rf_score,
+                ensemble_score,
+            })
+        } else {
+            Some(DetectionResult {
+                flow_key,
+                is_attack: false,
+                attack_type: None,
+                confidence: 1.0 - ensemble_score,
+                ae_score,
+                rf_score,
+                ensemble_score,
+            })
+        }
     }
 
     fn run_autoencoder(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<f32> {
@@ -106,70 +128,86 @@ impl Inference {
         let squared_errors = &diff * &diff;
         let mse = squared_errors.sum() / self.config.num_features() as f32;
 
-        Ok(mse)
+        let ae_norm = &self.config.ae_normalization;
+        let ae_score = (mse - ae_norm.min as f32) / (ae_norm.max as f32 - ae_norm.min as f32 + 1e-10);
+        let ae_score = ae_score.clamp(0.0, 1.0);
+
+        Ok(ae_score)
     }
 
-    fn run_random_forest(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<usize> {
+    fn run_random_forest(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<f32> {
         let input_tensor = input.clone().into_tensor();
 
         let result = self.models.random_forest.run(tvec![input_tensor.into()])?;
 
-        let output = result[0].to_array_view::<i64>()?;
+        // output[0] = output_label (i64)
+        // output[1] = output_probability (sequence of maps)
 
-        let prediction = output.iter().next().copied().unwrap_or(0) as usize;
+        if result.len() > 1 {
+            if let Ok(proba) = result[1].to_array_view::<f32>() {
+                if proba.len() > 1 {
+                    return Ok(proba.iter().nth(1).copied().unwrap_or(0.0));
+                } else if proba.len() == 1 {
+                    return Ok(proba.iter().next().copied().unwrap_or(0.0));
+                }
+            }
+        }
 
-        Ok(prediction)
+        let label = result[0].to_array_view::<i64>()?;
+        let prediction = label.iter().next().copied().unwrap_or(0);
+
+        Ok(if prediction != 0 { 1.0 } else { 0.0 })
     }
 
-    fn run_mlp(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<usize> {
+    fn run_mlp(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<(String, f32)> {
         let input_tensor = input.clone().into_tensor();
 
         let result = self.models.mlp.run(tvec![input_tensor.into()])?;
 
         let output = result[0].to_array_view::<f32>()?;
 
-        let prediction = output
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(cmp::Ordering::Equal))
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
+        let mut max_prob: f32 = 0.0;
+        let mut predicted_class: usize = 0;
 
-        Ok(prediction)
-    }
+        for (i, &prob) in output.iter().enumerate() {
+            if prob > max_prob {
+                max_prob = prob;
+                predicted_class = i;
+            }
+        }
 
-    fn is_attack(&self, ae_error: f32, rf_pred: usize, mlp_pred: usize) -> bool {
-        let ae_anomaly = ae_error > self.config.threshold as f32;
-
-        let rf_attack = rf_pred != 0;
-        let mlp_attack = mlp_pred != 0;
-
-        let votes = [ae_anomaly, rf_attack, mlp_attack]
-            .iter()
-            .filter(|&&x| x)
-            .count();
-
-        votes >= 2
-    }
-
-    fn get_attack_label(&self, prediction: usize) -> String {
-        self.config
+        let attack_type = self.config
             .attack_labels
-            .get(&prediction.to_string())
+            .get(&predicted_class.to_string())
             .cloned()
-            .unwrap_or_else(|| "UNKNOWN".to_string())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        Ok((attack_type, max_prob))
     }
 
-    fn compute_confidence(&self, ae_error: f32, rf_pred: usize, mlp_pred: usize) -> f32 {
-        let ae_conf = if ae_error > self.config.threshold as f32 {
-            (ae_error / self.config.threshold as f32).min(1.0)
+    fn compute_ensemble_score(&self, ae_score: f32, rf_score: f32) -> f32 {
+        let strategy = &self.config.strategy_name;
+
+        if strategy.starts_with("W_") {
+            if let Some(weights_str) = strategy.strip_prefix("W_") {
+                let parts: Vec<&str> = weights_str.split(':').collect();
+                if parts.len() == 2 {
+                    if let (Ok(w1), Ok(w2)) = (parts[0].parse::<f32>(), parts[1].parse::<f32>()) {
+                        let w1 = w1 / 10.0;
+                        let w2 = w2 / 10.0;
+                        return w1 * ae_score + w2 * rf_score;
+                    }
+                }
+            }
+            (ae_score + rf_score) / 2.0
         } else {
-            0.0
-        };
-
-        let rf_conf = if rf_pred != 0 { 0.8 } else { 0.2 };
-        let mlp_conf = if mlp_pred != 0 { 0.8 } else { 0.2 };
-
-        (ae_conf + rf_conf + mlp_conf) / 3.0
+            match strategy.as_str() {
+                "Average" => (ae_score + rf_score) / 2.0,
+                "Max" => ae_score.max(rf_score),
+                "Min" => ae_score.min(rf_score),
+                "Product" => ae_score * rf_score,
+                _ => (ae_score + rf_score) / 2.0,
+            }
+        }
     }
 }

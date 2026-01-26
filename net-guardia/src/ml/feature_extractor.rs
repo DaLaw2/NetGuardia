@@ -1,4 +1,5 @@
-use crate::model::ml_detection::PacketData;
+use std::collections::HashMap;
+use crate::model::ml_detection::{PacketData, ClipParams};
 use super::flow_tracker::FlowData;
 
 #[derive(Debug, Clone)]
@@ -8,17 +9,22 @@ pub struct FlowFeatures {
 }
 
 impl FlowFeatures {
-    pub fn extract(flow: &FlowData, feature_num: usize) -> Self {
-        let mut features = vec![0.0; feature_num];
+    pub fn extract(flow: &FlowData, feature_names: &[String]) -> Self {
+        let feature_num = feature_names.len();
+        let mut features = Vec::with_capacity(feature_num);
 
-        let mut set_feature = |idx: usize, val: f64| {
-            if idx < feature_num {
-                features[idx] = val;
-            }
-        };
+        for name in feature_names {
+            let value = Self::get_feature_by_name(flow, name.trim());
+            features.push(value);
+        }
 
+        Self { features, feature_num }
+    }
+
+    fn get_feature_by_name(flow: &FlowData, feature_name: &str) -> f64 {
         let safe_div = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
 
+        // 1-5
         let fwd_count = flow.fwd_packets.len() as f64;
         let bwd_count = flow.bwd_packets.len() as f64;
         let total_count = fwd_count + bwd_count;
@@ -27,76 +33,38 @@ impl FlowFeatures {
         let duration_s = duration_us / 1_000_000.0;
         let duration_s = if duration_s > 0.0 { duration_s } else { 1e-6 };
 
-        set_feature(0, flow.flow_key.dst_port as f64);
-        set_feature(1, duration_us);
-        set_feature(2, fwd_count);
-        set_feature(3, bwd_count);
-        set_feature(4, flow.fwd_total_bytes as f64);
-        set_feature(5, flow.bwd_total_bytes as f64);
-
+        // 6-9
         let fwd_lengths: Vec<f64> = flow.fwd_packets.iter().map(|p| p.length as f64).collect();
         let (fwd_max, fwd_min, fwd_mean, fwd_std) = compute_stats(&fwd_lengths);
 
-        set_feature(6, fwd_max);
-        set_feature(7, fwd_min);
-        set_feature(8, fwd_mean);
-        set_feature(9, fwd_std);
-
+        // 10-13
         let bwd_lengths: Vec<f64> = flow.bwd_packets.iter().map(|p| p.length as f64).collect();
         let (bwd_max, bwd_min, bwd_mean, bwd_std) = compute_stats(&bwd_lengths);
 
-        set_feature(10, bwd_max);
-        set_feature(11, bwd_min);
-        set_feature(12, bwd_mean);
-        set_feature(13, bwd_std);
-
+        // 14-15
         let total_bytes = (flow.fwd_total_bytes + flow.bwd_total_bytes) as f64;
 
-        set_feature(14, total_bytes / duration_s);
-        set_feature(15, total_count / duration_s);
-
+        // 16-19
         let flow_iats = compute_flow_iats(&flow.fwd_packets, &flow.bwd_packets);
         let (flow_iat_mean, flow_iat_std, flow_iat_max, flow_iat_min) = compute_stats(&flow_iats);
 
-        set_feature(16, flow_iat_mean);
-        set_feature(17, flow_iat_std);
-        set_feature(18, flow_iat_max);
-        set_feature(19, flow_iat_min);
-
+        // 20-24
         let fwd_iats = compute_iats(&flow.fwd_packets);
         let fwd_iat_total: f64 = fwd_iats.iter().sum();
         let (fwd_iat_mean, fwd_iat_std, fwd_iat_max, fwd_iat_min) = compute_stats(&fwd_iats);
 
-        set_feature(20, fwd_iat_total);
-        set_feature(21, fwd_iat_mean);
-        set_feature(22, fwd_iat_std);
-        set_feature(23, fwd_iat_max);
-        set_feature(24, fwd_iat_min);
-
+        // 25-29
         let bwd_iats = compute_iats(&flow.bwd_packets);
         let bwd_iat_total: f64 = bwd_iats.iter().sum();
         let (bwd_iat_mean, bwd_iat_std, bwd_iat_max, bwd_iat_min) = compute_stats(&bwd_iats);
 
-        set_feature(20, bwd_iat_total);
-        set_feature(21, bwd_iat_mean);
-        set_feature(22, bwd_iat_std);
-        set_feature(23, bwd_iat_max);
-        set_feature(24, bwd_iat_min);
-
+        // 30-37
         let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags.psh).count() as f64;
         let bwd_psh = flow.bwd_packets.iter().filter(|p| p.flags.psh).count() as f64;
         let fwd_urg = flow.fwd_packets.iter().filter(|p| p.flags.urg).count() as f64;
         let bwd_urg = flow.bwd_packets.iter().filter(|p| p.flags.urg).count() as f64;
 
-        set_feature(30, fwd_psh);
-        set_feature(31, bwd_psh);
-        set_feature(32, fwd_urg);
-        set_feature(33, bwd_urg);
-        set_feature(34, flow.fwd_header_bytes as f64);
-        set_feature(35, flow.bwd_header_bytes as f64);
-        set_feature(36, fwd_count / duration_s);
-        set_feature(37, bwd_count / duration_s);
-
+        // 38-55
         let all_lengths: Vec<f64> = flow
             .fwd_packets
             .iter()
@@ -106,59 +74,18 @@ impl FlowFeatures {
 
         let (max_len, min_len, mean_len, std_len) = compute_stats(&all_lengths);
 
-        set_feature(38, min_len);
-        set_feature(39, max_len);
-        set_feature(40, mean_len);
-        set_feature(41, std_len);
-        set_feature(42, std_len * std_len);
-
-        set_feature(43, flow.fin_count as f64);
-        set_feature(44, flow.syn_count as f64);
-        set_feature(45, flow.rst_count as f64);
-        set_feature(46, flow.psh_count as f64);
-        set_feature(47, flow.ack_count as f64);
-        set_feature(48, flow.urg_count as f64);
-        set_feature(49, flow.cwe_count as f64);
-        set_feature(50, flow.ece_count as f64);
-
-        set_feature(51, safe_div(bwd_count, fwd_count));
-        set_feature(52, safe_div(total_bytes, total_count));
-        set_feature(53, safe_div(flow.fwd_total_bytes as f64, fwd_count));
-        set_feature(54, safe_div(flow.bwd_total_bytes as f64, bwd_count));
-
-        set_feature(55, flow.fwd_header_bytes as f64);
-
+        // 56-67
         let fwd_bulk = &flow.fwd_bulk_state;
         let bwd_bulk = &flow.bwd_bulk_state;
 
-        set_feature(56, safe_div(fwd_bulk.total_bytes as f64, fwd_bulk.bulk_count as f64));
-        set_feature(57, safe_div(fwd_bulk.total_packets as f64, fwd_bulk.bulk_count as f64));
-        set_feature(58, safe_div(fwd_bulk.total_bytes as f64, duration_s));
-
-        set_feature(59, safe_div(bwd_bulk.total_bytes as f64, bwd_bulk.bulk_count as f64));
-        set_feature(60, safe_div(bwd_bulk.total_packets as f64, bwd_bulk.bulk_count as f64));
-        set_feature(61, safe_div(bwd_bulk.total_bytes as f64, duration_s));
-
-        set_feature(62, fwd_count);
-        set_feature(63, flow.fwd_total_bytes as f64);
-        set_feature(64, bwd_count);
-        set_feature(65, flow.bwd_total_bytes as f64);
-        set_feature(66, flow.init_win_bytes_fwd as f64);
-        set_feature(67, flow.init_win_bytes_bwd as f64);
-
+        // 68-69
         let fwd_seg_sizes: Vec<f64> = flow.fwd_packets
             .iter()
             .filter(|p| p.payload_length > 0)
             .map(|p| p.header_length as f64)
             .collect();
 
-        set_feature(68, fwd_seg_sizes.len() as f64);
-        set_feature(69, fwd_seg_sizes.iter()
-            .min_by(|a, b| a.total_cmp(b))
-            .copied()
-            .unwrap_or(0.0)
-        );
-
+        // 70-73
         let (active_mean, active_std, active_max, active_min) = compute_stats(
             &flow
                 .active_periods
@@ -167,11 +94,7 @@ impl FlowFeatures {
                 .collect::<Vec<_>>(),
         );
 
-        set_feature(70, active_mean);
-        set_feature(71, active_std);
-        set_feature(72, active_max);
-        set_feature(73, active_min);
-
+        // 74-77
         let (idle_mean, idle_std, idle_max, idle_min) = compute_stats(
             &flow
                 .idle_periods
@@ -180,12 +103,93 @@ impl FlowFeatures {
                 .collect::<Vec<_>>(),
         );
 
-        set_feature(74, idle_mean);
-        set_feature(75, idle_std);
-        set_feature(76, idle_max);
-        set_feature(77, idle_min);
+        match feature_name {
+            "Destination Port" => flow.flow_key.dst_port as f64,
+            "Flow Duration" => duration_us,
+            "Total Fwd Packets" => fwd_count,
+            "Total Backward Packets" => bwd_count,
+            "Total Length of Fwd Packets" => flow.fwd_total_bytes as f64,
+            "Total Length of Bwd Packets" => flow.bwd_total_bytes as f64,
+            "Fwd Packet Length Max" => fwd_max,
+            "Fwd Packet Length Min" => fwd_min,
+            "Fwd Packet Length Mean" => fwd_mean,
+            "Fwd Packet Length Std" => fwd_std,
+            "Bwd Packet Length Max" => bwd_max,
+            "Bwd Packet Length Min" => bwd_min,
+            "Bwd Packet Length Mean" => bwd_mean,
+            "Bwd Packet Length Std" => bwd_std,
+            "Flow Bytes/s" => safe_div(total_bytes, duration_s),
+            "Flow Packets/s" => safe_div(total_count, duration_s),
+            "Flow IAT Mean" => flow_iat_mean,
+            "Flow IAT Std" => flow_iat_std,
+            "Flow IAT Max" => flow_iat_max,
+            "Flow IAT Min" => flow_iat_min,
+            "Fwd IAT Total" => fwd_iat_total,
+            "Fwd IAT Mean" => fwd_iat_mean,
+            "Fwd IAT Std" => fwd_iat_std,
+            "Fwd IAT Max" => fwd_iat_max,
+            "Fwd IAT Min" => fwd_iat_min,
+            "Bwd IAT Total" => bwd_iat_total,
+            "Bwd IAT Mean" => bwd_iat_mean,
+            "Bwd IAT Std" => bwd_iat_std,
+            "Bwd IAT Max" => bwd_iat_max,
+            "Bwd IAT Min" => bwd_iat_min,
+            "Fwd PSH Flags" => fwd_psh,
+            "Bwd PSH Flags" => bwd_psh,
+            "Fwd URG Flags" => fwd_urg,
+            "Bwd URG Flags" => bwd_urg,
+            "Fwd Header Length" => flow.fwd_header_bytes as f64,
+            "Bwd Header Length" => flow.bwd_header_bytes as f64,
+            "Fwd Packets/s" => safe_div(fwd_count, duration_s),
+            "Bwd Packets/s" => safe_div(bwd_count, duration_s),
+            "Min Packet Length" => min_len,
+            "Max Packet Length" => max_len,
+            "Packet Length Mean" => mean_len,
+            "Packet Length Std" => std_len,
+            "Packet Length Variance" => std_len * std_len,
+            "FIN Flag Count" => flow.fin_count as f64,
+            "SYN Flag Count" => flow.syn_count as f64,
+            "RST Flag Count" => flow.rst_count as f64,
+            "PSH Flag Count" => flow.psh_count as f64,
+            "ACK Flag Count" => flow.ack_count as f64,
+            "URG Flag Count" => flow.urg_count as f64,
+            "CWE Flag Count" => flow.cwe_count as f64,
+            "ECE Flag Count" => flow.ece_count as f64,
+            "Down/Up Ratio" => safe_div(bwd_count, fwd_count),
+            "Average Packet Size" => safe_div(total_bytes, total_count),
+            "Avg Fwd Segment Size" => safe_div(flow.fwd_total_bytes as f64, fwd_count),
+            "Avg Bwd Segment Size" => safe_div(flow.bwd_total_bytes as f64, bwd_count),
+            "Fwd Header Length.1" => flow.fwd_header_bytes as f64,
+            "Fwd Avg Bytes/Bulk" => safe_div(fwd_bulk.total_bytes as f64, fwd_bulk.bulk_count as f64),
+            "Fwd Avg Packets/Bulk" => safe_div(fwd_bulk.total_packets as f64, fwd_bulk.bulk_count as f64),
+            "Fwd Avg Bulk Rate" => safe_div(fwd_bulk.total_bytes as f64, duration_s),
+            "Bwd Avg Bytes/Bulk" => safe_div(bwd_bulk.total_bytes as f64, bwd_bulk.bulk_count as f64),
+            "Bwd Avg Packets/Bulk" => safe_div(bwd_bulk.total_packets as f64, bwd_bulk.bulk_count as f64),
+            "Bwd Avg Bulk Rate" => safe_div(bwd_bulk.total_bytes as f64, duration_s),
+            "Subflow Fwd Packets" => fwd_count,
+            "Subflow Fwd Bytes" => flow.fwd_total_bytes as f64,
+            "Subflow Bwd Packets" => bwd_count,
+            "Subflow Bwd Bytes" => flow.bwd_total_bytes as f64,
+            "Init_Win_bytes_forward" => flow.init_win_bytes_fwd as f64,
+            "Init_Win_bytes_backward" => flow.init_win_bytes_bwd as f64,
+            "act_data_pkt_fwd" => fwd_seg_sizes.len() as f64,
+            "min_seg_size_forward" => fwd_seg_sizes.iter()
+                .min_by(|a, b| a.total_cmp(b))
+                .copied()
+                .unwrap_or(0.0),
+            "Active Mean" => active_mean,
+            "Active Std" => active_std,
+            "Active Max" => active_max,
+            "Active Min" => active_min,
+            "Idle Mean" => idle_mean,
+            "Idle Std" => idle_std,
+            "Idle Max" => idle_max,
+            "Idle Min" => idle_min,
 
-        Self { features, feature_num }
+            _ => {
+                0.0
+            }
+        }
     }
 
     pub fn normalize(&mut self, means: &[f64], stds: &[f64]) {
@@ -201,6 +205,17 @@ impl FlowFeatures {
     pub fn clip(&mut self, clip_min: f64, clip_max: f64) {
         for i in 0..self.feature_num {
             self.features[i] = self.features[i].max(clip_min).min(clip_max);
+        }
+    }
+
+    /// Winsorization: Clip each feature according to its specific bounds from clip_params
+    pub fn winsorize(&mut self, clip_params: &HashMap<String, ClipParams>, feature_names: &[String]) {
+        for (i, feature_name) in feature_names.iter().enumerate() {
+            if i < self.feature_num {
+                if let Some(params) = clip_params.get(feature_name) {
+                    self.features[i] = self.features[i].clamp(params.lower, params.upper);
+                }
+            }
         }
     }
 }

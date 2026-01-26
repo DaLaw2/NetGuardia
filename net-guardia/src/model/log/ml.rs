@@ -57,8 +57,8 @@ loggable! {
         #[error("Inference skipped: {reason}")]
         InferenceSkipped { reason: String } => tracing::Level::INFO,
 
-        #[error("Threat detected: {flow} -> {attack_type} (confidence: {confidence:.2}, AE error: {ae_error:.4})")]
-        ThreatDetected { flow: String, attack_type: String, confidence: f32, ae_error: f32 } => tracing::Level::WARN,
+        #[error("Threat detected: {flow} -> {attack_type} (confidence: {confidence:.2}, ae_score: {ae_score:.4}, rf_score: {rf_score:.4}, ensemble: {ensemble_score:.4})")]
+        ThreatDetected { flow: String, attack_type: String, confidence: f32, ae_score: f32, rf_score: f32, ensemble_score: f32 } => tracing::Level::WARN,
 
         #[error("Flow stats: total={total_flows}, qualified={flows_len}, min_packets={min_packets}")]
         FlowStats { total_flows: usize,  flows_len: usize, min_packets: usize } => tracing::Level::INFO,
@@ -76,6 +76,6 @@ loggable! {
         ParsePacketFailed { len: usize } => tracing::Level::INFO,
 
         #[error("Packet counts: {counts}")]
-        PacketCounts { counts: String } => tracing::Level::DEBUG,
+        PacketCounts { counts: String } => tracing::Level::INFO,
     }
 }

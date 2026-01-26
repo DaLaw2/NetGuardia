@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-01-22T11:40:04.026469",
+  "created_at": "2026-01-26T06:27:00.692447",
   "model": {
     "deep_autoencoder": {
       "file": "deep_autoencoder.onnx",
@@ -14,7 +14,7 @@
     "mlp_classifier": {
       "file": "mlp.onnx",
       "input_dim": 78,
-      "n_classes": 15
+      "n_classes": 10
     }
   },
   "preprocessing": {
@@ -580,39 +580,34 @@
     }
   },
   "ensemble": {
-    "strategy_name": "W_3:7",
-    "threshold": 0.09813703138082519,
-    "tpr": 0.9996808010816898,
+    "strategy_name": "Max",
+    "threshold": 0.14682877269773295,
+    "tpr": 0.9997148728763409,
     "fpr": 0.010000013197852974,
-    "precision": 0.9608220627750134,
-    "f1": 0.9798663262570912
+    "precision": 0.9608233457079925,
+    "f1": 0.9798833604015946
   },
   "ae_normalization": {
-    "min": 9.4466738711283e-6,
-    "max": 1.1348084823017912,
-    "mean": 0.0024022760549099083,
-    "std": 0.008875720120555656,
-    "median": 0.00029339765389954485,
-    "p90": 0.00510757553670217,
-    "p95": 0.010289545763192198,
-    "p99": 0.03430032866596488
+    "min": 1.3511362093236181e-5,
+    "max": 1.274394180524197,
+    "mean": 0.002437469730101617,
+    "std": 0.008751612731427433,
+    "median": 0.00031958053961503747,
+    "p90": 0.005287173969184662,
+    "p95": 0.010584545254860935,
+    "p99": 0.03459995134092111
   },
   "attack_labels": {
-    "0": "BENIGN",
-    "1": "Bot",
-    "2": "DDoS",
-    "3": "DoS GoldenEye",
-    "4": "DoS Hulk",
-    "5": "DoS Slowhttptest",
-    "6": "DoS slowloris",
-    "7": "FTP-Patator",
-    "8": "Heartbleed",
-    "9": "Infiltration",
-    "10": "PortScan",
-    "11": "SSH-Patator",
-    "12": "Web Attack - Brute Force",
-    "13": "Web Attack - Sql Injection",
-    "14": "Web Attack - XSS"
+    "0": "Bot",
+    "1": "DDoS",
+    "2": "DoS GoldenEye",
+    "3": "DoS Hulk",
+    "4": "DoS Slowhttptest",
+    "5": "DoS slowloris",
+    "6": "FTP-Patator",
+    "7": "PortScan",
+    "8": "SSH-Patator",
+    "9": "Web Attack"
   },
   "feature_order": [
     "Destination Port",

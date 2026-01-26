@@ -85,12 +85,12 @@ pub struct BulkState {
 #[derive(Debug, Clone)]
 pub struct DetectionResult {
     pub flow_key: String,
-    pub is_malicious: bool,
-    pub attack_type: String,
+    pub is_attack: bool,
+    pub attack_type: Option<String>,
     pub confidence: f32,
-    pub ae_reconstruction_error: f32,
-    pub rf_prediction: usize,
-    pub mlp_prediction: usize,
+    pub ae_score: f32,
+    pub rf_score: f32,
+    pub ensemble_score: f32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -105,7 +105,7 @@ pub struct InferenceStats {
 impl InferenceStats {
     pub fn from_results(results: &[DetectionResult], elapsed_us: u64) -> Self {
         let total = results.len();
-        let malicious = results.iter().filter(|r| r.is_malicious).count();
+        let malicious = results.iter().filter(|r| r.is_attack).count();
         let benign = total - malicious;
 
         let fps = if elapsed_us > 0 {
