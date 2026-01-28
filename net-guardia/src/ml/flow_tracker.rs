@@ -194,7 +194,9 @@ impl FlowTracker {
         let flow_key = FlowKey::from_packet(&packet);
         let reverse_key = flow_key.reverse();
 
-        let mut flows = self.flows.lock().unwrap();
+        let Ok(mut flows) = self.flows.lock() else {
+            return;
+        };
 
         let (actual_key, is_forward) = if flows.contains_key(&flow_key) {
             (flow_key, true)
@@ -220,12 +222,16 @@ impl FlowTracker {
     }
 
     pub fn get_flows_snapshot(&self) -> Vec<FlowData> {
-        let flows = self.flows.lock().unwrap();
+        let Ok(flows) = self.flows.lock() else {
+            return Vec::new();
+        };
         flows.values().cloned().collect()
     }
 
     pub fn get_flows_for_inference(&self, min_packets: usize) -> Vec<FlowData> {
-        let flows = self.flows.lock().unwrap();
+        let Ok(flows) = self.flows.lock() else {
+            return Vec::new();
+        };
         flows
             .values()
             .filter(|flow| flow.packet_count() >= min_packets)
@@ -236,17 +242,21 @@ impl FlowTracker {
     pub fn cleanup_old_flows(&self, max_age_us: u64) {
         let now = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64;
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
 
-        let mut flows = self.flows.lock().unwrap();
+        let Ok(mut flows) = self.flows.lock() else {
+            return;
+        };
         flows.retain(|_, flow| {
             now.saturating_sub(flow.last_time_us) < max_age_us
         });
     }
 
     pub fn flow_count(&self) -> usize {
-        let flows = self.flows.lock().unwrap();
+        let Ok(flows) = self.flows.lock() else {
+            return 0;
+        };
         flows.len()
     }
 }

@@ -1,5 +1,5 @@
 use tract_onnx::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::ml::MLError;

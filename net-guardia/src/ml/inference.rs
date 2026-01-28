@@ -1,5 +1,4 @@
 use std::sync::Arc;
-
 use tract_onnx::prelude::*;
 use macros::log;
 
@@ -12,8 +11,8 @@ use crate::model::ml_detection::DetectionResult;
 use crate::model::log::ml::MLLog;
 
 pub struct Inference {
-    models: Arc<MLModels>,
-    config: Arc<InferenceConfig>,
+    pub models: Arc<MLModels>,
+    pub config: Arc<InferenceConfig>,
 }
 
 impl Inference {
@@ -77,9 +76,11 @@ impl Inference {
             flow.flow_key.protocol
         );
 
+        let flow_key_raw = flow.flow_key.clone();
+
         if is_anomaly {
             // MLP
-            let (mut attack_type, mut confidence) = match self.run_mlp(&input) {
+            let (attack_type, confidence) = match self.run_mlp(&input) {
                 Ok((attack_type, conf)) => (attack_type, conf),
                 Err(e) => {
                     log!(MLLog::InferenceFailed {
@@ -90,8 +91,22 @@ impl Inference {
                 }
             };
 
+            if confidence < 0.75 {
+                return Some(DetectionResult {
+                    flow_key,
+                    flow_key_raw,
+                    is_attack: false,
+                    attack_type: None,
+                    confidence: 1.0 - ensemble_score,
+                    ae_score,
+                    rf_score,
+                    ensemble_score,
+                });
+            }
+
             Some(DetectionResult {
                 flow_key,
+                flow_key_raw,
                 is_attack: true,
                 attack_type: Some(attack_type),
                 confidence,
@@ -102,6 +117,7 @@ impl Inference {
         } else {
             Some(DetectionResult {
                 flow_key,
+                flow_key_raw,
                 is_attack: false,
                 attack_type: None,
                 confidence: 1.0 - ensemble_score,

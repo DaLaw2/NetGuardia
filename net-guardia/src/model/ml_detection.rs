@@ -85,6 +85,7 @@ pub struct BulkState {
 #[derive(Debug, Clone)]
 pub struct DetectionResult {
     pub flow_key: String,
+    pub flow_key_raw: FlowKey,
     pub is_attack: bool,
     pub attack_type: Option<String>,
     pub confidence: f32,

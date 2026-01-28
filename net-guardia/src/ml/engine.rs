@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 use macros::log;
 use tokio::time::interval;
@@ -8,6 +8,7 @@ use super::config_loader::InferenceConfig;
 use super::flow_tracker::FlowTracker;
 use super::inference::Inference;
 use super::model_loader::MLModels;
+use super::aggregator::AttackAggregator;
 
 use crate::utils::packet_parser::parse_packet;
 use crate::model::log::ml::MLLog;
@@ -16,6 +17,7 @@ use crate::model::ml_detection::{EngineStats, InferenceStats};
 pub struct Engine {
     flow_tracker: Arc<FlowTracker>,
     inference_pipeline: Arc<Inference>,
+    aggregator: Arc<Mutex<AttackAggregator>>,
     min_packets: usize,
     inference_interval_secs: u64,
 }
@@ -31,9 +33,12 @@ impl Engine {
         let flow_tracker = Arc::new(FlowTracker::new(max_flows));
         let inference_pipeline = Arc::new(Inference::new(models, config));
 
+        let aggregator = Arc::new(Mutex::new(AttackAggregator::new(30, 10)));
+
         Self {
             flow_tracker,
             inference_pipeline,
+            aggregator,
             min_packets,
             inference_interval_secs: interval_secs,
         }
@@ -59,6 +64,7 @@ impl Engine {
 
             let total_flows = self.flow_tracker.flow_count();
             let all_flows = self.flow_tracker.get_flows_snapshot();
+            let packet_counts: Vec<usize> = all_flows.iter().map(|f| f.packet_count()).collect();
 
             let flows = self
                 .flow_tracker
@@ -68,14 +74,10 @@ impl Engine {
                 MLLog::FlowStats{
                     total_flows,
                     flows_len: flows.len(),
-                    min_packets: self.min_packets
+                    min_packets: self.min_packets,
+                    counts: format!("{:?}", packet_counts),
                 }
             );
-
-            if !all_flows.is_empty() {
-                let packet_counts: Vec<usize> = all_flows.iter().map(|f| f.packet_count()).collect();
-                log!(MLLog::PacketCounts { counts: format!("{:?}", packet_counts) });
-            }
 
             if flows.is_empty() {
                 log!(MLLog::InferenceSkipped {
@@ -104,23 +106,35 @@ impl Engine {
 
             log!(MLLog::InferenceCompleted {
                 total_flows: stats.total_flows,
-                malicious: stats.malicious_flows,
+                anomaly: stats.malicious_flows,
                 benign: stats.benign_flows,
                 duration_ms: (elapsed_us as f64 / 1000.0) as u32,
                 throughput: stats.flows_per_second
             });
 
-            for result in &results {
-                if result.is_attack {
-                    log!(MLLog::ThreatDetected {
-                        flow: result.flow_key.clone(),
-                        attack_type: result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-                        confidence: result.confidence,
-                        ae_score: result.ae_score,
-                        rf_score: result.rf_score,
-                        ensemble_score: result.ensemble_score,
-                    });
+            if let Ok(mut aggregator) = self.aggregator.lock() {
+                for result in &results {
+                    if result.is_attack {
+                        let should_alert = aggregator.should_alert(
+                            &result.flow_key_raw,
+                            result.ensemble_score,
+                            self.inference_pipeline.config.threshold as f32,
+                        );
+
+                        if should_alert {
+                            log!(MLLog::ThreatDetected {
+                                flow: result.flow_key.clone(),
+                                attack_type: result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
+                                confidence: result.confidence,
+                                ae_score: result.ae_score,
+                                rf_score: result.rf_score,
+                                ensemble_score: result.ensemble_score,
+                            });
+                        }
+                    }
                 }
+
+                aggregator.cleanup();
             }
 
             self.flow_tracker.cleanup_old_flows(60_000_000);

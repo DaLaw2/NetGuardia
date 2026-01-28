@@ -51,8 +51,8 @@ loggable! {
         #[error("ML Engine started: max_flows={max_flows}, min_packets={min_packets}, interval={interval_secs}s")]
         EngineStarted { max_flows: usize, min_packets: usize, interval_secs: u64 } => tracing::Level::INFO,
 
-        #[error("Inference completed: {total_flows} flows ({malicious} malicious, {benign} benign) in {duration_ms}ms ({throughput:.1} flows/s)")]
-        InferenceCompleted { total_flows: usize, malicious: usize, benign: usize, duration_ms: u32, throughput: f32 } => tracing::Level::INFO,
+        #[error("Inference completed: {total_flows} flows ({anomaly} anomaly, {benign} benign) in {duration_ms}ms ({throughput:.1} flows/s)")]
+        InferenceCompleted { total_flows: usize, anomaly: usize, benign: usize, duration_ms: u32, throughput: f32 } => tracing::Level::INFO,
 
         #[error("Inference skipped: {reason}")]
         InferenceSkipped { reason: String } => tracing::Level::INFO,
@@ -60,8 +60,8 @@ loggable! {
         #[error("Threat detected: {flow} -> {attack_type} (confidence: {confidence:.2}, ae_score: {ae_score:.4}, rf_score: {rf_score:.4}, ensemble: {ensemble_score:.4})")]
         ThreatDetected { flow: String, attack_type: String, confidence: f32, ae_score: f32, rf_score: f32, ensemble_score: f32 } => tracing::Level::WARN,
 
-        #[error("Flow stats: total={total_flows}, qualified={flows_len}, min_packets={min_packets}")]
-        FlowStats { total_flows: usize,  flows_len: usize, min_packets: usize } => tracing::Level::INFO,
+        #[error("Flow stats: total={total_flows}, qualified={flows_len}, min_packets={min_packets}, packet_counts: {counts}")]
+        FlowStats { total_flows: usize,  flows_len: usize, min_packets: usize, counts: String } => tracing::Level::INFO,
 
         #[error("Running inference on {size} flows")]
         RunningInference { size: usize } => tracing::Level::INFO,
@@ -74,8 +74,5 @@ loggable! {
 
         #[error("Failed to parse packet (length: {len})")]
         ParsePacketFailed { len: usize } => tracing::Level::INFO,
-
-        #[error("Packet counts: {counts}")]
-        PacketCounts { counts: String } => tracing::Level::INFO,
     }
 }
