@@ -2,6 +2,7 @@ pub mod access_control;
 pub mod service;
 pub mod statistics;
 pub mod health;
+pub mod ml_inference;
 
 use actix_web::{web, Scope};
 
