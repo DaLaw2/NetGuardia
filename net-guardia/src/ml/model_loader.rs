@@ -11,7 +11,7 @@ pub struct MLModels {
     pub mlp: RunnableModel,
 }
 impl MLModels {
-    pub fn load_models(app_config: &Arc<AppConfig>, features: &usize) -> Result<Self, MLError> {
+    pub fn load_models(app_config: &Arc<AppConfig>, features: usize) -> Result<Self, MLError> {
         Ok(Self {
             deep_autoencoder: Self::loader(&app_config.deep_autoencoder_name, features)?,
             random_forest: Self::loader(&app_config.random_forest_name, features)?,
@@ -19,7 +19,7 @@ impl MLModels {
         })
     }
 
-    pub fn loader(model: &str, features: &usize) -> Result<RunnableModel, MLError> {
+    pub fn loader(model: &str, features: usize) -> Result<RunnableModel, MLError> {
         let model_path = PathBuf::from("models").join(model);
 
         let mut model = onnx()
@@ -28,7 +28,7 @@ impl MLModels {
                 MLError::ModelLoadFailed { path: model_path.clone() }
             })?;
 
-        model.set_input_fact(0, f32::fact(&[1, *features]).into())
+        model.set_input_fact(0, f32::fact(&[1, features]).into())
             .map_err(|_| {
                 MLError::ModelLoadFailed { path: model_path.clone() }
             })?;

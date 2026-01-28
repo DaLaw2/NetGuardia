@@ -78,8 +78,8 @@ impl GeoIpService {
             let city_name = city.city.names.english
                 .map(|s| s.to_string());
 
-            let latitude = city.location.latitude;
-            let longitude = city.location.longitude;
+            let latitude = city.location.latitude.or(Some(0.0));
+            let longitude = city.location.longitude.or(Some(0.0));
             let timezone = city.location.time_zone.map(|s| s.to_string());
 
             GeoLocation {

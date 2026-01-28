@@ -35,9 +35,7 @@ xsk-rs = { workspace = true }
 maxminddb = "0.27.1"
 lru = "0.16.2"
 futures = "0.3.31"
-ort = "=2.0.0-rc.11"
 tract-onnx = "0.22.0"
-ndarray = "0.16"
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

@@ -136,7 +136,7 @@ impl FlowData {
                 self.init_win_bytes_bwd = packet.tcp_window_size();
             }
 
-            Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
+            Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data);
         }
     }
 

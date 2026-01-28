@@ -48,7 +48,7 @@ impl Inference {
         let ae_score = match self.run_autoencoder(&input) {
             Ok(score) => score,
             Err(e) => {
-                log!(MLLog::InferenceFailed { model: "DeepAutoEncoder".to_string(), error: e.to_string() });
+                log!(MLLog::InferenceFailed("DeepAutoEncoder".to_string(), e.to_string()));
                 return None;
             }
         };
@@ -57,7 +57,7 @@ impl Inference {
         let rf_score = match self.run_random_forest(&input) {
             Ok(score) => score,
             Err(e) => {
-                log!(MLLog::InferenceFailed { model: "RandomForest".to_string(), error: e.to_string() });
+                log!(MLLog::InferenceFailed("RandomForest".to_string(), e.to_string()));
                 return None;
             }
         };
@@ -83,10 +83,7 @@ impl Inference {
             let (attack_type, confidence) = match self.run_mlp(&input) {
                 Ok((attack_type, conf)) => (attack_type, conf),
                 Err(e) => {
-                    log!(MLLog::InferenceFailed {
-                    model: "MLP".to_string(),
-                    error: e.to_string()
-                });
+                    log!(MLLog::InferenceFailed("MLP".to_string(), e.to_string()));
                     ("UNKNOWN".to_string(), ensemble_score)
                 }
             };

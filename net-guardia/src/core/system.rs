@@ -45,7 +45,7 @@ impl System {
 
         let inference_config = Arc::new(InferenceConfig::load_file(&app_config.models_config_name)?);
 
-        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config.num_features())?);
+        let ml_models = Arc::new(MLModels::load_models(&app_config, inference_config.num_features())?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),

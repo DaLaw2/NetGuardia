@@ -71,29 +71,31 @@ impl Engine {
                 .get_flows_for_inference(self.min_packets);
 
             log!(
-                MLLog::FlowStats{
+                MLLog::FlowStats(
                     total_flows,
-                    flows_len: flows.len(),
-                    min_packets: self.min_packets,
-                    counts: format!("{:?}", packet_counts),
-                }
+                    flows.len(),
+                    self.min_packets,
+                    format!("{:?}", packet_counts)
+                )
             );
 
             if flows.is_empty() {
-                log!(MLLog::InferenceSkipped {
-                    reason: format!(
-                        "No flows with sufficient packets (total flows: {}, min packets: {})",
-                        total_flows,
-                        self.min_packets
+                log!(
+                    MLLog::InferenceSkipped(
+                        format!(
+                            "No flows with sufficient packets (total flows: {}, min packets: {})",
+                            total_flows,
+                            self.min_packets
+                        )
                     )
-                });
+                );
                 continue;
             }
 
             let batch_size = flows.len().min(200);
             let batch = &flows[..batch_size];
 
-            log!(MLLog::RunningInference{ size: batch_size });
+            log!(MLLog::RunningInference(batch_size));
 
             let results = self.inference_pipeline.infer_batch(batch);
 
@@ -101,16 +103,17 @@ impl Engine {
             let stats = InferenceStats::from_results(&results, elapsed_us);
 
             if results.len() != batch_size {
-                log!(MLLog::InferenceResults{ size: batch_size, len: results.len() });
+                log!(MLLog::InferenceResults(batch_size, results.len()));
             }
 
-            log!(MLLog::InferenceCompleted {
-                total_flows: stats.total_flows,
-                anomaly: stats.malicious_flows,
-                benign: stats.benign_flows,
-                duration_ms: (elapsed_us as f64 / 1000.0) as u32,
-                throughput: stats.flows_per_second
-            });
+            log!(
+                MLLog::InferenceCompleted(
+                    stats.total_flows,
+                    stats.malicious_flows,
+                    stats.benign_flows,(elapsed_us as f64 / 1000.0) as u32,
+                    stats.flows_per_second
+                )
+            );
 
             if let Ok(mut aggregator) = self.aggregator.lock() {
                 for result in &results {
@@ -122,14 +125,16 @@ impl Engine {
                         );
 
                         if should_alert {
-                            log!(MLLog::ThreatDetected {
-                                flow: result.flow_key.clone(),
-                                attack_type: result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-                                confidence: result.confidence,
-                                ae_score: result.ae_score,
-                                rf_score: result.rf_score,
-                                ensemble_score: result.ensemble_score,
-                            });
+                            log!(
+                                MLLog::ThreatDetected(
+                                    result.flow_key.clone(),
+                                    result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
+                                    result.confidence,
+                                    result.ae_score,
+                                    result.rf_score,
+                                    result.ensemble_score,
+                                )
+                            );
                         }
                     }
                 }
@@ -147,7 +152,7 @@ impl Engine {
                 self.flow_tracker.process_packet(packet_info);
             }
             None => {
-                log!(MLLog::ParsePacketFailed { len: packet_data.len() })
+                log!(MLLog::ParsePacketFailed(packet_data.len()))
             }
         }
     }

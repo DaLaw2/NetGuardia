@@ -212,23 +212,17 @@ impl XskPair {
 
                     match self.process_comp_queue() {
                         Ok(count) => total_activity += count,
-                        Err(e) => log!(EbpfLog::CompQueueError {
-                            error: format!("{:?}", e)
-                        }),
+                        Err(e) => log!(EbpfLog::CompQueueError(format!("{:?}", e))),
                     }
 
                     match self.process_rx_queue(&forward_tx) {
                         Ok(count) => total_activity += count,
-                        Err(e) => log!(EbpfLog::RXQueueError {
-                            error: format!("{:?}", e)
-                        }),
+                        Err(e) => log!(EbpfLog::RXQueueError(format!("{:?}", e))),
                     }
 
                     match self.process_tx_queue(&forward_rx) {
                         Ok(count) => total_activity += count,
-                        Err(e) => log!(EbpfLog::TXQueueError {
-                            error: format!("{:?}", e)
-                        }),
+                        Err(e) => log!(EbpfLog::TXQueueError(format!("{:?}", e))),
                     }
 
                     if total_activity == 0 {
@@ -250,10 +244,7 @@ impl XskPair {
             })
             .map(|_| shutdown_tx)
             .map_err(|e| {
-                log!(EbpfLog::ThreadSpawnFailed {
-                    thread_name: thread_name.clone(),
-                    error: e.to_string()
-                });
+                log!(EbpfLog::ThreadSpawnFailed(thread_name.clone(), e.to_string()));
                 EbpfError::ThreadSpawnFailed(e)
             })
     }
@@ -305,10 +296,7 @@ impl XskPair {
             unsafe {
                 let produced = self.fill_queue.produce(&rx_descs[..rx_count]);
                 if produced != rx_count {
-                    log!(EbpfLog::FillQueueIncomplete {
-                        produced,
-                        expected: rx_count
-                    });
+                    log!(EbpfLog::FillQueueIncomplete(produced, rx_count));
                 }
             }
         }
@@ -337,9 +325,7 @@ impl XskPair {
         };
 
         if pool_size == 0 {
-            log!(EbpfLog::FramePoolExhausted {
-                send_len: packets_to_send.len()
-            });
+            log!(EbpfLog::FramePoolExhausted(packets_to_send.len()));
             return Ok(0);
         }
 
@@ -374,9 +360,7 @@ impl XskPair {
 
         if let Err(e) = self.tx.wakeup() {
             if e.kind() != std::io::ErrorKind::WouldBlock {
-                log!(EbpfLog::TXWakeupFailed {
-                    error: e.to_string()
-                });
+                log!(EbpfLog::TXWakeupFailed(e.to_string()));
             }
         }
 
