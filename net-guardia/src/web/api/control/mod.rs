@@ -2,7 +2,7 @@ pub mod access_control;
 pub mod service;
 pub mod statistics;
 pub mod health;
-pub mod ml_inference;
+pub mod ml_alert;
 
 use actix_web::{web, Scope};
 
@@ -12,4 +12,5 @@ pub fn initialize() -> Scope {
         .service(service::initialize())
         .service(statistics::initialize())
         .service(health::initialize())
+        .service(ml_alert::initialize())
 }

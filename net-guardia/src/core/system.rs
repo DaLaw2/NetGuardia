@@ -11,6 +11,8 @@ use macros::log;
 
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::core::infrastructure::AppServices;
+use crate::ml::config_loader::InferenceConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
@@ -19,18 +21,14 @@ use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 use crate::web::api::{control, default, misc};
-use crate::ml::model_loader::MLModels;
-use crate::ml::config_loader::InferenceConfig;
-use crate::ml::engine::Engine;
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
+    pub inference_config: Arc<InferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
+    pub app_services: Arc<AppServices>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
-    pub ml_models: Arc<MLModels>,
-    pub inference_config: Arc<InferenceConfig>,
-    pub ml_engine: Arc<Engine>,
     #[allow(dead_code)]
     ingress_program_array: ProgramArray<MapData>,
     #[allow(dead_code)]
@@ -45,36 +43,21 @@ impl System {
 
         let inference_config = Arc::new(InferenceConfig::load_file(&app_config.models_config_name)?);
 
-        let ml_models = Arc::new(MLModels::load_models(&app_config, inference_config.num_features())?);
-
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
             &mut egress_ebpf,
         )?);
 
-        let ml_engine = Arc::new(Engine::new(
-            ml_models.clone(),
-            inference_config.clone(),
-            app_config.max_concurrent_flows,
-            app_config.min_packets_for_inference,
-            app_config.inference_interval_secs,
-        ));
-
-        log!(MLLog::EngineStarted {
-            max_flows: app_config.max_concurrent_flows,
-            min_packets: app_config.min_packets_for_inference,
-            interval_secs: app_config.inference_interval_secs
-        });
+        let app_services = Arc::new(AppServices::new(app_config.clone(), inference_config.clone())?);
 
         let system = System {
             app_config,
+            inference_config,
             ebpf_services,
+            app_services,
             ingress_ebpf,
             egress_ebpf,
-            ml_models,
-            inference_config,
-            ml_engine,
             ingress_program_array,
             egress_program_array,
         };
@@ -83,12 +66,13 @@ impl System {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
+        let app_services = self.app_services.clone();
         Logging::initialize()?;
         log!(SystemLog::Initializing);
 
-        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("deep_autoencoder") });
-        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("random_forest") });
-        log!(MLLog::ModelsLoaded { info: self.ml_models.get_model_info("mlp") });
+        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("deep_autoencoder")));
+        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("random_forest")));
+        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("mlp")));
 
         log!(MLLog::ConfigLoaded {
             features: self.inference_config.num_features(),
@@ -99,19 +83,19 @@ impl System {
         log!(SystemLog::InitializeComplete);
         self.attach_ebpf()?;
 
-
-        let _ml_handle = self.ml_engine.clone().start();
-
-        ebpf_services.run(self.ml_engine.clone()).await?;
+        ebpf_services.run(app_services.ml_engine.clone()).await?;
+        app_services.run().await?;
         self.run_http_server().await?;
         Ok(())
     }
 
     pub async fn terminate(&self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
+        let app_services = self.app_services.clone();
         log!(SystemLog::Terminating);
 
         ebpf_services.terminate();
+        app_services.terminate();
         log!(SystemLog::TerminateComplete);
         Ok(())
     }
@@ -152,12 +136,12 @@ impl System {
 
     async fn run_http_server(&self) -> Result<(), Error> {
         let app_config = self.app_config.clone();
+        let inference_config = self.inference_config.clone();
         let access_control = self.ebpf_services.access_control.clone();
         let service = self.ebpf_services.service.clone();
         let statistics = self.ebpf_services.statistics.clone();
-        let health = self.ebpf_services.health.clone();
-        let ml_models = self.ml_models.clone();
-        let inference_config = self.inference_config.clone();
+        let health = self.app_services.health.clone();
+        let ml_alert = self.app_services.ml_alert.clone();
         let port = self.app_config.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -168,13 +152,14 @@ impl System {
             App::new()
                 .wrap(cors)
                 .app_data(web::Data::from(app_config.clone()))
+                .app_data(web::Data::from(inference_config.clone()))
                 .app_data(web::Data::from(access_control.clone()))
                 .app_data(web::Data::from(service.clone()))
                 .app_data(web::Data::from(statistics.clone()))
                 .app_data(web::Data::from(health.clone()))
-                .app_data(web::Data::from(ml_models.clone()))
-                .app_data(web::Data::from(inference_config.clone()))
+                .app_data(web::Data::from(ml_alert.clone()))
                 .service(control::initialize())
+                .service(control::ml_alert::initialize())
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
         })

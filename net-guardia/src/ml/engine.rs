@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 
 use macros::log;
+use tokio::sync::oneshot;
 use tokio::time::interval;
 
 use super::config_loader::InferenceConfig;
@@ -10,6 +11,7 @@ use super::inference::Inference;
 use super::model_loader::MLModels;
 use super::aggregator::AttackAggregator;
 
+use crate::core::infrastructure::ml_alert::MLAlert;
 use crate::utils::packet_parser::parse_packet;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{EngineStats, InferenceStats};
@@ -18,6 +20,7 @@ pub struct Engine {
     flow_tracker: Arc<FlowTracker>,
     inference_pipeline: Arc<Inference>,
     aggregator: Arc<Mutex<AttackAggregator>>,
+    ml_alert: Arc<MLAlert>,
     min_packets: usize,
     inference_interval_secs: u64,
 }
@@ -26,39 +29,52 @@ impl Engine {
     pub fn new(
         models: Arc<MLModels>,
         config: Arc<InferenceConfig>,
+        ml_alert: Arc<MLAlert>,
         max_flows: usize,
         min_packets: usize,
         interval_secs: u64,
+        window_secs: u64
     ) -> Self {
         let flow_tracker = Arc::new(FlowTracker::new(max_flows));
         let inference_pipeline = Arc::new(Inference::new(models, config));
 
-        let aggregator = Arc::new(Mutex::new(AttackAggregator::new(30, 10)));
+        let aggregator = Arc::new(
+                Mutex::new(AttackAggregator::new(window_secs, ((window_secs / interval_secs) / 2) as usize)
+            )
+        );
 
         Self {
             flow_tracker,
             inference_pipeline,
             aggregator,
+            ml_alert,
             min_packets,
             inference_interval_secs: interval_secs,
         }
     }
 
-    pub fn start(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+    pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
         tokio::spawn(async move {
-            self.run_inference_loop().await;
-        })
+            self.run_inference_loop(shutdown_rx).await;
+            log!(MLLog::Shutdown);
+        });
+        shutdown_tx
     }
 
     pub fn get_flow_tracker(&self) -> Arc<FlowTracker> {
         self.flow_tracker.clone()
     }
 
-    async fn run_inference_loop(&self) {
+    async fn run_inference_loop(&self, mut shutdown_rx: oneshot::Receiver<()>) {
         let mut ticker = interval(Duration::from_secs(self.inference_interval_secs));
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                _ = ticker.tick() => {}
+            }
 
             let start = Instant::now();
 
@@ -135,6 +151,8 @@ impl Engine {
                                     result.ensemble_score,
                                 )
                             );
+
+                            self.ml_alert.broadcast_alert(result);
                         }
                     }
                 }

@@ -28,7 +28,6 @@ use crate::ml::engine::{Engine, PacketProcessor};
 pub struct XskManager {
     app_config: Arc<AppConfig>,
     xsk_map: Mutex<XskMap<MapData>>,
-    shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
 impl XskManager {
@@ -42,11 +41,10 @@ impl XskManager {
         Ok(Self {
             app_config,
             xsk_map: Mutex::new(xsk_map),
-            shutdowns: SegQueue::new(),
         })
     }
 
-    pub fn run(&self, ml_engine: Option<Arc<Engine>>) -> Result<(), Error> {
+    pub fn run(&self, ml_engine: Option<Arc<Engine>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
 
@@ -82,23 +80,15 @@ impl XskManager {
             drop(xsk_map);
 
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
-            self.shutdowns.push(ingress_shutdown);
+            shutdowns.push(ingress_shutdown);
 
             let egress_shutdown = egress_xsk.run(egress_to_ingress_tx, ingress_to_egress_rx)?;
-            self.shutdowns.push(egress_shutdown);
+            shutdowns.push(egress_shutdown);
 
             log!(EbpfLog::QueuePairStarted(queue_id));
         }
 
         Ok(())
-    }
-
-    pub fn shutdown(&self) {
-        while let Some(sender) = self.shutdowns.pop() {
-            if sender.send(()).is_err() {
-                log!(SystemError::ShutdownSignalFailed);
-            }
-        }
     }
 }
 

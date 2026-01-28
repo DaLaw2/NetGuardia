@@ -23,7 +23,7 @@ pub struct AENormalization {
     pub p99: f64,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FlowKey {
     pub src_ip: String,
     pub dst_ip: String,

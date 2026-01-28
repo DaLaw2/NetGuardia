@@ -28,4 +28,5 @@ pub struct Config {
     pub max_concurrent_flows: usize,
     pub min_packets_for_inference: usize,
     pub inference_interval_secs: u64,
+    pub aggregator_window_secs: u64
 }
