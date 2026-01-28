@@ -1,7 +1,9 @@
-use common::model::event::{Event, IPv4Event, IPv6Event};
+use std::time;
+use std::mem;
+
+use common::model::event::{Event, IPv4Event, IPv6Event, TcpFlags};
 use network_types::ip::IpProto;
 
-/// Parse raw packet bytes into an Event
 pub fn parse_packet(packet_data: &[u8]) -> Option<Event> {
     if packet_data.len() < 14 {
         return None;
@@ -9,104 +11,158 @@ pub fn parse_packet(packet_data: &[u8]) -> Option<Event> {
 
     let eth_type = u16::from_be_bytes([packet_data[12], packet_data[13]]);
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let timestamp_us = time::SystemTime::now()
+        .duration_since(time::UNIX_EPOCH)
         .ok()?
-        .as_secs();
+        .as_micros() as u64;
 
     match eth_type {
-        0x0800 => parse_ipv4(packet_data, timestamp),
-        0x86DD => parse_ipv6(packet_data, timestamp),
+        0x0800 => parse_ipv4(packet_data, timestamp_us),
+        0x86DD => parse_ipv6(packet_data, timestamp_us),
         _ => None,
     }
 }
 
-fn parse_ipv4(packet_data: &[u8], timestamp: u64) -> Option<Event> {
-    // Ethernet header (14) + minimum IPv4 header (20) = 34 bytes
+fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     if packet_data.len() < 34 {
         return None;
     }
 
     let ip_header = &packet_data[14..];
 
-    // Parse IPv4 header
-    let protocol = ip_header[9];
-    let source_ip = u32::from_be_bytes([ip_header[12], ip_header[13], ip_header[14], ip_header[15]]);
-    let destination_ip = u32::from_be_bytes([ip_header[16], ip_header[17], ip_header[18], ip_header[19]]);
+    let protocol_byte = ip_header[9];
+    let protocol = unsafe { mem::transmute::<u8, IpProto>(protocol_byte) };
 
-    // Get IP header length
+    let src_ip = u32::from_be_bytes([ip_header[12], ip_header[13], ip_header[14], ip_header[15]]);
+    let dst_ip = u32::from_be_bytes([ip_header[16], ip_header[17], ip_header[18], ip_header[19]]);
+
     let ihl = (ip_header[0] & 0x0F) as usize * 4;
-
-    // Total length
     let total_len = u16::from_be_bytes([ip_header[2], ip_header[3]]) as u32;
 
-    // Parse transport layer (TCP/UDP)
-    let (source_port, destination_port) = if packet_data.len() >= 14 + ihl + 4 {
-        let transport_header = &ip_header[ihl..];
-        let src_port = u16::from_be_bytes([transport_header[0], transport_header[1]]);
-        let dst_port = u16::from_be_bytes([transport_header[2], transport_header[3]]);
-        (src_port, dst_port)
+    if packet_data.len() < 14 + ihl + 4 {
+        return None;
+    }
+
+    let transport_header = &ip_header[ihl..];
+    let src_port = u16::from_be_bytes([transport_header[0], transport_header[1]]);
+    let dst_port = u16::from_be_bytes([transport_header[2], transport_header[3]]);
+
+    let (tcp_flags, tcp_window_size, header_length) = if protocol_byte == 6 {
+        if packet_data.len() < 14 + ihl + 20 {
+            return None;
+        }
+
+        let data_offset = (transport_header[12] >> 4) as u16 * 4;
+        let flags = TcpFlags::from_byte(transport_header[13]);
+        let window = u16::from_be_bytes([transport_header[14], transport_header[15]]);
+
+        (flags, window, data_offset)
+    } else if protocol_byte == 17 {
+        (TcpFlags::default(), 0, 8)
     } else {
-        (0, 0)
+        (TcpFlags::default(), 0, 0)
     };
 
+    let payload_length = total_len.saturating_sub(ihl as u32 + header_length as u32);
+
     let event = IPv4Event {
-        protocol: unsafe { std::mem::transmute::<u8, IpProto>(protocol) },
-        source_ip,
-        destination_ip,
-        source_port,
-        destination_port,
-        len: total_len,
-        timestamp,
+        protocol,
+        src_ip,
+        dst_ip,
+        src_port,
+        dst_port,
+        packet_length: total_len,
+        payload_length,
+        header_length,
+        timestamp_us,
+        tcp_flags,
+        tcp_window_size,
+        is_forward: false,
     };
 
     Some(Event::IPv4(event))
 }
 
-fn parse_ipv6(packet_data: &[u8], timestamp: u64) -> Option<Event> {
-    // Ethernet header (14) + minimum IPv6 header (40) = 54 bytes
+fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     if packet_data.len() < 54 {
         return None;
     }
 
     let ip_header = &packet_data[14..];
 
-    // Parse IPv6 header
-    let protocol = ip_header[6];
+    let protocol_byte = ip_header[6];
+    let protocol = unsafe { mem::transmute::<u8, IpProto>(protocol_byte) };
 
-    // Source IPv6 address (16 bytes starting at offset 8)
     let mut source_ip_bytes = [0u8; 16];
     source_ip_bytes.copy_from_slice(&ip_header[8..24]);
-    let source_ip = u128::from_be_bytes(source_ip_bytes);
+    let src_ip = u128::from_be_bytes(source_ip_bytes);
 
-    // Destination IPv6 address (16 bytes starting at offset 24)
     let mut dest_ip_bytes = [0u8; 16];
     dest_ip_bytes.copy_from_slice(&ip_header[24..40]);
-    let destination_ip = u128::from_be_bytes(dest_ip_bytes);
+    let dst_ip = u128::from_be_bytes(dest_ip_bytes);
 
-    // Payload length
     let payload_len = u16::from_be_bytes([ip_header[4], ip_header[5]]) as u32;
-    let total_len = payload_len + 40; // IPv6 header is always 40 bytes
+    let total_len = payload_len + 40;
 
-    // Parse transport layer (TCP/UDP)
-    let (source_port, destination_port) = if packet_data.len() >= 54 + 4 {
-        let transport_header = &ip_header[40..];
-        let src_port = u16::from_be_bytes([transport_header[0], transport_header[1]]);
-        let dst_port = u16::from_be_bytes([transport_header[2], transport_header[3]]);
-        (src_port, dst_port)
+    if packet_data.len() < 54 + 4 {
+        return None;
+    }
+
+    let transport_header = &ip_header[40..];
+    let src_port = u16::from_be_bytes([transport_header[0], transport_header[1]]);
+    let dst_port = u16::from_be_bytes([transport_header[2], transport_header[3]]);
+
+    let (tcp_flags, tcp_window_size, header_length) = if protocol_byte == 6 {
+        if packet_data.len() < 54 + 20 {
+            return None;
+        }
+
+        let data_offset = (transport_header[12] >> 4) as u16 * 4;
+        let flags = TcpFlags::from_byte(transport_header[13]);
+        let window = u16::from_be_bytes([transport_header[14], transport_header[15]]);
+
+        (flags, window, data_offset)
+    } else if protocol_byte == 17 {
+        (TcpFlags::default(), 0, 8)
     } else {
-        (0, 0)
+        (TcpFlags::default(), 0, 0)
     };
 
+    let payload_length = total_len.saturating_sub(40 + header_length as u32);
+
     let event = IPv6Event {
-        protocol: unsafe { std::mem::transmute::<u8, IpProto>(protocol) },
-        source_ip,
-        destination_ip,
-        source_port,
-        destination_port,
-        len: total_len,
-        timestamp,
+        protocol,
+        src_ip,
+        dst_ip,
+        src_port,
+        dst_port,
+        packet_length: total_len,
+        payload_length,
+        header_length,
+        timestamp_us,
+        tcp_flags,
+        tcp_window_size,
+        is_forward: false,
     };
 
     Some(Event::IPv6(event))
+}
+
+pub fn format_ipv4(addr: u32) -> String {
+    let bytes = addr.to_be_bytes();
+    format!(
+        "{}.{}.{}.{}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    )
+}
+
+pub fn format_ipv6(addr: u128) -> String {
+    let bytes = addr.to_be_bytes();
+    format!(
+        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }

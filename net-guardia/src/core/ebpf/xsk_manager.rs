@@ -23,6 +23,7 @@ use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::log::ebpf::EbpfLog;
+use crate::ml::engine::{Engine, PacketProcessor};
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
@@ -45,20 +46,23 @@ impl XskManager {
         })
     }
 
-    pub fn run(&self) -> Result<(), Error> {
+    pub fn run(&self, ml_engine: Option<Arc<Engine>>) -> Result<(), Error> {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
 
+        let packet_processor = ml_engine.map(|engine| Arc::new(PacketProcessor::new(engine)));
+
         for queue_id in 0..combined_queue_count {
-            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.xsk_channel_size);
-            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.xsk_channel_size);
+            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.channel_size);
+            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.channel_size);
 
             let ingress_xsk = XskPair::new(
                 config.clone(),
                 queue_id,
                 &config.ingress_ifname,
                 &config.egress_ifname,
-                Direction::Ingress
+                Direction::Ingress,
+                packet_processor.clone(),
             )?;
 
             let egress_xsk = XskPair::new(
@@ -67,6 +71,7 @@ impl XskManager {
                 &config.egress_ifname,
                 &config.ingress_ifname,
                 Direction::Egress,
+                None,
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
@@ -105,6 +110,7 @@ pub struct XskPair {
     tx: TxQueue,
     rx: RxQueue,
     frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    packet_processor: Option<Arc<PacketProcessor>>,
 }
 
 impl XskPair {
@@ -114,6 +120,7 @@ impl XskPair {
         rx_ifname: &str,
         tx_ifname: &str,
         direction: Direction,
+        packet_processor: Option<Arc<PacketProcessor>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
 
@@ -170,6 +177,7 @@ impl XskPair {
             tx,
             rx,
             frame_pool: Arc::new(Mutex::new(pool_frames)),
+            packet_processor,
         };
 
         Ok(xsk_pair)
@@ -188,6 +196,7 @@ impl XskPair {
             .name(thread_name.clone())
             .spawn(move || {
                 let mut shutdown_rx = Some(shutdown_rx);
+                let mut idle_count: u32 = 0;
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -199,40 +208,48 @@ impl XskPair {
                         }
                     }
 
-                    if let Err(e) = self.process_comp_queue() {
-                        log!(EbpfLog::CompQueueError {
-                            error: format!("{:?}", e)
-                        });
+                    let mut total_activity = 0;
+
+                    match self.process_comp_queue() {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::CompQueueError(format!("{:?}", e))),
                     }
 
-                    if let Err(e) = self.process_rx_queue(&forward_tx) {
-                        log!(EbpfLog::RXQueueError {
-                            error: format!("{:?}", e)
-                        });
+                    match self.process_rx_queue(&forward_tx) {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::RXQueueError(format!("{:?}", e))),
                     }
 
-                    if let Err(e) = self.process_tx_queue(&forward_rx) {
-                        log!(EbpfLog::TXQueueError {
-                            error: format!("{:?}", e)
-                        });
+                    match self.process_tx_queue(&forward_rx) {
+                        Ok(count) => total_activity += count,
+                        Err(e) => log!(EbpfLog::TXQueueError(format!("{:?}", e))),
                     }
 
-                    thread::sleep(Duration::from_micros(1));
+                    if total_activity == 0 {
+                        idle_count = idle_count.saturating_add(1);
+                    } else {
+                        idle_count = 0;
+                    }
+
+                    let sleep_us = match idle_count {
+                        0..=10 => 1,
+                        11..=100 => 10,
+                        _ => 100,
+                    };
+
+                    thread::sleep(Duration::from_micros(sleep_us));
                 }
 
                 log!(EbpfLog::XSKShutdown);
             })
             .map(|_| shutdown_tx)
             .map_err(|e| {
-                log!(EbpfLog::ThreadSpawnFailed {
-                    thread_name: thread_name.clone(),
-                    error: e.to_string()
-                });
+                log!(EbpfLog::ThreadSpawnFailed(thread_name.clone(), e.to_string()));
                 EbpfError::ThreadSpawnFailed(e)
             })
     }
 
-    fn process_comp_queue(&mut self) -> Result<(), EbpfError> {
+    fn process_comp_queue(&mut self) -> Result<usize, EbpfError> {
         let mut comp_descs = vec![FrameDesc::default(); 256];
 
         let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
@@ -245,10 +262,10 @@ impl XskPair {
             }
         }
 
-        Ok(())
+        Ok(nb_completed)
     }
 
-    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<(), EbpfError> {
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut rx_descs = vec![FrameDesc::default(); 64];
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
@@ -259,6 +276,10 @@ impl XskPair {
 
                 let data = unsafe { self.umem.data(rx_desc) };
                 let packet_data = data.contents()[..packet_len].to_vec();
+
+                if let Some(ref processor) = self.packet_processor {
+                    processor.process(&packet_data);
+                }
 
                 if let Err(e) = forward_tx.try_send(packet_data) {
                     match e {
@@ -275,18 +296,15 @@ impl XskPair {
             unsafe {
                 let produced = self.fill_queue.produce(&rx_descs[..rx_count]);
                 if produced != rx_count {
-                    log!(EbpfLog::FillQueueIncomplete {
-                        produced,
-                        expected: rx_count
-                    });
+                    log!(EbpfLog::FillQueueIncomplete(produced, rx_count));
                 }
             }
         }
 
-        Ok(())
+        Ok(rx_count)
     }
 
-    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<(), EbpfError> {
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut packets_to_send = Vec::with_capacity(64);
         while let Ok(packet) = forward_rx.try_recv() {
             packets_to_send.push(packet);
@@ -296,7 +314,7 @@ impl XskPair {
         }
 
         if packets_to_send.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let _ = self.process_comp_queue();
@@ -307,10 +325,8 @@ impl XskPair {
         };
 
         if pool_size == 0 {
-            log!(EbpfLog::FramePoolExhausted {
-                send_len: packets_to_send.len()
-            });
-            return Ok(());
+            log!(EbpfLog::FramePoolExhausted(packets_to_send.len()));
+            return Ok(0);
         }
 
         let mut frames = Vec::with_capacity(packets_to_send.len());
@@ -327,7 +343,7 @@ impl XskPair {
 
         if frames.is_empty() {
             log!(EbpfLog::NoFramesAvailable);
-            return Ok(());
+            return Ok(0);
         }
 
         for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
@@ -340,16 +356,14 @@ impl XskPair {
             }
         }
 
-        let _nb_submitted = unsafe { self.tx.produce(&frames) };
+        let nb_submitted = unsafe { self.tx.produce(&frames) };
 
         if let Err(e) = self.tx.wakeup() {
             if e.kind() != std::io::ErrorKind::WouldBlock {
-                log!(EbpfLog::TXWakeupFailed {
-                    error: e.to_string()
-                });
+                log!(EbpfLog::TXWakeupFailed(e.to_string()));
             }
         }
 
-        Ok(())
+        Ok(nb_submitted)
     }
 }

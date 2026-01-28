@@ -1,9 +1,13 @@
 [Config]
 ingress_ifname = "enp4s0f1"  # Ingress NIC Name
 egress_ifname = "enp4s0f0"   # Egress NIC Name
-geoip_db_path = "net-guardia/static/geo/GeoLite2-City.mmdb"
+geoip_db_name = "GeoLite2-City.mmdb"
+deep_autoencoder_name = "deep_autoencoder.onnx"
+random_forest_name = "random_forest.onnx"
+mlp_name = "mlp.onnx"
+models_config_name = "inference_config.json"
 combined_queue_count = 8     # NIC Combined Queue Count (ethtool -l <NIC>)
-xsk_channel_size = 4096
+channel_size = 4096
 fill_queue_size = 4096       # Umem Used (Should not modify)
 comp_queue_size = 4096       # Umem Used (Should not modify)
 tx_queue_size = 4096         # Umem Used (Should not modify)
@@ -12,3 +16,7 @@ frame_size = 4096            # Umem Used (Should not modify)
 frame_count = 4096           # Umem Used (Should not modify)
 http_server_bind_port = 8080 # Http Server Listen Port
 refresh_interval = 5         # Statistics Refresh Time
+
+max_concurrent_flows =  10000       # max_flows: track up to 10000 concurrent flows
+min_packets_for_inference = 5     # min_packets: minimum 10 packets per flow for inference
+inference_interval_secs = 5         # interval_secs: run inference every 5 seconds

@@ -6,3 +6,4 @@ pub mod ip_address;
 pub mod list_type;
 pub mod log;
 pub mod time_type;
+pub mod ml_detection;

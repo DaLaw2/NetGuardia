@@ -32,9 +32,10 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 url = "2.5.7"
 xsk-rs = { workspace = true }
-maxminddb = "0.26.0"
+maxminddb = "0.27.1"
 lru = "0.16.2"
 futures = "0.3.31"
+tract-onnx = "0.22.0"
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

@@ -19,6 +19,7 @@ use crate::core::infrastructure::health::SystemHealth;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
+use crate::ml::engine::Engine;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
@@ -37,9 +38,9 @@ impl EbpfServices {
     ) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
-        let health = SystemHealth::new(&app_config)?;
+        let health = SystemHealth::new(app_config.clone())?;
         let service = Service::new(ingress_ebpf)?;
-        let statistics = Statistics::new(app_config, ingress_ebpf, egress_ebpf)?;
+        let statistics = Statistics::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let ebpf_services = Self {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
@@ -51,12 +52,12 @@ impl EbpfServices {
         Ok(ebpf_services)
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+    pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
         let statistics = self.statistics.clone();
         let health = self.health.clone();
 
-        xsk_manager.run()?;
+        xsk_manager.run(Some(ml_engine))?;
 
         let statistics_shutdown = statistics.run().await;
         let health_shutdown = health.run(Duration::from_secs(3)).await;

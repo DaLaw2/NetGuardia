@@ -1,5 +1,5 @@
 {
-  "threshold": 0.15133114984430773,
+  "threshold": 0.3603835832054485,
   "strategy_name": "Max",
   "clip_params": {
     "Destination Port": {
@@ -58,11 +58,11 @@
       "lower": 0.0,
       "upper": 1167.9936145600002
     },
-    "Flow Bytes/s": {
+    "Flow Bytes\/s": {
       "lower": 0.0,
       "upper": 37000000.0
     },
-    "Flow Packets/s": {
+    "Flow Packets\/s": {
       "lower": 0.041637660508,
       "upper": 2000000.0
     },
@@ -146,11 +146,11 @@
       "lower": 0.0,
       "upper": 3312.0
     },
-    "Fwd Packets/s": {
+    "Fwd Packets\/s": {
       "lower": 0.02417299188,
       "upper": 2000000.0
     },
-    "Bwd Packets/s": {
+    "Bwd Packets\/s": {
       "lower": 0.0,
       "upper": 142857.1429
     },
@@ -206,7 +206,7 @@
       "lower": 0.0,
       "upper": 0.0
     },
-    "Down/Up Ratio": {
+    "Down\/Up Ratio": {
       "lower": 0.0,
       "upper": 5.0
     },
@@ -226,11 +226,11 @@
       "lower": 20.0,
       "upper": 2376.0
     },
-    "Fwd Avg Bytes/Bulk": {
+    "Fwd Avg Bytes\/Bulk": {
       "lower": 0.0,
       "upper": 0.0
     },
-    "Fwd Avg Packets/Bulk": {
+    "Fwd Avg Packets\/Bulk": {
       "lower": 0.0,
       "upper": 0.0
     },
@@ -238,11 +238,11 @@
       "lower": 0.0,
       "upper": 0.0
     },
-    "Bwd Avg Bytes/Bulk": {
+    "Bwd Avg Bytes\/Bulk": {
       "lower": 0.0,
       "upper": 0.0
     },
-    "Bwd Avg Packets/Bulk": {
+    "Bwd Avg Packets\/Bulk": {
       "lower": 0.0,
       "upper": 0.0
     },
@@ -478,31 +478,26 @@
   "post_clip_min": -5.0,
   "post_clip_max": 5.0,
   "ae_normalization": {
-    "min": 4.147972858692375e-06,
-    "max": 1.292201307125899,
-    "mean": 0.0026365920400427795,
-    "std": 0.011092374621751085,
-    "median": 0.00023979156462091921,
-    "p90": 0.005233132974117131,
-    "p95": 0.01092618446409825,
-    "p99": 0.04010412447293844
+    "min": 1.480184057280627e-5,
+    "max": 1.1978646574008398,
+    "mean": 0.0023598657051511107,
+    "std": 0.008826375460685048,
+    "median": 0.00031163828850514576,
+    "p90": 0.004909278753678756,
+    "p95": 0.010077479060604477,
+    "p99": 0.03354822433745485
   },
   "attack_labels": {
-    "0": "BENIGN",
-    "1": "Bot",
-    "2": "DDoS",
-    "3": "DoS GoldenEye",
-    "4": "DoS Hulk",
-    "5": "DoS Slowhttptest",
-    "6": "DoS slowloris",
-    "7": "FTP-Patator",
-    "8": "Heartbleed",
-    "9": "Infiltration",
-    "10": "PortScan",
-    "11": "SSH-Patator",
-    "12": "Web Attack � Brute Force",
-    "13": "Web Attack � Sql Injection",
-    "14": "Web Attack � XSS"
+    "0": "Bot",
+    "1": "DDoS",
+    "2": "DoS GoldenEye",
+    "3": "DoS Hulk",
+    "4": "DoS Slowhttptest",
+    "5": "DoS slowloris",
+    "6": "FTP-Patator",
+    "7": "PortScan",
+    "8": "SSH-Patator",
+    "9": "Web Attack"
   },
   "feature_names": [
     "Destination Port",
@@ -519,8 +514,8 @@
     "Bwd Packet Length Min",
     "Bwd Packet Length Mean",
     "Bwd Packet Length Std",
-    "Flow Bytes/s",
-    "Flow Packets/s",
+    "Flow Bytes\/s",
+    "Flow Packets\/s",
     "Flow IAT Mean",
     "Flow IAT Std",
     "Flow IAT Max",
@@ -541,8 +536,8 @@
     "Bwd URG Flags",
     "Fwd Header Length",
     "Bwd Header Length",
-    "Fwd Packets/s",
-    "Bwd Packets/s",
+    "Fwd Packets\/s",
+    "Bwd Packets\/s",
     "Min Packet Length",
     "Max Packet Length",
     "Packet Length Mean",
@@ -556,16 +551,16 @@
     "URG Flag Count",
     "CWE Flag Count",
     "ECE Flag Count",
-    "Down/Up Ratio",
+    "Down\/Up Ratio",
     "Average Packet Size",
     "Avg Fwd Segment Size",
     "Avg Bwd Segment Size",
     "Fwd Header Length.1",
-    "Fwd Avg Bytes/Bulk",
-    "Fwd Avg Packets/Bulk",
+    "Fwd Avg Bytes\/Bulk",
+    "Fwd Avg Packets\/Bulk",
     "Fwd Avg Bulk Rate",
-    "Bwd Avg Bytes/Bulk",
-    "Bwd Avg Packets/Bulk",
+    "Bwd Avg Bytes\/Bulk",
+    "Bwd Avg Packets\/Bulk",
     "Bwd Avg Bulk Rate",
     "Subflow Fwd Packets",
     "Subflow Fwd Bytes",

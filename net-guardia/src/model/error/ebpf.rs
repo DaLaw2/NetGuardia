@@ -1,4 +1,4 @@
-use macros::{loggable, traceable};
+use macros::traceable;
 use tracing;
 
 traceable! {

@@ -1,9 +1,8 @@
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maxminddb::{geoip2, MaxMindDbError, Reader};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use lru::LruCache;
 use std::num::NonZeroUsize;
@@ -17,7 +16,8 @@ pub struct GeoIpService {
 }
 
 impl GeoIpService {
-    pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, MaxMindDbError> {
+    pub fn new(db_name: &str) -> Result<Self, MaxMindDbError> {
+        let db_path = PathBuf::from("net-guardia/static/geo").join(db_name);
         Self::with_cache_size(db_path, 10000)
     }
 
@@ -48,7 +48,10 @@ impl GeoIpService {
             Self::lookup_from_db_blocking(&reader, ip)
         })
             .await
-            .map_err(|e| MaxMindDbError::InvalidDatabase(format!("Task join error: {}", e)))??;
+            .map_err(|e| MaxMindDbError::InvalidDatabase {
+                message: format!("Task join error: {}", e),
+                offset: None,
+            })??;
 
         {
             let mut cache = self.cache.write().await;
@@ -62,38 +65,22 @@ impl GeoIpService {
         reader: &Reader<Vec<u8>>,
         ip: IpAddr,
     ) -> Result<Option<GeoLocation>, MaxMindDbError> {
-        let city_option: Option<geoip2::City> = reader.lookup(ip)?;
+        let lookup_result = reader.lookup(ip)?;
+        let city_option: Option<geoip2::City> = lookup_result.decode()?;
 
         Ok(city_option.map(|city| {
-            let country_name = city
-                .country
-                .as_ref()
-                .and_then(|c| c.names.as_ref())
-                .and_then(|n| n.get("en"))
+            let country_name = city.country.names.english
                 .map(|s| s.to_string());
 
-            let country_code = city
-                .country
-                .as_ref()
-                .and_then(|c| c.iso_code)
+            let country_code = city.country.iso_code
                 .map(|s| s.to_string());
 
-            let city_name = city
-                .city
-                .as_ref()
-                .and_then(|c| c.names.as_ref())
-                .and_then(|n| n.get("en"))
+            let city_name = city.city.names.english
                 .map(|s| s.to_string());
 
-            let latitude = city.location.as_ref().and_then(|l| l.latitude);
-
-            let longitude = city.location.as_ref().and_then(|l| l.longitude);
-
-            let timezone = city
-                .location
-                .as_ref()
-                .and_then(|l| l.time_zone)
-                .map(|s| s.to_string());
+            let latitude = city.location.latitude.or(Some(0.0));
+            let longitude = city.location.longitude.or(Some(0.0));
+            let timezone = city.location.time_zone.map(|s| s.to_string());
 
             GeoLocation {
                 country: country_name,

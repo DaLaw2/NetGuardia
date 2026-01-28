@@ -59,3 +59,9 @@ impl From<SystemError> for Error {
         Self::System(error)
     }
 }
+
+impl From<MLError> for Error {
+    fn from(error: MLError) -> Self {
+        Self::ML(error)
+    }
+}
