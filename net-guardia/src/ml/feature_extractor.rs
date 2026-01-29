@@ -208,7 +208,6 @@ impl FlowFeatures {
         }
     }
 
-    /// Winsorization: Clip each feature according to its specific bounds from clip_params
     pub fn winsorize(&mut self, clip_params: &HashMap<String, ClipParams>, feature_names: &[String]) {
         for (i, feature_name) in feature_names.iter().enumerate() {
             if i < self.feature_num {
@@ -217,6 +216,10 @@ impl FlowFeatures {
                 }
             }
         }
+    }
+
+    pub fn get_features_content(&self) -> &Vec<f64> {
+        &self.features
     }
 }
 
