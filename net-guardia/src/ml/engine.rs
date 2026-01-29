@@ -58,7 +58,6 @@ impl Engine {
 
         tokio::spawn(async move {
             self.run_inference_loop(shutdown_rx).await;
-            log!(MLLog::Shutdown);
         });
         shutdown_tx
     }

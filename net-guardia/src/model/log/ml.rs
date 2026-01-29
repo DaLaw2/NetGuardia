@@ -18,9 +18,6 @@ loggable! {
         #[error("Machine Learning detection ready")]
         Ready => tracing::Level::INFO,
 
-        #[error("Machine Learning detection shutdown")]
-        Shutdown => tracing::Level::INFO,
-
         #[error("Machine Learning channel disconnected")]
         ChannelDisconnected => tracing::Level::WARN,
 

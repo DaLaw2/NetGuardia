@@ -19,7 +19,6 @@ use crate::ml::engine::Engine;
 use crate::ml::model_loader::MLModels;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
-use crate::model::log::ml::MLLog;
 
 pub struct AppServices {
     pub health: Arc<SystemHealth>,

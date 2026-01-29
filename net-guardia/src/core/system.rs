@@ -20,7 +20,7 @@ use crate::model::error::Error;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, misc};
+use crate::web::api::{control, default, health, misc, ml_alert};
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
@@ -159,7 +159,8 @@ impl System {
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
                 .service(control::initialize())
-                .service(control::ml_alert::initialize())
+                .service(ml_alert::initialize())
+                .service(health::initialize())
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
         })
