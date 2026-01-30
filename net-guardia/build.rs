@@ -10,7 +10,7 @@ use cargo_metadata::{Artifact, CompilerMessage, Message, Metadata, MetadataComma
 fn main() {
     build_ingress_ebpf();
     build_egress_ebpf();
-    build_frontend();
+    // build_frontend();
 }
 
 fn build_ingress_ebpf() {

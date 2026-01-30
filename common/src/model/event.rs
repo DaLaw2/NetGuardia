@@ -1,4 +1,3 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use network_types::ip::IpProto;
 
 use crate::model::ip_address::{AddrPortV4, AddrPortV6};
@@ -8,6 +7,13 @@ use crate::model::ip_address::{AddrPortV4, AddrPortV6};
 pub enum Event {
     IPv4(IPv4Event),
     IPv6(IPv6Event),
+}
+
+#[repr(C, align(8))]
+#[derive(Clone)]
+pub enum RawIp {
+    V4(u32),
+    V6(u128),
 }
 
 impl Event {
@@ -67,25 +73,17 @@ impl Event {
         }
     }
 
-    pub fn src_ip(&self) -> IpAddr {
+    pub fn src_ip(&self) -> RawIp {
         match self {
-            Event::IPv4(e) => {
-                IpAddr::V4(Ipv4Addr::from(e.src_ip))
-            }
-            Event::IPv6(e) => {
-                IpAddr::V6(Ipv6Addr::from(e.src_ip))
-            }
+            Event::IPv4(e) => RawIp::V4(e.src_ip),
+            Event::IPv6(e) => RawIp::V6(e.src_ip),
         }
     }
 
-    pub fn dst_ip(&self) -> IpAddr {
+    pub fn dst_ip(&self) -> RawIp {
         match self {
-            Event::IPv4(e) => {
-                IpAddr::V4(Ipv4Addr::from(e.dst_ip))
-            }
-            Event::IPv6(e) => {
-                IpAddr::V6(Ipv6Addr::from(e.dst_ip))
-            }
+            Event::IPv4(e) => RawIp::V4(e.dst_ip),
+            Event::IPv6(e) => RawIp::V6(e.dst_ip),
         }
     }
 
@@ -170,6 +168,7 @@ impl IPv6Event {
     }
 }
 
+#[repr(C, align(8))]
 #[derive(Debug, Clone, Default)]
 pub struct TcpFlags {
     pub fin: bool,
