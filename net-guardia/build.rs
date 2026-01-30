@@ -259,9 +259,14 @@ fn build_frontend() {
     //     panic!("FRONTEND_DIR environment variable is required but not set");
     // };
 
-    let project_root = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let static_dir = PathBuf::from(&project_root).join("static").join("web");
-    let frontend_dir = PathBuf::from(format!("{}-frontend", &project_root));
+    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let static_dir = project_root.join("static").join("web");
+
+    let project_name = project_root.file_name().unwrap().to_string_lossy();
+    let frontend_dir = project_root
+        .parent()
+        .unwrap()
+        .join(format!("{}-frontend", project_name));
 
     if !frontend_dir.exists() {
         panic!("Frontend directory {:?} does not exist", frontend_dir);
