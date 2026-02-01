@@ -46,17 +46,17 @@ impl FlowFeatures {
 
         // 16-19
         let flow_iats = compute_flow_iats(&flow.fwd_packets, &flow.bwd_packets);
-        let (flow_iat_mean, flow_iat_std, flow_iat_max, flow_iat_min) = compute_stats(&flow_iats);
+        let (flow_iat_max, flow_iat_min, flow_iat_mean, flow_iat_std) = compute_stats(&flow_iats);
 
         // 20-24
         let fwd_iats = compute_iats(&flow.fwd_packets);
         let fwd_iat_total: f64 = fwd_iats.iter().sum();
-        let (fwd_iat_mean, fwd_iat_std, fwd_iat_max, fwd_iat_min) = compute_stats(&fwd_iats);
+        let (fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = compute_stats(&fwd_iats);
 
         // 25-29
         let bwd_iats = compute_iats(&flow.bwd_packets);
         let bwd_iat_total: f64 = bwd_iats.iter().sum();
-        let (bwd_iat_mean, bwd_iat_std, bwd_iat_max, bwd_iat_min) = compute_stats(&bwd_iats);
+        let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = compute_stats(&bwd_iats);
 
         // 30-37
         let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags.psh).count() as f64;
@@ -86,7 +86,7 @@ impl FlowFeatures {
             .collect();
 
         // 70-73
-        let (active_mean, active_std, active_max, active_min) = compute_stats(
+        let (active_max, active_min, active_mean, active_std) = compute_stats(
             &flow
                 .active_periods
                 .iter()
@@ -95,7 +95,7 @@ impl FlowFeatures {
         );
 
         // 74-77
-        let (idle_mean, idle_std, idle_max, idle_min) = compute_stats(
+        let (idle_max, idle_min, idle_mean, idle_std) = compute_stats(
             &flow
                 .idle_periods
                 .iter()
@@ -104,22 +104,23 @@ impl FlowFeatures {
         );
 
         match feature_name {
-            "Destination Port" => flow.flow_key.dst_port as f64,
+            "Destination Port" | "Dst Port" => flow.flow_key.dst_port as f64,
+            "Protocol" => flow.flow_key.protocol as f64,
             "Flow Duration" => duration_us,
-            "Total Fwd Packets" => fwd_count,
-            "Total Backward Packets" => bwd_count,
-            "Total Length of Fwd Packets" => flow.fwd_total_bytes as f64,
-            "Total Length of Bwd Packets" => flow.bwd_total_bytes as f64,
+            "Total Fwd Packets" | "Tot Fwd Pkts" => fwd_count,
+            "Total Backward Packets" | "Tot Bwd Pkts" => bwd_count,
+            "Total Length of Fwd Packets" | "TotLen Fwd Pkts" => flow.fwd_total_bytes as f64,
+            "Total Length of Bwd Packets" | "TotLen Bwd Pkts" => flow.bwd_total_bytes as f64,
             "Fwd Packet Length Max" => fwd_max,
             "Fwd Packet Length Min" => fwd_min,
-            "Fwd Packet Length Mean" => fwd_mean,
-            "Fwd Packet Length Std" => fwd_std,
+            "Fwd Packet Length Mean" | "Fwd Pkt Len Mean" => fwd_mean,
+            "Fwd Packet Length Std" | "Fwd Pkt Len Std" => fwd_std,
             "Bwd Packet Length Max" => bwd_max,
             "Bwd Packet Length Min" => bwd_min,
-            "Bwd Packet Length Mean" => bwd_mean,
-            "Bwd Packet Length Std" => bwd_std,
-            "Flow Bytes/s" => safe_div(total_bytes, duration_s),
-            "Flow Packets/s" => safe_div(total_count, duration_s),
+            "Bwd Packet Length Mean" | "Bwd Pkt Len Mean" => bwd_mean,
+            "Bwd Packet Length Std" | "Bwd Pkt Len Std" => bwd_std,
+            "Flow Bytes/s" | "Flow Byts/s" => safe_div(total_bytes, duration_s),
+            "Flow Packets/s" | "Flow Pkts/s" => safe_div(total_count, duration_s),
             "Flow IAT Mean" => flow_iat_mean,
             "Flow IAT Std" => flow_iat_std,
             "Flow IAT Max" => flow_iat_max,
@@ -144,14 +145,14 @@ impl FlowFeatures {
             "Bwd Packets/s" => safe_div(bwd_count, duration_s),
             "Min Packet Length" => min_len,
             "Max Packet Length" => max_len,
-            "Packet Length Mean" => mean_len,
-            "Packet Length Std" => std_len,
+            "Packet Length Mean" | "Pkt Len Mean" => mean_len,
+            "Packet Length Std" | "Pkt Len Std" => std_len,
             "Packet Length Variance" => std_len * std_len,
-            "FIN Flag Count" => flow.fin_count as f64,
-            "SYN Flag Count" => flow.syn_count as f64,
-            "RST Flag Count" => flow.rst_count as f64,
-            "PSH Flag Count" => flow.psh_count as f64,
-            "ACK Flag Count" => flow.ack_count as f64,
+            "FIN Flag Count" | "FIN Flag Cnt" => flow.fin_count as f64,
+            "SYN Flag Count" | "SYN Flag Cnt" => flow.syn_count as f64,
+            "RST Flag Count" | "RST Flag Cnt" => flow.rst_count as f64,
+            "PSH Flag Count" | "PSH Flag Cnt" => flow.psh_count as f64,
+            "ACK Flag Count" | "ACK Flag Cnt" => flow.ack_count as f64,
             "URG Flag Count" => flow.urg_count as f64,
             "CWE Flag Count" => flow.cwe_count as f64,
             "ECE Flag Count" => flow.ece_count as f64,
@@ -170,10 +171,10 @@ impl FlowFeatures {
             "Subflow Fwd Bytes" => flow.fwd_total_bytes as f64,
             "Subflow Bwd Packets" => bwd_count,
             "Subflow Bwd Bytes" => flow.bwd_total_bytes as f64,
-            "Init_Win_bytes_forward" => flow.init_win_bytes_fwd as f64,
-            "Init_Win_bytes_backward" => flow.init_win_bytes_bwd as f64,
-            "act_data_pkt_fwd" => fwd_seg_sizes.len() as f64,
-            "min_seg_size_forward" => fwd_seg_sizes.iter()
+            "Init_Win_bytes_forward" | "Init Fwd Win Byts" => flow.init_win_bytes_fwd as f64,
+            "Init_Win_bytes_backward" | "Init Bwd Win Byts" => flow.init_win_bytes_bwd as f64,
+            "act_data_pkt_fwd" | "Fwd Act Data Pkts" => fwd_seg_sizes.len() as f64,
+            "min_seg_size_forward" | "Fwd Seg Size Min" => fwd_seg_sizes.iter()
                 .min_by(|a, b| a.total_cmp(b))
                 .copied()
                 .unwrap_or(0.0),
