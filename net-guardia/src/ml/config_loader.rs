@@ -4,12 +4,13 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::model::error::ml::MLError;
-use crate::model::ml_detection::{AENormalization, ClipParams};
+use crate::model::ml_detection::{AENormalization, ClipParams, PrecisionLevels};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceConfig {
     pub threshold: f64,
     pub strategy_name: String,
+    pub precision_levels: HashMap<String, PrecisionLevels>,
     pub clip_params: HashMap<String, ClipParams>,
     pub scaler_mean: Vec<f64>,
     pub scaler_std: Vec<f64>,

@@ -15,12 +15,19 @@ pub struct ClipParams {
 pub struct AENormalization {
     pub min: f64,
     pub max: f64,
+    pub norm_max: f64,
     pub mean: f64,
     pub std: f64,
     pub median: f64,
     pub p90: f64,
     pub p95: f64,
     pub p99: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrecisionLevels {
+    pub threshold: f64,
+    pub precision: f64,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -85,6 +92,7 @@ pub struct BulkState {
 #[derive(Debug, Clone)]
 pub struct DetectionResult {
     pub flow_key: String,
+    // pub precision: String,
     pub flow_key_raw: FlowKey,
     pub is_attack: bool,
     pub attack_type: Option<String>,

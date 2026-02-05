@@ -88,6 +88,13 @@ impl Inference {
                 }
             };
 
+            // TODO: Don't write to death
+            if ensemble_score > self.config.precision_levels["p99.9"].threshold as f32 {
+                // 98% precision - high
+            } else if ensemble_score > self.config.precision_levels["p99.0"].threshold as f32{
+                // 89% precision - mid
+            }
+
             if confidence < 0.75 {
                 return Some(DetectionResult {
                     flow_key,
@@ -142,7 +149,7 @@ impl Inference {
         let mse = squared_errors.sum() / self.config.num_features() as f32;
 
         let ae_norm = &self.config.ae_normalization;
-        let ae_score = (mse - ae_norm.min as f32) / (ae_norm.max as f32 - ae_norm.min as f32 + 1e-10);
+        let ae_score = (mse - ae_norm.min as f32) / (ae_norm.norm_max as f32 - ae_norm.min as f32 + 1e-10);
         let ae_score = ae_score.clamp(0.0, 1.0);
 
         Ok(ae_score)
