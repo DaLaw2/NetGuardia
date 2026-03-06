@@ -20,12 +20,12 @@ impl AttackAggregator {
         }
     }
 
-    pub fn should_alert(&mut self, flow_key: &FlowKey, ensemble_score: f32, threshold: f32) -> bool {
+    pub fn should_alert(&mut self, flow_key: &FlowKey, score: f32, threshold: f32) -> bool {
         let now = Instant::now();
 
         let detections = self.detections.entry(flow_key.clone()).or_default();
         detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
-        detections.push((now, ensemble_score));
+        detections.push((now, score));
 
         if detections.len() >= self.min_detections {
             let avg_score: f32 =

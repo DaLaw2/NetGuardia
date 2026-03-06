@@ -99,7 +99,7 @@ pub struct XskPair {
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
-    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    frame_pool: Arc<Mutex<Vec<FrameDesc>>>, // SegQueue
     packet_processor: Option<Arc<PacketProcessor>>,
 }
 

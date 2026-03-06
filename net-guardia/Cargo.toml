@@ -10,7 +10,7 @@ macros = { path = "../macros" }
 actix = "0.13.5"
 actix-cors = "0.7.1"
 actix-web = "4.11.0"
-actix-ws = "0.3.0"
+actix-ws = "0.4.0"
 aya = { workspace = true }
 aya-log = { workspace = true }
 network-types = { workspace = true }
@@ -22,11 +22,11 @@ parking_lot = "0.12.5"
 rust-embed = "8.7.2"
 serde = { workspace = true }
 serde_json = "1.0.143"
-sysinfo = "0.37.0"
+sysinfo = "0.38.2"
 thiserror = "2.0.3"
 tokio = { version = "1.40.0", features = ["full", "macros"] }
 tokio-tungstenite = "0.28.0"
-toml = "0.9.5"
+toml = "1.0.3"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -36,6 +36,8 @@ maxminddb = "0.27.1"
 lru = "0.16.2"
 futures = "0.3.31"
 tract-onnx = "0.22.0"
+#csv = "1.4.0"
+#anyhow = "1.0.100"
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

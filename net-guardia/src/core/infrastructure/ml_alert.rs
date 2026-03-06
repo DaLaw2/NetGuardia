@@ -17,8 +17,6 @@ pub struct AlertMessage {
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
-    pub rf_score: f32,
-    pub ensemble_score: f32,
 }
 
 impl AlertMessage {
@@ -40,8 +38,6 @@ impl AlertMessage {
             attack_type: result.attack_type.clone(),
             confidence: result.confidence,
             ae_score: result.ae_score,
-            rf_score: result.rf_score,
-            ensemble_score: result.ensemble_score,
         }
     }
 }

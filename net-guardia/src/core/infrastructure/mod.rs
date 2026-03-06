@@ -32,7 +32,7 @@ impl AppServices {
     pub fn new(app_config: Arc<AppConfig>, inference_config: Arc<InferenceConfig>) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone())?;
 
-        let ml_models = Arc::new(MLModels::load_models(&app_config, inference_config.num_features())?);
+        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
         let ml_alert = Arc::new(MLAlert::new());
 
         let ml_engine = Arc::new(Engine::new(
@@ -41,6 +41,7 @@ impl AppServices {
             ml_alert.clone(),
             app_config.max_concurrent_flows,
             app_config.min_packets_for_inference,
+            app_config.inference_batch_size,
             app_config.inference_interval_secs,
             app_config.aggregator_window_secs,
         ));

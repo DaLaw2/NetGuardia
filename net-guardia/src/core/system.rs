@@ -71,11 +71,10 @@ impl System {
         log!(SystemLog::Initializing);
 
         log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("deep_autoencoder")));
-        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("random_forest")));
-        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("mlp")));
+        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("classifier")));
 
         log!(MLLog::ConfigLoaded {
-            features: self.inference_config.num_features(),
+            features: self.inference_config.num_ae_features(),
             attacks: self.inference_config.num_attack_types()
         });
 
