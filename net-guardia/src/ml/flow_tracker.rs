@@ -153,9 +153,12 @@ impl FlowData {
                 bulk_state.in_bulk = true;
                 bulk_state.last_bulk_bytes = packet.length as u64;
                 bulk_state.last_bulk_packets = 1;
+                bulk_state.last_bulk_start_us = packet.timestamp_us;
+                bulk_state.last_bulk_packet_us = packet.timestamp_us;
             } else {
                 bulk_state.last_bulk_bytes += packet.length as u64;
                 bulk_state.last_bulk_packets += 1;
+                bulk_state.last_bulk_packet_us = packet.timestamp_us;
             }
         } else {
             if bulk_state.in_bulk
@@ -165,10 +168,15 @@ impl FlowData {
                 bulk_state.bulk_count += 1;
                 bulk_state.total_bytes += bulk_state.last_bulk_bytes;
                 bulk_state.total_packets += bulk_state.last_bulk_packets;
+                bulk_state.total_duration_us += bulk_state
+                    .last_bulk_packet_us
+                    .saturating_sub(bulk_state.last_bulk_start_us);
             }
             bulk_state.in_bulk = false;
             bulk_state.last_bulk_bytes = 0;
             bulk_state.last_bulk_packets = 0;
+            bulk_state.last_bulk_start_us = 0;
+            bulk_state.last_bulk_packet_us = 0;
         }
     }
 

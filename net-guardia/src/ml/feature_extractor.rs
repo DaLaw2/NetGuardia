@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use crate::model::ml_detection::{PacketData, ClipParams};
+
 use super::flow_tracker::FlowData;
+use crate::model::ml_detection::{ClipParams, PacketData};
 
 #[derive(Debug, Clone)]
 pub struct FlowFeatures {
@@ -79,29 +80,20 @@ impl FlowFeatures {
         let bwd_bulk = &flow.bwd_bulk_state;
 
         // 68-69
-        let fwd_seg_sizes: Vec<f64> = flow.fwd_packets
+        let fwd_seg_sizes: Vec<f64> = flow
+            .fwd_packets
             .iter()
             .filter(|p| p.payload_length > 0)
             .map(|p| p.header_length as f64)
             .collect();
 
         // 70-73
-        let (active_max, active_min, active_mean, active_std) = compute_stats(
-            &flow
-                .active_periods
-                .iter()
-                .map(|&x| x as f64)
-                .collect::<Vec<_>>(),
-        );
+        let (active_max, active_min, active_mean, active_std) =
+            compute_stats(&flow.active_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
         // 74-77
-        let (idle_max, idle_min, idle_mean, idle_std) = compute_stats(
-            &flow
-                .idle_periods
-                .iter()
-                .map(|&x| x as f64)
-                .collect::<Vec<_>>(),
-        );
+        let (idle_max, idle_min, idle_mean, idle_std) =
+            compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
         match feature_name {
             "Destination Port" | "Dst Port" | "dst_port" => flow.flow_key.dst_port as f64,
@@ -163,10 +155,16 @@ impl FlowFeatures {
             "Fwd Header Length.1" => flow.fwd_header_bytes as f64,
             "Fwd Avg Bytes/Bulk" => safe_div(fwd_bulk.total_bytes as f64, fwd_bulk.bulk_count as f64),
             "Fwd Avg Packets/Bulk" => safe_div(fwd_bulk.total_packets as f64, fwd_bulk.bulk_count as f64),
-            "Fwd Avg Bulk Rate" => safe_div(fwd_bulk.total_bytes as f64, duration_s),
+            "Fwd Avg Bulk Rate" => safe_div(
+                fwd_bulk.total_bytes as f64,
+                fwd_bulk.total_duration_us as f64 / 1_000_000.0,
+            ),
             "Bwd Avg Bytes/Bulk" => safe_div(bwd_bulk.total_bytes as f64, bwd_bulk.bulk_count as f64),
             "Bwd Avg Packets/Bulk" => safe_div(bwd_bulk.total_packets as f64, bwd_bulk.bulk_count as f64),
-            "Bwd Avg Bulk Rate" => safe_div(bwd_bulk.total_bytes as f64, duration_s),
+            "Bwd Avg Bulk Rate" => safe_div(
+                bwd_bulk.total_bytes as f64,
+                bwd_bulk.total_duration_us as f64 / 1_000_000.0,
+            ),
             "Subflow Fwd Packets" => fwd_count,
             "Subflow Fwd Bytes" => flow.fwd_total_bytes as f64,
             "Subflow Bwd Packets" => bwd_count,
@@ -174,7 +172,8 @@ impl FlowFeatures {
             "Init_Win_bytes_forward" | "Init Fwd Win Byts" | "fwd_win_bytes" => flow.init_win_bytes_fwd as f64,
             "Init_Win_bytes_backward" | "Init Bwd Win Byts" | "bwd_win_bytes" => flow.init_win_bytes_bwd as f64,
             "act_data_pkt_fwd" | "Fwd Act Data Pkts" | "fwd_act_data_pkts" => fwd_seg_sizes.len() as f64,
-            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => fwd_seg_sizes.iter()
+            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => fwd_seg_sizes
+                .iter()
                 .min_by(|a, b| a.total_cmp(b))
                 .copied()
                 .unwrap_or(0.0),
@@ -187,9 +186,7 @@ impl FlowFeatures {
             "Idle Max" => idle_max,
             "Idle Min" => idle_min,
 
-            _ => {
-                0.0
-            }
+            _ => 0.0,
         }
     }
 
@@ -225,53 +222,97 @@ impl FlowFeatures {
 
     pub fn all_feature_names() -> Vec<&'static str> {
         vec![
-            "Destination Port", "Protocol", "Flow Duration",
-            "Total Fwd Packets", "Total Backward Packets",
-            "Total Length of Fwd Packets", "Total Length of Bwd Packets",
-            "Fwd Packet Length Max", "Fwd Packet Length Min",
-            "Fwd Packet Length Mean", "Fwd Packet Length Std",
-            "Bwd Packet Length Max", "Bwd Packet Length Min",
-            "Bwd Packet Length Mean", "Bwd Packet Length Std",
-            "Flow Bytes/s", "Flow Packets/s",
-            "Flow IAT Mean", "Flow IAT Std", "Flow IAT Max", "Flow IAT Min",
-            "Fwd IAT Total", "Fwd IAT Mean", "Fwd IAT Std", "Fwd IAT Max", "Fwd IAT Min",
-            "Bwd IAT Total", "Bwd IAT Mean", "Bwd IAT Std", "Bwd IAT Max", "Bwd IAT Min",
-            "Fwd PSH Flags", "Bwd PSH Flags", "Fwd URG Flags", "Bwd URG Flags",
-            "Fwd Header Length", "Bwd Header Length",
-            "Fwd Packets/s", "Bwd Packets/s",
-            "Min Packet Length", "Max Packet Length",
-            "Packet Length Mean", "Packet Length Std", "Packet Length Variance",
-            "FIN Flag Count", "SYN Flag Count", "RST Flag Count", "PSH Flag Count",
-            "ACK Flag Count", "URG Flag Count", "CWE Flag Count", "ECE Flag Count",
-            "Down/Up Ratio", "Average Packet Size",
-            "Avg Fwd Segment Size", "Avg Bwd Segment Size",
+            "Destination Port",
+            "Protocol",
+            "Flow Duration",
+            "Total Fwd Packets",
+            "Total Backward Packets",
+            "Total Length of Fwd Packets",
+            "Total Length of Bwd Packets",
+            "Fwd Packet Length Max",
+            "Fwd Packet Length Min",
+            "Fwd Packet Length Mean",
+            "Fwd Packet Length Std",
+            "Bwd Packet Length Max",
+            "Bwd Packet Length Min",
+            "Bwd Packet Length Mean",
+            "Bwd Packet Length Std",
+            "Flow Bytes/s",
+            "Flow Packets/s",
+            "Flow IAT Mean",
+            "Flow IAT Std",
+            "Flow IAT Max",
+            "Flow IAT Min",
+            "Fwd IAT Total",
+            "Fwd IAT Mean",
+            "Fwd IAT Std",
+            "Fwd IAT Max",
+            "Fwd IAT Min",
+            "Bwd IAT Total",
+            "Bwd IAT Mean",
+            "Bwd IAT Std",
+            "Bwd IAT Max",
+            "Bwd IAT Min",
+            "Fwd PSH Flags",
+            "Bwd PSH Flags",
+            "Fwd URG Flags",
+            "Bwd URG Flags",
+            "Fwd Header Length",
+            "Bwd Header Length",
+            "Fwd Packets/s",
+            "Bwd Packets/s",
+            "Min Packet Length",
+            "Max Packet Length",
+            "Packet Length Mean",
+            "Packet Length Std",
+            "Packet Length Variance",
+            "FIN Flag Count",
+            "SYN Flag Count",
+            "RST Flag Count",
+            "PSH Flag Count",
+            "ACK Flag Count",
+            "URG Flag Count",
+            "CWE Flag Count",
+            "ECE Flag Count",
+            "Down/Up Ratio",
+            "Average Packet Size",
+            "Avg Fwd Segment Size",
+            "Avg Bwd Segment Size",
             "Fwd Header Length.1",
-            "Fwd Avg Bytes/Bulk", "Fwd Avg Packets/Bulk", "Fwd Avg Bulk Rate",
-            "Bwd Avg Bytes/Bulk", "Bwd Avg Packets/Bulk", "Bwd Avg Bulk Rate",
-            "Subflow Fwd Packets", "Subflow Fwd Bytes",
-            "Subflow Bwd Packets", "Subflow Bwd Bytes",
-            "Init_Win_bytes_forward", "Init_Win_bytes_backward",
-            "act_data_pkt_fwd", "min_seg_size_forward",
-            "Active Mean", "Active Std", "Active Max", "Active Min",
-            "Idle Mean", "Idle Std", "Idle Max", "Idle Min",
+            "Fwd Avg Bytes/Bulk",
+            "Fwd Avg Packets/Bulk",
+            "Fwd Avg Bulk Rate",
+            "Bwd Avg Bytes/Bulk",
+            "Bwd Avg Packets/Bulk",
+            "Bwd Avg Bulk Rate",
+            "Subflow Fwd Packets",
+            "Subflow Fwd Bytes",
+            "Subflow Bwd Packets",
+            "Subflow Bwd Bytes",
+            "Init_Win_bytes_forward",
+            "Init_Win_bytes_backward",
+            "act_data_pkt_fwd",
+            "min_seg_size_forward",
+            "Active Mean",
+            "Active Std",
+            "Active Max",
+            "Active Min",
+            "Idle Mean",
+            "Idle Std",
+            "Idle Max",
+            "Idle Min",
         ]
     }
 
     pub fn all_feature_names_owned() -> Vec<String> {
-        Self::all_feature_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        Self::all_feature_names().iter().map(|s| s.to_string()).collect()
     }
 
     pub fn to_csv_record(&self) -> Vec<String> {
-        let mut record: Vec<String> = self.features.iter()
-            .map(|f| f.to_string())
-            .collect();
+        let mut record: Vec<String> = self.features.iter().map(|f| f.to_string()).collect();
         record.push("BENIGN".to_string());
         record
     }
-
 }
 
 fn compute_stats(values: &[f64]) -> (f64, f64, f64, f64) {

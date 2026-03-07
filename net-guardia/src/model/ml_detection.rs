@@ -86,8 +86,11 @@ pub struct BulkState {
     pub bulk_count: u32,
     pub total_bytes: u64,
     pub total_packets: u64,
+    pub total_duration_us: u64,
     pub last_bulk_bytes: u64,
     pub last_bulk_packets: u64,
+    pub last_bulk_start_us: u64,
+    pub last_bulk_packet_us: u64,
     pub in_bulk: bool,
 }
 
