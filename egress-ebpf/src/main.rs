@@ -5,7 +5,7 @@ mod action;
 use action::statistics;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{PerCpuArray, ProgramArray};
+use aya_ebpf::maps::{PerCpuArray, ProgramArray, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
@@ -16,6 +16,8 @@ use common::{ebpf::parsing, model::event::Event};
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+#[map]
+static EGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
@@ -39,12 +41,12 @@ unsafe fn packet_intake(ctx: XdpContext) -> Result<u32, ()> {
 #[xdp]
 pub fn statistics(ctx: XdpContext) -> u32 {
     unsafe {
-        let _ = try_statistics(ctx);
+        let _ = try_statistics(&ctx);
         xdp_action::XDP_PASS
     }
 }
 
-unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
+unsafe fn try_statistics(ctx: &XdpContext) -> Result<u32, ()> {
     unsafe {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
         let parsed_packet = &*ptr;
@@ -56,7 +58,17 @@ unsafe fn try_statistics(_: XdpContext) -> Result<u32, ()> {
                 statistics::ipv6_update_stats(event);
             }
         }
+        let _ = PROGRAM_ARRAY.tail_call(ctx, TRANSMISSION);
         Ok(xdp_action::XDP_PASS)
+    }
+}
+
+#[xdp]
+pub fn transmission(ctx: XdpContext) -> u32 {
+    let queue_id = unsafe { (*ctx.ctx).rx_queue_index };
+    match EGRESS_XSKS_MAP.redirect(queue_id, 0) {
+        Ok(action) => action,
+        Err(_) => xdp_action::XDP_PASS,
     }
 }
 

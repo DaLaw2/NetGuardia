@@ -33,7 +33,7 @@ impl EbpfServices {
         ingress_ebpf: &mut Ebpf,
         egress_ebpf: &mut Ebpf,
     ) -> Result<Self, Error> {
-        let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf)?;
+        let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let service = Service::new(ingress_ebpf)?;
         let statistics = Statistics::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;

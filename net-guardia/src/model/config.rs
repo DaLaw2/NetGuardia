@@ -29,4 +29,6 @@ pub struct Config {
     pub inference_interval_secs: u64,
     pub aggregator_window_secs: u64,
     pub inference_batch_size: usize,
+    pub traffic_logging_mode: bool,
+    pub traffic_log_csv_path: String,
 }

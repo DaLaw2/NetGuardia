@@ -23,5 +23,8 @@ loggable! {
 
         #[error("Configuration not found")]
         ConfigNotFound => tracing::Level::INFO,
+
+        #[error("Traffic logging mode enabled — writing packets to: {path}")]
+        TrafficLoggingEnabled { path: String } => tracing::Level::INFO,
     }
 }

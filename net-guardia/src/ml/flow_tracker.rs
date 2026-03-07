@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time;
 
-use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
 use common::model::event::Event;
+
+use crate::model::direction::Direction;
+use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
 
 #[derive(Debug, Clone)]
 pub struct FlowData {
     pub flow_key: FlowKey,
+    pub direction: Direction,
     pub start_time_us: u64,
     pub last_time_us: u64,
     pub fwd_packets: Vec<PacketData>,
@@ -34,9 +37,10 @@ pub struct FlowData {
 }
 
 impl FlowData {
-    pub fn new(flow_key: FlowKey, first_packet: &Event) -> Self {
+    pub fn new(flow_key: FlowKey, first_packet: &Event, direction: Direction) -> Self {
         Self {
             flow_key,
+            direction,
             start_time_us: first_packet.timestamp_us(),
             last_time_us: first_packet.timestamp_us(),
             fwd_packets: Vec::new(),
@@ -190,27 +194,40 @@ impl FlowTracker {
         }
     }
 
-    pub fn process_packet(&self, mut packet: Event) {
-        let flow_key = FlowKey::from_packet(&packet);
-        let reverse_key = flow_key.reverse();
+    pub fn process_packet(&self, mut packet: Event, is_ingress: bool) {
+        // Canonical flow key is always from the ingress-side perspective:
+        // ingress packets use the packet key as-is; egress packets use the reversed key.
+        let direction = if is_ingress {
+            Direction::Ingress
+        } else {
+            Direction::Egress
+        };
+        let (actual_key, interface_forward) = if is_ingress {
+            (FlowKey::from_packet(&packet), true)
+        } else {
+            (FlowKey::from_packet(&packet).reverse(), false)
+        };
 
         let Ok(mut flows) = self.flows.lock() else {
             return;
         };
 
-        let (actual_key, is_forward) = if flows.contains_key(&flow_key) {
-            (flow_key, true)
-        } else if flows.contains_key(&reverse_key) {
-            (reverse_key, false)
-        } else {
-            (flow_key, true)
+        // fwd = initiator, bwd = responder (matches CICFlowMeter training convention).
+        // Look up the flow's initiating direction first; for new flows use the current direction.
+        let flow_direction = flows.get(&actual_key).map(|f| f.direction).unwrap_or(direction);
+
+        // If the flow was initiated from egress, egress packets are fwd (initiator)
+        // and ingress packets are bwd (responder) — the opposite of the interface direction.
+        let is_forward = match flow_direction {
+            Direction::Ingress => interface_forward,
+            Direction::Egress => !interface_forward,
         };
 
         packet.set_is_forward(is_forward);
 
-        let flow = flows.entry(actual_key.clone()).or_insert_with(|| {
-            FlowData::new(actual_key, &packet)
-        });
+        let flow = flows
+            .entry(actual_key.clone())
+            .or_insert_with(|| FlowData::new(actual_key, &packet, direction));
 
         flow.add_packet(&packet);
 
@@ -248,9 +265,7 @@ impl FlowTracker {
         let Ok(mut flows) = self.flows.lock() else {
             return;
         };
-        flows.retain(|_, flow| {
-            now.saturating_sub(flow.last_time_us) < max_age_us
-        });
+        flows.retain(|_, flow| now.saturating_sub(flow.last_time_us) < max_age_us);
     }
 
     pub fn flow_count(&self) -> usize {

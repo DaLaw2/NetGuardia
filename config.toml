@@ -21,3 +21,6 @@ min_packets_for_inference = 5     # min_packets: minimum 10 packets per flow for
 inference_interval_secs = 5         # interval_secs: run inference every 5 seconds
 aggregator_window_secs = 30
 inference_batch_size = 200
+
+traffic_logging_mode = true        # When true, disables ML inference and records all ingress/egress packets to CSV
+traffic_log_csv_path = "traffic_log.csv"  # Output CSV file path for traffic logging mode

@@ -16,9 +16,13 @@ use crate::core::infrastructure::health::SystemHealth;
 use crate::core::infrastructure::ml_alert::MLAlert;
 use crate::ml::config_loader::InferenceConfig;
 use crate::ml::engine::Engine;
+use crate::ml::feature_extractor::FlowFeatures;
 use crate::ml::model_loader::MLModels;
+use crate::model::error::misc::MiscError;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
+use crate::ml::traffic_logger::TrafficLogger;
 
 pub struct AppServices {
     pub health: Arc<SystemHealth>,
@@ -35,6 +39,18 @@ impl AppServices {
         let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
         let ml_alert = Arc::new(MLAlert::new());
 
+        let traffic_logger = if app_config.traffic_logging_mode {
+            let csv_path = app_config.traffic_log_csv_path.clone();
+            let mut header = FlowFeatures::all_feature_names_owned();
+            header.push("Label".to_string());
+            let logger = TrafficLogger::new(&csv_path, header)
+                .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
+            log!(SystemLog::TrafficLoggingEnabled(csv_path));
+            Some(Arc::new(logger))
+        } else {
+            None
+        };
+
         let ml_engine = Arc::new(Engine::new(
             ml_models.clone(),
             inference_config.clone(),
@@ -44,6 +60,7 @@ impl AppServices {
             app_config.inference_batch_size,
             app_config.inference_interval_secs,
             app_config.aggregator_window_secs,
+            traffic_logger,
         ));
 
         Ok(Self {

@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
-use tract_onnx::prelude::*;
-use macros::log;
 
-use super::flow_tracker::FlowData;
+use macros::log;
+use tract_onnx::prelude::*;
+
 use super::config_loader::InferenceConfig;
 use super::feature_extractor::FlowFeatures;
+use super::flow_tracker::FlowData;
 use super::model_loader::MLModels;
-
-use crate::model::ml_detection::DetectionResult;
 use crate::model::log::ml::MLLog;
+use crate::model::ml_detection::DetectionResult;
 
 pub struct Inference {
     pub models: Arc<MLModels>,
@@ -21,10 +21,7 @@ impl Inference {
     }
 
     pub fn infer_batch(&self, flows: &[FlowData]) -> Vec<DetectionResult> {
-        flows
-            .iter()
-            .filter_map(|flow| self.infer_single(flow))
-            .collect()
+        flows.iter().filter_map(|flow| self.infer_single(flow)).collect()
     }
 
     pub fn infer_single(&self, flow: &FlowData) -> Option<DetectionResult> {
@@ -55,14 +52,17 @@ impl Inference {
 
         let flow_key = format!(
             "{}:{} -> {}:{} (proto {})",
-            flow.flow_key.src_ip, flow.flow_key.src_port,
-            flow.flow_key.dst_ip, flow.flow_key.dst_port,
+            flow.flow_key.src_ip,
+            flow.flow_key.src_port,
+            flow.flow_key.dst_ip,
+            flow.flow_key.dst_port,
             flow.flow_key.protocol
         );
 
         Some(DetectionResult {
             flow_key,
             flow_key_raw: flow.flow_key.clone(),
+            direction: flow.direction,
             is_attack,
             attack_type: if is_attack { Some(attack_type) } else { None },
             confidence,
@@ -84,19 +84,22 @@ impl Inference {
     }
 
     /// Classifier 輸入 = 已預處理的 ae_features ++ [ae_anomaly_score]
-    fn build_classifier_input(
-        &self,
-        ae_features: &[f32],
-        ae_score: f32,
-    ) -> tract_ndarray::Array2<f32> {
+    fn build_classifier_input(&self, ae_features: &[f32], ae_score: f32) -> tract_ndarray::Array2<f32> {
         let n = ae_features.len() + 1;
         tract_ndarray::Array2::from_shape_fn((1, n), |(_, j)| {
-            if j < ae_features.len() { ae_features[j] } else { ae_score }
+            if j < ae_features.len() {
+                ae_features[j]
+            } else {
+                ae_score
+            }
         })
     }
 
     fn run_autoencoder(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<f32> {
-        let result = self.models.deep_autoencoder.run(tvec![input.clone().into_tensor().into()])?;
+        let result = self
+            .models
+            .deep_autoencoder
+            .run(tvec![input.clone().into_tensor().into()])?;
 
         let output = result[0]
             .to_array_view::<f32>()?
@@ -124,7 +127,8 @@ impl Inference {
             }
         }
 
-        let attack_type = self.config
+        let attack_type = self
+            .config
             .attack_labels
             .get(&predicted_class.to_string())
             .cloned()

@@ -70,8 +70,12 @@ impl System {
         Logging::initialize()?;
         log!(SystemLog::Initializing);
 
-        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("deep_autoencoder")));
-        log!(MLLog::ModelsLoaded(self.app_services.ml_models.get_model_info("classifier")));
+        log!(MLLog::ModelsLoaded(
+            self.app_services.ml_models.get_model_info("deep_autoencoder")
+        ));
+        log!(MLLog::ModelsLoaded(
+            self.app_services.ml_models.get_model_info("classifier")
+        ));
 
         log!(MLLog::ConfigLoaded {
             features: self.inference_config.num_ae_features(),
@@ -163,11 +167,11 @@ impl System {
                 .service(misc::initialize())
                 .default_service(route().to(default::default_route))
         })
-            .bind(format!("0.0.0.0:{}", port))
-            .map_err(HttpError::BindPortError)?
-            .run()
-            .await
-            .map_err(HttpError::ServerPanic)?;
+        .bind(format!("0.0.0.0:{}", port))
+        .map_err(HttpError::BindPortError)?
+        .run()
+        .await
+        .map_err(HttpError::ServerPanic)?;
         Ok(())
     }
 
@@ -176,13 +180,23 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-ingress"
         )))
-            .map_err(EbpfError::EbpfNotFound)?;
+        .map_err(EbpfError::EbpfNotFound)?;
         let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "access_control", ingress::ACCESS_CONTROL)?;
+        Self::load_program(
+            &mut ingress_ebpf,
+            &mut program_array,
+            "access_control",
+            ingress::ACCESS_CONTROL,
+        )?;
         Self::load_program(&mut ingress_ebpf, &mut program_array, "service", ingress::SERVICE)?;
         Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", ingress::STATISTICS)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "transmission", ingress::TRANSMISSION)?;
+        Self::load_program(
+            &mut ingress_ebpf,
+            &mut program_array,
+            "transmission",
+            ingress::TRANSMISSION,
+        )?;
         Ok((ingress_ebpf, program_array))
     }
 
@@ -191,10 +205,16 @@ impl System {
             env!("OUT_DIR"),
             "/net-guardia-egress"
         )))
-            .map_err(EbpfError::EbpfNotFound)?;
+        .map_err(EbpfError::EbpfNotFound)?;
         let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
         Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;
+        Self::load_program(
+            &mut egress_ebpf,
+            &mut program_array,
+            "transmission",
+            egress::TRANSMISSION,
+        )?;
         Ok((egress_ebpf, program_array))
     }
 

@@ -21,5 +21,9 @@ traceable! {
 
         #[error("Invalid GeoIP configuration")]
         InvalidGeoIPConfiguration => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Failed to create traffic log file '{path}': {reason}")]
+        TrafficLogCreateError { path: String, reason: String } => tracing::Level::ERROR,
     }
 }

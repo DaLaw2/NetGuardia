@@ -1,6 +1,8 @@
+use common::model::event::{Event, TcpFlags};
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
-use common::model::event::{Event, TcpFlags};
+
+use crate::model::direction::Direction;
 use crate::utils::packet_parser::{format_ipv4, format_ipv6};
 
 pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
@@ -93,11 +95,12 @@ pub struct BulkState {
 pub struct DetectionResult {
     pub flow_key: String,
     pub flow_key_raw: FlowKey,
+    pub direction: Direction,
     pub is_attack: bool,
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
-    pub threshold: f32
+    pub threshold: f32,
 }
 
 #[derive(Debug, Clone, Default)]

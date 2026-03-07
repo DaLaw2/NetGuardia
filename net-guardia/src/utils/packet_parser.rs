@@ -36,6 +36,10 @@ fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     let src_ip = u32::from_be_bytes([ip_header[12], ip_header[13], ip_header[14], ip_header[15]]);
     let dst_ip = u32::from_be_bytes([ip_header[16], ip_header[17], ip_header[18], ip_header[19]]);
 
+    if protocol_byte != 6 && protocol_byte != 17 {
+        return None;
+    }
+
     let ihl = (ip_header[0] & 0x0F) as usize * 4;
     let total_len = u16::from_be_bytes([ip_header[2], ip_header[3]]) as u32;
 
@@ -100,6 +104,10 @@ fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     let mut dest_ip_bytes = [0u8; 16];
     dest_ip_bytes.copy_from_slice(&ip_header[24..40]);
     let dst_ip = u128::from_be_bytes(dest_ip_bytes);
+
+    if protocol_byte != 6 && protocol_byte != 17 {
+        return None;
+    }
 
     let payload_len = u16::from_be_bytes([ip_header[4], ip_header[5]]) as u32;
     let total_len = payload_len + 40;

@@ -51,8 +51,8 @@ loggable! {
         #[error("Inference skipped: {reason}")]
         InferenceSkipped { reason: String } => tracing::Level::INFO,
 
-        #[error("Threat detected: {flow} -> {attack_type} (confidence: {confidence:.2}, ae_score: {ae_score:.4})")]
-        ThreatDetected { flow: String, attack_type: String, confidence: f32, ae_score: f32 } => tracing::Level::WARN,
+        #[error("Threat detected [{direction}]: {flow} -> {attack_type} (confidence: {confidence:.2}, ae_score: {ae_score:.4})")]
+        ThreatDetected { direction: String, flow: String, attack_type: String, confidence: f32, ae_score: f32 } => tracing::Level::WARN,
 
         #[error("Flow stats: total={total_flows}, qualified={flows_len}, min_packets={min_packets}, packet_counts: {counts}")]
         FlowStats { total_flows: usize,  flows_len: usize, min_packets: usize, counts: String } => tracing::Level::INFO,

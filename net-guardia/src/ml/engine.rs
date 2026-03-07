@@ -1,20 +1,22 @@
-use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use macros::log;
 use tokio::sync::oneshot;
 use tokio::time::interval;
 
+use super::aggregator::AttackAggregator;
 use super::config_loader::InferenceConfig;
+use super::feature_extractor::FlowFeatures;
 use super::flow_tracker::FlowTracker;
 use super::inference::Inference;
 use super::model_loader::MLModels;
-use super::aggregator::AttackAggregator;
+use super::traffic_logger::TrafficLogger;
 
 use crate::core::infrastructure::ml_alert::MLAlert;
-use crate::utils::packet_parser::parse_packet;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{EngineStats, InferenceStats};
+use crate::utils::packet_parser::parse_packet;
 
 pub struct Engine {
     flow_tracker: Arc<FlowTracker>,
@@ -24,6 +26,7 @@ pub struct Engine {
     min_packets: usize,
     batch_size: usize,
     inference_interval_secs: u64,
+    traffic_logger: Option<Arc<TrafficLogger>>,
 }
 
 impl Engine {
@@ -36,14 +39,13 @@ impl Engine {
         batch_size: usize,
         interval_secs: u64,
         window_secs: u64,
+        traffic_logger: Option<Arc<TrafficLogger>>,
     ) -> Self {
         let flow_tracker = Arc::new(FlowTracker::new(max_flows));
         let inference_pipeline = Arc::new(Inference::new(models, config));
 
         let min_detections = ((window_secs / interval_secs) / 2).max(1) as usize;
-        let aggregator = Arc::new(Mutex::new(
-            AttackAggregator::new(window_secs, min_detections)
-        ));
+        let aggregator = Arc::new(Mutex::new(AttackAggregator::new(window_secs, min_detections)));
 
         Self {
             flow_tracker,
@@ -53,6 +55,7 @@ impl Engine {
             min_packets,
             batch_size,
             inference_interval_secs: interval_secs,
+            traffic_logger,
         }
     }
 
@@ -81,9 +84,7 @@ impl Engine {
             let all_flows = self.flow_tracker.get_flows_snapshot();
             let packet_counts: Vec<usize> = all_flows.iter().map(|f| f.packet_count()).collect();
 
-            let flows = self
-                .flow_tracker
-                .get_flows_for_inference(self.min_packets);
+            let flows = self.flow_tracker.get_flows_for_inference(self.min_packets);
 
             log!(MLLog::FlowStats(
                 total_flows,
@@ -97,6 +98,16 @@ impl Engine {
                     "No flows with sufficient packets (total flows: {}, min packets: {})",
                     total_flows, self.min_packets
                 )));
+                continue;
+            }
+
+            if let Some(ref logger) = self.traffic_logger {
+                let feature_names = FlowFeatures::all_feature_names_owned();
+                for flow in &flows {
+                    let features = FlowFeatures::extract(flow, &feature_names);
+                    logger.log_row(features.to_csv_record());
+                }
+                self.flow_tracker.cleanup_old_flows(60_000_000);
                 continue;
             }
 
@@ -125,14 +136,12 @@ impl Engine {
             if let Ok(mut aggregator) = self.aggregator.lock() {
                 for result in &results {
                     if result.is_attack {
-                        let should_alert = aggregator.should_alert(
-                            &result.flow_key_raw,
-                            result.ae_score,
-                            result.threshold,
-                        );
+                        let should_alert =
+                            aggregator.should_alert(&result.flow_key_raw, result.ae_score, result.threshold);
 
                         if should_alert {
                             log!(MLLog::ThreatDetected(
+                                format!("{:?}", result.direction),
                                 result.flow_key.clone(),
                                 result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
                                 result.confidence,
@@ -151,9 +160,9 @@ impl Engine {
         }
     }
 
-    pub fn process_packet(&self, packet_data: &[u8]) {
+    pub fn process_packet(&self, packet_data: &[u8], is_ingress: bool) {
         match parse_packet(packet_data) {
-            Some(packet_info) => self.flow_tracker.process_packet(packet_info),
+            Some(packet_info) => self.flow_tracker.process_packet(packet_info, is_ingress),
             None => log!(MLLog::ParsePacketFailed(packet_data.len())),
         }
     }
@@ -174,13 +183,13 @@ impl PacketProcessor {
         Self { ml_engine }
     }
 
-    pub fn process(&self, packet_data: &[u8]) {
-        self.ml_engine.process_packet(packet_data);
+    pub fn process(&self, packet_data: &[u8], is_ingress: bool) {
+        self.ml_engine.process_packet(packet_data, is_ingress);
     }
 
-    pub fn process_batch(&self, packets: &[Vec<u8>]) {
+    pub fn process_batch(&self, packets: &[Vec<u8>], is_ingress: bool) {
         for packet in packets {
-            self.process(packet);
+            self.process(packet, is_ingress);
         }
     }
 }
