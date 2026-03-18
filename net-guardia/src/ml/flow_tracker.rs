@@ -202,40 +202,61 @@ impl FlowTracker {
         }
     }
 
-    pub fn process_packet(&self, mut packet: Event, is_ingress: bool) {
-        // Canonical flow key is always from the ingress-side perspective:
-        // ingress packets use the packet key as-is; egress packets use the reversed key.
+    pub fn process_packet(&self, mut packet: Event, is_ingress: bool, payload: &[u8]) {
         let direction = if is_ingress {
             Direction::Ingress
         } else {
             Direction::Egress
         };
-        let (actual_key, interface_forward) = if is_ingress {
-            (FlowKey::from_packet(&packet), true)
-        } else {
-            (FlowKey::from_packet(&packet).reverse(), false)
-        };
+        let packet_key = FlowKey::from_packet(&packet);
+        let proto = packet_key.protocol;
+        let src_port = packet_key.src_port;
+        let dst_port = packet_key.dst_port;
+        let reversed_key = packet_key.clone().reverse();
 
         let Ok(mut flows) = self.flows.lock() else {
             return;
         };
 
-        // fwd = initiator, bwd = responder (matches CICFlowMeter training convention).
-        // Look up the flow's initiating direction first; for new flows use the current direction.
-        let flow_direction = flows.get(&actual_key).map(|f| f.direction).unwrap_or(direction);
-
-        // If the flow was initiated from egress, egress packets are fwd (initiator)
-        // and ingress packets are bwd (responder) — the opposite of the interface direction.
-        let is_forward = match flow_direction {
-            Direction::Ingress => interface_forward,
-            Direction::Egress => !interface_forward,
+        // Try-both: canonical key is whichever orientation already exists in the flow table.
+        // For new flows, identify the initiator using (in priority order):
+        //   1. TCP SYN / SYN+ACK flags
+        //   2. DPI: TLS ClientHello/ServerHello, HTTP request/response, DNS QR bit
+        //   3. Best effort: use packet as-is
+        let (actual_key, is_forward) = if flows.contains_key(&packet_key) {
+            (packet_key, true)
+        } else if flows.contains_key(&reversed_key) {
+            (reversed_key, false)
+        } else {
+            let flags = packet.tcp_flags();
+            if flags.syn && flags.ack {
+                // Normal: Server (egress side) sends SYN+ACK, packet arrives on ingress → reverse
+                // Bot attack: Client (egress side) sends SYN+ACK, packet arrives on egress → keep as-is
+                if is_ingress {
+                    (reversed_key, false)
+                } else {
+                    (packet_key, true)
+                }
+            } else if flags.syn {
+                (packet_key, true)
+            } else {
+                match detect_initiator(payload, proto, src_port, dst_port) {
+                    Some(true) => (packet_key, true),
+                    Some(false) => (reversed_key, false),
+                    None => (packet_key, true),
+                }
+            }
         };
 
         packet.set_is_forward(is_forward);
 
+        // `direction` should reflect the initiator's interface.
+        // If this packet is backward (is_forward = false), the initiator is on the opposite side.
+        let initiator_direction = if is_forward { direction } else { direction.flip() };
+
         let flow = flows
             .entry(actual_key.clone())
-            .or_insert_with(|| FlowData::new(actual_key, &packet, direction));
+            .or_insert_with(|| FlowData::new(actual_key, &packet, initiator_direction));
 
         flow.add_packet(&packet);
 
@@ -282,4 +303,50 @@ impl FlowTracker {
         };
         flows.len()
     }
+}
+
+/// Inspect payload bytes to determine which side is the flow initiator.
+/// Returns Some(true) if this packet is from the initiator, Some(false) if from the responder,
+/// or None if the payload gives no useful signal.
+fn detect_initiator(payload: &[u8], protocol: u8, src_port: u16, dst_port: u16) -> Option<bool> {
+    if payload.is_empty() {
+        return None;
+    }
+
+    // TLS: record type 0x16 (Handshake), byte 5 = handshake type
+    //   0x01 = ClientHello → this side is the initiator
+    //   0x02 = ServerHello → this side is the responder
+    if payload.len() >= 6 && payload[0] == 0x16 {
+        return match payload[5] {
+            0x01 => Some(true),
+            0x02 => Some(false),
+            _ => None,
+        };
+    }
+
+    // HTTP: request line starts with a method verb (initiator),
+    //       response starts with "HTTP/" (responder)
+    if payload.len() >= 5 {
+        if payload.starts_with(b"GET ")
+            || payload.starts_with(b"POST ")
+            || payload.starts_with(b"PUT ")
+            || payload.starts_with(b"HEAD ")
+            || payload.starts_with(b"DELETE ")
+            || payload.starts_with(b"OPTIONS ")
+            || payload.starts_with(b"PATCH ")
+        {
+            return Some(true);
+        }
+        if payload.starts_with(b"HTTP/") {
+            return Some(false);
+        }
+    }
+
+    // DNS over UDP (port 53): flags byte 2, MSB = QR bit
+    //   0 = query (initiator), 1 = response (responder)
+    if protocol == 17 && (src_port == 53 || dst_port == 53) && payload.len() >= 3 {
+        return Some((payload[2] >> 7) == 0);
+    }
+
+    None
 }

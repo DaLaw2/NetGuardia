@@ -51,12 +51,13 @@ impl Inference {
         let is_attack = ae_score >= self.config.ae_threshold;
 
         let flow_key = format!(
-            "{}:{} -> {}:{} (proto {})",
+            "{}:{} -> {}:{} (proto {}) [{}]",
             flow.flow_key.src_ip,
             flow.flow_key.src_port,
             flow.flow_key.dst_ip,
             flow.flow_key.dst_port,
-            flow.flow_key.protocol
+            flow.flow_key.protocol,
+            flow.direction
         );
 
         Some(DetectionResult {

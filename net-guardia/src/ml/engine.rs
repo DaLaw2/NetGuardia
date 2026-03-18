@@ -162,7 +162,10 @@ impl Engine {
 
     pub fn process_packet(&self, packet_data: &[u8], is_ingress: bool) {
         match parse_packet(packet_data) {
-            Some(packet_info) => self.flow_tracker.process_packet(packet_info, is_ingress),
+            Some((packet_info, payload_start)) => {
+                let payload = packet_data.get(payload_start..).unwrap_or(&[]);
+                self.flow_tracker.process_packet(packet_info, is_ingress, payload);
+            }
             None => log!(MLLog::ParsePacketFailed(packet_data.len())),
         }
     }

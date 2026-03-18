@@ -4,14 +4,11 @@ use std::thread;
 
 use crossbeam::channel::{bounded, Sender, TrySendError};
 
-/// Background-thread CSV writer for normal-traffic flow records.
-/// Each row is a pre-computed `Vec<String>` (e.g. from `FlowFeatures::to_csv_record()`).
 pub struct TrafficLogger {
     sender: Sender<Vec<String>>,
 }
 
 impl TrafficLogger {
-    /// Create the CSV file, write the given `header` row, and start the writer thread.
     pub fn new(csv_path: &str, header: Vec<String>) -> Result<Self, std::io::Error> {
         let file = OpenOptions::new()
             .create(true)
@@ -39,7 +36,6 @@ impl TrafficLogger {
         Ok(Self { sender })
     }
 
-    /// Queue one CSV row for writing. Non-blocking: silently drops if the channel is full.
     pub fn log_row(&self, record: Vec<String>) {
         match self.sender.try_send(record) {
             Ok(_) => {}

@@ -1,10 +1,10 @@
-use std::time;
 use std::mem;
+use std::time;
 
 use common::model::event::{Event, IPv4Event, IPv6Event, TcpFlags};
 use network_types::ip::IpProto;
 
-pub fn parse_packet(packet_data: &[u8]) -> Option<Event> {
+pub fn parse_packet(packet_data: &[u8]) -> Option<(Event, usize)> {
     if packet_data.len() < 14 {
         return None;
     }
@@ -23,7 +23,7 @@ pub fn parse_packet(packet_data: &[u8]) -> Option<Event> {
     }
 }
 
-fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
+fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<(Event, usize)> {
     if packet_data.len() < 34 {
         return None;
     }
@@ -68,6 +68,7 @@ fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     };
 
     let payload_length = total_len.saturating_sub(ihl as u32 + header_length as u32);
+    let payload_start = 14 + ihl + header_length as usize;
 
     let event = IPv4Event {
         protocol,
@@ -84,10 +85,10 @@ fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
         is_forward: false,
     };
 
-    Some(Event::IPv4(event))
+    Some((Event::IPv4(event), payload_start))
 }
 
-fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
+fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<(Event, usize)> {
     if packet_data.len() < 54 {
         return None;
     }
@@ -137,6 +138,7 @@ fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
     };
 
     let payload_length = total_len.saturating_sub(40 + header_length as u32);
+    let payload_start = 14 + 40 + header_length as usize;
 
     let event = IPv6Event {
         protocol,
@@ -153,24 +155,33 @@ fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<Event> {
         is_forward: false,
     };
 
-    Some(Event::IPv6(event))
+    Some((Event::IPv6(event), payload_start))
 }
 
 pub fn format_ipv4(addr: u32) -> String {
     let bytes = addr.to_be_bytes();
-    format!(
-        "{}.{}.{}.{}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-    )
+    format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3],)
 }
 
 pub fn format_ipv6(addr: u128) -> String {
     let bytes = addr.to_be_bytes();
     format!(
         "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11],
-        bytes[12], bytes[13], bytes[14], bytes[15]
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
     )
 }
