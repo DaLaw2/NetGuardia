@@ -7,8 +7,9 @@ use tokio::sync::RwLock;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use tokio::task;
-use crate::model::geo_stats::GeoLocation;
 
+use crate::model::geo_stats::GeoLocation;
+use crate::utils::ip_address;
 
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,
@@ -36,6 +37,17 @@ impl GeoIpService {
     }
 
     pub async fn lookup(&self, ip: IpAddr) -> Result<Option<GeoLocation>, MaxMindDbError> {
+        if ip_address::is_private_ip(&ip) {
+            return Ok(Some(GeoLocation {
+                country: Some("Local IP".into()),
+                country_code: Some("Local".into()),
+                city: None,
+                latitude: None,
+                longitude: None,
+                timezone: None,
+            }));
+        }
+
         {
             let cache = self.cache.read().await;
             if let Some(cached) = cache.peek(&ip) {

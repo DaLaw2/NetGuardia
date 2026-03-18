@@ -5,17 +5,17 @@ use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::ml::MLError;
 use crate::model::ml_detection::RunnableModel;
 
+use super::config_loader::InferenceConfig;
+
 pub struct MLModels {
     pub deep_autoencoder: RunnableModel,
-    pub random_forest: RunnableModel,
-    pub mlp: RunnableModel,
+    pub classifier: RunnableModel,
 }
 impl MLModels {
-    pub fn load_models(app_config: &Arc<AppConfig>, features: usize) -> Result<Self, MLError> {
+    pub fn load_models(app_config: &Arc<AppConfig>, inference_config: &Arc<InferenceConfig>) -> Result<Self, MLError> {
         Ok(Self {
-            deep_autoencoder: Self::loader(&app_config.deep_autoencoder_name, features)?,
-            random_forest: Self::loader(&app_config.random_forest_name, features)?,
-            mlp: Self::loader(&app_config.mlp_name, features)?,
+            deep_autoencoder: Self::loader(&app_config.deep_autoencoder_name, inference_config.num_ae_features())?,
+            classifier: Self::loader(&app_config.classifier_name, inference_config.num_classifier_features())?
         })
     }
 
@@ -49,8 +49,7 @@ impl MLModels {
     pub fn get_model_info(&self, name: &str) -> String {
         let model = match name {
             "deep_autoencoder" => &self.deep_autoencoder,
-            "random_forest" => &self.random_forest,
-            "mlp" => &self.mlp,
+            "classifier" => &self.classifier,
             _ => return "unknown model".to_string(),
         };
 

@@ -255,13 +255,18 @@ fn build_egress_ebpf() {
 fn build_frontend() {
     let _ = dotenvy::dotenv();
 
-    let Some(frontend_dir) = env::var_os("FRONTEND_DIR") else {
-        panic!("FRONTEND_DIR environment variable is required but not set");
-    };
+    // let Some(frontend_dir) = env::var_os("FRONTEND_DIR") else {
+    //     panic!("FRONTEND_DIR environment variable is required but not set");
+    // };
 
-    let project_root = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let static_dir = PathBuf::from(project_root).join("static").join("web");
-    let frontend_dir = PathBuf::from(frontend_dir);
+    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let static_dir = project_root.join("static").join("web");
+
+    let project_name = project_root.file_name().unwrap().to_string_lossy();
+    let frontend_dir = project_root
+        .parent()
+        .unwrap()
+        .join(format!("{}-frontend", project_name));
 
     if !frontend_dir.exists() {
         panic!("Frontend directory {:?} does not exist", frontend_dir);

@@ -10,7 +10,7 @@ target/
 
 .idea
 logs
-.env
+TODO
 .log
 .txt
 net-guardia/static/web

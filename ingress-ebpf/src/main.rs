@@ -19,7 +19,7 @@ static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
 #[map]
 static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 #[map]
-static XSKS_MAP: XskMap = XskMap::pinned(64, 0);
+static INGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
@@ -151,7 +151,7 @@ unsafe fn try_statistics(ctx: &XdpContext) -> Result<u32, ()> {
 #[xdp]
 pub fn transmission(ctx: XdpContext) -> u32 {
     let queue_id = unsafe { (*ctx.ctx).rx_queue_index };
-    match XSKS_MAP.redirect(queue_id, 0) {
+    match INGRESS_XSKS_MAP.redirect(queue_id, 0) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,
     }

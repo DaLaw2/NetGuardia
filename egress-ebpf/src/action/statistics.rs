@@ -60,14 +60,14 @@ pub fn ipv6_update_stats(event: &IPv6Event) {
 unsafe fn ipv4_update_flow_stats(map: &LruHashMap<AddrPortV4, FlowStats>, key: &AddrPortV4, event: &IPv4Event) {
     unsafe {
         if let Some(status) = map.get_ptr_mut(key) {
-            (*status).bytes += event.len as u64;
+            (*status).bytes += event.packet_length as u64;
             (*status).packets += 1;
-            (*status).last_seen = event.timestamp;
+            (*status).last_seen = event.timestamp_us;
         } else {
             let new_stats = FlowStats {
-                bytes: event.len as u64,
+                bytes: event.packet_length as u64,
                 packets: 1,
-                last_seen: event.timestamp,
+                last_seen: event.timestamp_us,
             };
             let _ = map.insert(key, &new_stats, 0);
         }
@@ -78,14 +78,14 @@ unsafe fn ipv4_update_flow_stats(map: &LruHashMap<AddrPortV4, FlowStats>, key: &
 unsafe fn ipv6_update_flow_status(map: &LruHashMap<AddrPortV6, FlowStats>, key: &AddrPortV6, event: &IPv6Event) {
     unsafe {
         if let Some(status) = map.get_ptr_mut(key) {
-            (*status).bytes += event.len as u64;
+            (*status).bytes += event.packet_length as u64;
             (*status).packets += 1;
-            (*status).last_seen = event.timestamp;
+            (*status).last_seen = event.timestamp_us;
         } else {
             let new_stats = FlowStats {
-                bytes: event.len as u64,
+                bytes: event.packet_length as u64,
                 packets: 1,
-                last_seen: event.timestamp,
+                last_seen: event.timestamp_us,
             };
             let _ = map.insert(key, &new_stats, 0);
         }

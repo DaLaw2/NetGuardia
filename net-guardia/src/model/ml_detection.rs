@@ -1,6 +1,8 @@
+use common::model::event::{Event, TcpFlags};
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
-use common::model::event::{Event, TcpFlags};
+
+use crate::model::direction::Direction;
 use crate::utils::packet_parser::{format_ipv4, format_ipv6};
 
 pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
@@ -15,6 +17,7 @@ pub struct ClipParams {
 pub struct AENormalization {
     pub min: f64,
     pub max: f64,
+    pub norm_max: f64,
     pub mean: f64,
     pub std: f64,
     pub median: f64,
@@ -23,7 +26,13 @@ pub struct AENormalization {
     pub p99: f64,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrecisionLevels {
+    pub threshold: f64,
+    pub precision: f64,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FlowKey {
     pub src_ip: String,
     pub dst_ip: String,
@@ -77,8 +86,11 @@ pub struct BulkState {
     pub bulk_count: u32,
     pub total_bytes: u64,
     pub total_packets: u64,
+    pub total_duration_us: u64,
     pub last_bulk_bytes: u64,
     pub last_bulk_packets: u64,
+    pub last_bulk_start_us: u64,
+    pub last_bulk_packet_us: u64,
     pub in_bulk: bool,
 }
 
@@ -86,12 +98,12 @@ pub struct BulkState {
 pub struct DetectionResult {
     pub flow_key: String,
     pub flow_key_raw: FlowKey,
+    pub direction: Direction,
     pub is_attack: bool,
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
-    pub rf_score: f32,
-    pub ensemble_score: f32,
+    pub threshold: f32,
 }
 
 #[derive(Debug, Clone, Default)]

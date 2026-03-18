@@ -7,4 +7,5 @@ pub mod ingress {
 
 pub mod egress {
     pub const STATISTICS: u32 = 0;
+    pub const TRANSMISSION: u32 = 1;
 }

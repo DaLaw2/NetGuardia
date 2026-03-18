@@ -23,13 +23,13 @@ static IPV6_DST_BLACKLIST: HashMap<IPv6, [Port; MAX_RULES_PORT]> = HashMap::with
 
 pub fn ipv4_is_whitelisted(event: &IPv4Event) -> bool {
     unsafe {
-        if let Some(ports) = IPV4_SRC_WHITELIST.get(&event.source_ip) {
-            if is_port_exist(ports, event.source_port) {
+        if let Some(ports) = IPV4_SRC_WHITELIST.get(&event.src_ip) {
+            if is_port_exist(ports, event.src_port) {
                 return true;
             }
         }
-        if let Some(ports) = IPV4_DST_WHITELIST.get(&event.destination_ip) {
-            if is_port_exist(ports, event.destination_port) {
+        if let Some(ports) = IPV4_DST_WHITELIST.get(&event.dst_ip) {
+            if is_port_exist(ports, event.dst_port) {
                 return true;
             }
         }
@@ -39,13 +39,13 @@ pub fn ipv4_is_whitelisted(event: &IPv4Event) -> bool {
 
 pub fn ipv6_is_whitelisted(event: &IPv6Event) -> bool {
     unsafe {
-        if let Some(ports) = IPV6_SRC_WHITELIST.get(&event.source_ip) {
-            if is_port_exist(ports, event.source_port) {
+        if let Some(ports) = IPV6_SRC_WHITELIST.get(&event.src_ip) {
+            if is_port_exist(ports, event.src_port) {
                 return true;
             }
         }
-        if let Some(ports) = IPV6_DST_WHITELIST.get(&event.destination_ip) {
-            if is_port_exist(ports, event.destination_port) {
+        if let Some(ports) = IPV6_DST_WHITELIST.get(&event.dst_ip) {
+            if is_port_exist(ports, event.dst_port) {
                 return true;
             }
         }
@@ -55,13 +55,13 @@ pub fn ipv6_is_whitelisted(event: &IPv6Event) -> bool {
 
 pub fn ipv4_is_blacklisted(event: &IPv4Event) -> bool {
     unsafe {
-        if let Some(ports) = IPV4_SRC_BLACKLIST.get(&event.source_ip) {
-            if is_port_exist(ports, event.source_port) {
+        if let Some(ports) = IPV4_SRC_BLACKLIST.get(&event.src_ip) {
+            if is_port_exist(ports, event.src_port) {
                 return true;
             }
         }
-        if let Some(ports) = IPV4_DST_BLACKLIST.get(&event.destination_ip) {
-            if is_port_exist(ports, event.destination_port) {
+        if let Some(ports) = IPV4_DST_BLACKLIST.get(&event.dst_ip) {
+            if is_port_exist(ports, event.dst_port) {
                 return true;
             }
         }
@@ -71,13 +71,13 @@ pub fn ipv4_is_blacklisted(event: &IPv4Event) -> bool {
 
 pub fn ipv6_is_blacklisted(event: &IPv6Event) -> bool {
     unsafe {
-        if let Some(ports) = IPV6_SRC_BLACKLIST.get(&event.source_ip) {
-            if is_port_exist(ports, event.source_port) {
+        if let Some(ports) = IPV6_SRC_BLACKLIST.get(&event.src_ip) {
+            if is_port_exist(ports, event.src_port) {
                 return true;
             }
         }
-        if let Some(ports) = IPV6_DST_BLACKLIST.get(&event.destination_ip) {
-            if is_port_exist(ports, event.destination_port) {
+        if let Some(ports) = IPV6_DST_BLACKLIST.get(&event.dst_ip) {
+            if is_port_exist(ports, event.dst_port) {
                 return true;
             }
         }

@@ -4,20 +4,19 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::model::error::ml::MLError;
-use crate::model::ml_detection::{AENormalization, ClipParams};
+use crate::model::ml_detection::{AENormalization, ClipParams, PrecisionLevels};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceConfig {
-    pub threshold: f64,
-    pub strategy_name: String,
-    pub clip_params: HashMap<String, ClipParams>,
-    pub scaler_mean: Vec<f64>,
-    pub scaler_std: Vec<f64>,
-    pub post_clip_min: f64,
-    pub post_clip_max: f64,
-    pub ae_normalization: AENormalization,
+    pub ae_feature_names: Vec<String>,
+    pub ae_clip_params: HashMap<String, ClipParams>,
+    pub ae_scaler_mean: Vec<f64>,
+    pub ae_scaler_std: Vec<f64>,
+    pub ae_post_clip_min: f64,
+    pub ae_post_clip_max: f64,
+    pub ae_threshold: f32,
+    pub classifier_feature_names: Vec<String>,
     pub attack_labels: HashMap<String, String>,
-    pub feature_names: Vec<String>,
 }
 
 impl InferenceConfig {
@@ -30,8 +29,12 @@ impl InferenceConfig {
         Ok(config)
     }
 
-    pub fn num_features(&self) -> usize {
-        self.feature_names.len()
+    pub fn num_ae_features(&self) -> usize {
+        self.ae_feature_names.len()
+    }
+
+    pub fn num_classifier_features(&self) -> usize {
+        self.classifier_feature_names.len()
     }
 
     pub fn num_attack_types(&self) -> usize {

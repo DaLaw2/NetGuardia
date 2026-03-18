@@ -12,8 +12,7 @@ pub struct Config {
     pub egress_ifname: String,
     pub geoip_db_name: String,
     pub deep_autoencoder_name: String,
-    pub random_forest_name: String,
-    pub mlp_name: String,
+    pub classifier_name: String,
     pub models_config_name: String,
     pub combined_queue_count: u32,
     pub channel_size: usize,
@@ -28,4 +27,8 @@ pub struct Config {
     pub max_concurrent_flows: usize,
     pub min_packets_for_inference: usize,
     pub inference_interval_secs: u64,
+    pub aggregator_window_secs: u64,
+    pub inference_batch_size: usize,
+    pub traffic_logging_mode: bool,
+    pub traffic_log_csv_path: String,
 }

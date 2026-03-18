@@ -1,3 +1,95 @@
 pub mod app_config;
 pub mod health;
 pub mod geoip;
+pub mod ml_alert;
+
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use crossbeam::queue::SegQueue;
+use macros::log;
+use tokio::sync::oneshot;
+
+use crate::core::infrastructure::app_config::AppConfig;
+use crate::core::infrastructure::health::SystemHealth;
+use crate::core::infrastructure::ml_alert::MLAlert;
+use crate::ml::config_loader::InferenceConfig;
+use crate::ml::engine::Engine;
+use crate::ml::feature_extractor::FlowFeatures;
+use crate::ml::model_loader::MLModels;
+use crate::model::error::misc::MiscError;
+use crate::model::error::system::SystemError;
+use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
+use crate::ml::traffic_logger::TrafficLogger;
+
+pub struct AppServices {
+    pub health: Arc<SystemHealth>,
+    pub ml_alert: Arc<MLAlert>,
+    pub ml_models: Arc<MLModels>,
+    pub ml_engine: Arc<Engine>,
+    shutdowns: SegQueue<oneshot::Sender<()>>,
+}
+
+impl AppServices {
+    pub fn new(app_config: Arc<AppConfig>, inference_config: Arc<InferenceConfig>) -> Result<Self, Error> {
+        let health = SystemHealth::new(app_config.clone())?;
+
+        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
+        let ml_alert = Arc::new(MLAlert::new());
+
+        let traffic_logger = if app_config.traffic_logging_mode {
+            let csv_path = app_config.traffic_log_csv_path.clone();
+            let mut header = FlowFeatures::all_feature_names_owned();
+            header.push("Label".to_string());
+            let logger = TrafficLogger::new(&csv_path, header)
+                .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
+            log!(SystemLog::TrafficLoggingEnabled(csv_path));
+            Some(Arc::new(logger))
+        } else {
+            None
+        };
+
+        let ml_engine = Arc::new(Engine::new(
+            ml_models.clone(),
+            inference_config.clone(),
+            ml_alert.clone(),
+            app_config.max_concurrent_flows,
+            app_config.min_packets_for_inference,
+            app_config.inference_batch_size,
+            app_config.inference_interval_secs,
+            app_config.aggregator_window_secs,
+            traffic_logger,
+        ));
+
+        Ok(Self {
+            health: Arc::new(health),
+            ml_alert,
+            ml_models,
+            ml_engine,
+            shutdowns: SegQueue::new(),
+        })
+    }
+
+    pub async fn run(&self) -> Result<(), Error> {
+        let health = self.health.clone();
+        let ml_engine = self.ml_engine.clone();
+
+        let health_shutdown = health.run(Duration::from_secs(3)).await;
+        self.shutdowns.push(health_shutdown);
+
+        let ml_shutdown = ml_engine.run().await;
+        self.shutdowns.push(ml_shutdown);
+
+        Ok(())
+    }
+
+    pub fn terminate(&self) {
+        while let Some(shutdown) = self.shutdowns.pop() {
+            if shutdown.send(()).is_err() {
+                log!(SystemError::ShutdownSignalFailed);
+            }
+        }
+    }
+}

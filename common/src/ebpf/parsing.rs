@@ -44,28 +44,28 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut Event) -> Res
         core::ptr::write(ipv4_data_ptr as *mut IpProto, ipv4.proto);
         core::ptr::copy_nonoverlapping(
             ipv4.src_addr.as_ptr(),
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, source_ip)),
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, src_ip)),
             4,
         );
         core::ptr::copy_nonoverlapping(
             ipv4.dst_addr.as_ptr(),
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, destination_ip)),
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, dst_ip)),
             4,
         );
         core::ptr::write(
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, source_port)) as *mut u16,
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, src_port)) as *mut u16,
             source_port,
         );
         core::ptr::write(
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, destination_port)) as *mut u16,
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, dst_port)) as *mut u16,
             destination_port,
         );
         core::ptr::write(
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, len)) as *mut u32,
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, packet_length)) as *mut u32,
             (end - start) as u32,
         );
         core::ptr::write(
-            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, timestamp)) as *mut u64,
+            ipv4_data_ptr.add(core::mem::offset_of!(IPv4Event, timestamp_us)) as *mut u64,
             bpf_ktime_get_ns(),
         );
 
@@ -95,28 +95,28 @@ unsafe fn parse_ipv6_packet(start: usize, end: usize, target: *mut Event) -> Res
         core::ptr::write(ipv6_data_ptr as *mut IpProto, ipv6.next_hdr);
         core::ptr::copy_nonoverlapping(
             ipv6.src_addr.as_ptr(),
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, source_ip)),
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, src_ip)),
             16,
         );
         core::ptr::copy_nonoverlapping(
             ipv6.dst_addr.as_ptr(),
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, destination_ip)),
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, dst_ip)),
             16,
         );
         core::ptr::write(
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, source_port)) as *mut u16,
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, src_port)) as *mut u16,
             source_port,
         );
         core::ptr::write(
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, destination_port)) as *mut u16,
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, dst_port)) as *mut u16,
             destination_port,
         );
         core::ptr::write(
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, len)) as *mut u32,
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, packet_length)) as *mut u32,
             (end - start) as u32,
         );
         core::ptr::write(
-            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, timestamp)) as *mut u64,
+            ipv6_data_ptr.add(core::mem::offset_of!(IPv6Event, timestamp_us)) as *mut u64,
             bpf_ktime_get_ns(),
         );
 

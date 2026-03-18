@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
-use crossbeam::channel::{Receiver, Sender, bounded};
+use aya::Ebpf;
+use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
@@ -17,36 +17,38 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::model::direction::Direction;
+use crate::ml::engine::{Engine, PacketProcessor};
 use crate::model::config::Config;
-use crate::model::error::Error;
+use crate::model::direction::Direction;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
+use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
-use crate::ml::engine::{Engine, PacketProcessor};
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
     xsk_map: Mutex<XskMap<MapData>>,
-    shutdowns: SegQueue<oneshot::Sender<()>>,
+    egress_xsk_map: Mutex<XskMap<MapData>>,
 }
 
 impl XskManager {
-    pub fn new(
-        app_config: Arc<AppConfig>,
-        ebpf: &mut Ebpf,
-    ) -> Result<Self, Error> {
-        let map = ebpf.take_map("XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
+    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
+        let map = ingress_ebpf
+            .take_map("INGRESS_XSKS_MAP")
+            .ok_or(EbpfError::MapNotFound)?;
         let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
+
+        let egress_map = egress_ebpf.take_map("EGRESS_XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
+        let egress_xsk_map = XskMap::try_from(egress_map).map_err(EbpfError::MapOperationError)?;
 
         Ok(Self {
             app_config,
             xsk_map: Mutex::new(xsk_map),
-            shutdowns: SegQueue::new(),
+            egress_xsk_map: Mutex::new(egress_xsk_map),
         })
     }
 
-    pub fn run(&self, ml_engine: Option<Arc<Engine>>) -> Result<(), Error> {
+    pub fn run(&self, ml_engine: Option<Arc<Engine>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
         let config = self.app_config.config.clone();
         let combined_queue_count = config.combined_queue_count;
 
@@ -71,7 +73,7 @@ impl XskManager {
                 &config.egress_ifname,
                 &config.ingress_ifname,
                 Direction::Egress,
-                None,
+                packet_processor.clone(),
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
@@ -81,24 +83,23 @@ impl XskManager {
                 .map_err(EbpfError::AfXdpSetFailed)?;
             drop(xsk_map);
 
+            let mut egress_xsk_map = self.egress_xsk_map.lock();
+            let egress_fd = egress_xsk.rx.fd().as_raw_fd();
+            egress_xsk_map
+                .set(queue_id, egress_fd, 0)
+                .map_err(EbpfError::AfXdpSetFailed)?;
+            drop(egress_xsk_map);
+
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
-            self.shutdowns.push(ingress_shutdown);
+            shutdowns.push(ingress_shutdown);
 
             let egress_shutdown = egress_xsk.run(egress_to_ingress_tx, ingress_to_egress_rx)?;
-            self.shutdowns.push(egress_shutdown);
+            shutdowns.push(egress_shutdown);
 
             log!(EbpfLog::QueuePairStarted(queue_id));
         }
 
         Ok(())
-    }
-
-    pub fn shutdown(&self) {
-        while let Some(sender) = self.shutdowns.pop() {
-            if sender.send(()).is_err() {
-                log!(SystemError::ShutdownSignalFailed);
-            }
-        }
     }
 }
 
@@ -109,7 +110,7 @@ pub struct XskPair {
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
-    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    frame_pool: Arc<Mutex<Vec<FrameDesc>>>, // SegQueue
     packet_processor: Option<Arc<PacketProcessor>>,
 }
 
@@ -150,10 +151,8 @@ impl XskPair {
 
         let interface = Interface::new(rx_ifname_c);
 
-        let (tx, rx, queue) = unsafe {
-            Socket::new(socket_config, &umem, &interface, queue_id)
-                .map_err(EbpfError::SocketSetFailed)?
-        };
+        let (tx, rx, queue) =
+            unsafe { Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)? };
 
         let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::UnknownError)?;
 
@@ -278,7 +277,7 @@ impl XskPair {
                 let packet_data = data.contents()[..packet_len].to_vec();
 
                 if let Some(ref processor) = self.packet_processor {
-                    processor.process(&packet_data);
+                    processor.process(&packet_data, self.direction == Direction::Ingress);
                 }
 
                 if let Err(e) = forward_tx.try_send(packet_data) {
