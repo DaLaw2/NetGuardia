@@ -3,8 +3,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
-use common::define::setting::MAX_RULES_PORT;
 use common::model::ip_address::{IPv4, IPv6, Port};
+use common::model::port_rule::PortRule;
 use tokio::sync::RwLock;
 
 use crate::model::direction::FlowDirection;
@@ -12,7 +12,6 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
 use crate::model::ip_address::NativeConvert;
 use crate::model::list_type::ListType;
-use crate::utils::ip_address::convert_ports_to_vec;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,
@@ -130,7 +129,7 @@ impl AccessControl {
 }
 
 struct MapWrapper<T> {
-    map: AyaHashMap<MapData, T, [Port; MAX_RULES_PORT]>,
+    map: AyaHashMap<MapData, T, PortRule>,
 }
 
 impl<T: NativeConvert + Pod> MapWrapper<T> {
@@ -144,63 +143,59 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
         self.map
             .iter()
             .filter_map(Result::ok)
-            .map(|(key, value)| (key.into_native(), convert_ports_to_vec(value)))
+            .map(|(key, rule)| (key.into_native(), rule.to_port_vec()))
             .collect()
     }
 
     fn add(&mut self, ip: T, port: Port) -> Result<(), Error> {
-        let mut new_ports = [0_u16; MAX_RULES_PORT];
         if port == 0 {
-            new_ports[0] = 0;
-        } else if let Ok(ports) = self.map.get(&ip, 0) {
-            if ports[0] == 0 {
-                return Ok(());
-            }
-            let mut index = None;
-            for (i, &value) in ports.iter().enumerate() {
-                if value == port {
-                    return Ok(());
-                }
-                if index.is_none() && value == 0 {
-                    index = Some(i);
-                }
-            }
-            if index.is_none() {
-                Err(EbpfError::RuleReachLimit)?;
-            }
-            new_ports.copy_from_slice(&ports);
-            new_ports[index.unwrap()] = port;
-        } else {
-            new_ports[0] = port;
+            // port 0 in API = match all ports
+            self.map
+                .insert(ip, PortRule::new_match_all(), 0)
+                .map_err(EbpfError::MapOperationError)?;
+            return Ok(());
         }
+
+        let mut rule = self.map.get(&ip, 0).unwrap_or_else(|_| PortRule::new_empty());
+
+        if rule.is_match_all() {
+            return Ok(()); // already matching all
+        }
+
+        if !rule.add_port(port) {
+            Err(EbpfError::RuleReachLimit)?;
+        }
+
         self.map
-            .insert(ip, new_ports, 0)
+            .insert(ip, rule, 0)
             .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
     fn remove(&mut self, ip: T, port: Port) -> Result<(), Error> {
-        if let Ok(mut ports) = self.map.get(&ip, 0) {
-            if port == 0 {
-                self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
-                return Ok(());
-            }
-
-            if let Some(index) = ports.iter().position(|&x| x == port) {
-                for i in index..(MAX_RULES_PORT - 1) {
-                    ports[i] = ports[i + 1];
-                }
-                ports[MAX_RULES_PORT - 1] = 0;
-
-                if ports[0] == 0 {
-                    self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
-                } else {
-                    self.map.insert(ip, ports, 0).map_err(EbpfError::MapOperationError)?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(EbpfError::IpDoesNotExist)?
+        if port == 0 {
+            // port 0 in API = remove entire IP
+            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            return Ok(());
         }
+
+        let mut rule = self.map.get(&ip, 0).map_err(|_| EbpfError::IpDoesNotExist)?;
+
+        if rule.is_match_all() {
+            // Can't remove a single port from match_all — remove the whole IP
+            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            return Ok(());
+        }
+
+        rule.remove_port(port);
+
+        if rule.is_empty() {
+            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+        } else {
+            self.map
+                .insert(ip, rule, 0)
+                .map_err(EbpfError::MapOperationError)?;
+        }
+        Ok(())
     }
 }

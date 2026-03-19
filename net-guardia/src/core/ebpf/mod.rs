@@ -1,6 +1,6 @@
 pub mod access_control;
-pub mod service;
-pub mod statistics;
+pub mod rate_limit;
+pub mod protocol_filter;
 pub mod xsk_manager;
 
 use std::sync::Arc;
@@ -11,51 +11,40 @@ use macros::log;
 use tokio::sync::oneshot;
 
 use crate::core::ebpf::access_control::AccessControl;
-use crate::core::ebpf::service::Service;
-use crate::core::ebpf::statistics::Statistics;
+use crate::core::ebpf::rate_limit::RateLimitConfig;
+use crate::core::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::ebpf::xsk_manager::XskManager;
 use crate::core::infrastructure::app_config::AppConfig;
+use crate::core::ml::engine::Engine;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
-use crate::ml::engine::Engine;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
     pub access_control: Arc<AccessControl>,
-    pub service: Arc<Service>,
-    pub statistics: Arc<Statistics>,
+    pub protocol_filter: Arc<ProtocolFilter>,
+    pub rate_limit: Arc<RateLimitConfig>,
     pub shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
 impl EbpfServices {
-    pub fn new(
-        app_config: Arc<AppConfig>,
-        ingress_ebpf: &mut Ebpf,
-        egress_ebpf: &mut Ebpf,
-    ) -> Result<Self, Error> {
+    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
-        let service = Service::new(ingress_ebpf)?;
-        let statistics = Statistics::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
-        let ebpf_services = Self {
+        let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
+        let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
+        Ok(Self {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
-            service: Arc::new(service),
-            statistics: Arc::new(statistics),
+            protocol_filter: Arc::new(protocol_filter),
+            rate_limit: Arc::new(rate_limit),
             shutdowns: SegQueue::new(),
-        };
-        Ok(ebpf_services)
+        })
     }
 
     pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
-        let statistics = self.statistics.clone();
-
         xsk_manager.run(Some(ml_engine), &self.shutdowns)?;
-
-        let statistics_shutdown = statistics.run().await;
-
-        self.shutdowns.push(statistics_shutdown);
         Ok(())
     }
 

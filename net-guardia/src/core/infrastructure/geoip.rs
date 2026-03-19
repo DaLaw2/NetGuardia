@@ -8,14 +8,27 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use tokio::task;
 
-use crate::model::geo_stats::GeoLocation;
 use crate::utils::ip_address;
 
+// TODO: Wire into statistics endpoint when GeoIP enrichment is enabled
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct GeoLocation {
+    pub country: Option<String>,
+    pub country_code: Option<String>,
+    pub city: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub timezone: Option<String>,
+}
+
+#[allow(dead_code)]
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,
     cache: Arc<RwLock<LruCache<IpAddr, Option<GeoLocation>>>>,
 }
 
+#[allow(dead_code)]
 impl GeoIpService {
     pub fn new(db_name: &str) -> Result<Self, MaxMindDbError> {
         let db_path = PathBuf::from("net-guardia/static/geo").join(db_name);
@@ -90,8 +103,8 @@ impl GeoIpService {
             let city_name = city.city.names.english
                 .map(|s| s.to_string());
 
-            let latitude = city.location.latitude.or(Some(0.0));
-            let longitude = city.location.longitude.or(Some(0.0));
+            let latitude = city.location.latitude;
+            let longitude = city.location.longitude;
             let timezone = city.location.time_zone.map(|s| s.to_string());
 
             GeoLocation {

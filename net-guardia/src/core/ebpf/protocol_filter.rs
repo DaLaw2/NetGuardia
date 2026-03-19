@@ -12,30 +12,30 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
 use crate::model::ip_address::NativeConvert;
 
-pub struct Service {
+pub struct ProtocolFilter {
     ipv4_http_service: RwLock<HttpServiceWrapper<AddrPortV4>>,
     ipv6_http_service: RwLock<HttpServiceWrapper<AddrPortV6>>,
     ssh_white_list_enable: RwLock<WhiteListControl>,
-    ipv4_ssh_service: RwLock<SshServiceWrapper<AddrPortV4>>,
-    ipv6_ssh_service: RwLock<SshServiceWrapper<AddrPortV6>>,
-    ipv4_ssh_white_list: RwLock<SshListWrapper<IPv4>>,
-    ipv6_ssh_white_list: RwLock<SshListWrapper<IPv6>>,
-    ipv4_ssh_black_list: RwLock<SshListWrapper<IPv4>>,
-    ipv6_ssh_black_list: RwLock<SshListWrapper<IPv6>>,
+    ipv4_ssh_service: RwLock<EntryMap<AddrPortV4>>,
+    ipv6_ssh_service: RwLock<EntryMap<AddrPortV6>>,
+    ipv4_ssh_white_list: RwLock<EntryMap<IPv4>>,
+    ipv6_ssh_white_list: RwLock<EntryMap<IPv6>>,
+    ipv4_ssh_black_list: RwLock<EntryMap<IPv4>>,
+    ipv6_ssh_black_list: RwLock<EntryMap<IPv6>>,
 }
 
-impl Service {
+impl ProtocolFilter {
     pub fn new(ebpf: &mut Ebpf) -> Result<Self, Error> {
         let service = Self {
             ipv4_http_service: RwLock::new(HttpServiceWrapper::new(ebpf, "IPV4_HTTP_SERVICE")?),
             ipv6_http_service: RwLock::new(HttpServiceWrapper::new(ebpf, "IPV6_HTTP_SERVICE")?),
             ssh_white_list_enable: RwLock::new(WhiteListControl::new(ebpf, "SSH_WHITE_LIST_ENABLE")?),
-            ipv4_ssh_service: RwLock::new(SshServiceWrapper::new(ebpf, "IPV4_SSH_SERVICE")?),
-            ipv6_ssh_service: RwLock::new(SshServiceWrapper::new(ebpf, "IPV6_SSH_SERVICE")?),
-            ipv4_ssh_white_list: RwLock::new(SshListWrapper::new(ebpf, "IPV4_SSH_WHITE_LIST")?),
-            ipv6_ssh_white_list: RwLock::new(SshListWrapper::new(ebpf, "IPV6_SSH_WHITE_LIST")?),
-            ipv4_ssh_black_list: RwLock::new(SshListWrapper::new(ebpf, "IPV4_SSH_BLACK_LIST")?),
-            ipv6_ssh_black_list: RwLock::new(SshListWrapper::new(ebpf, "IPV6_SSH_BLACK_LIST")?),
+            ipv4_ssh_service: RwLock::new(EntryMap::new(ebpf, "IPV4_SSH_SERVICE")?),
+            ipv6_ssh_service: RwLock::new(EntryMap::new(ebpf, "IPV6_SSH_SERVICE")?),
+            ipv4_ssh_white_list: RwLock::new(EntryMap::new(ebpf, "IPV4_SSH_WHITE_LIST")?),
+            ipv6_ssh_white_list: RwLock::new(EntryMap::new(ebpf, "IPV6_SSH_WHITE_LIST")?),
+            ipv4_ssh_black_list: RwLock::new(EntryMap::new(ebpf, "IPV4_SSH_BLACK_LIST")?),
+            ipv6_ssh_black_list: RwLock::new(EntryMap::new(ebpf, "IPV6_SSH_BLACK_LIST")?),
         };
         Ok(service)
     }
@@ -105,75 +105,75 @@ impl Service {
     }
 
     pub async fn get_ipv4_ssh_service(&self) -> Vec<SocketAddrV4> {
-        self.ipv4_ssh_service.read().await.get_ssh_service()
+        self.ipv4_ssh_service.read().await.get_all()
     }
 
     pub async fn get_ipv6_ssh_service(&self) -> Vec<SocketAddrV6> {
-        self.ipv6_ssh_service.read().await.get_ssh_service()
+        self.ipv6_ssh_service.read().await.get_all()
     }
 
     pub async fn add_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().await.add_ssh_service(address)
+        self.ipv4_ssh_service.write().await.add(address)
     }
 
     pub async fn add_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().await.add_ssh_service(address)
+        self.ipv6_ssh_service.write().await.add(address)
     }
 
     pub async fn remove_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().await.remove_ssh_service(address)
+        self.ipv4_ssh_service.write().await.remove(address)
     }
 
     pub async fn remove_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().await.remove_ssh_service(address)
+        self.ipv6_ssh_service.write().await.remove(address)
     }
 
     pub async fn get_ipv4_ssh_white_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_white_list.read().await.get_list()
+        self.ipv4_ssh_white_list.read().await.get_all()
     }
 
     pub async fn get_ipv6_ssh_white_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_white_list.read().await.get_list()
+        self.ipv6_ssh_white_list.read().await.get_all()
     }
 
     pub async fn add_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().await.add_list(ip)
+        self.ipv4_ssh_white_list.write().await.add(ip)
     }
 
     pub async fn add_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().await.add_list(ip)
+        self.ipv6_ssh_white_list.write().await.add(ip)
     }
 
     pub async fn remove_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().await.remove_list(ip)
+        self.ipv4_ssh_white_list.write().await.remove(ip)
     }
 
     pub async fn remove_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().await.remove_list(ip)
+        self.ipv6_ssh_white_list.write().await.remove(ip)
     }
 
     pub async fn get_ipv4_ssh_black_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_black_list.read().await.get_list()
+        self.ipv4_ssh_black_list.read().await.get_all()
     }
 
     pub async fn get_ipv6_ssh_black_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_black_list.read().await.get_list()
+        self.ipv6_ssh_black_list.read().await.get_all()
     }
 
     pub async fn add_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().await.add_list(ip)
+        self.ipv4_ssh_black_list.write().await.add(ip)
     }
 
     pub async fn add_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().await.add_list(ip)
+        self.ipv6_ssh_black_list.write().await.add(ip)
     }
 
     pub async fn remove_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().await.remove_list(ip)
+        self.ipv4_ssh_black_list.write().await.remove(ip)
     }
 
     pub async fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().await.remove_list(ip)
+        self.ipv6_ssh_black_list.write().await.remove(ip)
     }
 }
 
@@ -239,7 +239,7 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
         let ebpf_method = HttpMethod::convert_to_bitmap(http_method);
         self.map
             .insert(address, ebpf_method, 0)
-            .map_err(|_| EbpfError::RuleReachLimit)?;
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
@@ -263,18 +263,18 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
     }
 }
 
-struct SshServiceWrapper<T> {
+struct EntryMap<T> {
     map: AyaHashMap<MapData, T, PlaceHolder>,
 }
 
-impl<T: NativeConvert + Pod> SshServiceWrapper<T> {
+impl<T: NativeConvert + Pod> EntryMap<T> {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
         let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
         Ok(Self { map })
     }
 
-    fn get_ssh_service(&self) -> Vec<T::Native> {
+    fn get_all(&self) -> Vec<T::Native> {
         self.map
             .keys()
             .filter_map(Result::ok)
@@ -282,51 +282,17 @@ impl<T: NativeConvert + Pod> SshServiceWrapper<T> {
             .collect()
     }
 
-    fn add_ssh_service(&mut self, address: T::Native) -> Result<(), Error> {
-        let address = T::from_native(address);
+    fn add(&mut self, key: T::Native) -> Result<(), Error> {
+        let key = T::from_native(key);
         self.map
-            .insert(address, 0_u8, 0)
-            .map_err(|_| EbpfError::RuleReachLimit)?;
+            .insert(key, 0_u8, 0)
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
-    fn remove_ssh_service(&mut self, address: T::Native) -> Result<(), Error> {
-        let address = T::from_native(address);
-        self.map.remove(&address).map_err(|_| EbpfError::IpDoesNotExist)?;
-        Ok(())
-    }
-}
-
-struct SshListWrapper<T> {
-    map: AyaHashMap<MapData, T, PlaceHolder>,
-}
-
-impl<T: NativeConvert + Pod> SshListWrapper<T> {
-    fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
-        let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
-        let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
-        Ok(Self { map })
-    }
-
-    fn get_list(&self) -> Vec<T::Native> {
-        self.map
-            .keys()
-            .filter_map(Result::ok)
-            .map(|key| key.into_native())
-            .collect()
-    }
-
-    fn add_list(&mut self, address: T::Native) -> Result<(), Error> {
-        let address = T::from_native(address);
-        self.map
-            .insert(address, 0_u8, 0)
-            .map_err(|_| EbpfError::RuleReachLimit)?;
-        Ok(())
-    }
-
-    fn remove_list(&mut self, address: T::Native) -> Result<(), Error> {
-        let address = T::from_native(address);
-        self.map.remove(&address).map_err(|_| EbpfError::IpDoesNotExist)?;
+    fn remove(&mut self, key: T::Native) -> Result<(), Error> {
+        let key = T::from_native(key);
+        self.map.remove(&key).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }

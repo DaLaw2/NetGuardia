@@ -4,6 +4,8 @@ use tracing::error;
 
 use crate::model::ml_detection::DetectionResult;
 
+const ALERT_CHANNEL_CAPACITY: usize = 100;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AlertMessage {
     pub timestamp: u64,
@@ -23,14 +25,14 @@ impl AlertMessage {
     pub fn from_detection_result(result: &DetectionResult) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         Self {
             timestamp,
             flow_key: result.flow_key.clone(),
-            src_ip: result.flow_key_raw.src_ip.clone(),
-            dst_ip: result.flow_key_raw.dst_ip.clone(),
+            src_ip: result.flow_key_raw.src_ip_string(),
+            dst_ip: result.flow_key_raw.dst_ip_string(),
             src_port: result.flow_key_raw.src_port,
             dst_port: result.flow_key_raw.dst_port,
             protocol: result.flow_key_raw.protocol,
@@ -48,7 +50,7 @@ pub struct MLAlert  {
 
 impl MLAlert {
     pub fn new() -> Self {
-        let (broadcast_tx, _) = broadcast::channel(100);
+        let (broadcast_tx, _) = broadcast::channel(ALERT_CHANNEL_CAPACITY);
 
         MLAlert {
             broadcast_tx,
@@ -68,9 +70,6 @@ impl MLAlert {
         }
     }
 
-    pub fn has_subscribers(&self) -> bool {
-        self.broadcast_tx.receiver_count() > 0
-    }
 }
 
 impl Default for MLAlert {

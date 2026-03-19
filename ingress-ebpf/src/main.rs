@@ -4,41 +4,51 @@ mod action;
 
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
-use aya_ebpf::maps::{PerCpuArray, ProgramArray, XskMap};
+use aya_ebpf::maps::{Array, PerCpuArray, ProgramArray, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
-use common::define::program_array::ingress::*;
 use common::ebpf::parsing;
-use common::model::event::Event;
+use common::define::pipeline::*;
+use common::model::parsed_packet::ParsedPacket;
 
-use crate::action::{access_control, service, statistics};
+use crate::action::{access_control, rate_limit, protocol_filter};
 
 #[map]
-static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(8, 0);
+static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(MAX_STAGES, 0);
 #[map]
-static PARSED_PACKET: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+static NEXT_STAGE: Array<u32> = Array::with_max_entries(MAX_STAGES, 0);
+#[map]
+static PARSED_PACKET: PerCpuArray<ParsedPacket> = PerCpuArray::with_max_entries(1, 0);
 #[map]
 static INGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
+
+#[inline(always)]
+unsafe fn chain_next(ctx: &XdpContext, current_id: u32) {
+    unsafe {
+        if let Some(&next_slot) = NEXT_STAGE.get(current_id) {
+            if next_slot != STAGE_NONE {
+                let _ = PROGRAM_ARRAY.tail_call(ctx, next_slot);
+            }
+        }
+        let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
+    }
+}
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
     unsafe {
-        let _ = packet_intake(&ctx);
-        let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
+        packet_intake(&ctx);
+        let _ = PROGRAM_ARRAY.tail_call(&ctx, STAGE_TRANSMISSION);
         xdp_action::XDP_PASS
     }
 }
 
 #[inline(always)]
-unsafe fn packet_intake(ctx: &XdpContext) -> Result<u32, ()> {
-    unsafe {
-        let start = ctx.data();
-        let end = ctx.data_end();
-        let ptr = PARSED_PACKET.get_ptr_mut(0).ok_or(())?;
-        parsing::parse_packet(start, end, ptr)?;
-        let _ = PROGRAM_ARRAY.tail_call(ctx, ACCESS_CONTROL);
-        Err(())
+unsafe fn packet_intake(ctx: &XdpContext) {
+    let Some(ptr) = PARSED_PACKET.get_ptr_mut(0) else { return };
+    if parsing::parse_packet(ctx.data(), ctx.data_end(), ptr).is_ok() {
+        chain_next(ctx, STAGE_ENTRY);
     }
 }
 
@@ -48,7 +58,7 @@ pub fn access_control(ctx: XdpContext) -> u32 {
         match try_access_control(&ctx) {
             Ok(action) => action,
             Err(_) => {
-                let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
+                chain_next(&ctx, STAGE_ACCESS_CONTROL);
                 xdp_action::XDP_PASS
             }
         }
@@ -59,39 +69,66 @@ pub fn access_control(ctx: XdpContext) -> u32 {
 unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
     unsafe {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = &*ptr;
-        match parsed_packet {
-            Event::IPv4(event) => {
-                if access_control::ipv4_is_whitelisted(event) {
-                    let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
+        let pkt = &*ptr;
+        match pkt.ip_version {
+            4 => {
+                if access_control::ipv4_is_whitelisted(pkt) {
+                    let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
                 }
-                if access_control::ipv4_is_blacklisted(event) {
+                if access_control::ipv4_is_blacklisted(pkt) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            Event::IPv6(event) => {
-                if access_control::ipv6_is_whitelisted(event) {
-                    let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
+            6 => {
+                if access_control::ipv6_is_whitelisted(pkt) {
+                    let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
                 }
-                if access_control::ipv6_is_blacklisted(event) {
+                if access_control::ipv6_is_blacklisted(pkt) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
+            _ => {}
         }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, SERVICE);
+        chain_next(ctx, STAGE_ACCESS_CONTROL);
         Err(())
     }
 }
 
 #[xdp]
-pub fn service(ctx: XdpContext) -> u32 {
+pub fn rate_limit(ctx: XdpContext) -> u32 {
+    unsafe {
+        match try_rate_limit(&ctx) {
+            Ok(action) => action,
+            Err(_) => {
+                chain_next(&ctx, STAGE_RATE_LIMIT);
+                xdp_action::XDP_PASS
+            }
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn try_rate_limit(ctx: &XdpContext) -> Result<u32, ()> {
+    unsafe {
+        let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
+        let pkt = &*ptr;
+        if rate_limit::should_drop(pkt) {
+            return Ok(xdp_action::XDP_DROP);
+        }
+        chain_next(ctx, STAGE_RATE_LIMIT);
+        Err(())
+    }
+}
+
+#[xdp]
+pub fn protocol_filter(ctx: XdpContext) -> u32 {
     unsafe {
         match try_service(&ctx) {
             Ok(action) => action,
             Err(_) => {
-                let _ = PROGRAM_ARRAY.tail_call(&ctx, TRANSMISSION);
+                chain_next(&ctx, STAGE_SERVICE);
                 xdp_action::XDP_PASS
             }
         }
@@ -104,46 +141,21 @@ unsafe fn try_service(ctx: &XdpContext) -> Result<u32, ()> {
         let start = ctx.data();
         let end = ctx.data_end();
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = &*ptr;
-        match parsed_packet {
-            Event::IPv4(event) => {
-                if service::ipv4_service_rule_violation(start, end, event) {
+        let pkt = &*ptr;
+        match pkt.ip_version {
+            4 => {
+                if protocol_filter::ipv4_service_rule_violation(start, end, pkt) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            Event::IPv6(event) => {
-                if service::ipv6_service_rule_violation(start, end, event) {
+            6 => {
+                if protocol_filter::ipv6_service_rule_violation(start, end, pkt) {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
+            _ => {}
         }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, STATISTICS);
-        Err(())
-    }
-}
-
-#[xdp]
-pub fn statistics(ctx: XdpContext) -> u32 {
-    unsafe {
-        let _ = try_statistics(&ctx);
-        xdp_action::XDP_PASS
-    }
-}
-
-#[inline(always)]
-unsafe fn try_statistics(ctx: &XdpContext) -> Result<u32, ()> {
-    unsafe {
-        let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
-        let parsed_packet = &*ptr;
-        match parsed_packet {
-            Event::IPv4(event) => {
-                statistics::ipv4_update_stats(&event);
-            }
-            Event::IPv6(event) => {
-                statistics::ipv6_update_stats(&event);
-            }
-        }
-        let _ = PROGRAM_ARRAY.tail_call(ctx, TRANSMISSION);
+        chain_next(ctx, STAGE_SERVICE);
         Err(())
     }
 }

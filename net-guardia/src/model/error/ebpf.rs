@@ -50,6 +50,10 @@ traceable! {
         RuleReachLimit => tracing::Level::ERROR,
 
         #[no_source]
+        #[error("Fill queue initialization failed: submitted fewer frames than expected")]
+        FillQueueInitFailed => tracing::Level::ERROR,
+
+        #[no_source]
         #[error("Unknown error")]
         UnknownError => tracing::Level::ERROR,
 

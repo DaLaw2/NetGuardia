@@ -42,8 +42,8 @@ impl SystemHealth {
             networks: RwLock::new(Networks::new_with_refreshed_list()),
             components: RwLock::new(Components::new_with_refreshed_list()),
             broadcast_tx,
-            ingress_interface: config.ingress_ifname.clone(),
-            egress_interface: config.egress_ifname.clone(),
+            ingress_interface: config.network.ingress_ifname.clone(),
+            egress_interface: config.network.egress_ifname.clone(),
             // management_interface: config.management_ifindex.clone(),
         };
 
@@ -112,8 +112,8 @@ impl SystemHealth {
     ) -> SystemHealthMetrics {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let boot_time = System::boot_time();
         let uptime_seconds = timestamp - boot_time;
@@ -254,10 +254,8 @@ impl SystemHealth {
     }
 
     pub async fn get_current_metrics(&self) -> SystemHealthMetrics {
-        self.system.write().await.refresh_all();
-        self.networks.write().await.refresh(true);
-        self.components.write().await.refresh(true);
-
+        // Read last cached metrics from background task, don't refresh here
+        // to avoid racing with the background refresh_and_broadcast task
         let system = self.system.read().await;
         let networks = self.networks.read().await;
         let components = self.components.read().await;

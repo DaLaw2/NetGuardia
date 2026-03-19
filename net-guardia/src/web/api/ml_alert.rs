@@ -1,4 +1,4 @@
-use crate::core::infrastructure::ml_alert::MLAlert;
+use crate::core::ml::alert::MLAlert;
 use crate::web::websocket::alert_websocket;
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder, Scope};
 
@@ -16,7 +16,7 @@ async fn websocket_alert(
     match alert_websocket::websocket_alert(req, stream, ai).await {
         Ok(response) => response,
         Err(err) => {
-            HttpResponse::InternalServerError().body(format!("WebSocket error: {}", err))
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("{}", err)}))
         }
     }
 }

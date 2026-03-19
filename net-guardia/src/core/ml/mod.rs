@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod model_loader;
 pub mod config_loader;
 pub mod flow_tracker;
