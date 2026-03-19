@@ -21,7 +21,7 @@ use crate::model::error::Error;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, health, misc, ml_alert};
+use crate::web::api::{acl, filter, rate_limit as rate_limit_api, stats, health as health_api, ml, system as system_api, default, ws};
 
 /// Maps stage name (from config.toml) to (function_name, stage_id)
 fn stage_registry() -> HashMap<&'static str, (&'static str, u32)> {
@@ -171,10 +171,17 @@ impl System {
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
                 .app_data(web::Data::from(flow_statistics.clone()))
-                .service(control::initialize())
-                .service(ml_alert::initialize())
-                .service(health::initialize())
-                .service(misc::initialize())
+                .service(
+                    web::scope("/api")
+                        .service(acl::initialize())
+                        .service(filter::initialize())
+                        .service(rate_limit_api::initialize())
+                        .service(stats::initialize())
+                        .service(health_api::initialize())
+                        .service(ml::initialize())
+                        .service(system_api::initialize())
+                )
+                .service(ws::initialize())
                 .default_service(route().to(default::default_route))
         })
         .bind(format!("0.0.0.0:{}", port))
