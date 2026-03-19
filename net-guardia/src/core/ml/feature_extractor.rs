@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use common::define::tcp_flags::*;
+
 use super::flow_tracker::FlowData;
 use crate::model::ml_detection::{ClipParams, PacketData};
 
@@ -60,10 +62,10 @@ impl FlowFeatures {
         let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = compute_stats(&bwd_iats);
 
         // 30-37
-        let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags.psh).count() as f64;
-        let bwd_psh = flow.bwd_packets.iter().filter(|p| p.flags.psh).count() as f64;
-        let fwd_urg = flow.fwd_packets.iter().filter(|p| p.flags.urg).count() as f64;
-        let bwd_urg = flow.bwd_packets.iter().filter(|p| p.flags.urg).count() as f64;
+        let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
+        let bwd_psh = flow.bwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
+        let fwd_urg = flow.fwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
+        let bwd_urg = flow.bwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
 
         // 38-55
         let all_lengths: Vec<f64> = flow
@@ -84,7 +86,7 @@ impl FlowFeatures {
             .fwd_packets
             .iter()
             .filter(|p| p.payload_length > 0)
-            .map(|p| p.header_length as f64)
+            .map(|p| p.payload_length as f64)
             .collect();
 
         // 70-73
@@ -214,10 +216,6 @@ impl FlowFeatures {
                 }
             }
         }
-    }
-
-    pub fn get_features_content(&self) -> &Vec<f64> {
-        &self.features
     }
 
     pub fn all_feature_names() -> Vec<&'static str> {

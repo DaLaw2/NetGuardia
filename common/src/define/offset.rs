@@ -23,3 +23,10 @@ pub const IPV4_UDP_HEADER_END: usize = IPV4_UDP_HEADER_START + size_of::<UdpHdr>
 
 pub const IPV6_UDP_HEADER_START: usize = IPV6_HEADER_END;
 pub const IPV6_UDP_HEADER_END: usize = IPV6_UDP_HEADER_START + size_of::<UdpHdr>();
+
+#[cfg(not(feature = "user"))]
+const _: () = {
+    assert!(core::mem::size_of::<EthHdr>() == 14);
+    assert!(core::mem::size_of::<Ipv4Hdr>() == 20);
+    assert!(core::mem::size_of::<Ipv6Hdr>() == 40);
+};

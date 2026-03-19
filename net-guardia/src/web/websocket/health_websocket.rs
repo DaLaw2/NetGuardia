@@ -65,6 +65,7 @@ async fn handle_client_message(
     msg_result: Option<Result<Message, actix_ws::ProtocolError>>,
 ) -> bool {
     match msg_result {
+        // Text messages are intentionally ignored; no client commands are supported
         Some(Ok(Message::Text(_))) => true,
         Some(Ok(Message::Ping(bytes))) => session.pong(&bytes).await.is_ok(),
         Some(Ok(Message::Close(reason))) => {

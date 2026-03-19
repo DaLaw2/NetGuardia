@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::model::error::ml::MLError;
-use crate::model::ml_detection::{AENormalization, ClipParams, PrecisionLevels};
+use crate::model::ml_detection::ClipParams;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceConfig {
@@ -26,6 +26,15 @@ impl InferenceConfig {
             .map_err(|_| MLError::ConfigLoadFailed { path: path.to_path_buf() })?;
         let config: InferenceConfig = serde_json::from_str(&content)
             .map_err(|e| MLError::ConfigParseFailed { reason: e.to_string() })?;
+        if config.ae_feature_names.is_empty() {
+            return Err(MLError::ConfigParseFailed { reason: "ae_feature_names is empty".into() });
+        }
+        if config.ae_scaler_mean.len() != config.ae_feature_names.len() {
+            return Err(MLError::ConfigParseFailed { reason: "scaler mean length mismatch".into() });
+        }
+        if config.ae_scaler_std.len() != config.ae_feature_names.len() {
+            return Err(MLError::ConfigParseFailed { reason: "scaler std length mismatch".into() });
+        }
         Ok(config)
     }
 
@@ -41,6 +50,7 @@ impl InferenceConfig {
         self.attack_labels.len()
     }
 
+    #[allow(dead_code)]
     pub fn get_attack_label(&self, id: usize) -> Option<&String> {
         self.attack_labels.get(&id.to_string())
     }

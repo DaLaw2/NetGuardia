@@ -50,5 +50,8 @@ loggable! {
 
         #[error("Fill queue incomplete: produced {produced}, expected {expected}")]
         FillQueueIncomplete { produced: usize, expected: usize } => tracing::Level::WARN,
+
+        #[error("Invalid packet length exceeds buffer")]
+        InvalidPacketLength => tracing::Level::WARN,
     }
 }

@@ -1,18 +1,19 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web::web::route;
 use actix_web::{web, App, HttpServer};
-use aya::maps::{MapData, ProgramArray};
+use aya::maps::{Array, MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya::Ebpf;
 use aya_log::EbpfLogger;
-use common::define::program_array::*;
+use common::define::pipeline::*;
 use macros::log;
 
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::core::infrastructure::AppServices;
-use crate::ml::config_loader::InferenceConfig;
+use crate::core::infrastructure::MLService;
+use crate::core::ml::config_loader::InferenceConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
@@ -20,28 +21,40 @@ use crate::model::error::Error;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
-use crate::web::api::{control, default, health, misc, ml_alert};
+use crate::web::api::{acl, filter, rate_limit as rate_limit_api, stats, health as health_api, ml, system as system_api, default, ws};
+
+/// Maps stage name (from config.toml) to (function_name, stage_id)
+fn stage_registry() -> HashMap<&'static str, (&'static str, u32)> {
+    HashMap::from([
+        ("access_control", ("access_control", STAGE_ACCESS_CONTROL)),
+        ("rate_limit", ("rate_limit", STAGE_RATE_LIMIT)),
+        ("service", ("protocol_filter", STAGE_SERVICE)),
+    ])
+}
 
 pub struct System {
     pub app_config: Arc<AppConfig>,
     pub inference_config: Arc<InferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
-    pub app_services: Arc<AppServices>,
+    pub app_services: Arc<MLService>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
     ingress_program_array: ProgramArray<MapData>,
-    #[allow(dead_code)]
-    egress_program_array: ProgramArray<MapData>,
 }
 
 impl System {
     pub async fn new() -> Result<Self, Error> {
-        let (mut ingress_ebpf, ingress_program_array) = System::get_ingress_ebpf()?;
-        let (mut egress_ebpf, egress_program_array) = System::get_egress_ebpf()?;
+        let mut ingress_ebpf = Self::load_ebpf("ingress")?;
+        let mut egress_ebpf = Self::load_ebpf("egress")?;
         let app_config = Arc::new(AppConfig::new()?);
 
-        let inference_config = Arc::new(InferenceConfig::load_file(&app_config.models_config_name)?);
+        let ingress_program_array = Self::configure_ingress_pipeline(
+            &mut ingress_ebpf,
+            &app_config.pipeline.ingress,
+        )?;
+
+        let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
@@ -49,9 +62,9 @@ impl System {
             &mut egress_ebpf,
         )?);
 
-        let app_services = Arc::new(AppServices::new(app_config.clone(), inference_config.clone())?);
+        let app_services = Arc::new(MLService::new(app_config.clone(), inference_config.clone())?);
 
-        let system = System {
+        Ok(System {
             app_config,
             inference_config,
             ebpf_services,
@@ -59,9 +72,7 @@ impl System {
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
-            egress_program_array,
-        };
-        Ok(system)
+        })
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -110,29 +121,25 @@ impl System {
     }
 
     fn attach_ebpf(&mut self) -> Result<(), Error> {
-        let config = self.app_config.config.clone();
-        let ingress_ifname = config.ingress_ifname;
-        let egress_ifname = config.egress_ifname;
+        let ingress_ifname = self.app_config.network.ingress_ifname.clone();
+        let egress_ifname = self.app_config.network.egress_ifname.clone();
         Self::set_memory_limit()?;
-        let ingress_xdp: &mut Xdp = self
-            .ingress_ebpf
+
+        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;   // already loaded in configure_ingress_pipeline
+        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;   // load now
+        Ok(())
+    }
+
+    fn attach_xdp(ebpf: &mut Ebpf, ifname: &str, already_loaded: bool) -> Result<(), Error> {
+        let xdp: &mut Xdp = ebpf
             .program_mut("net_guardia")
             .ok_or(EbpfError::ProgramNotFound)?
             .try_into()
             .map_err(EbpfError::GetProgramFailed)?;
-        let egress_xdp: &mut Xdp = self
-            .egress_ebpf
-            .program_mut("net_guardia")
-            .ok_or(EbpfError::ProgramNotFound)?
-            .try_into()
-            .map_err(EbpfError::GetProgramFailed)?;
-        ingress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
-        ingress_xdp
-            .attach(&ingress_ifname, XdpFlags::DRV_MODE)
-            .map_err(EbpfError::AttachProgramFailed)?;
-        egress_xdp.load().map_err(EbpfError::LoadProgramFailed)?;
-        egress_xdp
-            .attach(&egress_ifname, XdpFlags::DRV_MODE)
+        if !already_loaded {
+            xdp.load().map_err(EbpfError::LoadProgramFailed)?;
+        }
+        xdp.attach(ifname, XdpFlags::DRV_MODE)
             .map_err(EbpfError::AttachProgramFailed)?;
         Ok(())
     }
@@ -141,14 +148,16 @@ impl System {
         let app_config = self.app_config.clone();
         let inference_config = self.inference_config.clone();
         let access_control = self.ebpf_services.access_control.clone();
-        let service = self.ebpf_services.service.clone();
-        let statistics = self.ebpf_services.statistics.clone();
+        let protocol_filter = self.ebpf_services.protocol_filter.clone();
+        let rate_limit = self.ebpf_services.rate_limit.clone();
         let health = self.app_services.health.clone();
         let ml_alert = self.app_services.ml_alert.clone();
-        let port = self.app_config.http_server_bind_port;
+        let flow_statistics = self.app_services.flow_statistics.clone();
+        let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
-                .allow_any_origin()
+                .allowed_origin("http://localhost:8080")
+                .allowed_origin("http://127.0.0.1:8080")
                 .allow_any_method()
                 .allow_any_header()
                 .max_age(3600);
@@ -157,14 +166,22 @@ impl System {
                 .app_data(web::Data::from(app_config.clone()))
                 .app_data(web::Data::from(inference_config.clone()))
                 .app_data(web::Data::from(access_control.clone()))
-                .app_data(web::Data::from(service.clone()))
-                .app_data(web::Data::from(statistics.clone()))
+                .app_data(web::Data::from(protocol_filter.clone()))
+                .app_data(web::Data::from(rate_limit.clone()))
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
-                .service(control::initialize())
-                .service(ml_alert::initialize())
-                .service(health::initialize())
-                .service(misc::initialize())
+                .app_data(web::Data::from(flow_statistics.clone()))
+                .service(
+                    web::scope("/api")
+                        .service(acl::initialize())
+                        .service(filter::initialize())
+                        .service(rate_limit_api::initialize())
+                        .service(stats::initialize())
+                        .service(health_api::initialize())
+                        .service(ml::initialize())
+                        .service(system_api::initialize())
+                )
+                .service(ws::initialize())
                 .default_service(route().to(default::default_route))
         })
         .bind(format!("0.0.0.0:{}", port))
@@ -175,54 +192,86 @@ impl System {
         Ok(())
     }
 
-    fn get_ingress_ebpf() -> Result<(Ebpf, ProgramArray<MapData>), Error> {
-        let mut ingress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/net-guardia-ingress"
-        )))
-        .map_err(EbpfError::EbpfNotFound)?;
-        let program_array = ingress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
-        let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(
-            &mut ingress_ebpf,
-            &mut program_array,
-            "access_control",
-            ingress::ACCESS_CONTROL,
-        )?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "service", ingress::SERVICE)?;
-        Self::load_program(&mut ingress_ebpf, &mut program_array, "statistics", ingress::STATISTICS)?;
-        Self::load_program(
-            &mut ingress_ebpf,
-            &mut program_array,
-            "transmission",
-            ingress::TRANSMISSION,
-        )?;
-        Ok((ingress_ebpf, program_array))
+    fn load_ebpf(name: &str) -> Result<Ebpf, Error> {
+        let bytes = match name {
+            "ingress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-ingress")),
+            "egress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-egress")),
+            _ => return Err(EbpfError::ProgramNotFound.into()),
+        };
+        Ok(Ebpf::load(bytes).map_err(EbpfError::EbpfNotFound)?)
     }
 
-    fn get_egress_ebpf() -> Result<(Ebpf, ProgramArray<MapData>), Error> {
-        let mut egress_ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/net-guardia-egress"
-        )))
-        .map_err(EbpfError::EbpfNotFound)?;
-        let program_array = egress_ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
-        let mut program_array = ProgramArray::try_from(program_array).map_err(EbpfError::MapOperationError)?;
-        Self::load_program(&mut egress_ebpf, &mut program_array, "statistics", egress::STATISTICS)?;
-        Self::load_program(
-            &mut egress_ebpf,
-            &mut program_array,
-            "transmission",
-            egress::TRANSMISSION,
-        )?;
-        Ok((egress_ebpf, program_array))
+    /// Configure the ingress pipeline based on config.toml [Pipeline] section.
+    /// Loads each stage program into ProgramArray and wires NEXT_STAGE map.
+    fn configure_ingress_pipeline(
+        ebpf: &mut Ebpf,
+        stages: &[String],
+    ) -> Result<ProgramArray<MapData>, Error> {
+        let registry = stage_registry();
+
+        // Load entry point program BEFORE taking maps — verifier needs map fds at load time
+        let entry: &mut Xdp = ebpf
+            .program_mut("net_guardia")
+            .ok_or(EbpfError::ProgramNotFound)?
+            .try_into()
+            .map_err(EbpfError::GetProgramFailed)?;
+        entry.load().map_err(EbpfError::LoadProgramFailed)?;
+
+        // Take maps
+        let pa_map = ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
+        let mut program_array = ProgramArray::try_from(pa_map).map_err(EbpfError::MapOperationError)?;
+
+        let ns_map = ebpf.take_map("NEXT_STAGE").ok_or(EbpfError::MapNotFound)?;
+        let mut next_stage = Array::<MapData, u32>::try_from(ns_map).map_err(EbpfError::MapOperationError)?;
+
+        // Load transmission (always present at STAGE_TRANSMISSION)
+        Self::load_program(ebpf, &mut program_array, "transmission", STAGE_TRANSMISSION)?;
+
+        if stages.is_empty() {
+            // Empty pipeline: entry → transmission
+            next_stage
+                .set(STAGE_ENTRY as u32, STAGE_TRANSMISSION, 0)
+                .map_err(EbpfError::MapOperationError)?;
+            return Ok(program_array);
+        }
+
+        // Load each stage and assign a slot (starting from slot 1)
+        let mut slots: Vec<(u32, u32)> = Vec::new(); // (stage_id, slot_index)
+        for (i, stage_name) in stages.iter().enumerate() {
+            let (func_name, stage_id) = registry
+                .get(stage_name.as_str())
+                .ok_or(EbpfError::ProgramNotFound)?;
+            let slot = (i + 1) as u32; // slots 1, 2, 3, ...
+            Self::load_program(ebpf, &mut program_array, func_name, slot)?;
+            slots.push((*stage_id, slot));
+        }
+
+        // Wire NEXT_STAGE: entry → first slot
+        next_stage
+            .set(STAGE_ENTRY as u32, slots[0].1, 0)
+            .map_err(EbpfError::MapOperationError)?;
+
+        // Wire each stage to the next
+        for i in 0..slots.len() {
+            let (stage_id, _) = slots[i];
+            let next_slot = if i + 1 < slots.len() {
+                slots[i + 1].1
+            } else {
+                STAGE_TRANSMISSION
+            };
+            next_stage
+                .set(stage_id as u32, next_slot, 0)
+                .map_err(EbpfError::MapOperationError)?;
+        }
+
+        Ok(program_array)
     }
 
     fn load_program(
         ebpf: &mut Ebpf,
         program_array: &mut ProgramArray<MapData>,
         function_name: &str,
-        index: u32,
+        slot: u32,
     ) -> Result<(), Error> {
         let program: &mut Xdp = ebpf
             .program_mut(function_name)
@@ -231,7 +280,9 @@ impl System {
             .map_err(EbpfError::MapOperationError)?;
         program.load().map_err(EbpfError::AttachProgramFailed)?;
         let fd = program.fd().map_err(|_| EbpfError::UnknownError)?;
-        program_array.set(index, fd, 0).map_err(EbpfError::MapOperationError)?;
+        program_array
+            .set(slot, fd, 0)
+            .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 

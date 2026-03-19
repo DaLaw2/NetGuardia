@@ -33,11 +33,10 @@ impl Logging {
             .with_ansi(false)
             .with_writer(file_appender);
 
-        let level = if cfg!(debug_assertions) {
-            Level::DEBUG
-        } else {
-            Level::INFO
-        };
+        let level = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|s| s.parse::<Level>().ok())
+            .unwrap_or(if cfg!(debug_assertions) { Level::DEBUG } else { Level::INFO });
 
         tracing_subscriber::registry()
             .with(stdout_layer)

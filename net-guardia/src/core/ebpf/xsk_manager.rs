@@ -17,8 +17,9 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::ml::engine::{Engine, PacketProcessor};
-use crate::model::config::Config;
+use crate::core::ml::engine::Engine;
+use crate::core::ml::flow_tracker::FlowTracker;
+use crate::model::config::NetworkConfig;
 use crate::model::direction::Direction;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
@@ -49,45 +50,47 @@ impl XskManager {
     }
 
     pub fn run(&self, ml_engine: Option<Arc<Engine>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
-        let config = self.app_config.config.clone();
-        let combined_queue_count = config.combined_queue_count;
-
-        let packet_processor = ml_engine.map(|engine| Arc::new(PacketProcessor::new(engine)));
+        let network = self.app_config.network.clone();
+        let combined_queue_count = network.combined_queue_count;
 
         for queue_id in 0..combined_queue_count {
-            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(config.channel_size);
-            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(config.channel_size);
+            let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(network.channel_size);
+            let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(network.channel_size);
+
+            let tracker = ml_engine.as_ref().map(|engine| engine.tracker(queue_id).clone());
 
             let ingress_xsk = XskPair::new(
-                config.clone(),
+                network.clone(),
                 queue_id,
-                &config.ingress_ifname,
-                &config.egress_ifname,
+                &network.ingress_ifname,
+                &network.egress_ifname,
                 Direction::Ingress,
-                packet_processor.clone(),
+                tracker.clone(),
             )?;
 
             let egress_xsk = XskPair::new(
-                config.clone(),
+                network.clone(),
                 queue_id,
-                &config.egress_ifname,
-                &config.ingress_ifname,
+                &network.egress_ifname,
+                &network.ingress_ifname,
                 Direction::Egress,
-                packet_processor.clone(),
+                tracker,
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
+            let mut egress_xsk_map = self.egress_xsk_map.lock();
+
             let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
             xsk_map
                 .set(queue_id, ingress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
-            drop(xsk_map);
 
-            let mut egress_xsk_map = self.egress_xsk_map.lock();
             let egress_fd = egress_xsk.rx.fd().as_raw_fd();
             egress_xsk_map
                 .set(queue_id, egress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
+
+            drop(xsk_map);
             drop(egress_xsk_map);
 
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
@@ -110,18 +113,18 @@ pub struct XskPair {
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
-    frame_pool: Arc<Mutex<Vec<FrameDesc>>>, // SegQueue
-    packet_processor: Option<Arc<PacketProcessor>>,
+    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    tracker: Option<Arc<Mutex<FlowTracker>>>,
 }
 
 impl XskPair {
     pub fn new(
-        config: Config,
+        config: NetworkConfig,
         queue_id: u32,
         rx_ifname: &str,
-        tx_ifname: &str,
+        _tx_ifname: &str,
         direction: Direction,
-        packet_processor: Option<Arc<PacketProcessor>>,
+        tracker: Option<Arc<Mutex<FlowTracker>>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
 
@@ -145,12 +148,13 @@ impl XskPair {
         let socket_config = SocketConfig::builder()
             .tx_queue_size(tx_queue_size)
             .rx_queue_size(rx_queue_size)
-            .bind_flags(BindFlags::XDP_ZEROCOPY)
+            .bind_flags(BindFlags::XDP_COPY)
             .libxdp_flags(LibxdpFlags::XSK_LIBXDP_FLAGS_INHIBIT_PROG_LOAD)
             .build();
 
         let interface = Interface::new(rx_ifname_c);
 
+        // SAFETY: Interface and umem are valid and outlive the socket
         let (tx, rx, queue) =
             unsafe { Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)? };
 
@@ -161,9 +165,10 @@ impl XskPair {
 
         let fill_frames: Vec<FrameDesc> = frame_descs.iter().take(fill_frames_count).copied().collect();
 
+        // SAFETY: Frame descriptors are valid and owned by this UMEM
         let submitted = unsafe { fill_queue.produce(&fill_frames) };
         if submitted != fill_frames.len() {
-            log!(EbpfLog::QueueInitIncomplete);
+            return Err(EbpfError::FillQueueInitFailed.into());
         }
 
         let pool_frames: Vec<FrameDesc> = frame_descs.iter().skip(fill_frames_count).copied().collect();
@@ -176,7 +181,7 @@ impl XskPair {
             tx,
             rx,
             frame_pool: Arc::new(Mutex::new(pool_frames)),
-            packet_processor,
+            tracker,
         };
 
         Ok(xsk_pair)
@@ -198,6 +203,9 @@ impl XskPair {
                 let mut idle_count: u32 = 0;
 
                 loop {
+                    // Non-blocking shutdown check: try_recv avoids blocking the hot loop.
+                    // The idle backoff below (sleep_us) ensures we don't busy-spin when idle,
+                    // which also bounds how quickly we detect shutdown to at most 100us.
                     if let Some(ref mut rx) = shutdown_rx {
                         match rx.try_recv() {
                             Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
@@ -266,6 +274,7 @@ impl XskPair {
 
     fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut rx_descs = vec![FrameDesc::default(); 64];
+        // SAFETY: rx_descs buffer is large enough for consume
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
         if rx_count > 0 {
@@ -273,11 +282,17 @@ impl XskPair {
                 let lengths = rx_desc.lengths();
                 let packet_len = lengths.data() as usize;
 
+                // SAFETY: rx_desc is valid and belongs to this UMEM
                 let data = unsafe { self.umem.data(rx_desc) };
-                let packet_data = data.contents()[..packet_len].to_vec();
+                let contents = data.contents();
+                if packet_len > contents.len() {
+                    log!(EbpfLog::InvalidPacketLength);
+                    continue;
+                }
+                let packet_data = contents[..packet_len].to_vec();
 
-                if let Some(ref processor) = self.packet_processor {
-                    processor.process(&packet_data, self.direction == Direction::Ingress);
+                if let Some(ref tracker) = self.tracker {
+                    Engine::process_packet(tracker, &packet_data, self.direction == Direction::Ingress);
                 }
 
                 if let Err(e) = forward_tx.try_send(packet_data) {
@@ -316,7 +331,9 @@ impl XskPair {
             return Ok(0);
         }
 
-        let _ = self.process_comp_queue();
+        if let Err(e) = self.process_comp_queue() {
+            log!(EbpfLog::CompQueueError(format!("{:?}", e)));
+        }
 
         let pool_size = {
             let pool = self.frame_pool.lock();
@@ -355,6 +372,7 @@ impl XskPair {
             }
         }
 
+        // SAFETY: Frames contain valid packet data written above
         let nb_submitted = unsafe { self.tx.produce(&frames) };
 
         if let Err(e) = self.tx.wakeup() {

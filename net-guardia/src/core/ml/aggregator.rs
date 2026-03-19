@@ -45,7 +45,4 @@ impl AttackAggregator {
         });
     }
 
-    pub fn tracked_flows(&self) -> usize {
-        self.detections.len()
-    }
 }

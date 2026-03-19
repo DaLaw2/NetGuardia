@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use macros::log;
 use tract_onnx::prelude::*;
@@ -40,7 +40,7 @@ impl Inference {
 
         let cls_input = self.build_classifier_input(&ae_features, ae_score);
 
-        let (attack_type, confidence) = match self.run_classifier(&cls_input) {
+        let (attack_type, confidence) = match self.run_classifier(cls_input) {
             Ok(result) => result,
             Err(e) => {
                 log!(MLLog::InferenceFailed("LightGBM".to_string(), e.to_string()));
@@ -52,9 +52,9 @@ impl Inference {
 
         let flow_key = format!(
             "{}:{} -> {}:{} (proto {}) [{}]",
-            flow.flow_key.src_ip,
+            flow.flow_key.src_ip_string(),
             flow.flow_key.src_port,
-            flow.flow_key.dst_ip,
+            flow.flow_key.dst_ip_string(),
             flow.flow_key.dst_port,
             flow.flow_key.protocol,
             flow.direction
@@ -77,6 +77,7 @@ impl Inference {
         features.winsorize(&self.config.ae_clip_params, &self.config.ae_feature_names);
         features.normalize(&self.config.ae_scaler_mean, &self.config.ae_scaler_std);
         features.clip(self.config.ae_post_clip_min, self.config.ae_post_clip_max);
+        // Note: f64->f32 precision loss is acceptable for ML inference
         features.features.iter().map(|&x| x as f32).collect()
     }
 
@@ -97,24 +98,24 @@ impl Inference {
     }
 
     fn run_autoencoder(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<f32> {
+        let input_tensor = input.clone().into_tensor();
         let result = self
             .models
             .deep_autoencoder
-            .run(tvec![input.clone().into_tensor().into()])?;
+            .run(tvec![input_tensor.into()])?;
 
         let output = result[0]
             .to_array_view::<f32>()?
             .into_dimensionality::<tract_ndarray::Ix2>()?;
 
         let diff = input - &output;
-        let mse = (&diff * &diff).sum() / self.config.ae_feature_names.len() as f32;
+        let mse = (&diff * &diff).sum() / output.len() as f32;
 
         Ok(mse)
     }
 
-    fn run_classifier(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<(String, f32)> {
-        let input_tensor = input.clone().into_tensor();
-        let result = self.models.classifier.run(tvec![input_tensor.into()])?;
+    fn run_classifier(&self, input: tract_ndarray::Array2<f32>) -> TractResult<(String, f32)> {
+        let result = self.models.classifier.run(tvec![input.into_tensor().into()])?;
 
         let output = result[0].to_array_view::<f32>()?;
 

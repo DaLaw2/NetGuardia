@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ListType {
-    #[serde(rename = "white_list")]
+    #[serde(rename = "whitelist")]
     White,
-    #[serde(rename = "black_list")]
+    #[serde(rename = "blacklist")]
     Black,
 }

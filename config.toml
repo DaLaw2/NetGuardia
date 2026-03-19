@@ -1,26 +1,34 @@
-[Config]
-ingress_ifname = "enp4s0f1"  # Ingress NIC Name
-egress_ifname = "enp4s0f0"   # Egress NIC Name
-geoip_db_name = "GeoLite2-City.mmdb"
+[Http]
+http_server_bind_port = 8080
+
+[Network]
+ingress_ifname = "ng-ext"
+egress_ifname = "ng-int"
+combined_queue_count = 16
+channel_size = 4096
+fill_queue_size = 4096
+comp_queue_size = 4096
+tx_queue_size = 4096
+rx_queue_size = 4096
+frame_size = 4096
+frame_count = 4096
+refresh_interval = 5
+
+[Inference]
 deep_autoencoder_name = "deep_autoencoder.onnx"
 classifier_name = "classifier.onnx"
 models_config_name = "inference_config.json"
-combined_queue_count = 8     # NIC Combined Queue Count (ethtool -l <NIC>)
-channel_size = 4096
-fill_queue_size = 4096       # Umem Used (Should not modify)
-comp_queue_size = 4096       # Umem Used (Should not modify)
-tx_queue_size = 4096         # Umem Used (Should not modify)
-rx_queue_size = 4096         # Umem Used (Should not modify)
-frame_size = 4096            # Umem Used (Should not modify)
-frame_count = 4096           # Umem Used (Should not modify)
-http_server_bind_port = 8080 # Http Server Listen Port
-refresh_interval = 5         # Statistics Refresh Time
-
-max_concurrent_flows =  10000       # max_flows: track up to 10000 concurrent flows
-min_packets_for_inference = 5     # min_packets: minimum 10 packets per flow for inference
-inference_interval_secs = 5         # interval_secs: run inference every 5 seconds
+max_concurrent_flows = 10000
+min_packets_for_inference = 5
+inference_interval_secs = 5
 aggregator_window_secs = 30
 inference_batch_size = 200
+traffic_logging_mode = true
+traffic_log_csv_path = "traffic_log.csv"
 
-traffic_logging_mode = true        # When true, disables ML inference and records all ingress/egress packets to CSV
-traffic_log_csv_path = "traffic_log.csv"  # Output CSV file path for traffic logging mode
+[Misc]
+geoip_db_name = "GeoLite2-City.mmdb"
+
+[Pipeline]
+ingress = ["access_control", "rate_limit", "service"]
+egress = []

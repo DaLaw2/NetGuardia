@@ -37,10 +37,9 @@ impl TrafficLogger {
     }
 
     pub fn log_row(&self, record: Vec<String>) {
-        match self.sender.try_send(record) {
-            Ok(_) => {}
-            Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => {}
+        if let Err(TrySendError::Disconnected(_)) = self.sender.try_send(record) {
+            eprintln!("[traffic-logger] channel disconnected");
         }
+        // Full is ok - just drop the record
     }
 }
