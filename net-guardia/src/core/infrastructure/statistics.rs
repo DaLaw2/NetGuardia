@@ -1,19 +1,17 @@
 use std::sync::Arc;
-
-use tokio::sync::broadcast;
+use std::time;
 
 use crate::core::ml::engine::Engine;
-use crate::model::flow_stats::{FlowStatsEntry, StatsSummary};
+use crate::model::direction::Direction;
+use crate::model::flow_stats::{FlowStatsEntry, FlowSubscription, StatsSummary};
 
 pub struct FlowStatistics {
     engine: Arc<Engine>,
-    broadcast_tx: broadcast::Sender<Vec<FlowStatsEntry>>,
 }
 
 impl FlowStatistics {
     pub fn new(engine: Arc<Engine>) -> Self {
-        let (broadcast_tx, _) = broadcast::channel(16);
-        Self { engine, broadcast_tx }
+        Self { engine }
     }
 
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
@@ -25,14 +23,45 @@ impl FlowStatistics {
         entries
     }
 
-    pub fn get_top_flows(&self, n: usize) -> Vec<FlowStatsEntry> {
-        let n = n.min(10000);
+    pub fn get_filtered_flows(&self, sub: &FlowSubscription) -> Vec<FlowStatsEntry> {
+        let now_us = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+
         let mut flows = self.get_all_flows();
+
+        // Filter by direction
+        if let Some(dir) = &sub.direction {
+            flows.retain(|f| &f.direction == dir);
+        }
+
+        // Filter by time window
+        if let Some(window_secs) = sub.window_secs {
+            let cutoff = now_us.saturating_sub(window_secs * 1_000_000);
+            flows.retain(|f| f.last_seen_us >= cutoff);
+        }
+
+        // Sort by total bytes descending
         flows.sort_by(|a, b| {
             (b.fwd_bytes + b.bwd_bytes).cmp(&(a.fwd_bytes + a.bwd_bytes))
         });
-        flows.truncate(n);
+
+        // Limit
+        if let Some(n) = sub.top_n {
+            flows.truncate(n.min(10000));
+        }
+
         flows
+    }
+
+    pub fn get_top_flows(&self, n: usize) -> Vec<FlowStatsEntry> {
+        self.get_filtered_flows(&FlowSubscription {
+            direction: None,
+            window_secs: None,
+            top_n: Some(n),
+            interval_secs: None,
+        })
     }
 
     pub fn get_summary(&self) -> StatsSummary {
@@ -44,17 +73,6 @@ impl FlowStatistics {
             total_flows,
             total_bytes,
             total_packets,
-        }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<Vec<FlowStatsEntry>> {
-        self.broadcast_tx.subscribe()
-    }
-
-    pub fn broadcast(&self) {
-        if self.broadcast_tx.receiver_count() > 0 {
-            let flows = self.get_all_flows();
-            let _ = self.broadcast_tx.send(flows);
         }
     }
 }
