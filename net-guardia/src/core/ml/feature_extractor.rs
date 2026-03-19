@@ -27,7 +27,6 @@ impl FlowFeatures {
     fn get_feature_by_name(flow: &FlowData, feature_name: &str) -> f64 {
         let safe_div = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
 
-        // 1-5
         let fwd_count = flow.fwd_packets.len() as f64;
         let bwd_count = flow.bwd_packets.len() as f64;
         let total_count = fwd_count + bwd_count;
@@ -36,64 +35,51 @@ impl FlowFeatures {
         let duration_s = duration_us / 1_000_000.0;
         let duration_s = if duration_s > 0.0 { duration_s } else { 1e-6 };
 
-        // 6-9
-        let fwd_lengths: Vec<f64> = flow.fwd_packets.iter().map(|p| p.length as f64).collect();
+        let fwd_lengths: Vec<f64> = flow.fwd_packets.iter().map(|p| p.payload_length as f64).collect();
         let (fwd_max, fwd_min, fwd_mean, fwd_std) = compute_stats(&fwd_lengths);
 
-        // 10-13
-        let bwd_lengths: Vec<f64> = flow.bwd_packets.iter().map(|p| p.length as f64).collect();
+        let bwd_lengths: Vec<f64> = flow.bwd_packets.iter().map(|p| p.payload_length as f64).collect();
         let (bwd_max, bwd_min, bwd_mean, bwd_std) = compute_stats(&bwd_lengths);
 
-        // 14-15
         let total_bytes = (flow.fwd_total_bytes + flow.bwd_total_bytes) as f64;
 
-        // 16-19
         let flow_iats = compute_flow_iats(&flow.fwd_packets, &flow.bwd_packets);
         let (flow_iat_max, flow_iat_min, flow_iat_mean, flow_iat_std) = compute_stats(&flow_iats);
 
-        // 20-24
         let fwd_iats = compute_iats(&flow.fwd_packets);
         let fwd_iat_total: f64 = fwd_iats.iter().sum();
         let (fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = compute_stats(&fwd_iats);
 
-        // 25-29
         let bwd_iats = compute_iats(&flow.bwd_packets);
         let bwd_iat_total: f64 = bwd_iats.iter().sum();
         let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = compute_stats(&bwd_iats);
 
-        // 30-37
         let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
         let bwd_psh = flow.bwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
         let fwd_urg = flow.fwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
         let bwd_urg = flow.bwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
 
-        // 38-55
         let all_lengths: Vec<f64> = flow
             .fwd_packets
             .iter()
             .chain(flow.bwd_packets.iter())
-            .map(|p| p.length as f64)
+            .map(|p| p.payload_length as f64)
             .collect();
 
         let (max_len, min_len, mean_len, std_len) = compute_stats(&all_lengths);
 
-        // 56-67
         let fwd_bulk = &flow.fwd_bulk_state;
         let bwd_bulk = &flow.bwd_bulk_state;
 
-        // 68-69
-        let fwd_seg_sizes: Vec<f64> = flow
+        let fwd_header_sizes: Vec<f64> = flow
             .fwd_packets
             .iter()
-            .filter(|p| p.payload_length > 0)
-            .map(|p| p.payload_length as f64)
+            .map(|p| p.header_length as f64)
             .collect();
 
-        // 70-73
         let (active_max, active_min, active_mean, active_std) =
             compute_stats(&flow.active_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
-        // 74-77
         let (idle_max, idle_min, idle_mean, idle_std) =
             compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
@@ -173,8 +159,8 @@ impl FlowFeatures {
             "Subflow Bwd Bytes" => flow.bwd_total_bytes as f64,
             "Init_Win_bytes_forward" | "Init Fwd Win Byts" | "fwd_win_bytes" => flow.init_win_bytes_fwd as f64,
             "Init_Win_bytes_backward" | "Init Bwd Win Byts" | "bwd_win_bytes" => flow.init_win_bytes_bwd as f64,
-            "act_data_pkt_fwd" | "Fwd Act Data Pkts" | "fwd_act_data_pkts" => fwd_seg_sizes.len() as f64,
-            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => fwd_seg_sizes
+            "act_data_pkt_fwd" | "Fwd Act Data Pkts" | "fwd_act_data_pkts" => flow.act_data_pkt_fwd as f64,
+            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => fwd_header_sizes
                 .iter()
                 .min_by(|a, b| a.total_cmp(b))
                 .copied()
@@ -325,7 +311,11 @@ fn compute_stats(values: &[f64]) -> (f64, f64, f64, f64) {
     let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
 
-    let variance: f64 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
+    let variance: f64 = if n > 1.0 {
+        values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)
+    } else {
+        0.0
+    };
     let std = variance.sqrt();
 
     (max, min, mean, std)

@@ -100,9 +100,6 @@ impl Engine {
     }
 
     fn run_inference_tick(&self) {
-        // Collect flows from all per-thread trackers.
-        // Each lock is held only for the duration of get_flows_for_inference (~microseconds).
-        // XSK threads are barely impacted since they process on different trackers.
         let mut all_flows = Vec::new();
         let mut total_count = 0;
 

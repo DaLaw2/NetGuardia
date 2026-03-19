@@ -34,6 +34,8 @@ pub struct FlowData {
     pub last_packet_time: u64,
     pub fwd_bulk_state: BulkState,
     pub bwd_bulk_state: BulkState,
+    pub act_data_pkt_fwd: u32,
+    is_first_packet: bool,
 }
 
 impl FlowData {
@@ -64,6 +66,8 @@ impl FlowData {
             last_packet_time: first_packet.timestamp_us,
             fwd_bulk_state: BulkState::default(),
             bwd_bulk_state: BulkState::default(),
+            act_data_pkt_fwd: 0,
+            is_first_packet: true,
         }
     }
 
@@ -100,11 +104,17 @@ impl FlowData {
         self.last_packet_time = packet.timestamp_us;
         self.last_time_us = packet.timestamp_us;
 
+        if self.is_first_packet {
+            self.is_first_packet = false;
+        } else if packet.is_forward && packet.payload_length > 0 {
+            self.act_data_pkt_fwd += 1;
+        }
+
         if packet.is_forward {
             if self.fwd_packets.len() < MAX_PACKETS_PER_DIRECTION {
                 self.fwd_packets.push(packet_data.clone());
             }
-            self.fwd_total_bytes += packet.packet_length as u64;
+            self.fwd_total_bytes += packet.payload_length as u64;
             self.fwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_fwd == 0 { self.init_win_bytes_fwd = packet.tcp_window_size; }
             Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
@@ -112,9 +122,9 @@ impl FlowData {
             if self.bwd_packets.len() < MAX_PACKETS_PER_DIRECTION {
                 self.bwd_packets.push(packet_data.clone());
             }
-            self.bwd_total_bytes += packet.packet_length as u64;
+            self.bwd_total_bytes += packet.payload_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
-            if self.init_win_bytes_bwd == 0 { self.init_win_bytes_bwd = packet.tcp_window_size; }
+            self.init_win_bytes_bwd = packet.tcp_window_size;
             Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data);
         }
     }

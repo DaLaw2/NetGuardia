@@ -125,8 +125,8 @@ impl System {
         let egress_ifname = self.app_config.network.egress_ifname.clone();
         Self::set_memory_limit()?;
 
-        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;   // already loaded in configure_ingress_pipeline
-        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;   // load now
+        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;
+        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;
         Ok(())
     }
 
@@ -209,7 +209,6 @@ impl System {
     ) -> Result<ProgramArray<MapData>, Error> {
         let registry = stage_registry();
 
-        // Load entry point program BEFORE taking maps — verifier needs map fds at load time
         let entry: &mut Xdp = ebpf
             .program_mut("net_guardia")
             .ok_or(EbpfError::ProgramNotFound)?
@@ -217,41 +216,35 @@ impl System {
             .map_err(EbpfError::GetProgramFailed)?;
         entry.load().map_err(EbpfError::LoadProgramFailed)?;
 
-        // Take maps
         let pa_map = ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(pa_map).map_err(EbpfError::MapOperationError)?;
 
         let ns_map = ebpf.take_map("NEXT_STAGE").ok_or(EbpfError::MapNotFound)?;
         let mut next_stage = Array::<MapData, u32>::try_from(ns_map).map_err(EbpfError::MapOperationError)?;
 
-        // Load transmission (always present at STAGE_TRANSMISSION)
         Self::load_program(ebpf, &mut program_array, "transmission", STAGE_TRANSMISSION)?;
 
         if stages.is_empty() {
-            // Empty pipeline: entry → transmission
             next_stage
                 .set(STAGE_ENTRY as u32, STAGE_TRANSMISSION, 0)
                 .map_err(EbpfError::MapOperationError)?;
             return Ok(program_array);
         }
 
-        // Load each stage and assign a slot (starting from slot 1)
-        let mut slots: Vec<(u32, u32)> = Vec::new(); // (stage_id, slot_index)
+        let mut slots: Vec<(u32, u32)> = Vec::new();
         for (i, stage_name) in stages.iter().enumerate() {
             let (func_name, stage_id) = registry
                 .get(stage_name.as_str())
                 .ok_or(EbpfError::ProgramNotFound)?;
-            let slot = (i + 1) as u32; // slots 1, 2, 3, ...
+            let slot = (i + 1) as u32;
             Self::load_program(ebpf, &mut program_array, func_name, slot)?;
             slots.push((*stage_id, slot));
         }
 
-        // Wire NEXT_STAGE: entry → first slot
         next_stage
             .set(STAGE_ENTRY as u32, slots[0].1, 0)
             .map_err(EbpfError::MapOperationError)?;
 
-        // Wire each stage to the next
         for i in 0..slots.len() {
             let (stage_id, _) = slots[i];
             let next_slot = if i + 1 < slots.len() {

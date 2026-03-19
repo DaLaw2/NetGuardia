@@ -3,12 +3,10 @@ use std::time::Duration;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::Message;
 use futures_util::StreamExt;
-use macros::log;
 use tokio::time::interval;
 
 use crate::core::infrastructure::statistics::FlowStatistics;
 use crate::model::flow_stats::FlowSubscription;
-use crate::model::log::http::HttpLog;
 
 /// Default subscription: all flows, no filter, 5 second interval
 fn default_subscription() -> FlowSubscription {
@@ -46,7 +44,6 @@ pub async fn flow_stats_ws(
                 msg = msg_stream.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            // Client sends subscription query as JSON
                             match serde_json::from_str::<FlowSubscription>(&text) {
                                 Ok(new_sub) => {
                                     let new_interval = new_sub.interval_secs.unwrap_or(5).max(1);
@@ -54,7 +51,6 @@ pub async fn flow_stats_ws(
                                     subscription.interval_secs = Some(new_interval);
                                     ticker = interval(Duration::from_secs(new_interval));
 
-                                    // Send immediate response with new filter
                                     let flows = stats.get_filtered_flows(&subscription);
                                     if let Ok(json) = serde_json::to_string(&flows) {
                                         if session.text(json).await.is_err() {

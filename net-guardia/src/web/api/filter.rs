@@ -56,8 +56,6 @@ fn ssh_blacklist_scope() -> Scope {
         .route("/ipv6", web::delete().to(remove_ipv6_ssh_black_list))
 }
 
-// --- HTTP service handlers ---
-
 async fn get_ipv4_http_service(service: web::Data<ProtocolFilter>) -> impl Responder {
     let list = service.get_ipv4_http_service().await;
     HttpResponse::Ok().json(list)
@@ -112,8 +110,6 @@ async fn remove_ipv6_http_service(
     }
 }
 
-// --- SSH service handlers ---
-
 async fn get_ipv4_ssh_service(service: web::Data<ProtocolFilter>) -> impl Responder {
     let list = service.get_ipv4_ssh_service().await;
     HttpResponse::Ok().json(list)
@@ -163,8 +159,6 @@ async fn remove_ipv6_ssh_service(
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
-
-// --- SSH whitelist handlers ---
 
 async fn is_ssh_white_list_enable(service: web::Data<ProtocolFilter>) -> impl Responder {
     let enabled = service.is_ssh_white_list_enable().await;
@@ -234,8 +228,6 @@ async fn remove_ipv6_ssh_white_list(
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
-
-// --- SSH blacklist handlers ---
 
 async fn get_ipv4_ssh_black_list(service: web::Data<ProtocolFilter>) -> impl Responder {
     let list = service.get_ipv4_ssh_black_list().await;

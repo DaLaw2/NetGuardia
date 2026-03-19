@@ -52,7 +52,6 @@ pub struct MemoryUsage {
 pub struct ConfiguredNetworkStats {
     pub ingress: Option<NetworkStats>,
     pub egress: Option<NetworkStats>,
-    // pub management: Option<NetworkStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]

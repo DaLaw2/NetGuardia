@@ -3,6 +3,9 @@ use std::io::{BufWriter, Write};
 use std::thread;
 
 use crossbeam::channel::{bounded, Sender, TrySendError};
+use macros::log;
+
+use crate::model::log::ml::MLLog;
 
 pub struct TrafficLogger {
     sender: Sender<Vec<String>>,
@@ -27,7 +30,7 @@ impl TrafficLogger {
             .spawn(move || {
                 for record in receiver {
                     if let Err(e) = writeln!(writer, "{}", record.join(",")) {
-                        eprintln!("[traffic-logger] write error: {}", e);
+                        log!(MLLog::TrafficLogWriteError(e.to_string()));
                     }
                 }
                 let _ = writer.flush();
@@ -38,8 +41,7 @@ impl TrafficLogger {
 
     pub fn log_row(&self, record: Vec<String>) {
         if let Err(TrySendError::Disconnected(_)) = self.sender.try_send(record) {
-            eprintln!("[traffic-logger] channel disconnected");
+            log!(MLLog::TrafficLogChannelDisconnected);
         }
-        // Full is ok - just drop the record
     }
 }

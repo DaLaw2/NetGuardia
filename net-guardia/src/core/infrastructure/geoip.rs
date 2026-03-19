@@ -10,7 +10,6 @@ use tokio::task;
 
 use crate::utils::ip_address;
 
-// TODO: Wire into statistics endpoint when GeoIP enrichment is enabled
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct GeoLocation {

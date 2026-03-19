@@ -10,7 +10,7 @@ traceable! {
         #[error("Invalid configuration")]
         InvalidConfig => tracing::Level::ERROR,
 
-        #[error("Configuration not found")]
+        #[error("Configuration file not found")]
         ConfigNotFound => tracing::Level::ERROR,
 
         #[error("Failed to terminate instance")]
@@ -20,14 +20,10 @@ traceable! {
         #[error("Failed to send shutdown signal")]
         ShutdownSignalFailed => tracing::Level::ERROR,
 
-        #[error("Unexcepted thread panic")]
+        #[error("Unexpected thread panic")]
         ThreadPanic => tracing::Level::ERROR,
 
-        #[error("Unexcepted error")]
-        UnexpectError => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Unknown error")]
-        UnknownError => tracing::Level::ERROR,
+        #[error("Unexpected error")]
+        UnexpectedError => tracing::Level::ERROR,
     }
 }

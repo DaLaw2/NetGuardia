@@ -1,4 +1,3 @@
-// net-guardia/src/core/ebpf/health.rs
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,9 +28,7 @@ pub struct SystemHealth {
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     ingress_interface: String,
     egress_interface: String,
-    // management_interface: String,
 }
-
 
 impl SystemHealth {
     pub fn new(config: Arc<AppConfig>) -> Result<Self, Error> {
@@ -44,7 +41,6 @@ impl SystemHealth {
             broadcast_tx,
             ingress_interface: config.network.ingress_ifname.clone(),
             egress_interface: config.network.egress_ifname.clone(),
-            // management_interface: config.management_ifindex.clone(),
         };
 
         Ok(health)
@@ -88,7 +84,6 @@ impl SystemHealth {
             &components,
             &self.ingress_interface,
             &self.egress_interface,
-            // &self.management_interface,
         );
 
         drop(system);
@@ -108,7 +103,6 @@ impl SystemHealth {
         components: &Components,
         ingress_interface: &str,
         egress_interface: &str,
-        // management_interface: &str,
     ) -> SystemHealthMetrics {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -134,7 +128,6 @@ impl SystemHealth {
             networks,
             ingress_interface,
             egress_interface,
-            // management_interface,
         );
 
         let load_average = System::load_average();
@@ -218,7 +211,6 @@ impl SystemHealth {
         networks: &Networks,
         ingress_interface: &str,
         egress_interface: &str,
-        // management_interface: &str,
     ) -> ConfiguredNetworkStats {
         let create_network_stats = |interface_name: &str| -> Option<NetworkStats> {
             networks.get(interface_name).map(|network| NetworkStats {
@@ -234,7 +226,6 @@ impl SystemHealth {
 
         let ingress = create_network_stats(ingress_interface);
         let egress = create_network_stats(egress_interface);
-        // let management = create_network_stats(management_interface);
 
         if ingress.is_none() {
             log!(Health::InterfaceNotFound("Ingress".to_string(), ingress_interface.to_string()));
@@ -242,20 +233,13 @@ impl SystemHealth {
         if egress.is_none() {
             log!(Health::InterfaceNotFound("Egress".to_string(), egress_interface.to_string()));
         }
-        // if management.is_none() {
-        //     warn!("Management interface '{}' not found", management_interface);
-        // }
-
         ConfiguredNetworkStats {
             ingress,
             egress,
-            // management,
         }
     }
 
     pub async fn get_current_metrics(&self) -> SystemHealthMetrics {
-        // Read last cached metrics from background task, don't refresh here
-        // to avoid racing with the background refresh_and_broadcast task
         let system = self.system.read().await;
         let networks = self.networks.read().await;
         let components = self.components.read().await;
@@ -266,7 +250,6 @@ impl SystemHealth {
             &components,
             &self.ingress_interface,
             &self.egress_interface,
-            // &self.management_interface,
         )
     }
 
@@ -328,11 +311,6 @@ impl SystemHealth {
             status.overall_healthy = false;
             status.issues.push("Egress interface not available".to_string());
         }
-        // if metrics.network_stats.management.is_none() {
-        //     status
-        //         .warnings
-        //         .push("Management interface not available".to_string());
-        // }
 
         status
     }

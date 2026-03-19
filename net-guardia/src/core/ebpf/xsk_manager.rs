@@ -126,7 +126,7 @@ impl XskPair {
         direction: Direction,
         tracker: Option<Arc<Mutex<FlowTracker>>>,
     ) -> Result<Self, Error> {
-        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::UnknownError)?;
+        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfig)?;
 
         let fill_queue_size = QueueSize::new(config.fill_queue_size).map_err(|_| SystemError::InvalidConfig)?;
         let comp_queue_size = QueueSize::new(config.comp_queue_size).map_err(|_| SystemError::InvalidConfig)?;
@@ -154,7 +154,6 @@ impl XskPair {
 
         let interface = Interface::new(rx_ifname_c);
 
-        // SAFETY: Interface and umem are valid and outlive the socket
         let (tx, rx, queue) =
             unsafe { Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)? };
 
@@ -165,7 +164,6 @@ impl XskPair {
 
         let fill_frames: Vec<FrameDesc> = frame_descs.iter().take(fill_frames_count).copied().collect();
 
-        // SAFETY: Frame descriptors are valid and owned by this UMEM
         let submitted = unsafe { fill_queue.produce(&fill_frames) };
         if submitted != fill_frames.len() {
             return Err(EbpfError::FillQueueInitFailed.into());
@@ -203,9 +201,6 @@ impl XskPair {
                 let mut idle_count: u32 = 0;
 
                 loop {
-                    // Non-blocking shutdown check: try_recv avoids blocking the hot loop.
-                    // The idle backoff below (sleep_us) ensures we don't busy-spin when idle,
-                    // which also bounds how quickly we detect shutdown to at most 100us.
                     if let Some(ref mut rx) = shutdown_rx {
                         match rx.try_recv() {
                             Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
@@ -274,7 +269,6 @@ impl XskPair {
 
     fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<usize, EbpfError> {
         let mut rx_descs = vec![FrameDesc::default(); 64];
-        // SAFETY: rx_descs buffer is large enough for consume
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
         if rx_count > 0 {
@@ -282,7 +276,6 @@ impl XskPair {
                 let lengths = rx_desc.lengths();
                 let packet_len = lengths.data() as usize;
 
-                // SAFETY: rx_desc is valid and belongs to this UMEM
                 let data = unsafe { self.umem.data(rx_desc) };
                 let contents = data.contents();
                 if packet_len > contents.len() {
@@ -372,7 +365,6 @@ impl XskPair {
             }
         }
 
-        // SAFETY: Frames contain valid packet data written above
         let nb_submitted = unsafe { self.tx.produce(&frames) };
 
         if let Err(e) = self.tx.wakeup() {

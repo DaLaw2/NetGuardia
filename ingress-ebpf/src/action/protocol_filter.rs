@@ -60,7 +60,6 @@ fn http_service_violation<K>(
             if pkt.tcp_flags & (TCP_PSH | TCP_ACK) != (TCP_PSH | TCP_ACK) {
                 return false;
             }
-            // Bounds check before reading IHL — verifier needs to see this
             if start + 15 > end {
                 return false;
             }

@@ -28,7 +28,7 @@ impl MLModels {
             Ok(model.into_optimized()?.into_runnable()?)
         };
 
-        load().map_err(|_| MLError::ModelLoadFailed { path: model_path })
+        load().map_err(|_| MLError::ModelLoadFailed(model_path))
     }
 
     pub fn get_model_info(&self, name: &str) -> String {
