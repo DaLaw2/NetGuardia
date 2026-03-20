@@ -32,15 +32,12 @@ pub struct NetworkConfig {
     pub frame_size: u32,
     pub frame_count: u32,
     pub refresh_interval: u64,
-    #[serde(default = "default_mtu")]
-    pub mtu: usize,
     #[serde(default = "default_packet_buffer_size")]
     pub packet_buffer_size: usize,
     #[serde(default = "default_buffer_pool_capacity")]
     pub buffer_pool_capacity: usize,
 }
 
-fn default_mtu() -> usize { 1500 }
 fn default_packet_buffer_size() -> usize { 2048 }
 fn default_buffer_pool_capacity() -> usize { 1024 }
 

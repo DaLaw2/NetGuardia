@@ -12,14 +12,15 @@ use common::ebpf::symmetric_hash::symmetric_queue_id;
 use common::model::parsed_packet::ParsedPacket;
 
 #[map]
-static EGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
-#[map]
 static NUM_QUEUES: Array<u32> = Array::with_max_entries(1, 0);
+
+#[map]
+static EGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
     let queue_id = unsafe {
-        compute_queue_id(&ctx).unwrap_or((*ctx.ctx).rx_queue_index)
+        compute_symmetric_queue_id(&ctx).unwrap_or((*ctx.ctx).rx_queue_index)
     };
     match EGRESS_XSKS_MAP.redirect(queue_id, 0) {
         Ok(action) => action,
@@ -28,7 +29,7 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 }
 
 #[inline(always)]
-unsafe fn compute_queue_id(ctx: &XdpContext) -> Option<u32> {
+unsafe fn compute_symmetric_queue_id(ctx: &XdpContext) -> Option<u32> {
     let mut pkt = core::mem::zeroed::<ParsedPacket>();
     parsing::parse_packet(ctx.data(), ctx.data_end(), &mut pkt).ok()?;
     let num_q = *NUM_QUEUES.get(0)?;

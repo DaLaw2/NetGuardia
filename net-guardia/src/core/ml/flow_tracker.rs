@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::time;
-
 use common::define::tcp_flags::*;
 
 use crate::model::direction::Direction;
@@ -177,16 +175,24 @@ impl FlowData {
 /// Per-thread flow tracker. No locks — each XSK thread owns one.
 /// RSS guarantees the same flow always goes to the same thread.
 pub struct FlowTracker {
-    flows: HashMap<FlowKey, FlowData>,
+    active: HashMap<FlowKey, FlowData>,
     max_flows: usize,
 }
 
 impl FlowTracker {
     pub fn new(max_flows: usize) -> Self {
         Self {
-            flows: HashMap::new(),
+            active: HashMap::new(),
             max_flows,
         }
+    }
+
+    /// Swap active flows with an empty map and return the old one.
+    /// This is O(1) — the caller filters outside the lock.
+    pub fn take_snapshot(&mut self) -> HashMap<FlowKey, FlowData> {
+        let mut snapshot = HashMap::with_capacity(self.active.capacity());
+        std::mem::swap(&mut self.active, &mut snapshot);
+        snapshot
     }
 
     pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
@@ -194,9 +200,9 @@ impl FlowTracker {
         let reversed_key = packet_key.clone().reverse();
 
         // Try to match an existing flow first (canonical key already established).
-        let (actual_key, is_forward) = if self.flows.contains_key(&packet_key) {
+        let (actual_key, is_forward) = if self.active.contains_key(&packet_key) {
             (packet_key, true)
-        } else if self.flows.contains_key(&reversed_key) {
+        } else if self.active.contains_key(&reversed_key) {
             (reversed_key, false)
         } else {
             // New flow: determine initiator using TCP flags, fall back to is_ingress.
@@ -227,61 +233,29 @@ impl FlowTracker {
             if is_ingress { Direction::Egress } else { Direction::Ingress }
         };
 
-        let flow = self.flows
+        let flow = self.active
             .entry(actual_key.clone())
             .or_insert_with(|| FlowData::new(actual_key, &packet, initiator_direction));
 
         flow.add_packet(&packet);
 
-        if self.flows.len() > self.max_flows {
-            if let Some(oldest_key) = self.flows.iter()
+        if self.active.len() > self.max_flows {
+            if let Some(oldest_key) = self.active.iter()
                 .min_by_key(|(_, flow)| flow.last_time_us)
                 .map(|(k, _)| k.clone())
             {
-                self.flows.remove(&oldest_key);
+                self.active.remove(&oldest_key);
             }
         }
     }
 
     /// Get a snapshot without draining.
     pub fn get_flows(&self) -> Vec<FlowData> {
-        self.flows.values().cloned().collect()
-    }
-
-    pub fn get_flows_for_inference(&self, min_packets: usize) -> Vec<FlowData> {
-        self.flows
-            .values()
-            .filter(|flow| flow.packet_count() >= min_packets)
-            .cloned()
-            .collect()
-    }
-
-    /// Drain flows that have accumulated enough packets for logging.
-    /// Flows below `min_packets` are kept so they can accumulate more data.
-    pub fn drain_flows_for_logging(&mut self, min_packets: usize) -> Vec<FlowData> {
-        let mut result = Vec::new();
-        self.flows.retain(|_, flow| {
-            if flow.packet_count() >= min_packets {
-                result.push(flow.clone());
-                false
-            } else {
-                true
-            }
-        });
-        result
-    }
-
-    pub fn cleanup_old_flows(&mut self, max_age_us: u64) {
-        let now = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .map(|d| d.as_micros() as u64)
-            .unwrap_or(0);
-
-        self.flows.retain(|_, flow| now.saturating_sub(flow.last_time_us) < max_age_us);
+        self.active.values().cloned().collect()
     }
 
     pub fn flow_count(&self) -> usize {
-        self.flows.len()
+        self.active.len()
     }
 }
 

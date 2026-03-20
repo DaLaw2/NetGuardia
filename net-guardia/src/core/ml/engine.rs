@@ -97,25 +97,22 @@ impl Engine {
     }
 
     fn run_inference_tick(&self) {
-        let mut all_flows = Vec::new();
+        let mut all_snapshots = Vec::new();
         let mut total_count = 0;
 
-        if self.traffic_logger.is_some() {
-            // Logging mode: drain flows that have enough packets so each flow is logged once.
-            // Flows below min_packets stay in the tracker to accumulate more data.
-            for tracker in &self.trackers {
-                let mut t = tracker.lock();
-                total_count += t.flow_count();
-                all_flows.extend(t.drain_flows_for_logging(self.min_packets));
-            }
-        } else {
-            // Inference mode: snapshot current state, clean up afterwards.
-            for tracker in &self.trackers {
-                let t = tracker.lock();
-                total_count += t.flow_count();
-                all_flows.extend(t.get_flows_for_inference(self.min_packets));
-            }
+        // Phase 1: O(1) lock per tracker — just swap
+        for tracker in &self.trackers {
+            let mut t = tracker.lock();
+            total_count += t.flow_count();
+            all_snapshots.push(t.take_snapshot());
+            // lock released here
         }
+
+        // Phase 2: filter outside all locks — O(flows) but non-blocking
+        let all_flows: Vec<FlowData> = all_snapshots.into_iter()
+            .flat_map(|map| map.into_values())
+            .filter(|flow| flow.packet_count() >= self.min_packets)
+            .collect();
 
         log!(MLLog::FlowStats(
             total_count,
@@ -125,11 +122,6 @@ impl Engine {
         ));
 
         if all_flows.is_empty() {
-            if self.traffic_logger.is_none() {
-                for tracker in &self.trackers {
-                    tracker.lock().cleanup_old_flows(self.flow_timeout_us);
-                }
-            }
             return;
         }
 
@@ -137,9 +129,6 @@ impl Engine {
             self.log_traffic(&all_flows, logger);
         } else {
             self.run_inference(&all_flows);
-            for tracker in &self.trackers {
-                tracker.lock().cleanup_old_flows(self.flow_timeout_us);
-            }
         }
     }
 

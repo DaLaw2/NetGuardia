@@ -158,6 +158,7 @@ impl System {
         let health = self.app_services.health.clone();
         let ml_alert = self.app_services.ml_alert.clone();
         let flow_statistics = self.app_services.flow_statistics.clone();
+        let drop_monitor = self.ebpf_services.drop_monitor.clone();
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -176,6 +177,7 @@ impl System {
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
                 .app_data(web::Data::from(flow_statistics.clone()))
+                .app_data(web::Data::from(drop_monitor.clone()))
                 .service(
                     web::scope("/api")
                         .service(acl::initialize())

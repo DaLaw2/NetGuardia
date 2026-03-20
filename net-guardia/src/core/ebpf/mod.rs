@@ -1,4 +1,5 @@
 pub mod access_control;
+pub mod drop_monitor;
 pub mod rate_limit;
 pub mod protocol_filter;
 pub mod xsk_manager;
@@ -6,16 +7,20 @@ pub mod xsk_manager;
 use std::sync::Arc;
 
 use aya::Ebpf;
+use aya::maps::{MapData, RingBuf};
 use crossbeam::queue::SegQueue;
 use macros::log;
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use crate::core::ebpf::access_control::AccessControl;
+use crate::core::ebpf::drop_monitor::DropMonitor;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::ebpf::xsk_manager::XskManager;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
+use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
 
@@ -24,6 +29,8 @@ pub struct EbpfServices {
     pub access_control: Arc<AccessControl>,
     pub protocol_filter: Arc<ProtocolFilter>,
     pub rate_limit: Arc<RateLimitConfig>,
+    pub drop_monitor: Arc<DropMonitor>,
+    drop_ring_buf: Mutex<Option<RingBuf<MapData>>>,
     pub shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
@@ -33,11 +40,18 @@ impl EbpfServices {
         let access_control = AccessControl::new(ingress_ebpf)?;
         let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
         let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
+        let drop_monitor = Arc::new(DropMonitor::new());
+        let drop_ring_buf = {
+            let map = ingress_ebpf.take_map("DROP_EVENTS").ok_or(EbpfError::MapNotFound)?;
+            RingBuf::try_from(map).map_err(EbpfError::MapOperationError)?
+        };
         Ok(Self {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
             protocol_filter: Arc::new(protocol_filter),
             rate_limit: Arc::new(rate_limit),
+            drop_monitor,
+            drop_ring_buf: Mutex::new(Some(drop_ring_buf)),
             shutdowns: SegQueue::new(),
         })
     }
@@ -45,6 +59,12 @@ impl EbpfServices {
     pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
         xsk_manager.run(Some(ml_engine), &self.shutdowns)?;
+
+        if let Some(ring_buf) = self.drop_ring_buf.lock().take() {
+            let shutdown = drop_monitor::start_consumer(ring_buf, self.drop_monitor.clone()).await;
+            self.shutdowns.push(shutdown);
+        }
+
         Ok(())
     }
 

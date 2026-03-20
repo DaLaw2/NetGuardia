@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::{Deserialize, Serialize};
+use common::define::setting::*;
 
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 
@@ -20,11 +21,11 @@ pub fn initialize() -> Scope {
 
 async fn get_config() -> impl Responder {
     HttpResponse::Ok().json(RateLimitSettings {
-        packet_rate: Some(common::model::rate_limit::DEFAULT_PACKET_RATE),
-        syn_rate: Some(common::model::rate_limit::DEFAULT_SYN_RATE),
-        udp_rate: Some(common::model::rate_limit::DEFAULT_UDP_RATE),
-        dns_rate: Some(common::model::rate_limit::DEFAULT_DNS_RATE),
-        window_ns: Some(common::model::rate_limit::DEFAULT_WINDOW_NS),
+        packet_rate: Some(DEFAULT_PACKET_RATE),
+        syn_rate: Some(DEFAULT_SYN_RATE),
+        udp_rate: Some(DEFAULT_UDP_RATE),
+        dns_rate: Some(DEFAULT_DNS_RATE),
+        window_ns: Some(DEFAULT_WINDOW_NS),
     })
 }
 

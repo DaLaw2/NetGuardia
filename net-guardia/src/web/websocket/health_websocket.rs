@@ -46,7 +46,7 @@ async fn handle_health_connection(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        log!(HttpLog::WebSocketLaged(skipped));
+                        log!(HttpLog::WebSocketLagged(skipped));
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
