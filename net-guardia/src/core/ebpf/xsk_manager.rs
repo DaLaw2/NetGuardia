@@ -25,6 +25,36 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
+use crate::utils::packet_parser::parse_packet;
+
+/// Pre-allocated buffer pool to avoid per-packet malloc.
+struct BufferPool {
+    buffers: Vec<Vec<u8>>,
+    buffer_size: usize,
+    max_capacity: usize,
+}
+
+impl BufferPool {
+    fn new(capacity: usize, buffer_size: usize) -> Self {
+        let buffers = (0..capacity)
+            .map(|_| Vec::with_capacity(buffer_size))
+            .collect();
+        Self { buffers, buffer_size, max_capacity: capacity * 2 }
+    }
+
+    fn get(&mut self) -> Vec<u8> {
+        self.buffers
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.buffer_size))
+    }
+
+    fn put(&mut self, mut buf: Vec<u8>) {
+        buf.clear();
+        if self.buffers.len() < self.max_capacity {
+            self.buffers.push(buf);
+        }
+    }
+}
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
@@ -113,8 +143,10 @@ pub struct XskPair {
     comp_queue: CompQueue,
     tx: TxQueue,
     rx: RxQueue,
-    frame_pool: Arc<Mutex<Vec<FrameDesc>>>,
+    frame_pool: Vec<FrameDesc>,
     tracker: Option<Arc<Mutex<FlowTracker>>>,
+    packet_buffer_size: usize,
+    buffer_pool_capacity: usize,
 }
 
 impl XskPair {
@@ -178,8 +210,10 @@ impl XskPair {
             comp_queue,
             tx,
             rx,
-            frame_pool: Arc::new(Mutex::new(pool_frames)),
+            frame_pool: pool_frames,
             tracker,
+            packet_buffer_size: config.packet_buffer_size,
+            buffer_pool_capacity: config.buffer_pool_capacity,
         };
 
         Ok(xsk_pair)
@@ -199,6 +233,7 @@ impl XskPair {
             .spawn(move || {
                 let mut shutdown_rx = Some(shutdown_rx);
                 let mut idle_count: u32 = 0;
+                let mut buffer_pool = BufferPool::new(self.buffer_pool_capacity, self.packet_buffer_size);
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -217,12 +252,12 @@ impl XskPair {
                         Err(e) => log!(EbpfLog::CompQueueError(format!("{:?}", e))),
                     }
 
-                    match self.process_rx_queue(&forward_tx) {
+                    match self.process_rx_queue(&forward_tx, &mut buffer_pool) {
                         Ok(count) => total_activity += count,
                         Err(e) => log!(EbpfLog::RXQueueError(format!("{:?}", e))),
                     }
 
-                    match self.process_tx_queue(&forward_rx) {
+                    match self.process_tx_queue(&forward_rx, &mut buffer_pool) {
                         Ok(count) => total_activity += count,
                         Err(e) => log!(EbpfLog::TXQueueError(format!("{:?}", e))),
                     }
@@ -257,21 +292,21 @@ impl XskPair {
         let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
 
         if nb_completed > 0 {
-            let mut pool = self.frame_pool.lock();
-
             for desc in comp_descs.iter().take(nb_completed) {
-                pool.push(*desc);
+                self.frame_pool.push(*desc);
             }
         }
 
         Ok(nb_completed)
     }
 
-    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>) -> Result<usize, EbpfError> {
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>, buffer_pool: &mut BufferPool) -> Result<usize, EbpfError> {
         let mut rx_descs = vec![FrameDesc::default(); 64];
         let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
 
         if rx_count > 0 {
+            let is_ingress = self.direction == Direction::Ingress;
+
             for rx_desc in rx_descs.iter().take(rx_count) {
                 let lengths = rx_desc.lengths();
                 let packet_len = lengths.data() as usize;
@@ -282,18 +317,28 @@ impl XskPair {
                     log!(EbpfLog::InvalidPacketLength);
                     continue;
                 }
-                let packet_data = contents[..packet_len].to_vec();
 
+                let raw = &contents[..packet_len];
+
+                // Parse directly from UMEM (zero-copy for ML path).
+                // Only clone for the forwarding path afterwards.
                 if let Some(ref tracker) = self.tracker {
-                    Engine::process_packet(tracker, &packet_data, self.direction == Direction::Ingress);
+                    if let Some((packet_info, _)) = parse_packet(raw) {
+                        tracker.lock().process_packet(packet_info, is_ingress);
+                    }
                 }
 
-                if let Err(e) = forward_tx.try_send(packet_data) {
+                // Clone into pooled buffer for forwarding
+                let mut buf = buffer_pool.get();
+                buf.extend_from_slice(raw);
+                if let Err(e) = forward_tx.try_send(buf) {
                     match e {
-                        crossbeam::channel::TrySendError::Full(_) => {
+                        crossbeam::channel::TrySendError::Full(returned) => {
+                            buffer_pool.put(returned);
                             log!(EbpfLog::ForwardChannelFull);
                         }
-                        crossbeam::channel::TrySendError::Disconnected(_) => {
+                        crossbeam::channel::TrySendError::Disconnected(returned) => {
+                            buffer_pool.put(returned);
                             log!(EbpfLog::ForwardChannelDisconnected);
                         }
                     }
@@ -311,7 +356,7 @@ impl XskPair {
         Ok(rx_count)
     }
 
-    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>) -> Result<usize, EbpfError> {
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>, buffer_pool: &mut BufferPool) -> Result<usize, EbpfError> {
         let mut packets_to_send = Vec::with_capacity(64);
         while let Ok(packet) = forward_rx.try_recv() {
             packets_to_send.push(packet);
@@ -328,33 +373,28 @@ impl XskPair {
             log!(EbpfLog::CompQueueError(format!("{:?}", e)));
         }
 
-        let pool_size = {
-            let pool = self.frame_pool.lock();
-            pool.len()
-        };
+        let total_packets = packets_to_send.len();
 
-        if pool_size == 0 {
-            log!(EbpfLog::FramePoolExhausted(packets_to_send.len()));
+        if self.frame_pool.is_empty() {
+            for pkt in packets_to_send {
+                buffer_pool.put(pkt);
+            }
+            log!(EbpfLog::FramePoolExhausted(total_packets));
             return Ok(0);
         }
 
-        let mut frames = Vec::with_capacity(packets_to_send.len());
-        {
-            let mut pool = self.frame_pool.lock();
-            let available = pool.len().min(packets_to_send.len());
-
-            for _ in 0..available {
-                if let Some(frame) = pool.pop() {
-                    frames.push(frame);
-                }
-            }
-        }
+        let available = self.frame_pool.len().min(total_packets);
+        let mut frames: Vec<FrameDesc> = self.frame_pool.drain(self.frame_pool.len() - available..).collect();
 
         if frames.is_empty() {
+            for pkt in packets_to_send {
+                buffer_pool.put(pkt);
+            }
             log!(EbpfLog::NoFramesAvailable);
             return Ok(0);
         }
 
+        let sent_count = frames.len();
         for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
             unsafe {
                 self.umem
@@ -371,6 +411,17 @@ impl XskPair {
             if e.kind() != std::io::ErrorKind::WouldBlock {
                 log!(EbpfLog::TXWakeupFailed(e.to_string()));
             }
+        }
+
+        // Log dropped packets when frames < packets
+        let dropped = total_packets - sent_count;
+        if dropped > 0 {
+            log!(EbpfLog::FramePoolExhausted(dropped));
+        }
+
+        // Return all buffers to pool
+        for pkt in packets_to_send {
+            buffer_pool.put(pkt);
         }
 
         Ok(nb_submitted)

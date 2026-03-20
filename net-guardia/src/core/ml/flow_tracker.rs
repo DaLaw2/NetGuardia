@@ -243,11 +243,6 @@ impl FlowTracker {
         }
     }
 
-    /// Take all flows out, leaving this tracker empty. Lock-free.
-    pub fn drain_flows(&mut self) -> Vec<FlowData> {
-        self.flows.drain().map(|(_, v)| v).collect()
-    }
-
     /// Get a snapshot without draining.
     pub fn get_flows(&self) -> Vec<FlowData> {
         self.flows.values().cloned().collect()

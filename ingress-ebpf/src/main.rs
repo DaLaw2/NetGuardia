@@ -5,6 +5,7 @@ mod action;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{Array, PerCpuArray, ProgramArray, XskMap};
+use common::ebpf::symmetric_hash::symmetric_queue_id;
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
@@ -22,6 +23,8 @@ static NEXT_STAGE: Array<u32> = Array::with_max_entries(MAX_STAGES, 0);
 static PARSED_PACKET: PerCpuArray<ParsedPacket> = PerCpuArray::with_max_entries(1, 0);
 #[map]
 static INGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
+#[map]
+static NUM_QUEUES: Array<u32> = Array::with_max_entries(1, 0);
 
 #[inline(always)]
 unsafe fn chain_next(ctx: &XdpContext, current_id: u32) {
@@ -162,11 +165,20 @@ unsafe fn try_service(ctx: &XdpContext) -> Result<u32, ()> {
 
 #[xdp]
 pub fn transmission(ctx: XdpContext) -> u32 {
-    let queue_id = unsafe { (*ctx.ctx).rx_queue_index };
+    let queue_id = unsafe {
+        compute_symmetric_queue_id().unwrap_or((*ctx.ctx).rx_queue_index)
+    };
     match INGRESS_XSKS_MAP.redirect(queue_id, 0) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,
     }
+}
+
+#[inline(always)]
+unsafe fn compute_symmetric_queue_id() -> Option<u32> {
+    let pkt = &*PARSED_PACKET.get_ptr(0)?;
+    let num_q = *NUM_QUEUES.get(0)?;
+    symmetric_queue_id(pkt, num_q)
 }
 
 #[cfg(not(test))]

@@ -17,15 +17,13 @@ use super::traffic_logger::TrafficLogger;
 use super::alert::MLAlert;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{EngineConfig, InferenceStats};
-use crate::utils::packet_parser::parse_packet;
 
-/// Single shared tracker for all queues. All ingress/egress XSK threads see the
-/// same flow table, so both directions of a flow always find the same canonical key
-/// regardless of which RSS queue they land on.
-pub type SharedTracker = Arc<Mutex<FlowTracker>>;
+/// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
+/// land on the same queue, so per-queue trackers correctly see bidirectional flows.
+pub type ThreadTracker = Arc<Mutex<FlowTracker>>;
 
 pub struct Engine {
-    tracker: SharedTracker,
+    trackers: Vec<ThreadTracker>,
     inference_pipeline: Arc<Inference>,
     aggregator: Mutex<AttackAggregator>,
     ml_alert: Arc<MLAlert>,
@@ -43,17 +41,20 @@ impl Engine {
         ml_alert: Arc<MLAlert>,
         engine_config: EngineConfig,
         traffic_logger: Option<Arc<TrafficLogger>>,
-        _num_threads: u32,
+        num_threads: u32,
     ) -> Self {
         let inference_pipeline = Arc::new(Inference::new(models, config));
 
         let min_detections = ((engine_config.aggregator_window_secs / engine_config.inference_interval_secs) / 2).max(1) as usize;
         let aggregator = Mutex::new(AttackAggregator::new(engine_config.aggregator_window_secs, min_detections));
 
-        let tracker = Arc::new(Mutex::new(FlowTracker::new(engine_config.max_flows)));
+        let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
+        let trackers: Vec<ThreadTracker> = (0..num_threads)
+            .map(|_| Arc::new(Mutex::new(FlowTracker::new(max_flows_per_thread))))
+            .collect();
 
         Self {
-            tracker,
+            trackers,
             inference_pipeline,
             aggregator,
             ml_alert,
@@ -65,13 +66,13 @@ impl Engine {
         }
     }
 
-    /// xsk_manager calls this per queue_id; all queues share the same tracker.
-    pub fn tracker(&self, _queue_id: u32) -> &SharedTracker {
-        &self.tracker
+    /// xsk_manager calls this per queue_id; with symmetric hash each queue has its own tracker.
+    pub fn tracker(&self, queue_id: u32) -> &ThreadTracker {
+        &self.trackers[queue_id as usize % self.trackers.len()]
     }
 
-    pub fn shared_tracker(&self) -> &SharedTracker {
-        &self.tracker
+    pub fn trackers(&self) -> &[ThreadTracker] {
+        &self.trackers
     }
 
     pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
@@ -96,32 +97,38 @@ impl Engine {
     }
 
     fn run_inference_tick(&self) {
-        let all_flows;
-        let total_count;
+        let mut all_flows = Vec::new();
+        let mut total_count = 0;
 
         if self.traffic_logger.is_some() {
             // Logging mode: drain flows that have enough packets so each flow is logged once.
             // Flows below min_packets stay in the tracker to accumulate more data.
-            let mut t = self.tracker.lock();
-            total_count = t.flow_count();
-            all_flows = t.drain_flows_for_logging(self.min_packets);
+            for tracker in &self.trackers {
+                let mut t = tracker.lock();
+                total_count += t.flow_count();
+                all_flows.extend(t.drain_flows_for_logging(self.min_packets));
+            }
         } else {
             // Inference mode: snapshot current state, clean up afterwards.
-            let t = self.tracker.lock();
-            total_count = t.flow_count();
-            all_flows = t.get_flows_for_inference(self.min_packets);
+            for tracker in &self.trackers {
+                let t = tracker.lock();
+                total_count += t.flow_count();
+                all_flows.extend(t.get_flows_for_inference(self.min_packets));
+            }
         }
 
         log!(MLLog::FlowStats(
             total_count,
             all_flows.len(),
             self.min_packets,
-            "shared tracker".to_string()
+            format!("{} trackers", self.trackers.len())
         ));
 
         if all_flows.is_empty() {
             if self.traffic_logger.is_none() {
-                self.tracker.lock().cleanup_old_flows(self.flow_timeout_us);
+                for tracker in &self.trackers {
+                    tracker.lock().cleanup_old_flows(self.flow_timeout_us);
+                }
             }
             return;
         }
@@ -130,7 +137,9 @@ impl Engine {
             self.log_traffic(&all_flows, logger);
         } else {
             self.run_inference(&all_flows);
-            self.tracker.lock().cleanup_old_flows(self.flow_timeout_us);
+            for tracker in &self.trackers {
+                tracker.lock().cleanup_old_flows(self.flow_timeout_us);
+            }
         }
     }
 
@@ -190,13 +199,4 @@ impl Engine {
         }
     }
 
-    /// Called by XSK threads. Lock is per-thread, uncontended on hot path.
-    pub fn process_packet(tracker: &Mutex<FlowTracker>, packet_data: &[u8], is_ingress: bool) {
-        match parse_packet(packet_data) {
-            Some((packet_info, _)) => {
-                tracker.lock().process_packet(packet_info, is_ingress);
-            }
-            None => log!(MLLog::ParsePacketFailed(packet_data.len())),
-        }
-    }
 }

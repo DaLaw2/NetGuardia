@@ -7,6 +7,7 @@ edition = "2024"
 common = { path = "../common", features = ["kernel"] }
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
+network-types = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

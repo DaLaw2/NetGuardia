@@ -56,6 +56,11 @@ impl System {
 
         let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
+        // Write queue count to eBPF maps for symmetric hash redirect
+        let num_queues = app_config.network.combined_queue_count;
+        Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
+        Self::write_num_queues(&mut egress_ebpf, num_queues)?;
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
@@ -288,6 +293,13 @@ impl System {
         if ret != 0 {
             Err(MiscError::RamLimitUnlockError(ret))?
         }
+        Ok(())
+    }
+
+    fn write_num_queues(ebpf: &mut Ebpf, num_queues: u32) -> Result<(), Error> {
+        let map = ebpf.map_mut("NUM_QUEUES").ok_or(EbpfError::MapNotFound)?;
+        let mut arr = Array::<_, u32>::try_from(map).map_err(EbpfError::MapOperationError)?;
+        arr.set(0, num_queues, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }

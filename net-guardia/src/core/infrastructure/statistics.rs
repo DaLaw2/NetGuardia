@@ -1,34 +1,25 @@
 use std::sync::Arc;
 use std::time;
 
-use tokio::sync::broadcast;
-
 use crate::core::ml::engine::Engine;
 use crate::model::flow_stats::{FlowStatsEntry, FlowSubscription, StatsSummary};
 
 pub struct FlowStatistics {
     engine: Arc<Engine>,
-    tx: broadcast::Sender<Vec<FlowStatsEntry>>,
 }
 
 impl FlowStatistics {
     pub fn new(engine: Arc<Engine>) -> Self {
-        let (tx, _) = broadcast::channel(16);
-        Self { engine, tx }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<Vec<FlowStatsEntry>> {
-        self.tx.subscribe()
-    }
-
-    pub fn broadcast(&self) {
-        let flows = self.get_all_flows();
-        let _ = self.tx.send(flows);
+        Self { engine }
     }
 
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
-        let t = self.engine.shared_tracker().lock();
-        t.get_flows().iter().map(FlowStatsEntry::from).collect()
+        let mut entries = Vec::new();
+        for tracker in self.engine.trackers() {
+            let t = tracker.lock();
+            entries.extend(t.get_flows().iter().map(FlowStatsEntry::from));
+        }
+        entries
     }
 
     pub fn get_filtered_flows(&self, sub: &FlowSubscription) -> Vec<FlowStatsEntry> {

@@ -34,7 +34,7 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut ParsedPacket)
     let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
         IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
         IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
-        _ => return Err(()),
+        _ => (0, 0, 0, 0),
     };
 
     let t = &mut *target;
@@ -64,7 +64,7 @@ unsafe fn parse_ipv6_packet(start: usize, end: usize, target: *mut ParsedPacket)
     let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv6.next_hdr {
         IpProto::Tcp => parse_tcp(start, end, IPV6_TCP_HEADER_START, IPV6_TCP_HEADER_END)?,
         IpProto::Udp => parse_udp(start, end, IPV6_UDP_HEADER_START, IPV6_UDP_HEADER_END)?,
-        _ => return Err(()),
+        _ => (0, 0, 0, 0),
     };
 
     let t = &mut *target;
