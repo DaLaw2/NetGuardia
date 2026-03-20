@@ -37,22 +37,7 @@ fn parse_ipv4(packet_data: &[u8], timestamp_us: u64) -> Option<(UserPacket, usiz
     let total_len = u16::from_be_bytes([ip_header[2], ip_header[3]]) as u32;
 
     if protocol_byte != 6 && protocol_byte != 17 {
-        let packet = UserPacket {
-            ip_version: 4,
-            protocol: protocol_byte,
-            tcp_flags: 0,
-            src_ip: format_ipv4(src_ip_raw),
-            dst_ip: format_ipv4(dst_ip_raw),
-            src_port: 0,
-            dst_port: 0,
-            packet_length: total_len,
-            payload_length: 0,
-            header_length: 0,
-            tcp_window_size: 0,
-            timestamp_us,
-            is_forward: false,
-        };
-        return Some((packet, 14 + ihl));
+        return None;
     }
 
     if packet_data.len() < 14 + ihl + 4 {
@@ -122,22 +107,7 @@ fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<(UserPacket, usiz
     let total_len = payload_len + 40;
 
     if protocol_byte != 6 && protocol_byte != 17 {
-        let packet = UserPacket {
-            ip_version: 6,
-            protocol: protocol_byte,
-            tcp_flags: 0,
-            src_ip: format_ipv6(src_ip_raw),
-            dst_ip: format_ipv6(dst_ip_raw),
-            src_port: 0,
-            dst_port: 0,
-            packet_length: total_len,
-            payload_length: 0,
-            header_length: 0,
-            tcp_window_size: 0,
-            timestamp_us,
-            is_forward: false,
-        };
-        return Some((packet, 14 + 40));
+        return None;
     }
 
     if packet_data.len() < 54 + 4 {

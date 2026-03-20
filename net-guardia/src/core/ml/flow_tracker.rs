@@ -124,7 +124,7 @@ impl FlowData {
             }
             self.bwd_total_bytes += packet.payload_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
-            self.init_win_bytes_bwd = packet.tcp_window_size;
+            if self.init_win_bytes_bwd == 0 { self.init_win_bytes_bwd = packet.tcp_window_size; }
             Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data);
         }
     }
@@ -189,36 +189,43 @@ impl FlowTracker {
         }
     }
 
-    pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool, payload: &[u8]) {
-        let direction = if is_ingress { Direction::Ingress } else { Direction::Egress };
+    pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
-        let proto = packet_key.protocol;
-        let src_port = packet_key.src_port;
-        let dst_port = packet_key.dst_port;
         let reversed_key = packet_key.clone().reverse();
 
+        // Try to match an existing flow first (canonical key already established).
         let (actual_key, is_forward) = if self.flows.contains_key(&packet_key) {
             (packet_key, true)
         } else if self.flows.contains_key(&reversed_key) {
             (reversed_key, false)
         } else {
-            let has_syn = packet.tcp_flags & TCP_SYN != 0;
-            let has_ack = packet.tcp_flags & TCP_ACK != 0;
-            if has_syn && has_ack {
+            // New flow: determine initiator using TCP flags, fall back to is_ingress.
+            let syn = packet.tcp_flags & TCP_SYN != 0;
+            let ack = packet.tcp_flags & TCP_ACK != 0;
+            if syn && ack {
+                // SYN+ACK: sender is the responder.
+                //   Ingress: external server responding to internal client → reverse so
+                //            canonical key has internal client as src.
+                //   Egress:  internal server responding to external client → keep as-is.
                 if is_ingress { (reversed_key, false) } else { (packet_key, true) }
-            } else if has_syn {
+            } else if syn {
+                // SYN: sender is always the initiator.
                 (packet_key, true)
             } else {
-                match detect_initiator(payload, proto, src_port, dst_port) {
-                    Some(true) => (packet_key, true),
-                    Some(false) => (reversed_key, false),
-                    None => (packet_key, true),
-                }
+                // Mid-stream / UDP / ICMP: use is_ingress as best-effort heuristic.
+                // Egress = we are the initiator (forward); ingress = remote initiated (backward).
+                if is_ingress { (reversed_key, false) } else { (packet_key, true) }
             }
         };
 
         packet.is_forward = is_forward;
-        let initiator_direction = if is_forward { direction } else { direction.flip() };
+
+        // Record which interface the initiator is on for this flow.
+        let initiator_direction = if is_forward {
+            if is_ingress { Direction::Ingress } else { Direction::Egress }
+        } else {
+            if is_ingress { Direction::Egress } else { Direction::Ingress }
+        };
 
         let flow = self.flows
             .entry(actual_key.clone())
@@ -254,6 +261,21 @@ impl FlowTracker {
             .collect()
     }
 
+    /// Drain flows that have accumulated enough packets for logging.
+    /// Flows below `min_packets` are kept so they can accumulate more data.
+    pub fn drain_flows_for_logging(&mut self, min_packets: usize) -> Vec<FlowData> {
+        let mut result = Vec::new();
+        self.flows.retain(|_, flow| {
+            if flow.packet_count() >= min_packets {
+                result.push(flow.clone());
+                false
+            } else {
+                true
+            }
+        });
+        result
+    }
+
     pub fn cleanup_old_flows(&mut self, max_age_us: u64) {
         let now = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
@@ -268,36 +290,3 @@ impl FlowTracker {
     }
 }
 
-fn detect_initiator(payload: &[u8], protocol: u8, src_port: u16, dst_port: u16) -> Option<bool> {
-    if payload.is_empty() { return None; }
-
-    if payload.len() >= 6 && payload[0] == 0x16 {
-        return match payload[5] {
-            0x01 => Some(true),
-            0x02 => Some(false),
-            _ => None,
-        };
-    }
-
-    if payload.len() >= 5 {
-        if payload.starts_with(b"GET ")
-            || payload.starts_with(b"POST ")
-            || payload.starts_with(b"PUT ")
-            || payload.starts_with(b"HEAD ")
-            || payload.starts_with(b"DELETE ")
-            || payload.starts_with(b"OPTIONS ")
-            || payload.starts_with(b"PATCH ")
-        {
-            return Some(true);
-        }
-        if payload.starts_with(b"HTTP/") {
-            return Some(false);
-        }
-    }
-
-    if protocol == 17 && (src_port == 53 || dst_port == 53) && payload.len() >= 3 {
-        return Some((payload[2] >> 7) == 0);
-    }
-
-    None
-}
