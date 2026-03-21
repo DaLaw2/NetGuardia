@@ -107,7 +107,7 @@ fn ipv4_should_drop(pkt: &ParsedPacket) -> Option<u8> {
         }
     }
 
-    if pkt.dst_port == 53 {
+    if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
         if check_rate(&IPV4_DNS_RATE_MAP, &src_ip, now, window, get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE)) {
             return Some(DROP_REASON_RATE_LIMIT_DNS);
         }
@@ -138,7 +138,7 @@ fn ipv6_should_drop(pkt: &ParsedPacket) -> Option<u8> {
         }
     }
 
-    if pkt.dst_port == 53 {
+    if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
         if check_rate(&IPV6_DNS_RATE_MAP, &src_ip, now, window, get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE)) {
             return Some(DROP_REASON_RATE_LIMIT_DNS);
         }

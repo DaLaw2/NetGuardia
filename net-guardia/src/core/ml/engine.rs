@@ -75,6 +75,14 @@ impl Engine {
         &self.trackers
     }
 
+    pub fn inference_interval_secs(&self) -> u64 {
+        self.inference_interval_secs
+    }
+
+    pub fn has_traffic_logger(&self) -> bool {
+        self.traffic_logger.is_some()
+    }
+
     pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {

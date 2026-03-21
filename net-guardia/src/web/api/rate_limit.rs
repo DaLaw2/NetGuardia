@@ -19,13 +19,15 @@ pub fn initialize() -> Scope {
         .route("/config", web::put().to(set_config))
 }
 
-async fn get_config() -> impl Responder {
+async fn get_config(
+    config: web::Data<RateLimitConfig>,
+) -> impl Responder {
     HttpResponse::Ok().json(RateLimitSettings {
-        packet_rate: Some(DEFAULT_PACKET_RATE),
-        syn_rate: Some(DEFAULT_SYN_RATE),
-        udp_rate: Some(DEFAULT_UDP_RATE),
-        dns_rate: Some(DEFAULT_DNS_RATE),
-        window_ns: Some(DEFAULT_WINDOW_NS),
+        packet_rate: Some(config.get_packet_rate().unwrap_or(DEFAULT_PACKET_RATE)),
+        syn_rate: Some(config.get_syn_rate().unwrap_or(DEFAULT_SYN_RATE)),
+        udp_rate: Some(config.get_udp_rate().unwrap_or(DEFAULT_UDP_RATE)),
+        dns_rate: Some(config.get_dns_rate().unwrap_or(DEFAULT_DNS_RATE)),
+        window_ns: Some(config.get_window_ns().unwrap_or(DEFAULT_WINDOW_NS)),
     })
 }
 

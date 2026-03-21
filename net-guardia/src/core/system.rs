@@ -159,6 +159,7 @@ impl System {
         let rate_limit = self.ebpf_services.rate_limit.clone();
         let health = self.app_services.health.clone();
         let ml_alert = self.app_services.ml_alert.clone();
+        let ml_engine = self.app_services.ml_engine.clone();
         let flow_statistics = self.app_services.flow_statistics.clone();
         let drop_monitor = self.ebpf_services.drop_monitor.clone();
         let port = self.app_config.http.http_server_bind_port;
@@ -180,6 +181,7 @@ impl System {
                 .app_data(web::Data::from(rate_limit.clone()))
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
+                .app_data(web::Data::from(ml_engine.clone()))
                 .app_data(web::Data::from(flow_statistics.clone()))
                 .app_data(web::Data::from(drop_monitor.clone()))
                 .service(
