@@ -45,8 +45,8 @@ impl EbpfServices {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
-        let dns_filter = DnsFilter::new(ingress_ebpf)?;
-        let geo_block = GeoBlock::new(ingress_ebpf)?;
+        let dns_filter = DnsFilter::new();
+        let geo_block = GeoBlock::new(ingress_ebpf, &app_config)?;
         let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
         let drop_monitor = Arc::new(DropMonitor::new());
         let drop_ring_buf = {
@@ -68,7 +68,7 @@ impl EbpfServices {
 
     pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
-        xsk_manager.run(Some(ml_engine), &self.shutdowns)?;
+        xsk_manager.run(Some(ml_engine), Some(self.dns_filter.clone()), &self.shutdowns)?;
 
         if let Some(ring_buf) = self.drop_ring_buf.lock().take() {
             let shutdown = drop_monitor::start_consumer(ring_buf, self.drop_monitor.clone()).await;

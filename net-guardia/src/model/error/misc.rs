@@ -19,8 +19,9 @@ traceable! {
         #[error("Network interface '{interface}' not found")]
         NetworkInterfaceNotFound { interface: String } => tracing::Level::ERROR,
 
-        #[error("Invalid GeoIP configuration")]
-        InvalidGeoIPConfiguration => tracing::Level::ERROR,
+        #[no_source]
+        #[error("Failed to open GeoIP database '{path}': {reason}")]
+        GeoIPDatabaseError { path: String, reason: String } => tracing::Level::ERROR,
 
         #[no_source]
         #[error("Failed to create traffic log file '{path}': {reason}")]

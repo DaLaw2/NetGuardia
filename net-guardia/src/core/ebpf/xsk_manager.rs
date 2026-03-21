@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
+use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowTracker;
@@ -79,7 +80,7 @@ impl XskManager {
         })
     }
 
-    pub fn run(&self, ml_engine: Option<Arc<Engine>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
+    pub fn run(&self, ml_engine: Option<Arc<Engine>>, dns_filter: Option<Arc<DnsFilter>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
         let network = self.app_config.network.clone();
         let combined_queue_count = network.combined_queue_count;
 
@@ -96,6 +97,7 @@ impl XskManager {
                 &network.egress_ifname,
                 Direction::Ingress,
                 tracker.clone(),
+                dns_filter.clone(),
             )?;
 
             let egress_xsk = XskPair::new(
@@ -105,6 +107,7 @@ impl XskManager {
                 &network.ingress_ifname,
                 Direction::Egress,
                 tracker,
+                None,
             )?;
 
             let mut xsk_map = self.xsk_map.lock();
@@ -145,6 +148,7 @@ pub struct XskPair {
     rx: RxQueue,
     frame_pool: Vec<FrameDesc>,
     tracker: Option<Arc<Mutex<FlowTracker>>>,
+    dns_filter: Option<Arc<DnsFilter>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
 }
@@ -157,6 +161,7 @@ impl XskPair {
         _tx_ifname: &str,
         direction: Direction,
         tracker: Option<Arc<Mutex<FlowTracker>>>,
+        dns_filter: Option<Arc<DnsFilter>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfig)?;
 
@@ -212,6 +217,7 @@ impl XskPair {
             rx,
             frame_pool: pool_frames,
             tracker,
+            dns_filter,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
         };
@@ -319,6 +325,15 @@ impl XskPair {
                 }
 
                 let raw = &contents[..packet_len];
+
+                // DNS blacklist check — drop blacklisted DNS queries before forwarding
+                if let Some(ref dns) = self.dns_filter {
+                    if let Some((dns_name, name_len)) = DnsFilter::parse_query_name(raw) {
+                        if dns.is_blacklisted(&dns_name, name_len) {
+                            continue;
+                        }
+                    }
+                }
 
                 // Parse directly from UMEM (zero-copy for ML path).
                 // Only clone for the forwarding path afterwards.

@@ -29,9 +29,11 @@ fn dns_scope() -> Scope {
         )
 }
 
+const MAX_DNS_DOMAINS_PER_REQUEST: usize = 1000;
+
 async fn get_dns_blacklist(service: web::Data<DnsFilter>) -> impl Responder {
-    let domains = service.list_domains().await;
-    HttpResponse::Ok().json(domains)
+    let domains = service.list_domains();
+    HttpResponse::Ok().json(serde_json::json!({"domains": domains}))
 }
 
 async fn add_dns_blacklist(
@@ -39,13 +41,17 @@ async fn add_dns_blacklist(
     service: web::Data<DnsFilter>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
+    if domains.len() > MAX_DNS_DOMAINS_PER_REQUEST {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": format!("too many domains (max {})", MAX_DNS_DOMAINS_PER_REQUEST)}));
+    }
     for domain in &domains {
-        if let Err(e) = service.add_domain(domain).await {
+        if let Err(e) = service.add_domain(domain) {
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": e.to_string()}));
         }
     }
-    HttpResponse::Ok().finish()
+    HttpResponse::Ok().json(serde_json::json!({"added": domains.len()}))
 }
 
 async fn remove_dns_blacklist(
@@ -54,12 +60,12 @@ async fn remove_dns_blacklist(
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
     for domain in &domains {
-        if let Err(e) = service.remove_domain(domain).await {
+        if let Err(e) = service.remove_domain(domain) {
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": e.to_string()}));
         }
     }
-    HttpResponse::Ok().finish()
+    HttpResponse::Ok().json(serde_json::json!({"removed": domains.len()}))
 }
 
 fn http_scope() -> Scope {

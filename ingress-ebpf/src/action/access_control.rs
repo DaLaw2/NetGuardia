@@ -29,14 +29,15 @@ static GEO_BLOCK_V4: LpmTrie<u32, u8> = LpmTrie::with_max_entries(MAX_GEO_ENTRIE
 static GEO_BLOCK_V6: LpmTrie<u128, u8> = LpmTrie::with_max_entries(MAX_GEO_ENTRIES, 0);
 
 pub fn ipv4_is_geo_blocked(pkt: &ParsedPacket) -> bool {
-    // Use big-endian representation for LPM prefix matching
-    let src_ip = u32::from_be_bytes([pkt.src_ip[0], pkt.src_ip[1], pkt.src_ip[2], pkt.src_ip[3]]);
+    // from_ne_bytes so memory layout = raw packet bytes (network order).
+    // Matches userspace insertion which uses to_bits().to_be() (same memory layout).
+    let src_ip = u32::from_ne_bytes([pkt.src_ip[0], pkt.src_ip[1], pkt.src_ip[2], pkt.src_ip[3]]);
     let key = Key::new(32, src_ip);
     unsafe { GEO_BLOCK_V4.get(&key).is_some() }
 }
 
 pub fn ipv6_is_geo_blocked(pkt: &ParsedPacket) -> bool {
-    let src_ip = u128::from_be_bytes(pkt.src_ip);
+    let src_ip = u128::from_ne_bytes(pkt.src_ip);
     let key = Key::new(128, src_ip);
     unsafe { GEO_BLOCK_V6.get(&key).is_some() }
 }

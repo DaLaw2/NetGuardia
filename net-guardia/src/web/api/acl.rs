@@ -108,18 +108,14 @@ async fn block_geo_countries(
     geo_block: web::Data<GeoBlock>,
 ) -> impl Responder {
     let codes = body.into_inner().country_codes;
-    let mut total_prefixes = 0u64;
-    for code in &codes {
-        match geo_block.block_country(code) {
-            Ok(count) => total_prefixes += count,
-            Err(e) => return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()})),
-        }
+    match geo_block.block_countries(&codes) {
+        Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
+            "blocked_countries": geo_block.get_blocked_countries(),
+            "total_prefixes": total_prefixes,
+        })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})),
     }
-    HttpResponse::Ok().json(serde_json::json!({
-        "blocked_countries": geo_block.get_blocked_countries(),
-        "total_prefixes": total_prefixes,
-    }))
 }
 
 async fn unblock_geo_countries(
@@ -127,16 +123,12 @@ async fn unblock_geo_countries(
     geo_block: web::Data<GeoBlock>,
 ) -> impl Responder {
     let codes = body.into_inner().country_codes;
-    let mut total_prefixes = 0u64;
-    for code in &codes {
-        match geo_block.unblock_country(code) {
-            Ok(count) => total_prefixes += count,
-            Err(e) => return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()})),
-        }
+    match geo_block.unblock_countries(&codes) {
+        Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
+            "blocked_countries": geo_block.get_blocked_countries(),
+            "total_prefixes": total_prefixes,
+        })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})),
     }
-    HttpResponse::Ok().json(serde_json::json!({
-        "blocked_countries": geo_block.get_blocked_countries(),
-        "total_prefixes": total_prefixes,
-    }))
 }
