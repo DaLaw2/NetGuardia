@@ -294,6 +294,31 @@ impl Database {
     }
 }
 
+/// Implement the RepositoryPort trait, proving Database satisfies the port contract.
+/// This enables adapter-level testing with mock implementations.
+impl crate::interface::port::repository::RepositoryPort for Database {
+    fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.insert_acl_rule(ip_version, direction, list_type, ip_address, port) }
+    fn delete_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.delete_acl_rule(ip_version, direction, list_type, ip_address, port) }
+    fn load_acl_rules(&self) -> Result<Vec<(u8, String, String, String, u16)>, Error> { self.load_acl_rules() }
+    fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> { self.set_rate_limit(key, value) }
+    fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> { self.load_rate_limit_config() }
+    fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> { self.insert_dns_domain(domain) }
+    fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> { self.delete_dns_domain(domain) }
+    fn load_dns_domains(&self) -> Result<Vec<String>, Error> { self.load_dns_domains() }
+    fn insert_geo_country(&self, code: &str) -> Result<(), Error> { self.insert_geo_country(code) }
+    fn delete_geo_country(&self, code: &str) -> Result<(), Error> { self.delete_geo_country(code) }
+    fn load_geo_countries(&self) -> Result<Vec<String>, Error> { self.load_geo_countries() }
+    fn get_setting(&self, key: &str) -> Result<Option<String>, Error> { self.get_setting(key) }
+    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> { self.set_setting(key, value) }
+    fn find_user(&self, username: &str) -> Result<Option<(i64, String, String, String, bool)>, Error> { self.find_user(username) }
+    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<(), Error> { self.insert_user(username, password_hash, role, force_password_change) }
+    fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.update_user_password(user_id, password_hash) }
+    fn user_count(&self) -> Result<i64, Error> { self.user_count() }
+    fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> { self.record_login_failure(username) }
+    fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> { self.check_login_locked(username) }
+    fn clear_login_failures(&self, username: &str) -> Result<(), Error> { self.clear_login_failures(username) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +458,27 @@ mod tests {
     fn test_find_nonexistent_user() {
         let db = test_db();
         assert!(db.find_user("nobody").unwrap().is_none());
+    }
+
+    /// Verify that Database satisfies the RepositoryPort trait contract.
+    /// This test ensures the trait impl compiles and can be used via trait object.
+    #[test]
+    fn test_repository_port_trait_object() {
+        use crate::interface::port::repository::RepositoryPort;
+
+        let db = test_db();
+        let repo: &dyn RepositoryPort = &db;
+
+        // Use via trait object — proves the abstraction works
+        repo.set_setting("test_key", "test_value").unwrap();
+        assert_eq!(repo.get_setting("test_key").unwrap(), Some("test_value".to_string()));
+
+        repo.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
+        let rules = repo.load_acl_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+
+        assert_eq!(repo.user_count().unwrap(), 0);
+        repo.insert_user("test", "hash", "viewer", false).unwrap();
+        assert_eq!(repo.user_count().unwrap(), 1);
     }
 }

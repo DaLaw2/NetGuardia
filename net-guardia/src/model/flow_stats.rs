@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::ml::flow_tracker::FlowData;
 use crate::model::direction::Direction;
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,24 +18,8 @@ pub struct FlowStatsEntry {
     pub last_seen_us: u64,
 }
 
-impl From<&FlowData> for FlowStatsEntry {
-    fn from(flow: &FlowData) -> Self {
-        Self {
-            direction: flow.direction,
-            src_ip: flow.flow_key.src_ip_string(),
-            dst_ip: flow.flow_key.dst_ip_string(),
-            src_port: flow.flow_key.src_port,
-            dst_port: flow.flow_key.dst_port,
-            protocol: flow.flow_key.protocol,
-            fwd_packets: flow.fwd_packets.len(),
-            bwd_packets: flow.bwd_packets.len(),
-            fwd_bytes: flow.fwd_total_bytes,
-            bwd_bytes: flow.bwd_total_bytes,
-            duration_us: flow.duration_us(),
-            last_seen_us: flow.last_time_us,
-        }
-    }
-}
+// NOTE: From<&FlowData> impl moved to core/infrastructure/statistics.rs
+// to maintain the dependency rule: model/ must not import core/
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsSummary {

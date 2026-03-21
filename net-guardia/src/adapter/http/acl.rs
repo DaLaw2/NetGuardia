@@ -3,7 +3,9 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
-use crate::core::database::Database;
+use crate::interface::port::repository::RepositoryPort;
+
+type Repo = dyn RepositoryPort;
 use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::geo_block::GeoBlock;
 use crate::model::direction::FlowDirection;
@@ -57,7 +59,7 @@ async fn add_ipv4_list(
     address: web::Json<SocketAddrV4>,
     path: web::Path<(FlowDirection, ListType)>,
     access_control: web::Data<AccessControl>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
@@ -74,7 +76,7 @@ async fn add_ipv6_list(
     address: web::Json<SocketAddrV6>,
     path: web::Path<(FlowDirection, ListType)>,
     access_control: web::Data<AccessControl>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
@@ -91,7 +93,7 @@ async fn remove_ipv4_list(
     address: web::Json<SocketAddrV4>,
     path: web::Path<(FlowDirection, ListType)>,
     access_control: web::Data<AccessControl>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
@@ -108,7 +110,7 @@ async fn remove_ipv6_list(
     address: web::Json<SocketAddrV6>,
     path: web::Path<(FlowDirection, ListType)>,
     access_control: web::Data<AccessControl>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let address = address.into_inner();
     let (direction, list_type) = path.into_inner();
@@ -131,7 +133,7 @@ async fn get_geo_blocked(
 async fn block_geo_countries(
     body: web::Json<CountryCodesRequest>,
     geo_block: web::Data<GeoBlock>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let codes = body.into_inner().country_codes;
     for code in &codes {
@@ -153,7 +155,7 @@ async fn block_geo_countries(
 async fn unblock_geo_countries(
     body: web::Json<CountryCodesRequest>,
     geo_block: web::Data<GeoBlock>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let codes = body.into_inner().country_codes;
     for code in &codes {

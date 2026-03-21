@@ -1,4 +1,4 @@
-use crate::core::database::Database;
+use crate::adapter::persistence::Database;
 use crate::model::error::database::DatabaseError;
 use crate::model::error::Error;
 use lettre::message::header::ContentType;

@@ -5,7 +5,9 @@ use actix_web::{web, HttpResponse, Responder, Scope};
 use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
-use crate::core::database::Database;
+use crate::interface::port::repository::RepositoryPort;
+
+type Repo = dyn RepositoryPort;
 use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 
@@ -49,7 +51,7 @@ async fn get_dns_blacklist(service: web::Data<DnsFilter>) -> impl Responder {
 async fn add_dns_blacklist(
     payload: web::Json<DnsDomainsPayload>,
     service: web::Data<DnsFilter>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
     if domains.len() > MAX_DNS_DOMAINS_PER_REQUEST {
@@ -74,7 +76,7 @@ async fn add_dns_blacklist(
 async fn remove_dns_blacklist(
     payload: web::Json<DnsDomainsPayload>,
     service: web::Data<DnsFilter>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
     for domain in &domains {

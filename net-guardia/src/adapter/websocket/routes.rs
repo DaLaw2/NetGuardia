@@ -6,7 +6,7 @@ use crate::core::ebpf::drop_monitor::DropMonitor;
 use crate::core::infrastructure::health::SystemHealth;
 use crate::core::infrastructure::statistics::FlowStatistics;
 use crate::core::ml::alert::MLAlert;
-use crate::web::websocket::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
+use super::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
 
 #[derive(Deserialize)]
 struct WsQuery {

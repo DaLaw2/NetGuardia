@@ -2,7 +2,9 @@ use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::{Deserialize, Serialize};
 use common::define::setting::*;
 
-use crate::core::database::Database;
+use crate::interface::port::repository::RepositoryPort;
+
+type Repo = dyn RepositoryPort;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 
 #[derive(Serialize, Deserialize)]
@@ -35,7 +37,7 @@ async fn get_config(
 async fn set_config(
     settings: web::Json<RateLimitSettings>,
     config: web::Data<RateLimitConfig>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let s = settings.into_inner();
     if let Some(v) = s.packet_rate {

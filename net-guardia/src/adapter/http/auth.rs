@@ -3,7 +3,9 @@ use serde::Deserialize;
 
 use crate::core::auth::jwt::{Claims, JwtService};
 use crate::core::auth::password;
-use crate::core::database::Database;
+use crate::interface::port::repository::RepositoryPort;
+
+type Repo = dyn RepositoryPort;
 
 #[derive(Deserialize)]
 struct LoginRequest {
@@ -51,7 +53,7 @@ fn validate_password(password: &str) -> Result<(), &'static str> {
 
 async fn login(
     body: web::Json<LoginRequest>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
     let req = body.into_inner();
@@ -106,7 +108,7 @@ async fn login(
 async fn register(
     req: HttpRequest,
     body: web::Json<RegisterRequest>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     // Check caller is admin
     let claims = req.extensions().get::<Claims>().cloned();
@@ -166,7 +168,7 @@ async fn me(req: HttpRequest) -> impl Responder {
 async fn change_password(
     req: HttpRequest,
     body: web::Json<ChangePasswordRequest>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let claims = match req.extensions().get::<Claims>().cloned() {
         Some(c) => c,

@@ -1,7 +1,9 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
-use crate::core::database::Database;
+use crate::interface::port::repository::RepositoryPort;
+
+type Repo = dyn RepositoryPort;
 
 #[derive(Deserialize)]
 struct EnforceModeRequest {
@@ -25,7 +27,7 @@ async fn get_boot_time() -> impl Responder {
     HttpResponse::Ok().json(crate::utils::boot_time::boot_time())
 }
 
-async fn get_enforce_mode(db: web::Data<Database>) -> impl Responder {
+async fn get_enforce_mode(db: web::Data<Repo>) -> impl Responder {
     match db.get_setting("enforce_mode") {
         Ok(Some(mode)) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Ok(None) => HttpResponse::Ok().json(serde_json::json!({"mode": "monitor"})),
@@ -36,7 +38,7 @@ async fn get_enforce_mode(db: web::Data<Database>) -> impl Responder {
 
 async fn set_enforce_mode(
     body: web::Json<EnforceModeRequest>,
-    db: web::Data<Database>,
+    db: web::Data<Repo>,
 ) -> impl Responder {
     let mode = &body.mode;
     if mode != "monitor" && mode != "enforce" {
@@ -54,7 +56,7 @@ async fn set_enforce_mode(
     }
 }
 
-async fn get_xdp_mode(db: web::Data<Database>) -> impl Responder {
+async fn get_xdp_mode(db: web::Data<Repo>) -> impl Responder {
     let ingress = db.get_setting("xdp_ingress_mode")
         .ok().flatten().unwrap_or_else(|| "unknown".to_string());
     let egress = db.get_setting("xdp_egress_mode")

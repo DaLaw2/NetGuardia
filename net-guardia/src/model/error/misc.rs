@@ -30,5 +30,17 @@ traceable! {
         #[no_source]
         #[error("Invalid DNS domain name: {reason}")]
         InvalidDnsName { reason: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Type mismatch during message dispatch")]
+        TypeMismatch => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("No handler registered for this message type")]
+        HandlerNotFound => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Event type not registered with communication manager")]
+        TypeNotRegistered => tracing::Level::ERROR,
     }
 }

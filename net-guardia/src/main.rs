@@ -1,7 +1,9 @@
+mod adapter;
 mod core;
+mod infrastructure;
+mod interface;
 mod model;
 mod utils;
-mod web;
 
 use crate::core::system::System;
 use crate::model::error::Error;

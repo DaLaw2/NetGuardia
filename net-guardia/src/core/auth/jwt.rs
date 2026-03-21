@@ -1,7 +1,7 @@
 use jsonwebtoken::{decode, encode, errors::ErrorKind, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-use crate::core::database::Database;
+use crate::adapter::persistence::Database;
 use crate::model::error::auth::AuthError;
 use crate::model::error::Error;
 

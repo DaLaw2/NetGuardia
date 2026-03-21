@@ -7,4 +7,3 @@ pub mod ml;
 pub mod rate_limit;
 pub mod stats;
 pub mod system;
-pub mod ws;
