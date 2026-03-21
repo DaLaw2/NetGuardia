@@ -1,5 +1,7 @@
 pub mod access_control;
+pub mod dns_filter;
 pub mod drop_monitor;
+pub mod geo_block;
 pub mod rate_limit;
 pub mod protocol_filter;
 pub mod xsk_manager;
@@ -14,7 +16,9 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use crate::core::ebpf::access_control::AccessControl;
+use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ebpf::drop_monitor::DropMonitor;
+use crate::core::ebpf::geo_block::GeoBlock;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::ebpf::xsk_manager::XskManager;
@@ -28,6 +32,8 @@ pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
     pub access_control: Arc<AccessControl>,
     pub protocol_filter: Arc<ProtocolFilter>,
+    pub dns_filter: Arc<DnsFilter>,
+    pub geo_block: Arc<GeoBlock>,
     pub rate_limit: Arc<RateLimitConfig>,
     pub drop_monitor: Arc<DropMonitor>,
     drop_ring_buf: Mutex<Option<RingBuf<MapData>>>,
@@ -39,6 +45,8 @@ impl EbpfServices {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
+        let dns_filter = DnsFilter::new(ingress_ebpf)?;
+        let geo_block = GeoBlock::new(ingress_ebpf)?;
         let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
         let drop_monitor = Arc::new(DropMonitor::new());
         let drop_ring_buf = {
@@ -49,6 +57,8 @@ impl EbpfServices {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
             protocol_filter: Arc::new(protocol_filter),
+            dns_filter: Arc::new(dns_filter),
+            geo_block: Arc::new(geo_block),
             rate_limit: Arc::new(rate_limit),
             drop_monitor,
             drop_ring_buf: Mutex::new(Some(drop_ring_buf)),

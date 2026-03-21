@@ -32,6 +32,8 @@ pub struct DropCounters {
     pub rate_limit_udp: u64,
     pub rate_limit_dns: u64,
     pub protocol_filter: u64,
+    pub dns_blacklist: u64,
+    pub geo_block: u64,
     pub total: u64,
 }
 
@@ -69,6 +71,8 @@ impl DropMonitor {
                 DROP_REASON_RATE_LIMIT_UDP => c.rate_limit_udp += 1,
                 DROP_REASON_RATE_LIMIT_DNS => c.rate_limit_dns += 1,
                 DROP_REASON_PROTOCOL_FILTER => c.protocol_filter += 1,
+                DROP_REASON_DNS_BLACKLIST => c.dns_blacklist += 1,
+                DROP_REASON_GEO_BLOCK => c.geo_block += 1,
                 _ => {}
             }
         }
@@ -127,6 +131,8 @@ fn reason_to_str(reason: u8) -> &'static str {
         DROP_REASON_RATE_LIMIT_UDP => "rate_limit_udp",
         DROP_REASON_RATE_LIMIT_DNS => "rate_limit_dns",
         DROP_REASON_PROTOCOL_FILTER => "protocol_filter",
+        DROP_REASON_DNS_BLACKLIST => "dns_blacklist",
+        DROP_REASON_GEO_BLOCK => "geo_block",
         _ => "unknown",
     }
 }

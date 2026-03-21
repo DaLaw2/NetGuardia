@@ -49,6 +49,7 @@ parking_lot = { workspace = true }
 thiserror = { workspace = true }
 sysinfo = { workspace = true }
 maxminddb = { workspace = true }
+ipnetwork = { workspace = true }
 lru = { workspace = true }
 
 #csv = "1.4.0"

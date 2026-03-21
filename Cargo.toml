@@ -49,6 +49,7 @@ crossbeam = "0.8.4"
 # System
 sysinfo = "0.38.4"
 maxminddb = "0.27.3"
+ipnetwork = "0.21.1"
 lru = "0.16.3"
 
 # Build dependencies

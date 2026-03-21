@@ -15,7 +15,7 @@ use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent;
 use common::model::parsed_packet::ParsedPacket;
 
-use crate::action::{access_control, rate_limit, protocol_filter};
+use crate::action::{access_control, dns_filter, rate_limit, protocol_filter};
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(MAX_STAGES, 0);
@@ -96,6 +96,10 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
         let pkt = &*ptr;
         match pkt.ip_version {
             4 => {
+                if access_control::ipv4_is_geo_blocked(pkt) {
+                    emit_drop_event(pkt, DROP_REASON_GEO_BLOCK);
+                    return Ok(xdp_action::XDP_DROP);
+                }
                 if access_control::ipv4_is_whitelisted(pkt) {
                     let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
@@ -106,6 +110,10 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
                 }
             }
             6 => {
+                if access_control::ipv6_is_geo_blocked(pkt) {
+                    emit_drop_event(pkt, DROP_REASON_GEO_BLOCK);
+                    return Ok(xdp_action::XDP_DROP);
+                }
                 if access_control::ipv6_is_whitelisted(pkt) {
                     let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
@@ -169,6 +177,13 @@ unsafe fn try_protocol_filter(ctx: &XdpContext) -> Result<u32, ()> {
         let end = ctx.data_end();
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
         let pkt = &*ptr;
+
+        // DNS blacklist check (works for both IPv4/IPv6, checks protocol/port internally)
+        if dns_filter::is_dns_blacklisted(start, end, pkt) {
+            emit_drop_event(pkt, DROP_REASON_DNS_BLACKLIST);
+            return Ok(xdp_action::XDP_DROP);
+        }
+
         match pkt.ip_version {
             4 => {
                 if protocol_filter::ipv4_service_rule_violation(start, end, pkt) {

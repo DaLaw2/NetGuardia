@@ -1691,6 +1691,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "futures-util",
+ "ipnetwork",
  "libc",
  "libxdp-sys",
  "lru",

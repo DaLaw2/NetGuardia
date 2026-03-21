@@ -4,3 +4,5 @@ pub const DROP_REASON_RATE_LIMIT_SYN: u8 = 3;
 pub const DROP_REASON_RATE_LIMIT_UDP: u8 = 4;
 pub const DROP_REASON_RATE_LIMIT_DNS: u8 = 5;
 pub const DROP_REASON_PROTOCOL_FILTER: u8 = 6;
+pub const DROP_REASON_GEO_BLOCK: u8 = 7;
+pub const DROP_REASON_DNS_BLACKLIST: u8 = 8;

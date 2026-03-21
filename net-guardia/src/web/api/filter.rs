@@ -2,13 +2,64 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use actix_web::{web, HttpResponse, Responder, Scope};
 use common::model::http_method::HttpMethod;
+use serde::Deserialize;
 
+use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 
 pub fn initialize() -> Scope {
     web::scope("/filter")
         .service(http_scope())
         .service(ssh_scope())
+        .service(dns_scope())
+}
+
+#[derive(Deserialize)]
+struct DnsDomainsPayload {
+    domains: Vec<String>,
+}
+
+fn dns_scope() -> Scope {
+    web::scope("/dns")
+        .service(
+            web::scope("/blacklist")
+                .route("", web::get().to(get_dns_blacklist))
+                .route("", web::put().to(add_dns_blacklist))
+                .route("", web::delete().to(remove_dns_blacklist))
+        )
+}
+
+async fn get_dns_blacklist(service: web::Data<DnsFilter>) -> impl Responder {
+    let domains = service.list_domains().await;
+    HttpResponse::Ok().json(domains)
+}
+
+async fn add_dns_blacklist(
+    payload: web::Json<DnsDomainsPayload>,
+    service: web::Data<DnsFilter>,
+) -> impl Responder {
+    let domains = payload.into_inner().domains;
+    for domain in &domains {
+        if let Err(e) = service.add_domain(domain).await {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    HttpResponse::Ok().finish()
+}
+
+async fn remove_dns_blacklist(
+    payload: web::Json<DnsDomainsPayload>,
+    service: web::Data<DnsFilter>,
+) -> impl Responder {
+    let domains = payload.into_inner().domains;
+    for domain in &domains {
+        if let Err(e) = service.remove_domain(domain).await {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    HttpResponse::Ok().finish()
 }
 
 fn http_scope() -> Scope {

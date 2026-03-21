@@ -154,6 +154,8 @@ impl System {
         let inference_config = self.inference_config.clone();
         let access_control = self.ebpf_services.access_control.clone();
         let protocol_filter = self.ebpf_services.protocol_filter.clone();
+        let dns_filter = self.ebpf_services.dns_filter.clone();
+        let geo_block = self.ebpf_services.geo_block.clone();
         let rate_limit = self.ebpf_services.rate_limit.clone();
         let health = self.app_services.health.clone();
         let ml_alert = self.app_services.ml_alert.clone();
@@ -173,6 +175,8 @@ impl System {
                 .app_data(web::Data::from(inference_config.clone()))
                 .app_data(web::Data::from(access_control.clone()))
                 .app_data(web::Data::from(protocol_filter.clone()))
+                .app_data(web::Data::from(dns_filter.clone()))
+                .app_data(web::Data::from(geo_block.clone()))
                 .app_data(web::Data::from(rate_limit.clone()))
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))

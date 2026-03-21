@@ -7,3 +7,4 @@ pub const DEFAULT_PACKET_RATE: u64 = 10000;
 pub const DEFAULT_SYN_RATE: u64 = 100;
 pub const DEFAULT_UDP_RATE: u64 = 5000;
 pub const DEFAULT_DNS_RATE: u64 = 200;
+pub const MAX_GEO_ENTRIES: u32 = 131072;

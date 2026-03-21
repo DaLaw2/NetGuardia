@@ -25,5 +25,9 @@ traceable! {
         #[no_source]
         #[error("Failed to create traffic log file '{path}': {reason}")]
         TrafficLogCreateError { path: String, reason: String } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Invalid DNS domain name: {reason}")]
+        InvalidDnsName { reason: String } => tracing::Level::WARN,
     }
 }
