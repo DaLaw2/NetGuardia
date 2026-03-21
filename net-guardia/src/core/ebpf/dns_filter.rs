@@ -33,7 +33,7 @@ impl DnsFilter {
         self.blacklist
             .read()
             .iter()
-            .filter_map(|name| wire_format_to_domain(name))
+            .filter_map(wire_format_to_domain)
             .collect()
     }
 
@@ -169,7 +169,7 @@ impl DnsFilter {
             out += 1;
             for j in 0..ll {
                 let mut b = raw[pos + 1 + j];
-                if b >= b'A' && b <= b'Z' {
+                if b.is_ascii_uppercase() {
                     b += 32;
                 }
                 name.data[out] = b;

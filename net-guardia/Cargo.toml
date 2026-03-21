@@ -71,6 +71,7 @@ license = ["dep:ed25519-dalek", "dep:base64"]
 
 [build-dependencies]
 cargo_metadata = { workspace = true }
+which = { workspace = true }
 dotenvy = "0.15.7"
 
 [[bin]]

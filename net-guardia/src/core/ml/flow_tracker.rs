@@ -95,9 +95,8 @@ impl FlowData {
 
         if iat > IDLE_THRESHOLD_US {
             if self.idle_periods.len() < MAX_PERIODS { self.idle_periods.push(iat); }
-        } else if iat > 0 {
-            if self.active_periods.len() < MAX_PERIODS { self.active_periods.push(iat); }
-        }
+        } else if iat > 0
+            && self.active_periods.len() < MAX_PERIODS { self.active_periods.push(iat); }
 
         self.last_packet_time = packet.timestamp_us;
         self.last_time_us = packet.timestamp_us;
@@ -239,13 +238,12 @@ impl FlowTracker {
 
         flow.add_packet(&packet);
 
-        if self.active.len() > self.max_flows {
-            if let Some(oldest_key) = self.active.iter()
+        if self.active.len() > self.max_flows
+            && let Some(oldest_key) = self.active.iter()
                 .min_by_key(|(_, flow)| flow.last_time_us)
                 .map(|(k, _)| k.clone())
-            {
-                self.active.remove(&oldest_key);
-            }
+        {
+            self.active.remove(&oldest_key);
         }
     }
 

@@ -191,11 +191,7 @@ impl WhiteListControl {
     fn is_white_list_enable(&self) -> bool {
         match self.map.get(&0, 0) {
             Ok(status) => {
-                if status == 0 {
-                    false
-                } else {
-                    true
-                }
+                status != 0
             }
             Err(_) => false,
         }
@@ -253,7 +249,7 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
             } else {
                 let new_http_method = HttpMethod::convert_to_bitmap(http_method);
                 self.map
-                    .insert(&address, new_http_method, 0)
+                    .insert(address, new_http_method, 0)
                     .map_err(EbpfError::MapOperationError)?;
             }
             Ok(())

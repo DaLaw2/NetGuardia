@@ -33,3 +33,6 @@ license-generator/target/
 license.key
 license_priv.key
 license_pub.key
+.gstack/
+interfaces.txt
+traffic_log.csv

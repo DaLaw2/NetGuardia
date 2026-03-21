@@ -174,7 +174,7 @@ impl ServiceFactory {
 
         if stages.is_empty() {
             next_stage
-                .set(STAGE_ENTRY as u32, STAGE_TRANSMISSION, 0)
+                .set(STAGE_ENTRY, STAGE_TRANSMISSION, 0)
                 .map_err(EbpfError::MapOperationError)?;
             return Ok(program_array);
         }
@@ -190,7 +190,7 @@ impl ServiceFactory {
         }
 
         next_stage
-            .set(STAGE_ENTRY as u32, slots[0].1, 0)
+            .set(STAGE_ENTRY, slots[0].1, 0)
             .map_err(EbpfError::MapOperationError)?;
 
         for i in 0..slots.len() {
@@ -201,7 +201,7 @@ impl ServiceFactory {
                 STAGE_TRANSMISSION
             };
             next_stage
-                .set(stage_id as u32, next_slot, 0)
+                .set(stage_id, next_slot, 0)
                 .map_err(EbpfError::MapOperationError)?;
         }
 
@@ -315,14 +315,13 @@ impl ServiceFactory {
     }
 
     fn restore_geo_countries(db: &Database, ebpf_services: &EbpfServices) {
-        if let Ok(countries) = db.load_geo_countries() {
-            if !countries.is_empty() {
+        if let Ok(countries) = db.load_geo_countries()
+            && !countries.is_empty() {
                 if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
                     tracing::warn!("Failed to restore geo-blocked countries: {}", e);
                 } else {
                     tracing::info!("Restored {} geo-blocked countries from database", countries.len());
                 }
-            }
         }
     }
 

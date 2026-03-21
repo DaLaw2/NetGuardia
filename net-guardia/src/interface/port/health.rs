@@ -1,4 +1,3 @@
-use crate::model::error::Error;
 use crate::model::health::{SystemHealthMetrics, SystemHealthStatus};
 use async_trait::async_trait;
 

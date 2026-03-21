@@ -90,10 +90,9 @@ impl SystemHealth {
         drop(networks);
         drop(components);
 
-        if self.broadcast_tx.receiver_count() > 0 {
-            if let Err(e) = self.broadcast_tx.send(metrics) {
+        if self.broadcast_tx.receiver_count() > 0
+            && let Err(e) = self.broadcast_tx.send(metrics) {
                 log!(Health::BroadcastFailed(e.to_string()));
-            }
         }
     }
 

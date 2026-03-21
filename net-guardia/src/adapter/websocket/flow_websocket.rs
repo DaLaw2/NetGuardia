@@ -35,10 +35,9 @@ pub async fn flow_stats_ws(
             tokio::select! {
                 _ = ticker.tick() => {
                     let flows = stats.get_filtered_flows(&subscription);
-                    if let Ok(json) = serde_json::to_string(&flows) {
-                        if session.text(json).await.is_err() {
+                    if let Ok(json) = serde_json::to_string(&flows)
+                        && session.text(json).await.is_err() {
                             break;
-                        }
                     }
                 }
                 msg = msg_stream.next() => {
@@ -52,10 +51,9 @@ pub async fn flow_stats_ws(
                                     ticker = interval(Duration::from_secs(new_interval));
 
                                     let flows = stats.get_filtered_flows(&subscription);
-                                    if let Ok(json) = serde_json::to_string(&flows) {
-                                        if session.text(json).await.is_err() {
+                                    if let Ok(json) = serde_json::to_string(&flows)
+                                        && session.text(json).await.is_err() {
                                             break;
-                                        }
                                     }
                                 }
                                 Err(e) => {

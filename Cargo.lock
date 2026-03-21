@@ -2009,6 +2009,7 @@ dependencies = [
  "tracing-subscriber",
  "tract-onnx",
  "url",
+ "which",
  "xsk-rs",
 ]
 

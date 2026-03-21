@@ -75,8 +75,8 @@ where
             let token = match auth_header {
                 Some(val) => {
                     let val_str = val.to_str().unwrap_or("");
-                    if val_str.starts_with("Bearer ") {
-                        &val_str[7..]
+                    if let Some(token_str) = val_str.strip_prefix("Bearer ") {
+                        token_str
                     } else {
                         let resp = HttpResponse::Unauthorized()
                             .json(serde_json::json!({"error": "Invalid authorization header"}));

@@ -86,7 +86,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn load_acl_rules(&self) -> Result<Vec<(u8, String, String, String, u16)>, Error> {
+    pub fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT ip_version, direction, list_type, ip_address, port FROM acl_rules")?;
         let rows = stmt.query_map([], |row| {
@@ -201,7 +201,7 @@ impl Database {
     }
 
     // --- Users ---
-    pub fn find_user(&self, username: &str) -> Result<Option<(i64, String, String, String, bool)>, Error> {
+    pub fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
         let conn = self.conn.lock();
         let result = conn.query_row(
             "SELECT id, username, password_hash, role, force_password_change FROM users WHERE username = ?1",
@@ -270,8 +270,8 @@ impl Database {
 
     pub fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> {
         let key_locked = format!("login_locked_until:{}", username);
-        if let Some(locked_str) = self.get_setting(&key_locked)? {
-            if let Ok(locked_until) = locked_str.parse::<u64>() {
+        if let Some(locked_str) = self.get_setting(&key_locked)?
+            && let Ok(locked_until) = locked_str.parse::<u64>() {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -281,7 +281,6 @@ impl Database {
                 }
                 // Lock expired, clear it
                 self.clear_login_failures(username)?;
-            }
         }
         Ok(None)
     }
@@ -299,7 +298,7 @@ impl Database {
 impl crate::interface::port::repository::RepositoryPort for Database {
     fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.insert_acl_rule(ip_version, direction, list_type, ip_address, port) }
     fn delete_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.delete_acl_rule(ip_version, direction, list_type, ip_address, port) }
-    fn load_acl_rules(&self) -> Result<Vec<(u8, String, String, String, u16)>, Error> { self.load_acl_rules() }
+    fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> { self.load_acl_rules() }
     fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> { self.set_rate_limit(key, value) }
     fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> { self.load_rate_limit_config() }
     fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> { self.insert_dns_domain(domain) }
@@ -310,7 +309,7 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn load_geo_countries(&self) -> Result<Vec<String>, Error> { self.load_geo_countries() }
     fn get_setting(&self, key: &str) -> Result<Option<String>, Error> { self.get_setting(key) }
     fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> { self.set_setting(key, value) }
-    fn find_user(&self, username: &str) -> Result<Option<(i64, String, String, String, bool)>, Error> { self.find_user(username) }
+    fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user(username) }
     fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<(), Error> { self.insert_user(username, password_hash, role, force_password_change) }
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.update_user_password(user_id, password_hash) }
     fn user_count(&self) -> Result<i64, Error> { self.user_count() }
