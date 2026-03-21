@@ -58,7 +58,11 @@ pub struct InferenceConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MiscConfig {
     pub geoip_db_name: String,
+    #[serde(default = "default_db_path")]
+    pub database_path: String,
 }
+
+fn default_db_path() -> String { "net-guardia.db".to_string() }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {

@@ -2,6 +2,7 @@ use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::{Deserialize, Serialize};
 use common::define::setting::*;
 
+use crate::core::database::Database;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 
 #[derive(Serialize, Deserialize)]
@@ -34,29 +35,45 @@ async fn get_config(
 async fn set_config(
     settings: web::Json<RateLimitSettings>,
     config: web::Data<RateLimitConfig>,
+    db: web::Data<Database>,
 ) -> impl Responder {
     let s = settings.into_inner();
     if let Some(v) = s.packet_rate {
+        if let Err(e) = db.set_rate_limit("packet_rate", v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
         if let Err(e) = config.set_packet_rate(v) {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
         }
     }
     if let Some(v) = s.syn_rate {
+        if let Err(e) = db.set_rate_limit("syn_rate", v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
         if let Err(e) = config.set_syn_rate(v) {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
         }
     }
     if let Some(v) = s.udp_rate {
+        if let Err(e) = db.set_rate_limit("udp_rate", v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
         if let Err(e) = config.set_udp_rate(v) {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
         }
     }
     if let Some(v) = s.dns_rate {
+        if let Err(e) = db.set_rate_limit("dns_rate", v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
         if let Err(e) = config.set_dns_rate(v) {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
         }
     }
     if let Some(v) = s.window_ns {
+        if let Err(e) = db.set_rate_limit("window_ns", v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
         if let Err(e) = config.set_window_ns(v) {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
         }

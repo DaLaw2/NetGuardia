@@ -50,6 +50,7 @@ sysinfo = { workspace = true }
 maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
+rusqlite = { workspace = true }
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

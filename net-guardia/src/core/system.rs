@@ -10,6 +10,7 @@ use aya_log::EbpfLogger;
 use common::define::pipeline::*;
 use macros::log;
 
+use crate::core::database::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::infrastructure::MLService;
@@ -37,6 +38,7 @@ pub struct System {
     pub inference_config: Arc<InferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<MLService>,
+    pub db: Arc<Database>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
@@ -61,6 +63,8 @@ impl System {
         Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
         Self::write_num_queues(&mut egress_ebpf, num_queues)?;
 
+        let db = Arc::new(Database::new(&app_config.misc.database_path)?);
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
@@ -69,11 +73,55 @@ impl System {
 
         let app_services = Arc::new(MLService::new(app_config.clone(), inference_config.clone())?);
 
+        // Load persisted DNS blacklist
+        if let Ok(domains) = db.load_dns_domains() {
+            for domain in &domains {
+                if let Err(e) = ebpf_services.dns_filter.add_domain(domain) {
+                    tracing::warn!("Failed to restore DNS domain '{}': {}", domain, e);
+                }
+            }
+            if !domains.is_empty() {
+                tracing::info!("Restored {} DNS blacklist domains from database", domains.len());
+            }
+        }
+
+        // Load persisted geo-blocked countries
+        if let Ok(countries) = db.load_geo_countries() {
+            if !countries.is_empty() {
+                if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
+                    tracing::warn!("Failed to restore geo-blocked countries: {}", e);
+                } else {
+                    tracing::info!("Restored {} geo-blocked countries from database", countries.len());
+                }
+            }
+        }
+
+        // Load persisted rate limit config
+        if let Ok(configs) = db.load_rate_limit_config() {
+            for (key, value) in &configs {
+                let result = match key.as_str() {
+                    "packet_rate" => ebpf_services.rate_limit.set_packet_rate(*value),
+                    "syn_rate" => ebpf_services.rate_limit.set_syn_rate(*value),
+                    "udp_rate" => ebpf_services.rate_limit.set_udp_rate(*value),
+                    "dns_rate" => ebpf_services.rate_limit.set_dns_rate(*value),
+                    "window_ns" => ebpf_services.rate_limit.set_window_ns(*value),
+                    _ => Ok(()),
+                };
+                if let Err(e) = result {
+                    tracing::warn!("Failed to restore rate limit '{}': {}", key, e);
+                }
+            }
+            if !configs.is_empty() {
+                tracing::info!("Restored {} rate limit settings from database", configs.len());
+            }
+        }
+
         Ok(System {
             app_config,
             inference_config,
             ebpf_services,
             app_services,
+            db,
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
@@ -162,6 +210,7 @@ impl System {
         let ml_engine = self.app_services.ml_engine.clone();
         let flow_statistics = self.app_services.flow_statistics.clone();
         let drop_monitor = self.ebpf_services.drop_monitor.clone();
+        let db = self.db.clone();
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -184,6 +233,7 @@ impl System {
                 .app_data(web::Data::from(ml_engine.clone()))
                 .app_data(web::Data::from(flow_statistics.clone()))
                 .app_data(web::Data::from(drop_monitor.clone()))
+                .app_data(web::Data::from(db.clone()))
                 .service(
                     web::scope("/api")
                         .service(acl::initialize())

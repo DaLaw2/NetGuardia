@@ -50,6 +50,7 @@ sysinfo = "0.38.4"
 maxminddb = "0.27.3"
 ipnetwork = "0.21.1"
 lru = "0.16.3"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 # Build dependencies
 cargo_metadata = { version = "0.23.1", default-features = false }

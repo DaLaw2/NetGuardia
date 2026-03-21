@@ -5,6 +5,7 @@ use actix_web::{web, HttpResponse, Responder, Scope};
 use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
+use crate::core::database::Database;
 use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 
@@ -48,11 +49,18 @@ async fn get_dns_blacklist(service: web::Data<DnsFilter>) -> impl Responder {
 async fn add_dns_blacklist(
     payload: web::Json<DnsDomainsPayload>,
     service: web::Data<DnsFilter>,
+    db: web::Data<Database>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
     if domains.len() > MAX_DNS_DOMAINS_PER_REQUEST {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": format!("too many domains (max {})", MAX_DNS_DOMAINS_PER_REQUEST)}));
+    }
+    for domain in &domains {
+        if let Err(e) = db.insert_dns_domain(domain) {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
     }
     for domain in &domains {
         if let Err(e) = service.add_domain(domain) {
@@ -66,8 +74,15 @@ async fn add_dns_blacklist(
 async fn remove_dns_blacklist(
     payload: web::Json<DnsDomainsPayload>,
     service: web::Data<DnsFilter>,
+    db: web::Data<Database>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
+    for domain in &domains {
+        if let Err(e) = db.delete_dns_domain(domain) {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
     for domain in &domains {
         if let Err(e) = service.remove_domain(domain) {
             return HttpResponse::InternalServerError()
