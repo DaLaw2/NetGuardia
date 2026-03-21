@@ -1,11 +1,10 @@
 use std::collections::{HashMap as StdHashMap, HashSet};
-use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use aya::maps::lpm_trie::{Key, LpmTrie};
 use aya::maps::MapData;
 use aya::Ebpf;
-use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use ipnetwork::IpNetwork;
 use macros::log;
 use maxminddb::{geoip2, Reader};
 use parking_lot::RwLock;
@@ -44,12 +43,7 @@ impl GeoBlock {
                 reason: e.to_string(),
             })?;
 
-        log!(SystemLog::Initializing);
         let index = Self::build_index(&reader)?;
-        let country_count = index.v4.len();
-        let v4_total: usize = index.v4.values().map(|v| v.len()).sum();
-        let v6_total: usize = index.v6.values().map(|v| v.len()).sum();
-        log!(SystemLog::InitializeComplete);
 
         Ok(Self {
             geo_block_v4: RwLock::new(v4_trie),

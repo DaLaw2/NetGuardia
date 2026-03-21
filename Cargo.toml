@@ -22,7 +22,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["full", "macros"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # Web framework
 actix = "0.13.5"
@@ -42,7 +42,6 @@ tract-onnx = "0.22.1"
 parking_lot = "0.12.5"
 libc = { version = "0.2.183", default-features = false }
 thiserror = "2.0.18"
-futures = "0.3.32"
 futures-util = "0.3.32"
 crossbeam = "0.8.4"
 
@@ -66,11 +65,9 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-#opt-level = 3
-#lto = true
-#strip = true
-#debug = false
-#overflow-checks = false
+opt-level = 3
+lto = "thin"
+strip = true
 
 [profile.release.package.ingress-ebpf]
 debug = 2

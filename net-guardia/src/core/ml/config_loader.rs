@@ -50,8 +50,4 @@ impl InferenceConfig {
         self.attack_labels.len()
     }
 
-    #[allow(dead_code)]
-    pub fn get_attack_label(&self, id: usize) -> Option<&String> {
-        self.attack_labels.get(&id.to_string())
-    }
 }

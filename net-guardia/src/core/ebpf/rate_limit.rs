@@ -42,22 +42,22 @@ impl RateLimitConfig {
     }
 
     pub fn get_packet_rate(&self) -> Result<u64, Error> {
-        self.config_map.lock().get(&0, 0).map_err(EbpfError::MapOperationError).map(|v| *v).map_err(Into::into)
+        self.config_map.lock().get(&0, 0).map_err(|e| EbpfError::MapOperationError(e).into())
     }
 
     pub fn get_syn_rate(&self) -> Result<u64, Error> {
-        self.config_map.lock().get(&1, 0).map_err(EbpfError::MapOperationError).map(|v| *v).map_err(Into::into)
+        self.config_map.lock().get(&1, 0).map_err(|e| EbpfError::MapOperationError(e).into())
     }
 
     pub fn get_udp_rate(&self) -> Result<u64, Error> {
-        self.config_map.lock().get(&2, 0).map_err(EbpfError::MapOperationError).map(|v| *v).map_err(Into::into)
+        self.config_map.lock().get(&2, 0).map_err(|e| EbpfError::MapOperationError(e).into())
     }
 
     pub fn get_dns_rate(&self) -> Result<u64, Error> {
-        self.config_map.lock().get(&3, 0).map_err(EbpfError::MapOperationError).map(|v| *v).map_err(Into::into)
+        self.config_map.lock().get(&3, 0).map_err(|e| EbpfError::MapOperationError(e).into())
     }
 
     pub fn get_window_ns(&self) -> Result<u64, Error> {
-        self.config_map.lock().get(&4, 0).map_err(EbpfError::MapOperationError).map(|v| *v).map_err(Into::into)
+        self.config_map.lock().get(&4, 0).map_err(|e| EbpfError::MapOperationError(e).into())
     }
 }

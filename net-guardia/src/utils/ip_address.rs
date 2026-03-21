@@ -1,6 +1,5 @@
 use std::net::IpAddr;
 
-#[allow(dead_code)]
 pub fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {

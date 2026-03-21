@@ -96,7 +96,8 @@ impl PortRule {
 
     #[cfg(feature = "user")]
     pub fn to_port_vec(&self) -> Vec<Port> {
-        self.ports[..self.count as usize].to_vec()
+        let count = (self.count as usize).min(MAX_RULES_PORT);
+        self.ports[..count].to_vec()
     }
 
     #[cfg(feature = "user")]

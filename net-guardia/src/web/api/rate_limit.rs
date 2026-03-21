@@ -36,10 +36,30 @@ async fn set_config(
     config: web::Data<RateLimitConfig>,
 ) -> impl Responder {
     let s = settings.into_inner();
-    if let Some(v) = s.packet_rate { let _ = config.set_packet_rate(v); }
-    if let Some(v) = s.syn_rate { let _ = config.set_syn_rate(v); }
-    if let Some(v) = s.udp_rate { let _ = config.set_udp_rate(v); }
-    if let Some(v) = s.dns_rate { let _ = config.set_dns_rate(v); }
-    if let Some(v) = s.window_ns { let _ = config.set_window_ns(v); }
+    if let Some(v) = s.packet_rate {
+        if let Err(e) = config.set_packet_rate(v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    if let Some(v) = s.syn_rate {
+        if let Err(e) = config.set_syn_rate(v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    if let Some(v) = s.udp_rate {
+        if let Err(e) = config.set_udp_rate(v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    if let Some(v) = s.dns_rate {
+        if let Err(e) = config.set_dns_rate(v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
+    if let Some(v) = s.window_ns {
+        if let Err(e) = config.set_window_ns(v) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}));
+        }
+    }
     HttpResponse::Ok().json(serde_json::json!({"status": "ok"}))
 }

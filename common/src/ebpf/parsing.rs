@@ -31,16 +31,6 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut ParsedPacket)
     let ipv4 = &*((start + IPV4_HEADER_START) as *const Ipv4Hdr);
     let packet_length = (end - start) as u32;
 
-    // Compute actual IPv4 header length from the IHL field
-    let ihl = (*((start + IPV4_HEADER_START) as *const u8) & 0x0F) as usize * 4;
-    if ihl < 20 || ihl > 60 {
-        return Err(());
-    }
-    let l4_start = ETHER_HEADER_END + ihl;
-    if start + l4_start > end {
-        return Err(());
-    }
-
     let t = &mut *target;
     t.timestamp_ns = bpf_ktime_get_ns();
     core::ptr::copy_nonoverlapping(ipv4.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 4);
@@ -49,16 +39,13 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut ParsedPacket)
     t.ip_version = 4;
     t.protocol = ipv4.proto;
 
-    let tcp_min_end = l4_start + core::mem::size_of::<TcpHdr>();
-    let udp_min_end = l4_start + core::mem::size_of::<UdpHdr>();
-
     let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
-        IpProto::Tcp => parse_tcp(start, end, l4_start, tcp_min_end)?,
-        IpProto::Udp => parse_udp(start, end, l4_start, udp_min_end)?,
+        IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
+        IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
         _ => (0, 0, 0, 0),
     };
 
-    t.payload_length = packet_length.saturating_sub((l4_start + l4_header_len) as u32);
+    t.payload_length = packet_length.saturating_sub((IPV4_HEADER_END + l4_header_len) as u32);
     t.src_port = src_port;
     t.dst_port = dst_port;
     t.tcp_flags = tcp_flags;
