@@ -422,6 +422,13 @@ impl XskPair {
 
         let nb_submitted = unsafe { self.tx.produce(&frames) };
 
+        // Return unsubmitted frames to pool to prevent frame leak
+        if nb_submitted < frames.len() {
+            for frame in frames[nb_submitted..].iter() {
+                self.frame_pool.push(*frame);
+            }
+        }
+
         if let Err(e) = self.tx.wakeup() {
             if e.kind() != std::io::ErrorKind::WouldBlock {
                 log!(EbpfLog::TXWakeupFailed(e.to_string()));

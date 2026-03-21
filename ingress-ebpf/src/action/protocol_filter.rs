@@ -109,7 +109,7 @@ fn get_http_request_method(start: usize, end: usize, offset: usize) -> Option<Ht
 fn ipv4_ssh_service_violation(source: &AddrPortV4, destination: &AddrPortV4) -> bool {
     unsafe {
         if IPV4_SSH_SERVICE.get(destination).is_some() {
-            if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
+            if matches!(SSH_WHITE_LIST_ENABLE.get(0), Some(&v) if v != 0) {
                 IPV4_SSH_WHITE_LIST.get(&source.ip()).is_none()
             } else {
                 IPV4_SSH_BLACK_LIST.get(&source.ip()).is_some()
@@ -124,7 +124,7 @@ fn ipv4_ssh_service_violation(source: &AddrPortV4, destination: &AddrPortV4) -> 
 fn ipv6_ssh_service_violation(source: &AddrPortV6, destination: &AddrPortV6) -> bool {
     unsafe {
         if IPV6_SSH_SERVICE.get(destination).is_some() {
-            if SSH_WHITE_LIST_ENABLE.get(0).is_some() {
+            if matches!(SSH_WHITE_LIST_ENABLE.get(0), Some(&v) if v != 0) {
                 IPV6_SSH_WHITE_LIST.get(&source.ip()).is_none()
             } else {
                 IPV6_SSH_BLACK_LIST.get(&source.ip()).is_some()
