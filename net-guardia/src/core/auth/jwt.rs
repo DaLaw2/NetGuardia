@@ -1,4 +1,4 @@
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, errors::ErrorKind, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
 use crate::core::database::Database;
@@ -60,10 +60,9 @@ impl JwtService {
     pub fn validate_token(&self, token: &str) -> Result<Claims, Error> {
         let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::default())
             .map_err(|e| {
-                if e.to_string().contains("ExpiredSignature") {
-                    Error::from(AuthError::TokenExpired)
-                } else {
-                    Error::from(AuthError::InvalidToken)
+                match e.kind() {
+                    ErrorKind::ExpiredSignature => Error::from(AuthError::TokenExpired),
+                    _ => Error::from(AuthError::InvalidToken),
                 }
             })?;
         Ok(token_data.claims)

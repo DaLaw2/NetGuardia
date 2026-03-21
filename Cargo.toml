@@ -54,6 +54,9 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 jsonwebtoken = "9"
 argon2 = "0.5"
 rand = "0.9"
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
 
 # Build dependencies
 cargo_metadata = { version = "0.23.1", default-features = false }

@@ -1,4 +1,4 @@
-use actix_web::{web, HttpRequest, HttpResponse, Responder, Scope};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
 use crate::core::auth::jwt::{Claims, JwtService};

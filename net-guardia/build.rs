@@ -11,6 +11,38 @@ fn main() {
     build_ebpf_package("ingress-ebpf", "ingress-ebpf");
     build_ebpf_package("egress-ebpf", "egress-ebpf");
     build_frontend();
+    embed_license_public_key();
+}
+
+fn embed_license_public_key() {
+    // Only needed when license feature is enabled
+    let license_enabled = env::var("CARGO_FEATURE_LICENSE").is_ok();
+
+    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let key_path = project_root.join("license_pub.key");
+
+    println!("cargo:rerun-if-changed={}", key_path.display());
+
+    if key_path.exists() {
+        let key_hex = fs::read_to_string(&key_path)
+            .expect("Failed to read license_pub.key")
+            .trim()
+            .to_string();
+        println!("cargo:rustc-env=LICENSE_PUBLIC_KEY={}", key_hex);
+    } else if license_enabled {
+        panic!(
+            "license feature enabled but license_pub.key not found at {}.\n\
+             Generate it with: cd license-generator && cargo run -- keygen\n\
+             Then copy license_pub.key to the repo root.",
+            key_path.display()
+        );
+    } else {
+        // Feature not enabled, set clearly invalid placeholder (won't be used)
+        println!("cargo:rustc-env=LICENSE_PUBLIC_KEY=DISABLED");
+    }
 }
 
 fn build_ebpf_package(package_name: &str, target_subdir: &str) {

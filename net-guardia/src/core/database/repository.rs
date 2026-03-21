@@ -221,7 +221,7 @@ impl Database {
         conn.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (?1, ?2, ?3)",
             params![username, password_hash, role],
-        ).map_err(|e| {
+        ).map_err(|e| -> Error {
             if e.to_string().contains("UNIQUE constraint") {
                 DatabaseError::UserAlreadyExists { username: username.to_string() }.into()
             } else {
@@ -234,6 +234,6 @@ impl Database {
     pub fn user_count(&self) -> Result<i64, Error> {
         let conn = self.conn.lock();
         conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() }.into())
+            .map_err(|e| -> Error { DatabaseError::QueryFailed { reason: e.to_string() }.into() })
     }
 }

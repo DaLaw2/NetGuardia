@@ -3,6 +3,8 @@ pub mod database;
 pub mod ebpf;
 pub mod http;
 pub mod io;
+#[cfg(feature = "license")]
+pub mod license;
 pub mod misc;
 pub mod ml;
 pub mod system;
@@ -14,6 +16,8 @@ use crate::model::error::database::DatabaseError;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::io::IOError;
+#[cfg(feature = "license")]
+use crate::model::error::license::LicenseError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::ml::MLError;
 use crate::model::error::system::SystemError;
@@ -32,6 +36,9 @@ pub enum Error {
     ML(MLError),
     #[error("{0}")]
     IO(IOError),
+    #[cfg(feature = "license")]
+    #[error("{0}")]
+    License(LicenseError),
     #[error("{0}")]
     Misc(MiscError),
     #[error("{0}")]
@@ -65,6 +72,13 @@ impl From<HttpError> for Error {
 impl From<IOError> for Error {
     fn from(error: IOError) -> Self {
         Self::IO(error)
+    }
+}
+
+#[cfg(feature = "license")]
+impl From<LicenseError> for Error {
+    fn from(error: LicenseError) -> Self {
+        Self::License(error)
     }
 }
 

@@ -26,3 +26,10 @@ net-guardia/static/web
 # Profiling
 *.profraw
 *.profdata
+
+# License keys
+license-generator/target/
+*.hex
+license.key
+license_priv.key
+license_pub.key

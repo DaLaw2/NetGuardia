@@ -30,7 +30,6 @@ pub struct Engine {
     min_packets: usize,
     batch_size: usize,
     inference_interval_secs: u64,
-    flow_timeout_us: u64,
     traffic_logger: Option<Arc<TrafficLogger>>,
 }
 
@@ -61,7 +60,6 @@ impl Engine {
             min_packets: engine_config.min_packets,
             batch_size: engine_config.batch_size,
             inference_interval_secs: engine_config.inference_interval_secs,
-            flow_timeout_us: engine_config.flow_timeout_us,
             traffic_logger,
         }
     }

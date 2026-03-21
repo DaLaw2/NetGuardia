@@ -64,9 +64,12 @@ pub struct MiscConfig {
     pub geoip_db_name: String,
     #[serde(default = "default_db_path")]
     pub database_path: String,
+    #[serde(default = "default_license_path")]
+    pub license_file: String,
 }
 
 fn default_db_path() -> String { "net-guardia.db".to_string() }
+fn default_license_path() -> String { "license.key".to_string() }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {

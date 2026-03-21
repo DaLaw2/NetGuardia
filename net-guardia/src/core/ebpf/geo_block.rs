@@ -5,7 +5,6 @@ use aya::maps::lpm_trie::{Key, LpmTrie};
 use aya::maps::MapData;
 use aya::Ebpf;
 use ipnetwork::IpNetwork;
-use macros::log;
 use maxminddb::{geoip2, Reader};
 use parking_lot::RwLock;
 
@@ -13,7 +12,6 @@ use crate::core::infrastructure::app_config::AppConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
-use crate::model::log::system::SystemLog;
 
 /// Pre-indexed GeoIP prefix table, built once at startup.
 struct GeoIndex {

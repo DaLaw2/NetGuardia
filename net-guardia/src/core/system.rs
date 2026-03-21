@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
 use actix_web::web::route;
@@ -16,11 +17,17 @@ use crate::core::database::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
 use crate::core::infrastructure::MLService;
+#[cfg(feature = "license")]
+use crate::core::license::LicenseInfo;
+#[cfg(feature = "license")]
+use crate::core::license::validator::validate_license;
 use crate::core::ml::config_loader::InferenceConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
+use crate::model::direction::FlowDirection;
 use crate::model::error::Error;
+use crate::model::list_type::ListType;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
@@ -42,6 +49,8 @@ pub struct System {
     pub app_services: Arc<MLService>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
+    #[cfg(feature = "license")]
+    pub license_info: Arc<LicenseInfo>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
@@ -53,6 +62,13 @@ impl System {
         let mut ingress_ebpf = Self::load_ebpf("ingress")?;
         let mut egress_ebpf = Self::load_ebpf("egress")?;
         let app_config = Arc::new(AppConfig::new()?);
+
+        #[cfg(feature = "license")]
+        let license_info = Arc::new(validate_license(
+            &app_config.misc.license_file,
+            &app_config.network.ingress_ifname,
+            &app_config.network.egress_ifname,
+        )?);
 
         let ingress_program_array = Self::configure_ingress_pipeline(
             &mut ingress_ebpf,
@@ -128,6 +144,61 @@ impl System {
             }
         }
 
+        // Load persisted ACL rules
+        if let Ok(rules) = db.load_acl_rules() {
+            let mut restored = 0u32;
+            for (ip_version, direction, list_type, ip_address, port) in &rules {
+                let dir = match direction.as_str() {
+                    "source" => FlowDirection::Source,
+                    "destination" => FlowDirection::Destination,
+                    other => {
+                        tracing::warn!("Unknown ACL direction '{}', skipping", other);
+                        continue;
+                    }
+                };
+                let lt = match list_type.as_str() {
+                    "whitelist" => ListType::White,
+                    "blacklist" => ListType::Black,
+                    other => {
+                        tracing::warn!("Unknown ACL list type '{}', skipping", other);
+                        continue;
+                    }
+                };
+                let result = match ip_version {
+                    4 => {
+                        match ip_address.parse::<Ipv4Addr>() {
+                            Ok(addr) => ebpf_services.access_control.add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)).await,
+                            Err(e) => {
+                                tracing::warn!("Failed to parse IPv4 address '{}': {}", ip_address, e);
+                                continue;
+                            }
+                        }
+                    }
+                    6 => {
+                        match ip_address.parse::<Ipv6Addr>() {
+                            Ok(addr) => ebpf_services.access_control.add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0)).await,
+                            Err(e) => {
+                                tracing::warn!("Failed to parse IPv6 address '{}': {}", ip_address, e);
+                                continue;
+                            }
+                        }
+                    }
+                    other => {
+                        tracing::warn!("Unknown IP version {}, skipping", other);
+                        continue;
+                    }
+                };
+                if let Err(e) = result {
+                    tracing::warn!("Failed to restore ACL rule ({} {} {}:{}): {}", direction, list_type, ip_address, port, e);
+                } else {
+                    restored += 1;
+                }
+            }
+            if restored > 0 {
+                tracing::info!("Restored {} ACL rules from database", restored);
+            }
+        }
+
         Ok(System {
             app_config,
             inference_config,
@@ -135,6 +206,8 @@ impl System {
             app_services,
             db,
             jwt_service,
+            #[cfg(feature = "license")]
+            license_info,
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
@@ -225,6 +298,8 @@ impl System {
         let drop_monitor = self.ebpf_services.drop_monitor.clone();
         let db = self.db.clone();
         let jwt_service = self.jwt_service.clone();
+        #[cfg(feature = "license")]
+        let license_info = self.license_info.clone();
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -233,7 +308,7 @@ impl System {
                 .allow_any_method()
                 .allow_any_header()
                 .max_age(3600);
-            App::new()
+            let app = App::new()
                 .wrap(cors)
                 .app_data(web::Data::from(app_config.clone()))
                 .app_data(web::Data::from(inference_config.clone()))
@@ -248,8 +323,10 @@ impl System {
                 .app_data(web::Data::from(flow_statistics.clone()))
                 .app_data(web::Data::from(drop_monitor.clone()))
                 .app_data(web::Data::from(db.clone()))
-                .app_data(web::Data::from(jwt_service.clone()))
-                .service(
+                .app_data(web::Data::from(jwt_service.clone()));
+            #[cfg(feature = "license")]
+            let app = app.app_data(web::Data::from(license_info.clone()));
+            app.service(
                     web::scope("/api")
                         .wrap(crate::core::auth::middleware::AuthMiddleware)
                         .service(auth::initialize())
