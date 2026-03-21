@@ -8,16 +8,16 @@ use std::time::SystemTime;
 use cargo_metadata::{Artifact, CompilerMessage, Message, Metadata, MetadataCommand, Package, Target, TargetKind};
 
 fn main() {
-    build_ingress_ebpf();
-    build_egress_ebpf();
+    build_ebpf_package("ingress-ebpf", "ingress-ebpf");
+    build_ebpf_package("egress-ebpf", "egress-ebpf");
     build_frontend();
 }
 
-fn build_ingress_ebpf() {
+fn build_ebpf_package(package_name: &str, target_subdir: &str) {
     let Metadata { packages, .. } = MetadataCommand::new().no_deps().exec().unwrap();
     let ebpf_package = packages
         .into_iter()
-        .find(|Package { name, .. }| **name == "ingress-ebpf")
+        .find(|Package { name, .. }| **name == *package_name)
         .unwrap();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
@@ -42,6 +42,7 @@ fn build_ingress_ebpf() {
         let ebpf_dir = manifest_path.parent().unwrap();
 
         println!("cargo:rerun-if-changed={}", ebpf_dir.as_str());
+        println!("cargo:rerun-if-changed=../common/src");
 
         let mut cmd = Command::new("cargo");
         cmd.args([
@@ -62,127 +63,7 @@ fn build_ingress_ebpf() {
         }
         cmd.current_dir(ebpf_dir);
 
-        let ebpf_target_dir = out_dir.join("../ingress-ebpf");
-        cmd.arg("--target-dir").arg(&ebpf_target_dir);
-
-        let mut child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|err| panic!("failed to spawn {cmd:?}: {err}"));
-        let Child { stdout, stderr, .. } = &mut child;
-
-        let stderr = stderr.take().unwrap();
-        let stderr = BufReader::new(stderr);
-        let stderr = std::thread::spawn(move || {
-            for line in stderr.lines() {
-                let line = line.unwrap();
-                println!("{line}");
-            }
-        });
-
-        let stdout = stdout.take().unwrap();
-        let stdout = BufReader::new(stdout);
-        let mut executables = Vec::new();
-        for message in Message::parse_stream(stdout) {
-            #[allow(clippy::collapsible_match)]
-            match message.expect("valid JSON") {
-                Message::CompilerArtifact(Artifact {
-                    executable,
-                    target: Target { name, .. },
-                    ..
-                }) => {
-                    if let Some(executable) = executable {
-                        executables.push((name, executable.into_std_path_buf()));
-                    }
-                }
-                Message::CompilerMessage(CompilerMessage { message, .. }) => {
-                    for line in message.rendered.unwrap_or_default().split('\n') {
-                        println!("{line}");
-                    }
-                }
-                Message::TextLine(line) => {
-                    println!("{line}");
-                }
-                _ => {}
-            }
-        }
-
-        let status = child
-            .wait()
-            .unwrap_or_else(|err| panic!("failed to wait for {cmd:?}: {err}"));
-        assert_eq!(status.code(), Some(0), "{cmd:?} failed: {status:?}");
-
-        stderr.join().map_err(std::panic::resume_unwind).unwrap();
-
-        for (name, binary) in executables {
-            let dst = out_dir.join(name);
-            let _: u64 =
-                fs::copy(&binary, &dst).unwrap_or_else(|err| panic!("failed to copy {binary:?} to {dst:?}: {err}"));
-        }
-    } else {
-        let Package { targets, .. } = ebpf_package;
-        for Target { name, kind, .. } in targets {
-            if *kind != [TargetKind::Bin] {
-                continue;
-            }
-            let dst = out_dir.join(name);
-            fs::write(&dst, []).unwrap_or_else(|err| panic!("failed to create {dst:?}: {err}"));
-        }
-    }
-}
-
-fn build_egress_ebpf() {
-    let Metadata { packages, .. } = MetadataCommand::new().no_deps().exec().unwrap();
-    let ebpf_package = packages
-        .into_iter()
-        .find(|Package { name, .. }| **name == "egress-ebpf")
-        .unwrap();
-
-    let out_dir = env::var_os("OUT_DIR").unwrap();
-    let out_dir = PathBuf::from(out_dir);
-
-    let endian = env::var_os("CARGO_CFG_TARGET_ENDIAN").unwrap();
-    let target = if endian == "big" {
-        "bpfeb"
-    } else if endian == "little" {
-        "bpfel"
-    } else {
-        panic!("unsupported endian={:?}", endian)
-    };
-
-    let build_ebpf = true;
-    if build_ebpf {
-        let arch = env::var_os("CARGO_CFG_TARGET_ARCH").unwrap();
-
-        let target = format!("{target}-unknown-none");
-
-        let Package { manifest_path, .. } = ebpf_package;
-        let ebpf_dir = manifest_path.parent().unwrap();
-
-        println!("cargo:rerun-if-changed={}", ebpf_dir.as_str());
-
-        let mut cmd = Command::new("cargo");
-        cmd.args([
-            "build",
-            "-Z",
-            "build-std=core",
-            "--bins",
-            "--message-format=json",
-            "--release",
-            "--target",
-            &target,
-        ]);
-
-        cmd.env("CARGO_CFG_BPF_TARGET_ARCH", arch);
-        cmd.env("CARGO_TERM_COLOR", "always");
-
-        for key in ["RUSTUP_TOOLCHAIN", "RUSTC", "RUSTC_WORKSPACE_WRAPPER"] {
-            cmd.env_remove(key);
-        }
-        cmd.current_dir(ebpf_dir);
-
-        let ebpf_target_dir = out_dir.join("../egress-ebpf");
+        let ebpf_target_dir = out_dir.join(format!("../{target_subdir}"));
         cmd.arg("--target-dir").arg(&ebpf_target_dir);
 
         let mut child = cmd

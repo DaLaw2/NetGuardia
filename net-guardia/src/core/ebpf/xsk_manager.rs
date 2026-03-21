@@ -240,6 +240,8 @@ impl XskPair {
                 let mut shutdown_rx = Some(shutdown_rx);
                 let mut idle_count: u32 = 0;
                 let mut buffer_pool = BufferPool::new(self.buffer_pool_capacity, self.packet_buffer_size);
+                let mut comp_descs = vec![FrameDesc::default(); 256];
+                let mut rx_descs = vec![FrameDesc::default(); 64];
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -253,17 +255,17 @@ impl XskPair {
 
                     let mut total_activity = 0;
 
-                    match self.process_comp_queue() {
+                    match self.process_comp_queue(&mut comp_descs) {
                         Ok(count) => total_activity += count,
                         Err(e) => log!(EbpfLog::CompQueueError(format!("{:?}", e))),
                     }
 
-                    match self.process_rx_queue(&forward_tx, &mut buffer_pool) {
+                    match self.process_rx_queue(&forward_tx, &mut buffer_pool, &mut rx_descs) {
                         Ok(count) => total_activity += count,
                         Err(e) => log!(EbpfLog::RXQueueError(format!("{:?}", e))),
                     }
 
-                    match self.process_tx_queue(&forward_rx, &mut buffer_pool) {
+                    match self.process_tx_queue(&forward_rx, &mut buffer_pool, &mut comp_descs) {
                         Ok(count) => total_activity += count,
                         Err(e) => log!(EbpfLog::TXQueueError(format!("{:?}", e))),
                     }
@@ -292,10 +294,8 @@ impl XskPair {
             })
     }
 
-    fn process_comp_queue(&mut self) -> Result<usize, EbpfError> {
-        let mut comp_descs = vec![FrameDesc::default(); 256];
-
-        let nb_completed = unsafe { self.comp_queue.consume(&mut comp_descs) };
+    fn process_comp_queue(&mut self, comp_descs: &mut [FrameDesc]) -> Result<usize, EbpfError> {
+        let nb_completed = unsafe { self.comp_queue.consume(comp_descs) };
 
         if nb_completed > 0 {
             for desc in comp_descs.iter().take(nb_completed) {
@@ -306,9 +306,8 @@ impl XskPair {
         Ok(nb_completed)
     }
 
-    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>, buffer_pool: &mut BufferPool) -> Result<usize, EbpfError> {
-        let mut rx_descs = vec![FrameDesc::default(); 64];
-        let rx_count = unsafe { self.rx.consume(&mut rx_descs) };
+    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>, buffer_pool: &mut BufferPool, rx_descs: &mut [FrameDesc]) -> Result<usize, EbpfError> {
+        let rx_count = unsafe { self.rx.consume(rx_descs) };
 
         if rx_count > 0 {
             let is_ingress = self.direction == Direction::Ingress;
@@ -371,7 +370,7 @@ impl XskPair {
         Ok(rx_count)
     }
 
-    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>, buffer_pool: &mut BufferPool) -> Result<usize, EbpfError> {
+    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>, buffer_pool: &mut BufferPool, comp_descs: &mut [FrameDesc]) -> Result<usize, EbpfError> {
         let mut packets_to_send = Vec::with_capacity(64);
         while let Ok(packet) = forward_rx.try_recv() {
             packets_to_send.push(packet);
@@ -384,7 +383,7 @@ impl XskPair {
             return Ok(0);
         }
 
-        if let Err(e) = self.process_comp_queue() {
+        if let Err(e) = self.process_comp_queue(comp_descs) {
             log!(EbpfLog::CompQueueError(format!("{:?}", e)));
         }
 

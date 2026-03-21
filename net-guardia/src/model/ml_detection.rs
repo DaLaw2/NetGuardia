@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
@@ -35,15 +35,13 @@ pub struct FlowKey {
 
 impl FlowKey {
     pub fn from_packet(packet: &UserPacket) -> Self {
-        let (src_ip, ip_version) = Self::parse_ip_to_bytes(&packet.src_ip);
-        let (dst_ip, _) = Self::parse_ip_to_bytes(&packet.dst_ip);
         Self {
-            src_ip,
-            dst_ip,
+            src_ip: packet.src_ip,
+            dst_ip: packet.dst_ip,
             src_port: packet.src_port,
             dst_port: packet.dst_port,
             protocol: packet.protocol,
-            ip_version,
+            ip_version: packet.ip_version,
         }
     }
 
@@ -64,21 +62,6 @@ impl FlowKey {
 
     pub fn dst_ip_string(&self) -> String {
         self.ip_bytes_to_string(&self.dst_ip)
-    }
-
-    fn parse_ip_to_bytes(ip_str: &str) -> ([u8; 16], u8) {
-        if let Ok(addr) = ip_str.parse::<IpAddr>() {
-            match addr {
-                IpAddr::V4(v4) => {
-                    let mut buf = [0u8; 16];
-                    buf[..4].copy_from_slice(&v4.octets());
-                    (buf, 4)
-                }
-                IpAddr::V6(v6) => (v6.octets(), 6),
-            }
-        } else {
-            ([0u8; 16], 4)
-        }
     }
 
     fn ip_bytes_to_string(&self, bytes: &[u8; 16]) -> String {
