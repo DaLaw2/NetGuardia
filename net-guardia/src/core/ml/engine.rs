@@ -17,10 +17,9 @@ use super::traffic_logger::TrafficLogger;
 use super::alert::MLAlert;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{EngineConfig, InferenceStats};
-use crate::utils::packet_parser::parse_packet;
 
-/// Per-thread tracker. Mutex is only contested during inference tick (every N seconds).
-/// Hot path (process_packet): lock is uncontended → ~15ns.
+/// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
+/// land on the same queue, so per-queue trackers correctly see bidirectional flows.
 pub type ThreadTracker = Arc<Mutex<FlowTracker>>;
 
 pub struct Engine {
@@ -28,7 +27,6 @@ pub struct Engine {
     inference_pipeline: Arc<Inference>,
     aggregator: Mutex<AttackAggregator>,
     ml_alert: Arc<MLAlert>,
-    max_flows_per_thread: usize,
     min_packets: usize,
     batch_size: usize,
     inference_interval_secs: u64,
@@ -50,8 +48,7 @@ impl Engine {
         let min_detections = ((engine_config.aggregator_window_secs / engine_config.inference_interval_secs) / 2).max(1) as usize;
         let aggregator = Mutex::new(AttackAggregator::new(engine_config.aggregator_window_secs, min_detections));
 
-        let max_flows_per_thread = engine_config.max_flows / num_threads.max(1) as usize;
-
+        let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
         let trackers: Vec<ThreadTracker> = (0..num_threads)
             .map(|_| Arc::new(Mutex::new(FlowTracker::new(max_flows_per_thread))))
             .collect();
@@ -61,7 +58,6 @@ impl Engine {
             inference_pipeline,
             aggregator,
             ml_alert,
-            max_flows_per_thread,
             min_packets: engine_config.min_packets,
             batch_size: engine_config.batch_size,
             inference_interval_secs: engine_config.inference_interval_secs,
@@ -70,12 +66,21 @@ impl Engine {
         }
     }
 
+    /// xsk_manager calls this per queue_id; with symmetric hash each queue has its own tracker.
     pub fn tracker(&self, queue_id: u32) -> &ThreadTracker {
-        &self.trackers[queue_id as usize]
+        &self.trackers[queue_id as usize % self.trackers.len()]
     }
 
     pub fn trackers(&self) -> &[ThreadTracker] {
         &self.trackers
+    }
+
+    pub fn inference_interval_secs(&self) -> u64 {
+        self.inference_interval_secs
+    }
+
+    pub fn has_traffic_logger(&self) -> bool {
+        self.traffic_logger.is_some()
     }
 
     pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
@@ -100,17 +105,22 @@ impl Engine {
     }
 
     fn run_inference_tick(&self) {
-        // Collect flows from all per-thread trackers.
-        // Each lock is held only for the duration of get_flows_for_inference (~microseconds).
-        // XSK threads are barely impacted since they process on different trackers.
-        let mut all_flows = Vec::new();
+        let mut all_snapshots = Vec::new();
         let mut total_count = 0;
 
+        // Phase 1: O(1) lock per tracker — just swap
         for tracker in &self.trackers {
-            let t = tracker.lock();
+            let mut t = tracker.lock();
             total_count += t.flow_count();
-            all_flows.extend(t.get_flows_for_inference(self.min_packets));
+            all_snapshots.push(t.take_snapshot());
+            // lock released here
         }
+
+        // Phase 2: filter outside all locks — O(flows) but non-blocking
+        let all_flows: Vec<FlowData> = all_snapshots.into_iter()
+            .flat_map(|map| map.into_values())
+            .filter(|flow| flow.packet_count() >= self.min_packets)
+            .collect();
 
         log!(MLLog::FlowStats(
             total_count,
@@ -127,10 +137,6 @@ impl Engine {
             self.log_traffic(&all_flows, logger);
         } else {
             self.run_inference(&all_flows);
-        }
-
-        for tracker in &self.trackers {
-            tracker.lock().cleanup_old_flows(self.flow_timeout_us);
         }
     }
 
@@ -190,14 +196,4 @@ impl Engine {
         }
     }
 
-    /// Called by XSK threads. Lock is per-thread, uncontended on hot path.
-    pub fn process_packet(tracker: &Mutex<FlowTracker>, packet_data: &[u8], is_ingress: bool) {
-        match parse_packet(packet_data) {
-            Some((packet_info, payload_start)) => {
-                let payload = packet_data.get(payload_start..).unwrap_or(&[]);
-                tracker.lock().process_packet(packet_info, is_ingress, payload);
-            }
-            None => log!(MLLog::ParsePacketFailed(packet_data.len())),
-        }
-    }
 }

@@ -7,15 +7,6 @@ pub enum Direction {
     Egress,
 }
 
-impl Direction {
-    pub fn flip(self) -> Self {
-        match self {
-            Direction::Ingress => Direction::Egress,
-            Direction::Egress => Direction::Ingress,
-        }
-    }
-}
-
 impl std::fmt::Display for Direction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -149,7 +149,6 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
 
     fn add(&mut self, ip: T, port: Port) -> Result<(), Error> {
         if port == 0 {
-            // port 0 in API = match all ports
             self.map
                 .insert(ip, PortRule::new_match_all(), 0)
                 .map_err(EbpfError::MapOperationError)?;
@@ -159,7 +158,7 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
         let mut rule = self.map.get(&ip, 0).unwrap_or_else(|_| PortRule::new_empty());
 
         if rule.is_match_all() {
-            return Ok(()); // already matching all
+            return Ok(());
         }
 
         if !rule.add_port(port) {
@@ -174,7 +173,6 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
 
     fn remove(&mut self, ip: T, port: Port) -> Result<(), Error> {
         if port == 0 {
-            // port 0 in API = remove entire IP
             self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
             return Ok(());
         }
@@ -182,7 +180,6 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
         let mut rule = self.map.get(&ip, 0).map_err(|_| EbpfError::IpDoesNotExist)?;
 
         if rule.is_match_all() {
-            // Can't remove a single port from match_all — remove the whole IP
             self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
             return Ok(());
         }

@@ -23,17 +23,17 @@ impl InferenceConfig {
     pub fn load_file(file: &str) -> Result<Self, MLError> {
         let path = PathBuf::from("models").join(file);
         let content = fs::read_to_string(&path)
-            .map_err(|_| MLError::ConfigLoadFailed { path: path.to_path_buf() })?;
+            .map_err(|_| MLError::ConfigLoadFailed(path.to_path_buf()))?;
         let config: InferenceConfig = serde_json::from_str(&content)
-            .map_err(|e| MLError::ConfigParseFailed { reason: e.to_string() })?;
+            .map_err(|e| MLError::ConfigParseFailed(e.to_string()))?;
         if config.ae_feature_names.is_empty() {
-            return Err(MLError::ConfigParseFailed { reason: "ae_feature_names is empty".into() });
+            return Err(MLError::ConfigParseFailed("ae_feature_names is empty"));
         }
         if config.ae_scaler_mean.len() != config.ae_feature_names.len() {
-            return Err(MLError::ConfigParseFailed { reason: "scaler mean length mismatch".into() });
+            return Err(MLError::ConfigParseFailed("scaler mean length mismatch"));
         }
         if config.ae_scaler_std.len() != config.ae_feature_names.len() {
-            return Err(MLError::ConfigParseFailed { reason: "scaler std length mismatch".into() });
+            return Err(MLError::ConfigParseFailed("scaler std length mismatch"));
         }
         Ok(config)
     }
@@ -50,8 +50,4 @@ impl InferenceConfig {
         self.attack_labels.len()
     }
 
-    #[allow(dead_code)]
-    pub fn get_attack_label(&self, id: usize) -> Option<&String> {
-        self.attack_labels.get(&id.to_string())
-    }
 }

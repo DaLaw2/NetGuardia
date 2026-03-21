@@ -65,11 +65,11 @@ impl PortRule {
                 return false;
             }
             if self.ports[i] == port {
-                return true; // already exists
+                return true;
             }
         }
         if (self.count as usize) >= MAX_RULES_PORT {
-            return false; // full
+            return false;
         }
         self.ports[self.count as usize] = port;
         self.count += 1;
@@ -83,7 +83,6 @@ impl PortRule {
                 break;
             }
             if self.ports[i] == port {
-                // shift remaining
                 for j in i..(self.count as usize - 1) {
                     self.ports[j] = self.ports[j + 1];
                 }
@@ -97,7 +96,8 @@ impl PortRule {
 
     #[cfg(feature = "user")]
     pub fn to_port_vec(&self) -> Vec<Port> {
-        self.ports[..self.count as usize].to_vec()
+        let count = (self.count as usize).min(MAX_RULES_PORT);
+        self.ports[..count].to_vec()
     }
 
     #[cfg(feature = "user")]

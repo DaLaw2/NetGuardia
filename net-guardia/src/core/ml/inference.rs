@@ -25,10 +25,8 @@ impl Inference {
     }
 
     pub fn infer_single(&self, flow: &FlowData) -> Option<DetectionResult> {
-        // extract
         let ae_features = self.preprocess_ae_features(flow);
 
-        // 2. Deep Autoencoder
         let ae_input = Self::vec_to_array2(&ae_features);
         let ae_score = match self.run_autoencoder(&ae_input) {
             Ok(score) => score,
@@ -77,7 +75,6 @@ impl Inference {
         features.winsorize(&self.config.ae_clip_params, &self.config.ae_feature_names);
         features.normalize(&self.config.ae_scaler_mean, &self.config.ae_scaler_std);
         features.clip(self.config.ae_post_clip_min, self.config.ae_post_clip_max);
-        // Note: f64->f32 precision loss is acceptable for ML inference
         features.features.iter().map(|&x| x as f32).collect()
     }
 
@@ -109,7 +106,7 @@ impl Inference {
             .into_dimensionality::<tract_ndarray::Ix2>()?;
 
         let diff = input - &output;
-        let mse = (&diff * &diff).sum() / output.len() as f32;
+        let mse = (&diff * &diff).sum() / self.config.ae_feature_names.len() as f32;
 
         Ok(mse)
     }

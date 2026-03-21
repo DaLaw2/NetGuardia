@@ -31,22 +31,23 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut ParsedPacket)
     let ipv4 = &*((start + IPV4_HEADER_START) as *const Ipv4Hdr);
     let packet_length = (end - start) as u32;
 
-    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
-        IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
-        IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
-        _ => return Err(()),
-    };
-
     let t = &mut *target;
     t.timestamp_ns = bpf_ktime_get_ns();
     core::ptr::copy_nonoverlapping(ipv4.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 4);
     core::ptr::copy_nonoverlapping(ipv4.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 4);
     t.packet_length = packet_length;
+    t.ip_version = 4;
+    t.protocol = ipv4.proto;
+
+    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
+        IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
+        IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
+        _ => (0, 0, 0, 0),
+    };
+
     t.payload_length = packet_length.saturating_sub((IPV4_HEADER_END + l4_header_len) as u32);
     t.src_port = src_port;
     t.dst_port = dst_port;
-    t.ip_version = 4;
-    t.protocol = ipv4.proto;
     t.tcp_flags = tcp_flags;
 
     Ok(())
@@ -61,22 +62,23 @@ unsafe fn parse_ipv6_packet(start: usize, end: usize, target: *mut ParsedPacket)
     let ipv6 = &*((start + IPV6_HEADER_START) as *const Ipv6Hdr);
     let packet_length = (end - start) as u32;
 
-    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv6.next_hdr {
-        IpProto::Tcp => parse_tcp(start, end, IPV6_TCP_HEADER_START, IPV6_TCP_HEADER_END)?,
-        IpProto::Udp => parse_udp(start, end, IPV6_UDP_HEADER_START, IPV6_UDP_HEADER_END)?,
-        _ => return Err(()),
-    };
-
     let t = &mut *target;
     t.timestamp_ns = bpf_ktime_get_ns();
     core::ptr::copy_nonoverlapping(ipv6.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 16);
     core::ptr::copy_nonoverlapping(ipv6.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 16);
     t.packet_length = packet_length;
+    t.ip_version = 6;
+    t.protocol = ipv6.next_hdr;
+
+    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv6.next_hdr {
+        IpProto::Tcp => parse_tcp(start, end, IPV6_TCP_HEADER_START, IPV6_TCP_HEADER_END)?,
+        IpProto::Udp => parse_udp(start, end, IPV6_UDP_HEADER_START, IPV6_UDP_HEADER_END)?,
+        _ => (0, 0, 0, 0),
+    };
+
     t.payload_length = packet_length.saturating_sub((IPV6_HEADER_END + l4_header_len) as u32);
     t.src_port = src_port;
     t.dst_port = dst_port;
-    t.ip_version = 6;
-    t.protocol = ipv6.next_hdr;
     t.tcp_flags = tcp_flags;
 
     Ok(())

@@ -4,26 +4,70 @@ members = ["net-guardia", "common", "macros", "ingress-ebpf", "egress-ebpf"]
 default-members = ["net-guardia", "common"]
 
 [workspace.dependencies]
+# eBPF - kernel side (pinned: aya-ebpf 0.1.2 was yanked, see aya-rs/aya#1400)
+aya-ebpf = { version = "=0.1.1", default-features = false }
+aya-log-ebpf = { version = "=0.1.0", default-features = false }
+
+# eBPF - userspace side
 aya = { version = "0.13.1", default-features = false }
-aya-ebpf = { version = "0.1.1", default-features = false }
 aya-log = { version = "0.2.1", default-features = false }
-aya-log-ebpf = { version = "0.1.0", default-features = false }
-cargo_metadata = { version = "0.23.1", default-features = false }
-libc = { version = "0.2.159", default-features = false }
 network-types = "0.1.0"
-serde = { version = "1.0.215", features = ["derive"] }
+
+# XDP
 xsk-rs = { version = "0.8.0", default-features = false }
+libxdp-sys = { version = "0.2.4", features = ["use_cc_build", "use_precompiled_bpf"] }
+
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+# Async runtime
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# Web framework
+actix = "0.13.5"
+actix-web = "4.13.0"
+actix-cors = "0.7.1"
+actix-ws = "0.4.0"
+
+# Logging / tracing
+tracing = "0.1.44"
+tracing-appender = "0.2.4"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# ML
+tract-onnx = "0.22.1"
+
+# Utilities
+parking_lot = "0.12.5"
+libc = { version = "0.2.183", default-features = false }
+thiserror = "2.0.18"
+futures-util = "0.3.32"
+crossbeam = "0.8.4"
+
+# System
+sysinfo = "0.38.4"
+maxminddb = "0.27.3"
+ipnetwork = "0.21.1"
+lru = "0.16.3"
+
+# Build dependencies
+cargo_metadata = { version = "0.23.1", default-features = false }
+which = "8.0.2"
+
+# Proc macro
+proc-macro2 = "1.0.106"
+quote = "1.0.45"
+syn = { version = "2.0.117", features = ["full"] }
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
-#opt-level = 3
-#lto = true
-#strip = true
-#debug = false
-#overflow-checks = false
+opt-level = 3
+lto = "thin"
+strip = true
 
 [profile.release.package.ingress-ebpf]
 debug = 2

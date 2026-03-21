@@ -7,37 +7,49 @@ edition = "2024"
 common = { path = "../common", features = ["user"] }
 macros = { path = "../macros" }
 
-actix = "0.13.5"
-actix-cors = "0.7.1"
-actix-web = "4.11.0"
-actix-ws = "0.4.0"
+# eBPF userspace
 aya = { workspace = true }
 aya-log = { workspace = true }
 network-types = { workspace = true }
-crossbeam = "0.8.4"
-futures-util = "0.3.30"
-libc = { workspace = true }
-mime_guess = "2.0.5"
-parking_lot = "0.12.5"
-rust-embed = "8.7.2"
-serde = { workspace = true }
-serde_json = "1.0.143"
-sysinfo = "0.38.2"
-thiserror = "2.0.3"
-tokio = { version = "1.40.0", features = ["full", "macros"] }
-tokio-tungstenite = "0.28.0"
-toml = "1.0.3"
-tracing = "0.1.41"
-tracing-appender = "0.2.3"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-url = "2.5.7"
 xsk-rs = { workspace = true }
-maxminddb = "0.27.1"
-lru = "0.16.2"
-futures = "0.3.31"
-tract-onnx = "0.22.0"
-#csv = "1.4.0"
-#anyhow = "1.0.100"
+libxdp-sys = { workspace = true }
+libc = { workspace = true }
+
+# Web
+actix = { workspace = true }
+actix-web = { workspace = true }
+actix-cors = { workspace = true }
+actix-ws = { workspace = true }
+rust-embed = "8.11.0"
+mime_guess = "2.0.5"
+url = "2.5.8"
+tokio-tungstenite = "0.28.0"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "1.0.7"
+
+# Async
+tokio = { workspace = true }
+futures-util = { workspace = true }
+crossbeam = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# ML
+tract-onnx = { workspace = true }
+
+# Utilities
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+sysinfo = { workspace = true }
+maxminddb = { workspace = true }
+ipnetwork = { workspace = true }
+lru = { workspace = true }
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

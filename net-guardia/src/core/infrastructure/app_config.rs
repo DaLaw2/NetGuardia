@@ -10,7 +10,6 @@ pub struct AppConfig {
     pub http: HttpConfig,
     pub network: NetworkConfig,
     pub inference: InfConfig,
-    #[allow(dead_code)]
     pub misc: MiscConfig,
     pub pipeline: PipelineConfig,
 }

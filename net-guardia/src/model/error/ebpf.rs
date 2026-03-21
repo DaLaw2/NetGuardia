@@ -6,20 +6,20 @@ traceable! {
         #[error("Failed to initialize eBPF logger")]
         LoggerInitFailed => tracing::Level::ERROR,
 
-        #[error("Ebpf program not found")]
+        #[error("eBPF object not found")]
         EbpfNotFound => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Failed to load XDP program")]
+        #[error("XDP program not found")]
         ProgramNotFound => tracing::Level::ERROR,
 
-        #[error("Failed to load XDP program")]
+        #[error("Failed to get XDP program")]
         GetProgramFailed => tracing::Level::ERROR,
 
         #[error("Failed to load XDP program")]
         LoadProgramFailed => tracing::Level::ERROR,
 
-        #[error("Failed to attach the XDP program")]
+        #[error("Failed to attach XDP program")]
         AttachProgramFailed => tracing::Level::ERROR,
 
         #[error("Failed to set umem")]
@@ -28,33 +28,33 @@ traceable! {
         #[error("Failed to set AF_XDP socket")]
         SocketSetFailed => tracing::Level::ERROR,
 
-        #[error("Failed to set AF_XDP")]
+        #[error("Failed to configure AF_XDP")]
         AfXdpSetFailed => tracing::Level::ERROR,
 
         #[error("Failed to wakeup TX")]
         WakeupTXFailed => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Map not found")]
+        #[error("eBPF map not found")]
         MapNotFound => tracing::Level::ERROR,
 
-        #[error("An error occurred during map operation")]
+        #[error("eBPF map operation failed")]
         MapOperationError => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("The ip required for operation does not exist")]
+        #[error("IP does not exist in map")]
         IpDoesNotExist => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Amount of rules has reached the upper limit")]
+        #[error("Rule count has reached the upper limit")]
         RuleReachLimit => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Fill queue initialization failed: submitted fewer frames than expected")]
+        #[error("Fill queue initialization failed")]
         FillQueueInitFailed => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Unknown error")]
+        #[error("Unknown eBPF error")]
         UnknownError => tracing::Level::ERROR,
 
         #[error("Failed to spawn XSK thread")]
@@ -70,4 +70,3 @@ traceable! {
         TXQueueError => tracing::Level::ERROR,
     }
 }
-

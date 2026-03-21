@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::time;
-
 use common::define::tcp_flags::*;
 
 use crate::model::direction::Direction;
@@ -34,6 +32,8 @@ pub struct FlowData {
     pub last_packet_time: u64,
     pub fwd_bulk_state: BulkState,
     pub bwd_bulk_state: BulkState,
+    pub act_data_pkt_fwd: u32,
+    is_first_packet: bool,
 }
 
 impl FlowData {
@@ -64,6 +64,8 @@ impl FlowData {
             last_packet_time: first_packet.timestamp_us,
             fwd_bulk_state: BulkState::default(),
             bwd_bulk_state: BulkState::default(),
+            act_data_pkt_fwd: 0,
+            is_first_packet: true,
         }
     }
 
@@ -100,11 +102,17 @@ impl FlowData {
         self.last_packet_time = packet.timestamp_us;
         self.last_time_us = packet.timestamp_us;
 
+        if self.is_first_packet {
+            self.is_first_packet = false;
+        } else if packet.is_forward && packet.payload_length > 0 {
+            self.act_data_pkt_fwd += 1;
+        }
+
         if packet.is_forward {
             if self.fwd_packets.len() < MAX_PACKETS_PER_DIRECTION {
                 self.fwd_packets.push(packet_data.clone());
             }
-            self.fwd_total_bytes += packet.packet_length as u64;
+            self.fwd_total_bytes += packet.payload_length as u64;
             self.fwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_fwd == 0 { self.init_win_bytes_fwd = packet.tcp_window_size; }
             Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
@@ -112,7 +120,7 @@ impl FlowData {
             if self.bwd_packets.len() < MAX_PACKETS_PER_DIRECTION {
                 self.bwd_packets.push(packet_data.clone());
             }
-            self.bwd_total_bytes += packet.packet_length as u64;
+            self.bwd_total_bytes += packet.payload_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_bwd == 0 { self.init_win_bytes_bwd = packet.tcp_window_size; }
             Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data);
@@ -167,127 +175,87 @@ impl FlowData {
 /// Per-thread flow tracker. No locks — each XSK thread owns one.
 /// RSS guarantees the same flow always goes to the same thread.
 pub struct FlowTracker {
-    flows: HashMap<FlowKey, FlowData>,
+    active: HashMap<FlowKey, FlowData>,
     max_flows: usize,
 }
 
 impl FlowTracker {
     pub fn new(max_flows: usize) -> Self {
         Self {
-            flows: HashMap::new(),
+            active: HashMap::new(),
             max_flows,
         }
     }
 
-    pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool, payload: &[u8]) {
-        let direction = if is_ingress { Direction::Ingress } else { Direction::Egress };
+    /// Swap active flows with an empty map and return the old one.
+    /// This is O(1) — the caller filters outside the lock.
+    pub fn take_snapshot(&mut self) -> HashMap<FlowKey, FlowData> {
+        let mut snapshot = HashMap::with_capacity(self.active.capacity());
+        std::mem::swap(&mut self.active, &mut snapshot);
+        snapshot
+    }
+
+    pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
-        let proto = packet_key.protocol;
-        let src_port = packet_key.src_port;
-        let dst_port = packet_key.dst_port;
         let reversed_key = packet_key.clone().reverse();
 
-        let (actual_key, is_forward) = if self.flows.contains_key(&packet_key) {
+        // Try to match an existing flow first (canonical key already established).
+        let (actual_key, is_forward) = if self.active.contains_key(&packet_key) {
             (packet_key, true)
-        } else if self.flows.contains_key(&reversed_key) {
+        } else if self.active.contains_key(&reversed_key) {
             (reversed_key, false)
         } else {
-            let has_syn = packet.tcp_flags & TCP_SYN != 0;
-            let has_ack = packet.tcp_flags & TCP_ACK != 0;
-            if has_syn && has_ack {
+            // New flow: determine initiator using TCP flags, fall back to is_ingress.
+            let syn = packet.tcp_flags & TCP_SYN != 0;
+            let ack = packet.tcp_flags & TCP_ACK != 0;
+            if syn && ack {
+                // SYN+ACK: sender is the responder.
+                //   Ingress: external server responding to internal client → reverse so
+                //            canonical key has internal client as src.
+                //   Egress:  internal server responding to external client → keep as-is.
                 if is_ingress { (reversed_key, false) } else { (packet_key, true) }
-            } else if has_syn {
+            } else if syn {
+                // SYN: sender is always the initiator.
                 (packet_key, true)
             } else {
-                match detect_initiator(payload, proto, src_port, dst_port) {
-                    Some(true) => (packet_key, true),
-                    Some(false) => (reversed_key, false),
-                    None => (packet_key, true),
-                }
+                // Mid-stream / UDP / ICMP: use is_ingress as best-effort heuristic.
+                // Egress = we are the initiator (forward); ingress = remote initiated (backward).
+                if is_ingress { (reversed_key, false) } else { (packet_key, true) }
             }
         };
 
         packet.is_forward = is_forward;
-        let initiator_direction = if is_forward { direction } else { direction.flip() };
 
-        let flow = self.flows
+        // Record which interface the initiator is on for this flow.
+        let initiator_direction = if is_forward {
+            if is_ingress { Direction::Ingress } else { Direction::Egress }
+        } else {
+            if is_ingress { Direction::Egress } else { Direction::Ingress }
+        };
+
+        let flow = self.active
             .entry(actual_key.clone())
             .or_insert_with(|| FlowData::new(actual_key, &packet, initiator_direction));
 
         flow.add_packet(&packet);
 
-        if self.flows.len() > self.max_flows {
-            if let Some(oldest_key) = self.flows.iter()
+        if self.active.len() > self.max_flows {
+            if let Some(oldest_key) = self.active.iter()
                 .min_by_key(|(_, flow)| flow.last_time_us)
                 .map(|(k, _)| k.clone())
             {
-                self.flows.remove(&oldest_key);
+                self.active.remove(&oldest_key);
             }
         }
     }
 
-    /// Take all flows out, leaving this tracker empty. Lock-free.
-    pub fn drain_flows(&mut self) -> Vec<FlowData> {
-        self.flows.drain().map(|(_, v)| v).collect()
-    }
-
     /// Get a snapshot without draining.
     pub fn get_flows(&self) -> Vec<FlowData> {
-        self.flows.values().cloned().collect()
-    }
-
-    pub fn get_flows_for_inference(&self, min_packets: usize) -> Vec<FlowData> {
-        self.flows
-            .values()
-            .filter(|flow| flow.packet_count() >= min_packets)
-            .cloned()
-            .collect()
-    }
-
-    pub fn cleanup_old_flows(&mut self, max_age_us: u64) {
-        let now = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .map(|d| d.as_micros() as u64)
-            .unwrap_or(0);
-
-        self.flows.retain(|_, flow| now.saturating_sub(flow.last_time_us) < max_age_us);
+        self.active.values().cloned().collect()
     }
 
     pub fn flow_count(&self) -> usize {
-        self.flows.len()
+        self.active.len()
     }
 }
 
-fn detect_initiator(payload: &[u8], protocol: u8, src_port: u16, dst_port: u16) -> Option<bool> {
-    if payload.is_empty() { return None; }
-
-    if payload.len() >= 6 && payload[0] == 0x16 {
-        return match payload[5] {
-            0x01 => Some(true),
-            0x02 => Some(false),
-            _ => None,
-        };
-    }
-
-    if payload.len() >= 5 {
-        if payload.starts_with(b"GET ")
-            || payload.starts_with(b"POST ")
-            || payload.starts_with(b"PUT ")
-            || payload.starts_with(b"HEAD ")
-            || payload.starts_with(b"DELETE ")
-            || payload.starts_with(b"OPTIONS ")
-            || payload.starts_with(b"PATCH ")
-        {
-            return Some(true);
-        }
-        if payload.starts_with(b"HTTP/") {
-            return Some(false);
-        }
-    }
-
-    if protocol == 17 && (src_port == 53 || dst_port == 53) && payload.len() >= 3 {
-        return Some((payload[2] >> 7) == 0);
-    }
-
-    None
-}

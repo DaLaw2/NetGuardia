@@ -13,4 +13,16 @@ logs
 TODO
 .log
 .txt
+.csv
 net-guardia/static/web
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# Profiling
+*.profraw
+*.profdata

@@ -1,10 +1,17 @@
 use std::net::{SocketAddrV4, SocketAddrV6};
 
 use actix_web::{web, HttpResponse, Responder, Scope};
+use serde::Deserialize;
 
 use crate::core::ebpf::access_control::AccessControl;
+use crate::core::ebpf::geo_block::GeoBlock;
 use crate::model::direction::FlowDirection;
 use crate::model::list_type::ListType;
+
+#[derive(Deserialize)]
+struct CountryCodesRequest {
+    country_codes: Vec<String>,
+}
 
 pub fn initialize() -> Scope {
     web::scope("/acl")
@@ -14,6 +21,9 @@ pub fn initialize() -> Scope {
         .route("/ipv6/{direction}/{list_type}", web::put().to(add_ipv6_list))
         .route("/ipv4/{direction}/{list_type}", web::delete().to(remove_ipv4_list))
         .route("/ipv6/{direction}/{list_type}", web::delete().to(remove_ipv6_list))
+        .route("/geo/blocked", web::get().to(get_geo_blocked))
+        .route("/geo/block", web::put().to(block_geo_countries))
+        .route("/geo/unblock", web::delete().to(unblock_geo_countries))
 }
 
 async fn get_ipv4_list(
@@ -83,5 +93,42 @@ async fn remove_ipv6_list(
     match access_control.remove_ipv6_list(direction, list_type, address).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+async fn get_geo_blocked(
+    geo_block: web::Data<GeoBlock>,
+) -> impl Responder {
+    let blocked = geo_block.get_blocked_countries();
+    HttpResponse::Ok().json(serde_json::json!({"blocked_countries": blocked}))
+}
+
+async fn block_geo_countries(
+    body: web::Json<CountryCodesRequest>,
+    geo_block: web::Data<GeoBlock>,
+) -> impl Responder {
+    let codes = body.into_inner().country_codes;
+    match geo_block.block_countries(&codes) {
+        Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
+            "blocked_countries": geo_block.get_blocked_countries(),
+            "total_prefixes": total_prefixes,
+        })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+async fn unblock_geo_countries(
+    body: web::Json<CountryCodesRequest>,
+    geo_block: web::Data<GeoBlock>,
+) -> impl Responder {
+    let codes = body.into_inner().country_codes;
+    match geo_block.unblock_countries(&codes) {
+        Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
+            "blocked_countries": geo_block.get_blocked_countries(),
+            "total_prefixes": total_prefixes,
+        })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})),
     }
 }

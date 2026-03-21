@@ -27,7 +27,7 @@ traffic_logging_mode = true
 traffic_log_csv_path = "traffic_log.csv"
 
 [Misc]
-geoip_db_name = "GeoLite2-City.mmdb"
+geoip_db_name = "net-guardia/static/geo/GeoLite2-City.mmdb"
 
 [Pipeline]
 ingress = ["access_control", "rate_limit", "service"]

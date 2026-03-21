@@ -56,6 +56,11 @@ impl System {
 
         let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
+        // Write queue count to eBPF maps for symmetric hash redirect
+        let num_queues = app_config.network.combined_queue_count;
+        Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
+        Self::write_num_queues(&mut egress_ebpf, num_queues)?;
+
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
             &mut ingress_ebpf,
@@ -125,8 +130,8 @@ impl System {
         let egress_ifname = self.app_config.network.egress_ifname.clone();
         Self::set_memory_limit()?;
 
-        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;   // already loaded in configure_ingress_pipeline
-        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;   // load now
+        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;
+        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;
         Ok(())
     }
 
@@ -149,10 +154,14 @@ impl System {
         let inference_config = self.inference_config.clone();
         let access_control = self.ebpf_services.access_control.clone();
         let protocol_filter = self.ebpf_services.protocol_filter.clone();
+        let dns_filter = self.ebpf_services.dns_filter.clone();
+        let geo_block = self.ebpf_services.geo_block.clone();
         let rate_limit = self.ebpf_services.rate_limit.clone();
         let health = self.app_services.health.clone();
         let ml_alert = self.app_services.ml_alert.clone();
+        let ml_engine = self.app_services.ml_engine.clone();
         let flow_statistics = self.app_services.flow_statistics.clone();
+        let drop_monitor = self.ebpf_services.drop_monitor.clone();
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -167,10 +176,14 @@ impl System {
                 .app_data(web::Data::from(inference_config.clone()))
                 .app_data(web::Data::from(access_control.clone()))
                 .app_data(web::Data::from(protocol_filter.clone()))
+                .app_data(web::Data::from(dns_filter.clone()))
+                .app_data(web::Data::from(geo_block.clone()))
                 .app_data(web::Data::from(rate_limit.clone()))
                 .app_data(web::Data::from(health.clone()))
                 .app_data(web::Data::from(ml_alert.clone()))
+                .app_data(web::Data::from(ml_engine.clone()))
                 .app_data(web::Data::from(flow_statistics.clone()))
+                .app_data(web::Data::from(drop_monitor.clone()))
                 .service(
                     web::scope("/api")
                         .service(acl::initialize())
@@ -209,7 +222,6 @@ impl System {
     ) -> Result<ProgramArray<MapData>, Error> {
         let registry = stage_registry();
 
-        // Load entry point program BEFORE taking maps — verifier needs map fds at load time
         let entry: &mut Xdp = ebpf
             .program_mut("net_guardia")
             .ok_or(EbpfError::ProgramNotFound)?
@@ -217,41 +229,35 @@ impl System {
             .map_err(EbpfError::GetProgramFailed)?;
         entry.load().map_err(EbpfError::LoadProgramFailed)?;
 
-        // Take maps
         let pa_map = ebpf.take_map("PROGRAM_ARRAY").ok_or(EbpfError::MapNotFound)?;
         let mut program_array = ProgramArray::try_from(pa_map).map_err(EbpfError::MapOperationError)?;
 
         let ns_map = ebpf.take_map("NEXT_STAGE").ok_or(EbpfError::MapNotFound)?;
         let mut next_stage = Array::<MapData, u32>::try_from(ns_map).map_err(EbpfError::MapOperationError)?;
 
-        // Load transmission (always present at STAGE_TRANSMISSION)
         Self::load_program(ebpf, &mut program_array, "transmission", STAGE_TRANSMISSION)?;
 
         if stages.is_empty() {
-            // Empty pipeline: entry → transmission
             next_stage
                 .set(STAGE_ENTRY as u32, STAGE_TRANSMISSION, 0)
                 .map_err(EbpfError::MapOperationError)?;
             return Ok(program_array);
         }
 
-        // Load each stage and assign a slot (starting from slot 1)
-        let mut slots: Vec<(u32, u32)> = Vec::new(); // (stage_id, slot_index)
+        let mut slots: Vec<(u32, u32)> = Vec::new();
         for (i, stage_name) in stages.iter().enumerate() {
             let (func_name, stage_id) = registry
                 .get(stage_name.as_str())
                 .ok_or(EbpfError::ProgramNotFound)?;
-            let slot = (i + 1) as u32; // slots 1, 2, 3, ...
+            let slot = (i + 1) as u32;
             Self::load_program(ebpf, &mut program_array, func_name, slot)?;
             slots.push((*stage_id, slot));
         }
 
-        // Wire NEXT_STAGE: entry → first slot
         next_stage
             .set(STAGE_ENTRY as u32, slots[0].1, 0)
             .map_err(EbpfError::MapOperationError)?;
 
-        // Wire each stage to the next
         for i in 0..slots.len() {
             let (stage_id, _) = slots[i];
             let next_slot = if i + 1 < slots.len() {
@@ -295,6 +301,13 @@ impl System {
         if ret != 0 {
             Err(MiscError::RamLimitUnlockError(ret))?
         }
+        Ok(())
+    }
+
+    fn write_num_queues(ebpf: &mut Ebpf, num_queues: u32) -> Result<(), Error> {
+        let map = ebpf.map_mut("NUM_QUEUES").ok_or(EbpfError::MapNotFound)?;
+        let mut arr = Array::<_, u32>::try_from(map).map_err(EbpfError::MapOperationError)?;
+        arr.set(0, num_queues, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }

@@ -1,0 +1,72 @@
+version: "3"
+
+services:
+  netguardia:
+    build:
+      context: ..
+      dockerfile: compose/Containerfile.netguardia
+    container_name: netguardia
+    hostname: netguardia
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    dns:
+      - 10.10.3.1
+      - 8.8.8.8
+    networks:
+      mgmt-net:
+        ipv4_address: 10.10.3.10
+    ports:
+      - "2222:22"
+      - "8080:8080"
+    volumes:
+      - /home/dalaw2/NetGuardia:/root/NetGuardia:z
+      - /sys/fs/bpf:/sys/fs/bpf:rw
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+
+  router:
+    build:
+      context: ..
+      dockerfile: compose/Containerfile.router
+    container_name: router
+    hostname: router
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: none
+
+  external:
+    build:
+      context: ..
+      dockerfile: compose/Containerfile.endpoint
+    container_name: external
+    hostname: external
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: none
+    command: ["/opt/scripts/traffic-external.sh"]
+
+  internal:
+    build:
+      context: ..
+      dockerfile: compose/Containerfile.endpoint
+    container_name: internal
+    hostname: internal
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: none
+    command: ["/opt/scripts/traffic-internal.sh"]
+
+networks:
+  mgmt-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.3.0/24
+          gateway: 10.10.3.1

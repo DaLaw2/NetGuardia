@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 common = { path = "../common", features = ["kernel"] }
-
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
+network-types = { workspace = true }
 
 [build-dependencies]
-which = "8.0.0"
+which = { workspace = true }
 
 [[bin]]
 name = "net-guardia-egress"

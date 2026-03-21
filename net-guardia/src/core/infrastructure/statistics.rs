@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time;
 
 use crate::core::ml::engine::Engine;
-use crate::model::direction::Direction;
 use crate::model::flow_stats::{FlowStatsEntry, FlowSubscription, StatsSummary};
 
 pub struct FlowStatistics {
@@ -31,23 +30,19 @@ impl FlowStatistics {
 
         let mut flows = self.get_all_flows();
 
-        // Filter by direction
         if let Some(dir) = &sub.direction {
             flows.retain(|f| &f.direction == dir);
         }
 
-        // Filter by time window
         if let Some(window_secs) = sub.window_secs {
             let cutoff = now_us.saturating_sub(window_secs * 1_000_000);
             flows.retain(|f| f.last_seen_us >= cutoff);
         }
 
-        // Sort by total bytes descending
         flows.sort_by(|a, b| {
             (b.fwd_bytes + b.bwd_bytes).cmp(&(a.fwd_bytes + a.bwd_bytes))
         });
 
-        // Limit
         if let Some(n) = sub.top_n {
             flows.truncate(n.min(10000));
         }

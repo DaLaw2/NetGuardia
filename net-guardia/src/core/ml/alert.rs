@@ -1,7 +1,8 @@
+use macros::log;
 use serde::Serialize;
 use tokio::sync::broadcast;
-use tracing::error;
 
+use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::DetectionResult;
 
 const ALERT_CHANNEL_CAPACITY: usize = 100;
@@ -65,11 +66,10 @@ impl MLAlert {
         if self.broadcast_tx.receiver_count() > 0 {
             let alert = AlertMessage::from_detection_result(result);
             if let Err(e) = self.broadcast_tx.send(alert) {
-                error!("Failed to broadcast ML alert: {}", e);
+                log!(MLLog::BroadcastAlertFailed(e.to_string()));
             }
         }
     }
-
 }
 
 impl Default for MLAlert {
