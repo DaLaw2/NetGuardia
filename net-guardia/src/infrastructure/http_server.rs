@@ -6,8 +6,9 @@ use actix_web::{web, App, HttpServer};
 use crate::core::auth::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
+use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::core::ml::config_loader::InferenceConfig;
 #[cfg(feature = "license")]
 use crate::core::license::LicenseInfo;
@@ -25,6 +26,7 @@ pub struct HttpServerParams {
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
+    pub comm: Arc<CommunicationManager>,
     #[cfg(feature = "license")]
     pub license_info: Arc<LicenseInfo>,
 }
@@ -45,6 +47,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let inference_config = params.inference_config;
     let db = params.db;
     let jwt_service = params.jwt_service;
+    let comm = params.comm;
     #[cfg(feature = "license")]
     let license_info = params.license_info;
     let port = app_config.http.http_server_bind_port;
@@ -70,7 +73,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
             .app_data(web::Data::from(db.clone() as Arc<dyn RepositoryPort>))
-            .app_data(web::Data::from(jwt_service.clone()));
+            .app_data(web::Data::from(jwt_service.clone()))
+            .app_data(web::Data::from(comm.clone()));
         #[cfg(feature = "license")]
         let app = app.app_data(web::Data::from(license_info.clone()));
         app.service(

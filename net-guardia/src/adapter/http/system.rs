@@ -1,6 +1,9 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
+use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::interface::communication::command_types::ChangeEnforceModeCommand;
+use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::repository::RepositoryPort;
 
 type Repo = dyn RepositoryPort;
@@ -27,10 +30,9 @@ async fn get_boot_time() -> impl Responder {
     HttpResponse::Ok().json(crate::utils::boot_time::boot_time())
 }
 
-async fn get_enforce_mode(db: web::Data<Repo>) -> impl Responder {
-    match db.get_setting("enforce_mode") {
-        Ok(Some(mode)) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
-        Ok(None) => HttpResponse::Ok().json(serde_json::json!({"mode": "monitor"})),
+async fn get_enforce_mode(comm: web::Data<CommunicationManager>) -> impl Responder {
+    match comm.send_query(GetEnforceModeQuery).await {
+        Ok(mode) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Err(e) => HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()})),
     }
@@ -38,7 +40,7 @@ async fn get_enforce_mode(db: web::Data<Repo>) -> impl Responder {
 
 async fn set_enforce_mode(
     body: web::Json<EnforceModeRequest>,
-    db: web::Data<Repo>,
+    comm: web::Data<CommunicationManager>,
 ) -> impl Responder {
     let mode = &body.mode;
     if mode != "monitor" && mode != "enforce" {
@@ -46,9 +48,8 @@ async fn set_enforce_mode(
             .json(serde_json::json!({"error": "Mode must be 'monitor' or 'enforce'"}));
     }
 
-    match db.set_setting("enforce_mode", mode) {
+    match comm.send_command(ChangeEnforceModeCommand { mode: mode.clone() }).await {
         Ok(_) => {
-            tracing::info!("Enforce mode changed to: {}", mode);
             HttpResponse::Ok().json(serde_json::json!({"mode": mode}))
         }
         Err(e) => HttpResponse::InternalServerError()

@@ -7,8 +7,9 @@ use macros::log;
 use crate::core::auth::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
+use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::core::ml::config_loader::InferenceConfig;
 #[cfg(feature = "license")]
 use crate::core::license::LicenseInfo;
@@ -30,6 +31,7 @@ pub struct System {
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
+    pub comm: Arc<CommunicationManager>,
     #[cfg(feature = "license")]
     pub license_info: Arc<LicenseInfo>,
     pub ingress_ebpf: Ebpf,
@@ -48,6 +50,7 @@ impl System {
             app_services: state.app_services,
             db: state.db,
             jwt_service: state.jwt_service,
+            comm: state.comm,
             #[cfg(feature = "license")]
             license_info: state.license_info,
             ingress_ebpf: state.ingress_ebpf,
@@ -122,6 +125,7 @@ impl System {
             app_services: self.app_services.clone(),
             db: self.db.clone(),
             jwt_service: self.jwt_service.clone(),
+            comm: self.comm.clone(),
             #[cfg(feature = "license")]
             license_info: self.license_info.clone(),
         };

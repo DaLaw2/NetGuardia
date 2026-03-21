@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio::time::interval;
 use macros::log;
 
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::model::log::health::Health;
 use crate::model::error::Error;
 use crate::model::health::{

@@ -22,7 +22,7 @@ use crate::core::ebpf::geo_block::GeoBlock;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::ebpf::xsk_manager::XskManager;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;

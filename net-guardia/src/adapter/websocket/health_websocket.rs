@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::core::infrastructure::health::SystemHealth;
+use crate::infrastructure::health::SystemHealth;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;

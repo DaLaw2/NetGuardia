@@ -1,7 +1,8 @@
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
-use crate::core::auth::jwt::{Claims, JwtService};
+use crate::core::auth::jwt::JwtService;
+use crate::model::auth::Claims;
 use crate::core::auth::password;
 use crate::interface::port::repository::RepositoryPort;
 
@@ -218,5 +219,49 @@ async fn change_password(
             .json(serde_json::json!({"message": "Password changed successfully"})),
         Err(e) => HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("admin").is_ok());
+        assert!(validate_username("user_123").is_ok());
+        assert!(validate_username("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_empty() {
+        assert!(validate_username("").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_too_long() {
+        let long = "a".repeat(33);
+        assert!(validate_username(&long).is_err());
+    }
+
+    #[test]
+    fn test_validate_username_special_chars() {
+        assert!(validate_username("admin@host").is_err());
+        assert!(validate_username("user name").is_err());
+        assert!(validate_username("user-name").is_err());
+        assert!(validate_username("用戶").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("12345678").is_ok());
+        assert!(validate_password("a very long password").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_too_short() {
+        assert!(validate_password("").is_err());
+        assert!(validate_password("1234567").is_err());
+        assert!(validate_password("a").is_err());
     }
 }

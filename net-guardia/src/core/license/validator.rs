@@ -3,39 +3,14 @@ use std::path::Path;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signature, VerifyingKey, Verifier};
-use serde::{Deserialize, Serialize};
 
 use crate::model::error::license::LicenseError;
+use crate::model::license::{LicenseInfo, LicensePayload};
 
 /// Public key auto-embedded from license_pub.key at compile time.
 /// Generate with: cd license-generator && cargo run -- keygen
 /// Then place license_pub.key in the repo root.
 const PUBLIC_KEY_HEX: &str = env!("LICENSE_PUBLIC_KEY");
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LicensePayload {
-    pub ingress_mac: String,
-    pub egress_mac: String,
-    pub expires: String,
-    pub features: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LicenseInfo {
-    pub payload: Option<LicensePayload>,
-    pub valid: bool,
-    pub days_remaining: i64,
-}
-
-impl LicenseInfo {
-    pub fn unlicensed() -> Self {
-        Self {
-            payload: None,
-            valid: false,
-            days_remaining: 0,
-        }
-    }
-}
 
 pub fn validate_license(license_path: &str, ingress_ifname: &str, egress_ifname: &str) -> Result<LicenseInfo, crate::model::error::Error> {
     // Guard against builds where the license feature was not configured

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dalaw2-dev]
+  pull_request:
+    branches: [master, dalaw2-dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc m4 clang llvm \
+            libelf-dev zlib1g-dev pkg-config
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Rust nightly toolchain (for bpf-linker)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # bpf-linker is required by build.rs to compile eBPF programs.
+      # Use cargo-binstall for a faster pre-built binary install when available,
+      # otherwise fall back to building from source (can take ~30 min).
+      - name: Install bpf-linker
+        run: |
+          cargo install cargo-binstall --locked 2>/dev/null || true
+          if command -v cargo-binstall &>/dev/null; then
+            cargo binstall bpf-linker --no-confirm --locked || cargo install bpf-linker --locked
+          else
+            cargo install bpf-linker --locked
+          fi
+        timeout-minutes: 45
+
+      - name: cargo check
+        run: cargo check --package net-guardia
+
+      - name: cargo test
+        run: cargo test --package net-guardia
+
+      - name: cargo clippy
+        run: cargo clippy --package net-guardia -- -D warnings -A dead_code
+
+  integration-test:
+    name: Integration Test (placeholder)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Integration tests require a podman-based multi-container network
+      # environment (netguardia, router, external, internal containers) that
+      # is not available in GitHub Actions runners.
+      #
+      # The real integration tests are run on the dev server via:
+      #   /home/dalaw2/test_netguardia.sh
+      #
+      # That script tests XDP packet forwarding, Web API endpoints, ACL
+      # blocking, rate limiting, ML engine, WebSocket, GeoIP country
+      # blocking, and DNS blacklist functionality across the container
+      # network topology.
+      - name: Integration test reminder
+        run: |
+          echo "============================================"
+          echo "  Integration tests are not run in CI."
+          echo "  They require the podman test environment."
+          echo ""
+          echo "  Run on the dev server:"
+          echo "    bash /home/dalaw2/test_netguardia.sh"
+          echo "============================================"

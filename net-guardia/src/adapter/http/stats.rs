@@ -1,7 +1,7 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 
 use crate::core::ebpf::drop_monitor::DropMonitor;
-use crate::core::infrastructure::statistics::FlowStatistics;
+use crate::infrastructure::statistics::FlowStatistics;
 
 pub fn initialize() -> Scope {
     web::scope("/stats")

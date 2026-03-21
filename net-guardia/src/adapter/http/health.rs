@@ -1,6 +1,6 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 
-use crate::core::infrastructure::health::SystemHealth;
+use crate::infrastructure::health::SystemHealth;
 
 pub fn initialize() -> Scope {
     web::scope("/health")

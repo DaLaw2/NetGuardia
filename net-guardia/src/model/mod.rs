@@ -1,9 +1,13 @@
+pub mod auth;
 pub mod config;
 pub mod direction;
+pub mod drop_event;
 pub mod error;
 pub mod flow_stats;
 pub mod health;
 pub mod ip_address;
+#[cfg(feature = "license")]
+pub mod license;
 pub mod list_type;
 pub mod log;
 pub mod ml_detection;

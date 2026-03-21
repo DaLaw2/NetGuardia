@@ -8,7 +8,7 @@ use ipnetwork::IpNetwork;
 use maxminddb::{geoip2, Reader};
 use parking_lot::RwLock;
 
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;

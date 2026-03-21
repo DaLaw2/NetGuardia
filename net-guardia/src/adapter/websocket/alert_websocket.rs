@@ -4,7 +4,8 @@ use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::core::ml::alert::{MLAlert, AlertMessage};
+use crate::core::ml::alert::MLAlert;
+use crate::model::ml_detection::AlertMessage;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;

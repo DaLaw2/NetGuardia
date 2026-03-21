@@ -1,3 +1,3 @@
 pub mod validator;
 
-pub use validator::LicenseInfo;
+pub use crate::model::license::LicenseInfo;

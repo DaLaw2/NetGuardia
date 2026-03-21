@@ -1,17 +1,9 @@
 use jsonwebtoken::{decode, encode, errors::ErrorKind, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
 
-use crate::adapter::persistence::Database;
+use crate::interface::port::repository::RepositoryPort;
+use crate::model::auth::Claims;
 use crate::model::error::auth::AuthError;
 use crate::model::error::Error;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Claims {
-    pub sub: i64,
-    pub username: String,
-    pub role: String,
-    pub exp: usize,
-}
 
 pub struct JwtService {
     encoding_key: EncodingKey,
@@ -20,7 +12,7 @@ pub struct JwtService {
 }
 
 impl JwtService {
-    pub fn new(db: &Database, expiry_hours: u64) -> Result<Self, Error> {
+    pub fn new(db: &dyn RepositoryPort, expiry_hours: u64) -> Result<Self, Error> {
         let secret = match db.get_setting("jwt_secret")? {
             Some(s) => s,
             None => {
@@ -81,6 +73,7 @@ fn hex_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::persistence::Database;
 
     fn test_jwt_service() -> JwtService {
         let db = Database::new(":memory:").unwrap();

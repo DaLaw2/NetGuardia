@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::core::auth::jwt::JwtService;
 use crate::core::ebpf::drop_monitor::DropMonitor;
-use crate::core::infrastructure::health::SystemHealth;
-use crate::core::infrastructure::statistics::FlowStatistics;
+use crate::infrastructure::health::SystemHealth;
+use crate::infrastructure::statistics::FlowStatistics;
 use crate::core::ml::alert::MLAlert;
 use super::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
 

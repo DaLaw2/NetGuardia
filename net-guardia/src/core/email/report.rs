@@ -1,6 +1,5 @@
-use crate::adapter::persistence::Database;
+use crate::interface::port::repository::RepositoryPort;
 use crate::model::error::Error;
-use std::sync::Arc;
 
 /// Generate an HTML weekly report email body.
 ///
@@ -14,7 +13,7 @@ use std::sync::Arc;
 ///
 /// If a key is missing the report falls back to placeholder data so it can
 /// be exercised before the ML aggregation pipeline is wired up.
-pub fn generate_weekly_report(db: &Arc<Database>) -> Result<String, Error> {
+pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> {
     let threats_count = db
         .get_setting("weekly_threats_count")
 ?

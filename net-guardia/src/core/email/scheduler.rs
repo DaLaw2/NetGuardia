@@ -1,4 +1,4 @@
-use crate::adapter::persistence::Database;
+use crate::interface::port::repository::RepositoryPort;
 use crate::model::error::database::DatabaseError;
 use crate::model::error::Error;
 use lettre::message::header::ContentType;
@@ -22,7 +22,7 @@ impl SmtpClient {
     ///
     /// Returns `None` if any required setting (`smtp_host`, `smtp_port`,
     /// `smtp_username`, `smtp_password`) is missing.
-    pub fn from_database(db: &Database) -> Result<Option<Self>, Error> {
+    pub fn from_database(db: &dyn RepositoryPort) -> Result<Option<Self>, Error> {
         let host = match db.get_setting("smtp_host")? {
             Some(v) if !v.is_empty() => v,
             _ => return Ok(None),
@@ -100,11 +100,11 @@ impl SmtpClient {
 /// Scheduler that checks once per hour whether it is time to send the weekly
 /// report (Monday 08:00 local time) and dispatches it via SMTP.
 pub struct ReportScheduler {
-    db: Arc<Database>,
+    db: Arc<dyn RepositoryPort>,
 }
 
 impl ReportScheduler {
-    pub fn new(db: Arc<Database>) -> Self {
+    pub fn new(db: Arc<dyn RepositoryPort>) -> Self {
         Self { db }
     }
 
@@ -123,7 +123,7 @@ impl ReportScheduler {
 
                 info!("Weekly report window reached — preparing report");
 
-                let smtp = match SmtpClient::from_database(&db) {
+                let smtp = match SmtpClient::from_database(&*db) {
                     Ok(Some(client)) => client,
                     Ok(None) => {
                         warn!(
@@ -146,7 +146,7 @@ impl ReportScheduler {
                     }
                 };
 
-                let html = match super::report::generate_weekly_report(&db) {
+                let html = match super::report::generate_weekly_report(&*db) {
                     Ok(h) => h,
                     Err(e) => {
                         error!("Failed to generate weekly report: {e}");

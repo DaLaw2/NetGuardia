@@ -12,8 +12,13 @@ use crate::core::auth::jwt::JwtService;
 use crate::core::auth::password;
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
+use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
+use crate::interface::communication::command_types::ChangeEnforceModeCommand;
+use crate::interface::communication::query_types::GetEnforceModeQuery;
+use crate::interface::port::repository::RepositoryPort;
 #[cfg(feature = "license")]
 use crate::core::license::LicenseInfo;
 #[cfg(feature = "license")]
@@ -33,6 +38,7 @@ pub struct AppState {
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
+    pub comm: Arc<CommunicationManager>,
     #[cfg(feature = "license")]
     pub license_info: Arc<LicenseInfo>,
     pub ingress_ebpf: Ebpf,
@@ -93,7 +99,7 @@ impl ServiceFactory {
             db.set_setting("enforce_mode", "monitor")?;
         }
 
-        let jwt_service = Arc::new(JwtService::new(&db, app_config.http.jwt_expiry_hours)?);
+        let jwt_service = Arc::new(JwtService::new(db.as_ref(), app_config.http.jwt_expiry_hours)?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
@@ -102,6 +108,15 @@ impl ServiceFactory {
         )?);
 
         let app_services = Arc::new(AppServices::new(app_config.clone(), inference_config.clone())?);
+
+        // Create CommunicationManager and register enforce-mode handler
+        let comm = Arc::new(CommunicationManager::new());
+        let enforce_handler = Arc::new(EnforceModeHandler::new(db.clone() as Arc<dyn RepositoryPort>));
+        let _ = comm.clone()
+            .with_service(enforce_handler)
+            .command::<ChangeEnforceModeCommand>()
+            .query::<GetEnforceModeQuery>()
+            .build();
 
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
@@ -116,6 +131,7 @@ impl ServiceFactory {
             app_services,
             db,
             jwt_service,
+            comm,
             #[cfg(feature = "license")]
             license_info,
             ingress_ebpf,
