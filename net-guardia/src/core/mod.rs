@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod database;
 pub mod ebpf;
 pub mod infrastructure;

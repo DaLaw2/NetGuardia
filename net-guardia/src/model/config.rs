@@ -17,7 +17,11 @@ pub struct AppConfigTable {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpConfig {
     pub http_server_bind_port: u16,
+    #[serde(default = "default_jwt_expiry")]
+    pub jwt_expiry_hours: u64,
 }
+
+fn default_jwt_expiry() -> u64 { 24 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NetworkConfig {

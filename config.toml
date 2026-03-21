@@ -1,5 +1,6 @@
 [Http]
 http_server_bind_port = 8080
+jwt_expiry_hours = 24
 
 [Network]
 ingress_ifname = "ng-ext"

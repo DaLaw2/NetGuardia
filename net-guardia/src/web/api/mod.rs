@@ -1,9 +1,10 @@
 pub mod acl;
+pub mod auth;
+pub mod default;
 pub mod filter;
-pub mod rate_limit;
-pub mod stats;
 pub mod health;
 pub mod ml;
+pub mod rate_limit;
+pub mod stats;
 pub mod system;
-pub mod default;
 pub mod ws;

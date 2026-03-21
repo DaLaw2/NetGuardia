@@ -51,6 +51,9 @@ maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
 rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

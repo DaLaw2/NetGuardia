@@ -10,6 +10,8 @@ use aya_log::EbpfLogger;
 use common::define::pipeline::*;
 use macros::log;
 
+use crate::core::auth::jwt::JwtService;
+use crate::core::auth::password;
 use crate::core::database::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
@@ -22,7 +24,7 @@ use crate::model::error::Error;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
-use crate::web::api::{acl, filter, rate_limit as rate_limit_api, stats, health as health_api, ml, system as system_api, default, ws};
+use crate::web::api::{acl, auth, filter, rate_limit as rate_limit_api, stats, health as health_api, ml, system as system_api, default, ws};
 
 /// Maps stage name (from config.toml) to (function_name, stage_id)
 fn stage_registry() -> HashMap<&'static str, (&'static str, u32)> {
@@ -39,6 +41,7 @@ pub struct System {
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<MLService>,
     pub db: Arc<Database>,
+    pub jwt_service: Arc<JwtService>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     #[allow(dead_code)]
@@ -64,6 +67,15 @@ impl System {
         Self::write_num_queues(&mut egress_ebpf, num_queues)?;
 
         let db = Arc::new(Database::new(&app_config.misc.database_path)?);
+
+        // Create default admin user if no users exist
+        if db.user_count().unwrap_or(0) == 0 {
+            let hash = password::hash_password("admin")?;
+            db.insert_user("admin", &hash, "admin")?;
+            tracing::warn!("Default admin user created with password 'admin' — change it immediately");
+        }
+
+        let jwt_service = Arc::new(JwtService::new(&db, app_config.http.jwt_expiry_hours)?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
@@ -122,6 +134,7 @@ impl System {
             ebpf_services,
             app_services,
             db,
+            jwt_service,
             ingress_ebpf,
             egress_ebpf,
             ingress_program_array,
@@ -211,6 +224,7 @@ impl System {
         let flow_statistics = self.app_services.flow_statistics.clone();
         let drop_monitor = self.ebpf_services.drop_monitor.clone();
         let db = self.db.clone();
+        let jwt_service = self.jwt_service.clone();
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
@@ -234,8 +248,11 @@ impl System {
                 .app_data(web::Data::from(flow_statistics.clone()))
                 .app_data(web::Data::from(drop_monitor.clone()))
                 .app_data(web::Data::from(db.clone()))
+                .app_data(web::Data::from(jwt_service.clone()))
                 .service(
                     web::scope("/api")
+                        .wrap(crate::core::auth::middleware::AuthMiddleware)
+                        .service(auth::initialize())
                         .service(acl::initialize())
                         .service(filter::initialize())
                         .service(rate_limit_api::initialize())
