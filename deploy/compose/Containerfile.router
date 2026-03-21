@@ -1,0 +1,10 @@
+FROM rockylinux:10
+
+RUN dnf install -y --allowerasing \
+    iproute \
+    iputils \
+    net-tools \
+    tcpdump \
+    && dnf clean all
+
+CMD ["sleep", "infinity"]

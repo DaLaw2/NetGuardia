@@ -1,0 +1,25 @@
+FROM rockylinux:10
+
+RUN dnf install -y epel-release && \
+    dnf install -y --allowerasing \
+    nmap \
+    tcpdump \
+    net-tools \
+    iputils \
+    iproute \
+    ncat \
+    curl wget \
+    httpd \
+    openssh-server \
+    python3 python3-pip \
+    && dnf clean all
+
+RUN pip3 install scapy requests
+
+RUN echo "NetGuardia Endpoint" > /var/www/html/index.html && \
+    ssh-keygen -A
+
+COPY scripts/*.sh /opt/scripts/
+RUN chmod +x /opt/scripts/*.sh
+
+CMD ["sleep", "infinity"]
