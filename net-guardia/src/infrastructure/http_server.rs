@@ -7,7 +7,7 @@ use crate::core::auth::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::core::infrastructure::MLService;
+use crate::infrastructure::app_services::AppServices;
 use crate::core::ml::config_loader::InferenceConfig;
 #[cfg(feature = "license")]
 use crate::core::license::LicenseInfo;
@@ -22,7 +22,7 @@ pub struct HttpServerParams {
     pub app_config: Arc<AppConfig>,
     pub inference_config: Arc<InferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
-    pub app_services: Arc<MLService>,
+    pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
     #[cfg(feature = "license")]

@@ -13,7 +13,7 @@ use crate::core::auth::password;
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::core::infrastructure::app_config::AppConfig;
-use crate::core::infrastructure::MLService;
+use crate::infrastructure::app_services::AppServices;
 #[cfg(feature = "license")]
 use crate::core::license::LicenseInfo;
 #[cfg(feature = "license")]
@@ -30,7 +30,7 @@ pub struct AppState {
     pub app_config: Arc<AppConfig>,
     pub inference_config: Arc<InferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
-    pub app_services: Arc<MLService>,
+    pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
     #[cfg(feature = "license")]
@@ -101,7 +101,7 @@ impl ServiceFactory {
             &mut egress_ebpf,
         )?);
 
-        let app_services = Arc::new(MLService::new(app_config.clone(), inference_config.clone())?);
+        let app_services = Arc::new(AppServices::new(app_config.clone(), inference_config.clone())?);
 
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
