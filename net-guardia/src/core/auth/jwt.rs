@@ -77,3 +77,71 @@ fn hex_encode(data: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_jwt_service() -> JwtService {
+        let db = Database::new(":memory:").unwrap();
+        JwtService::new(&db, 24).unwrap()
+    }
+
+    #[test]
+    fn test_create_and_validate_token() {
+        let jwt = test_jwt_service();
+        let token = jwt.create_token(1, "admin", "admin").unwrap();
+        let claims = jwt.validate_token(&token).unwrap();
+        assert_eq!(claims.sub, 1);
+        assert_eq!(claims.username, "admin");
+        assert_eq!(claims.role, "admin");
+    }
+
+    #[test]
+    fn test_invalid_token() {
+        let jwt = test_jwt_service();
+        let result = jwt.validate_token("invalid.token.here");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_expired_token() {
+        let db = Database::new(":memory:").unwrap();
+        let jwt = JwtService::new(&db, 0).unwrap(); // 0 hours = immediate expiry
+
+        // Create token with 0 hour expiry — it expires in the past
+        let claims = Claims {
+            sub: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            exp: 0, // epoch = expired
+        };
+        let token = encode(&Header::default(), &claims, &jwt.encoding_key).unwrap();
+        let result = jwt.validate_token(&token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_jwt_secret_persistence() {
+        let db = Database::new(":memory:").unwrap();
+
+        // First creation generates and stores secret
+        let jwt1 = JwtService::new(&db, 24).unwrap();
+        let token = jwt1.create_token(1, "admin", "admin").unwrap();
+
+        // Second creation reuses stored secret
+        let jwt2 = JwtService::new(&db, 24).unwrap();
+        let claims = jwt2.validate_token(&token).unwrap();
+        assert_eq!(claims.username, "admin");
+    }
+
+    #[test]
+    fn test_different_secrets_reject() {
+        let jwt1 = test_jwt_service();
+        let jwt2 = test_jwt_service(); // different in-memory DB = different secret
+
+        let token = jwt1.create_token(1, "admin", "admin").unwrap();
+        let result = jwt2.validate_token(&token);
+        assert!(result.is_err());
+    }
+}

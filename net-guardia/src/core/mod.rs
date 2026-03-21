@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod database;
+pub mod email;
 pub mod ebpf;
 pub mod infrastructure;
 #[cfg(feature = "license")]

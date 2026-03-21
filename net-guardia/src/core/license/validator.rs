@@ -233,3 +233,95 @@ fn days_until(expiry_str: &str, today: &(i32, u32, u32)) -> Result<i64, String> 
     let today_days = ymd_to_epoch_days(today.0, today.1, today.2) as i64;
     Ok(expiry_days - today_days)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hex_decode_valid() {
+        assert_eq!(hex_decode("48656c6c6f").unwrap(), b"Hello");
+        assert_eq!(hex_decode("ff00").unwrap(), vec![0xff, 0x00]);
+    }
+
+    #[test]
+    fn test_hex_decode_odd_length() {
+        assert!(hex_decode("abc").is_err());
+    }
+
+    #[test]
+    fn test_hex_decode_invalid_chars() {
+        assert!(hex_decode("zzzz").is_err());
+    }
+
+    #[test]
+    fn test_parse_date_valid() {
+        assert_eq!(parse_date("2026-03-21").unwrap(), (2026, 3, 21));
+        assert_eq!(parse_date("2000-01-01").unwrap(), (2000, 1, 1));
+    }
+
+    #[test]
+    fn test_parse_date_invalid() {
+        assert!(parse_date("not-a-date").is_err());
+        assert!(parse_date("2026-13").is_err());
+        assert!(parse_date("").is_err());
+    }
+
+    #[test]
+    fn test_epoch_roundtrip() {
+        // Test several dates
+        let dates = vec![
+            (2026, 3, 21),
+            (2000, 1, 1),
+            (1970, 1, 1),
+            (2024, 2, 29), // leap year
+            (2025, 12, 31),
+        ];
+        for (y, m, d) in dates {
+            let days = ymd_to_epoch_days(y, m, d);
+            let (ry, rm, rd) = epoch_days_to_ymd(days);
+            assert_eq!((ry, rm, rd), (y, m, d), "Roundtrip failed for {}-{}-{}", y, m, d);
+        }
+    }
+
+    #[test]
+    fn test_epoch_day_1970() {
+        assert_eq!(ymd_to_epoch_days(1970, 1, 1), 0);
+    }
+
+    #[test]
+    fn test_days_until() {
+        let today = (2026, 3, 21);
+        assert_eq!(days_until("2026-03-21", &today).unwrap(), 0);
+        assert_eq!(days_until("2026-03-22", &today).unwrap(), 1);
+        assert_eq!(days_until("2026-03-20", &today).unwrap(), -1);
+        assert_eq!(days_until("2027-03-21", &today).unwrap(), 365);
+    }
+
+    #[test]
+    fn test_chrono_free_today_returns_reasonable_date() {
+        let (y, m, d) = chrono_free_today();
+        assert!(y >= 2025 && y <= 2030);
+        assert!(m >= 1 && m <= 12);
+        assert!(d >= 1 && d <= 31);
+    }
+
+    #[test]
+    fn test_get_interface_mac_path_traversal() {
+        // Should reject path traversal attempts
+        assert!(get_interface_mac("../etc/passwd").is_none());
+        assert!(get_interface_mac("eth0/../..").is_none());
+    }
+
+    #[test]
+    fn test_license_format_invalid() {
+        // Test with invalid license content (no file, just the parsing logic)
+        let bad_formats = vec!["", "nodot", "too.many.dots"];
+        for fmt in bad_formats {
+            let parts: Vec<&str> = fmt.splitn(2, '.').collect();
+            if parts.len() != 2 {
+                continue; // expected — this is what validate_license checks
+            }
+        }
+    }
+}

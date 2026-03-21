@@ -1,0 +1,56 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  identity:
+    hostname: netguardia
+    username: netguardia
+    # Password: netguardia  (mkpasswd --method=SHA-512)
+    password: "$6$rounds=4096$randomsalt$PLACEHOLDER_HASH"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+
+  storage:
+    layout:
+      name: lvm
+      sizing-policy: all
+
+  network:
+    version: 2
+    ethernets:
+      ens3:
+        dhcp4: true
+
+  packages:
+    - whiptail
+    - jq
+    - curl
+    - net-tools
+    - iproute2
+    - linux-tools-common
+
+  late-commands:
+    # Create required directories
+    - mkdir -p /target/opt/netguardia/bin
+    - mkdir -p /target/var/log/netguardia
+
+    # Enable serial console for headless access
+    - >-
+      curtin in-target -- systemctl enable serial-getty@ttyS0.service
+
+  user-data:
+    runcmd:
+      # Run the setup wizard on first boot if not already configured
+      - |
+        if [ ! -f /opt/netguardia/config.toml ]; then
+          /opt/netguardia/bin/setup-wizard.sh
+        fi
+
+  final_message: |
+    NetGuardia image provisioning complete.
+    Run /opt/netguardia/bin/setup-wizard.sh to configure.

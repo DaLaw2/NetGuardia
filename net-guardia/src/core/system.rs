@@ -87,8 +87,13 @@ impl System {
         // Create default admin user if no users exist
         if db.user_count().unwrap_or(0) == 0 {
             let hash = password::hash_password("admin")?;
-            db.insert_user("admin", &hash, "admin")?;
-            tracing::warn!("Default admin user created with password 'admin' — change it immediately");
+            db.insert_user("admin", &hash, "admin", true)?;
+            tracing::warn!("Default admin user created with password 'admin' — you must change it on first login");
+        }
+
+        // Ensure enforce_mode setting exists (default: monitor)
+        if db.get_setting("enforce_mode")?.is_none() {
+            db.set_setting("enforce_mode", "monitor")?;
         }
 
         let jwt_service = Arc::new(JwtService::new(&db, app_config.http.jwt_expiry_hours)?);
@@ -264,12 +269,21 @@ impl System {
         let egress_ifname = self.app_config.network.egress_ifname.clone();
         Self::set_memory_limit()?;
 
-        Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;
-        Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;
+        let ingress_mode = Self::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;
+        let egress_mode = Self::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;
+
+        // Store XDP mode in settings for health API reporting
+        if let Err(e) = self.db.set_setting("xdp_ingress_mode", &ingress_mode) {
+            tracing::warn!("Failed to store XDP ingress mode: {}", e);
+        }
+        if let Err(e) = self.db.set_setting("xdp_egress_mode", &egress_mode) {
+            tracing::warn!("Failed to store XDP egress mode: {}", e);
+        }
+
         Ok(())
     }
 
-    fn attach_xdp(ebpf: &mut Ebpf, ifname: &str, already_loaded: bool) -> Result<(), Error> {
+    fn attach_xdp(ebpf: &mut Ebpf, ifname: &str, already_loaded: bool) -> Result<String, Error> {
         let xdp: &mut Xdp = ebpf
             .program_mut("net_guardia")
             .ok_or(EbpfError::ProgramNotFound)?
@@ -278,9 +292,42 @@ impl System {
         if !already_loaded {
             xdp.load().map_err(EbpfError::LoadProgramFailed)?;
         }
-        xdp.attach(ifname, XdpFlags::DRV_MODE)
-            .map_err(EbpfError::AttachProgramFailed)?;
-        Ok(())
+
+        // Try DRV_MODE first (native XDP, best performance)
+        match xdp.attach(ifname, XdpFlags::DRV_MODE) {
+            Ok(_) => {
+                tracing::info!("XDP attached to {} in native DRV_MODE", ifname);
+                return Ok("drv".to_string());
+            }
+            Err(drv_err) => {
+                tracing::warn!(
+                    "XDP DRV_MODE failed on {}: {}. Falling back to SKB_MODE.",
+                    ifname, drv_err
+                );
+            }
+        }
+
+        // Fallback to SKB_MODE (generic XDP, reduced performance)
+        match xdp.attach(ifname, XdpFlags::SKB_MODE) {
+            Ok(_) => {
+                tracing::warn!(
+                    "XDP attached to {} in generic SKB_MODE (reduced performance). \
+                     For best performance, use a NIC with native XDP support (e.g., virtio-net, Intel i40e/ice).",
+                    ifname
+                );
+                Ok("skb".to_string())
+            }
+            Err(skb_err) => {
+                tracing::error!(
+                    "XDP attach failed on {} with both DRV_MODE and SKB_MODE. \
+                     Ensure the interface exists and supports XDP. \
+                     Supported NICs: virtio-net, Intel i40e/ice/i350, Mellanox mlx5. \
+                     SKB error: {}",
+                    ifname, skb_err
+                );
+                Err(EbpfError::AttachProgramFailed(skb_err).into())
+            }
+        }
     }
 
     async fn run_http_server(&self) -> Result<(), Error> {
@@ -303,8 +350,7 @@ impl System {
         let port = self.app_config.http.http_server_bind_port;
         HttpServer::new(move || {
             let cors = actix_cors::Cors::default()
-                .allowed_origin("http://localhost:8080")
-                .allowed_origin("http://127.0.0.1:8080")
+                .allow_any_origin()
                 .allow_any_method()
                 .allow_any_header()
                 .max_age(3600);

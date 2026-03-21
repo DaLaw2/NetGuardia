@@ -43,6 +43,10 @@ tracing-subscriber = { workspace = true }
 # ML
 tract-onnx = { workspace = true }
 
+# Email
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
 # Utilities
 parking_lot = { workspace = true }
 thiserror = { workspace = true }

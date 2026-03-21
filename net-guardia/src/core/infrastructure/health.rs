@@ -312,6 +312,42 @@ impl SystemHealth {
             status.issues.push("Egress interface not available".to_string());
         }
 
+        // Disk usage check
+        let disk_usage = Self::check_disk_usage();
+        if let Some((usage_percent, available_gb)) = disk_usage {
+            if usage_percent > 95.0 {
+                status.overall_healthy = false;
+                status.issues.push(format!(
+                    "Critical disk usage: {:.1}% (only {:.1} GB free). Traffic logging paused.",
+                    usage_percent, available_gb
+                ));
+            } else if usage_percent > 90.0 {
+                status.warnings.push(format!(
+                    "High disk usage: {:.1}% ({:.1} GB free)",
+                    usage_percent, available_gb
+                ));
+            }
+        }
+
         status
+    }
+
+    fn check_disk_usage() -> Option<(f32, f64)> {
+        use sysinfo::Disks;
+        let disks = Disks::new_with_refreshed_list();
+        // Find the root disk or the disk containing /opt/netguardia
+        for disk in disks.list() {
+            let mount = disk.mount_point().to_string_lossy();
+            if mount == "/" || mount.starts_with("/opt") {
+                let total = disk.total_space() as f64;
+                let available = disk.available_space() as f64;
+                if total > 0.0 {
+                    let usage_percent = ((total - available) / total * 100.0) as f32;
+                    let available_gb = available / (1024.0 * 1024.0 * 1024.0);
+                    return Some((usage_percent, available_gb));
+                }
+            }
+        }
+        None
     }
 }
