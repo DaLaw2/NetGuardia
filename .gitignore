@@ -41,3 +41,10 @@ traffic_log.csv
 CLAUDE.md
 DESIGN.md
 TODOS.md
+VERSION
+CHANGELOG.md
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
