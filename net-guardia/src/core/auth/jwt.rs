@@ -32,7 +32,7 @@ impl JwtService {
         })
     }
 
-    pub fn create_token(&self, user_id: i64, username: &str, role: &str) -> Result<String, Error> {
+    pub fn create_token(&self, user_id: i64, username: &str, role: &str, permissions: Vec<String>) -> Result<String, Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -42,6 +42,7 @@ impl JwtService {
             sub: user_id,
             username: username.to_string(),
             role: role.to_string(),
+            permissions,
             exp: (now + self.expiry_hours * 3600) as usize,
         };
 
@@ -83,11 +84,13 @@ mod tests {
     #[test]
     fn test_create_and_validate_token() {
         let jwt = test_jwt_service();
-        let token = jwt.create_token(1, "admin", "admin").unwrap();
+        let perms = vec!["dashboard:read".to_string()];
+        let token = jwt.create_token(1, "admin", "admin", perms.clone()).unwrap();
         let claims = jwt.validate_token(&token).unwrap();
         assert_eq!(claims.sub, 1);
         assert_eq!(claims.username, "admin");
         assert_eq!(claims.role, "admin");
+        assert_eq!(claims.permissions, perms);
     }
 
     #[test]
@@ -107,6 +110,7 @@ mod tests {
             sub: 1,
             username: "admin".to_string(),
             role: "admin".to_string(),
+            permissions: vec![],
             exp: 0, // epoch = expired
         };
         let token = encode(&Header::default(), &claims, &jwt.encoding_key).unwrap();
@@ -120,7 +124,7 @@ mod tests {
 
         // First creation generates and stores secret
         let jwt1 = JwtService::new(&db, 24).unwrap();
-        let token = jwt1.create_token(1, "admin", "admin").unwrap();
+        let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
 
         // Second creation reuses stored secret
         let jwt2 = JwtService::new(&db, 24).unwrap();
@@ -133,7 +137,7 @@ mod tests {
         let jwt1 = test_jwt_service();
         let jwt2 = test_jwt_service(); // different in-memory DB = different secret
 
-        let token = jwt1.create_token(1, "admin", "admin").unwrap();
+        let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
         let result = jwt2.validate_token(&token);
         assert!(result.is_err());
     }

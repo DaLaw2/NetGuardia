@@ -34,9 +34,30 @@ pub trait RepositoryPort: Send + Sync {
 
     // --- Users ---
     fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error>;
-    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<(), Error>;
+    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error>;
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
     fn user_count(&self) -> Result<i64, Error>;
+
+    // --- User Management ---
+    fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error>;
+    fn delete_user(&self, user_id: i64) -> Result<bool, Error>;
+    fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error>;
+    fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error>;
+
+    // --- User Groups ---
+    fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error>;
+    fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error>;
+    fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error>;
+    fn delete_user_group(&self, id: i64) -> Result<bool, Error>;
+    fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error>;
+
+    // --- User Group Membership ---
+    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error>;
+    fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error>;
+    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error>;
+    fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error>;
+    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error>;
 
     // --- Login Rate Limiting ---
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error>;

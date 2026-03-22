@@ -51,6 +51,20 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS user_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                permissions TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS user_group_members (
+                user_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                PRIMARY KEY (user_id, group_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (group_id) REFERENCES user_groups(id)
+            );
         ")?;
 
         // Migration: add force_password_change column if missing (for existing DBs)
@@ -62,6 +76,78 @@ impl Database {
             conn_ref.execute_batch(
                 "ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0;"
             )?;
+        }
+
+        // Migration: seed default user groups if table is empty
+        let group_count: i64 = conn_ref.query_row(
+            "SELECT COUNT(*) FROM user_groups", [], |row| row.get(0),
+        )?;
+        if group_count == 0 {
+            let all_permissions = serde_json::json!([
+                "dashboard:read", "statistics:read", "traffic_map:read", "drops:read",
+                "ai_detection:read", "ai_detection:write",
+                "access_control:read", "access_control:write",
+                "geo_block:read", "geo_block:write",
+                "dns_filter:read", "dns_filter:write",
+                "rate_limit:read", "rate_limit:write",
+                "protocol_filter:read", "protocol_filter:write",
+                "system:read", "system:write",
+                "users:read", "users:write", "users:admin"
+            ]).to_string();
+            let viewer_permissions = serde_json::json!([
+                "dashboard:read", "statistics:read", "traffic_map:read", "drops:read",
+                "ai_detection:read", "access_control:read", "geo_block:read",
+                "dns_filter:read", "rate_limit:read", "protocol_filter:read",
+                "system:read"
+            ]).to_string();
+
+            conn_ref.execute(
+                "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
+                params!["Administrator", "Full system access with all permissions", &all_permissions],
+            )?;
+            conn_ref.execute(
+                "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
+                params!["Viewer", "Read-only access to all modules", &viewer_permissions],
+            )?;
+        }
+
+        // Migration: assign existing users to default groups if user_group_members is empty
+        let member_count: i64 = conn_ref.query_row(
+            "SELECT COUNT(*) FROM user_group_members", [], |row| row.get(0),
+        )?;
+        if member_count == 0 {
+            // Get admin group id and viewer group id
+            let admin_group_id: Option<i64> = conn_ref.query_row(
+                "SELECT id FROM user_groups WHERE name = 'Administrator'", [],
+                |row| row.get(0),
+            ).ok();
+            let viewer_group_id: Option<i64> = conn_ref.query_row(
+                "SELECT id FROM user_groups WHERE name = 'Viewer'", [],
+                |row| row.get(0),
+            ).ok();
+
+            if let Some(ag_id) = admin_group_id {
+                let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'admin'")?;
+                let admin_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?
+                    .filter_map(|r| r.ok()).collect();
+                for uid in admin_ids {
+                    conn_ref.execute(
+                        "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
+                        params![uid, ag_id],
+                    )?;
+                }
+            }
+            if let Some(vg_id) = viewer_group_id {
+                let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'viewer'")?;
+                let viewer_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?
+                    .filter_map(|r| r.ok()).collect();
+                for uid in viewer_ids {
+                    conn_ref.execute(
+                        "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
+                        params![uid, vg_id],
+                    )?;
+                }
+            }
         }
 
         Ok(())
@@ -215,7 +301,7 @@ impl Database {
         }
     }
 
-    pub fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<(), Error> {
+    pub fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO users (username, password_hash, role, force_password_change) VALUES (?1, ?2, ?3, ?4)",
@@ -227,7 +313,7 @@ impl Database {
                 e.into()
             }
         })?;
-        Ok(())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
@@ -242,6 +328,199 @@ impl Database {
     pub fn user_count(&self) -> Result<i64, Error> {
         let conn = self.conn.lock();
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? != 0,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn delete_user(&self, user_id: i64) -> Result<bool, Error> {
+        self.cleanup_user_memberships(user_id)?;
+        let conn = self.conn.lock();
+        let affected = conn.execute("DELETE FROM users WHERE id = ?1", params![user_id])?;
+        Ok(affected > 0)
+    }
+
+    pub fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", params![role, user_id])?;
+        Ok(())
+    }
+
+    pub fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE users SET password_hash = ?1, force_password_change = 1 WHERE id = ?2",
+            params![password_hash, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+        let conn = self.conn.lock();
+        let result = conn.query_row(
+            "SELECT id, username, password_hash, role, force_password_change FROM users WHERE id = ?1",
+            params![user_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get::<_, i64>(4)? != 0)),
+        );
+        match result {
+            Ok(user) => Ok(Some(user)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // --- User Groups ---
+    pub fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
+            params![name, description, permissions],
+        ).map_err(|e| -> Error {
+            if e.to_string().contains("UNIQUE constraint") {
+                DatabaseError::QueryFailed { reason: format!("Group '{}' already exists", name) }.into()
+            } else {
+                e.into()
+            }
+        })?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE user_groups SET name = ?1, description = ?2, permissions = ?3 WHERE id = ?4",
+            params![name, description, permissions, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_user_group(&self, id: i64) -> Result<bool, Error> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM user_group_members WHERE group_id = ?1", params![id])?;
+        let affected = conn.execute("DELETE FROM user_groups WHERE id = ?1", params![id])?;
+        Ok(affected > 0)
+    }
+
+    pub fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error> {
+        let conn = self.conn.lock();
+        let result = conn.query_row(
+            "SELECT id, name, description, permissions, created_at FROM user_groups WHERE id = ?1",
+            params![id],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            )),
+        );
+        match result {
+            Ok(group) => Ok(Some(group)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // --- User Group Membership ---
+    pub fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT g.id, g.name, g.description, g.permissions FROM user_groups g \
+             INNER JOIN user_group_members m ON g.id = m.group_id \
+             WHERE m.user_id = ?1 ORDER BY g.id"
+        )?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM user_group_members WHERE user_id = ?1", params![user_id])?;
+        for &gid in group_ids {
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
+                params![user_id, gid],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
+        let groups = self.get_user_groups(user_id)?;
+        let mut all_perms = std::collections::HashSet::new();
+        for (_id, _name, _desc, perms_json) in groups {
+            if let Ok(perms) = serde_json::from_str::<Vec<String>>(&perms_json) {
+                for p in perms {
+                    all_perms.insert(p);
+                }
+            }
+        }
+        let mut result: Vec<String> = all_perms.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    pub fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM user_group_members WHERE user_id = ?1", params![user_id])?;
+        Ok(())
+    }
+
+    pub fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT user_id FROM user_group_members WHERE group_id = ?1")?;
+        let rows = stmt.query_map(params![group_id], |row| row.get::<_, i64>(0))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 
     // --- Login Rate Limiting ---
@@ -310,9 +589,24 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn get_setting(&self, key: &str) -> Result<Option<String>, Error> { self.get_setting(key) }
     fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> { self.set_setting(key, value) }
     fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user(username) }
-    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<(), Error> { self.insert_user(username, password_hash, role, force_password_change) }
+    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error> { self.insert_user(username, password_hash, role, force_password_change) }
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.update_user_password(user_id, password_hash) }
     fn user_count(&self) -> Result<i64, Error> { self.user_count() }
+    fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error> { self.list_users() }
+    fn delete_user(&self, user_id: i64) -> Result<bool, Error> { self.delete_user(user_id) }
+    fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> { self.update_user_role(user_id, role) }
+    fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.reset_user_password(user_id, password_hash) }
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user_by_id(user_id) }
+    fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error> { self.list_user_groups() }
+    fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> { self.create_user_group(name, description, permissions) }
+    fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> { self.update_user_group(id, name, description, permissions) }
+    fn delete_user_group(&self, id: i64) -> Result<bool, Error> { self.delete_user_group(id) }
+    fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error> { self.get_user_group(id) }
+    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> { self.get_user_groups(user_id) }
+    fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> { self.set_user_groups(user_id, group_ids) }
+    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> { self.get_user_permissions(user_id) }
+    fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error> { self.cleanup_user_memberships(user_id) }
+    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> { self.get_group_member_ids(group_id) }
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> { self.record_login_failure(username) }
     fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> { self.check_login_locked(username) }
     fn clear_login_failures(&self, username: &str) -> Result<(), Error> { self.clear_login_failures(username) }

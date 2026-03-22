@@ -32,6 +32,37 @@ pub struct AuthMiddlewareService<S> {
     service: Rc<S>,
 }
 
+fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<String> {
+    let resource = if path.starts_with("/api/auth/") {
+        return None; // Auth endpoints handled separately
+    } else if path.starts_with("/api/health/") || path.starts_with("/api/stats/") {
+        "dashboard"
+    } else if path.starts_with("/api/ml/") {
+        "ai_detection"
+    } else if path.starts_with("/api/acl/geo/") {
+        "geo_block"
+    } else if path.starts_with("/api/acl/") {
+        "access_control"
+    } else if path.starts_with("/api/filter/dns/") {
+        "dns_filter"
+    } else if path.starts_with("/api/filter/http/") || path.starts_with("/api/filter/ssh/") {
+        "protocol_filter"
+    } else if path.starts_with("/api/rate-limit/") {
+        "rate_limit"
+    } else if path.starts_with("/api/system/") {
+        "system"
+    } else {
+        return None;
+    };
+
+    let action = match *method {
+        actix_web::http::Method::GET => "read",
+        _ => "write",
+    };
+
+    Some(format!("{}:{}", resource, action))
+}
+
 impl<S, B> Service<ServiceRequest> for AuthMiddlewareService<S>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
@@ -100,11 +131,13 @@ where
                 }
             };
 
-            // RBAC: viewer can only GET
-            if claims.role == "viewer" && req.method() != actix_web::http::Method::GET {
-                let resp = HttpResponse::Forbidden()
-                    .json(serde_json::json!({"error": "Insufficient permissions"}));
-                return Ok(req.into_response(resp).map_into_right_body());
+            // Permission-based RBAC check
+            if let Some(required) = required_permission(&path, req.method()) {
+                if !claims.permissions.contains(&required) {
+                    let resp = HttpResponse::Forbidden()
+                        .json(serde_json::json!({"error": "Insufficient permissions"}));
+                    return Ok(req.into_response(resp).map_into_right_body());
+                }
             }
 
             // Store claims in request extensions

@@ -90,7 +90,13 @@ impl ServiceFactory {
         // Create default admin user if no users exist
         if db.user_count().unwrap_or(0) == 0 {
             let hash = password::hash_password("admin")?;
-            db.insert_user("admin", &hash, "admin", true)?;
+            let admin_user_id = db.insert_user("admin", &hash, "admin", true)?;
+            // Assign to Administrator group
+            if let Ok(groups) = db.list_user_groups() {
+                if let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator") {
+                    let _ = db.set_user_groups(admin_user_id, &[group_id]);
+                }
+            }
             tracing::warn!("Default admin user created with password 'admin' — you must change it on first login");
         }
 

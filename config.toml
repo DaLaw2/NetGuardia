@@ -5,7 +5,7 @@ jwt_expiry_hours = 24
 [Network]
 ingress_ifname = "ng-ext"
 egress_ifname = "ng-int"
-combined_queue_count = 16
+combined_queue_count = 1
 channel_size = 4096
 fill_queue_size = 4096
 comp_queue_size = 4096

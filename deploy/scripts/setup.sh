@@ -1,11 +1,15 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+COMPOSE_FILE="$DEPLOY_DIR/compose/podman-compose.yml"
+
 if command -v podman-compose &>/dev/null; then
-    COMPOSE="podman-compose"
+    COMPOSE="podman-compose -f $COMPOSE_FILE"
     RT="podman"
 elif command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
-    COMPOSE="docker compose"
+    COMPOSE="docker compose -f $COMPOSE_FILE"
     RT="docker"
 else
     echo "ERROR: No container runtime found"
