@@ -1,4 +1,4 @@
-#[cfg(all(feature = "user"))]
+#[cfg(feature = "user")]
 use std::vec::Vec;
 
 #[cfg(feature = "user")]
@@ -23,7 +23,7 @@ pub enum HttpMethod {
 #[cfg(feature = "user")]
 impl HttpMethod {
     pub fn convert_from_bitmap(http_method_bitmap: HttpMethodBitmap) -> Vec<HttpMethod> {
-        let value = http_method_bitmap as u16;
+        let value = http_method_bitmap;
         let mut http_methods = Vec::new();
 
         let all_methods = [

@@ -198,7 +198,7 @@ pub fn generate_error_enum(input: TokenStream, force_no_source: bool) -> TokenSt
     });
 
     let expanded = quote! {
-        #[allow(dead_code)]
+        #[allow(dead_code, clippy::enum_variant_names)]
         #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
         pub enum #enum_name {
             #(#enum_variants,)*

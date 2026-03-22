@@ -1,0 +1,38 @@
+[Unit]
+Description=NetGuardia Network Security Gateway
+Documentation=https://github.com/dalaw2/NetGuardia
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+ExecStart=/opt/netguardia/bin/net-guardia
+WorkingDirectory=/opt/netguardia
+Restart=on-failure
+RestartSec=5
+
+# Watchdog: service must notify systemd within this interval or be killed
+WatchdogSec=30
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/netguardia /var/log/netguardia
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netguardia
+
+# Environment
+Environment=RUST_LOG=info
+Environment=CONFIG_PATH=/opt/netguardia/config.toml
+
+[Install]
+WantedBy=multi-user.target

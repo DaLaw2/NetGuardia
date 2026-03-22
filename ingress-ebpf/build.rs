@@ -1,6 +1,8 @@
-use which::which;
-
 fn main() {
-    let bpf_linker = which("bpf-linker").unwrap();
-    println!("cargo:rerun-if-changed={}", bpf_linker.to_str().unwrap());
+    // bpf-linker path is resolved and injected by net-guardia/build.rs
+    // via CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER env var.
+    // This build.rs only needs to exist for cargo to run it.
+    if let Ok(linker) = which::which("bpf-linker") {
+        println!("cargo:rerun-if-changed={}", linker.display());
+    }
 }

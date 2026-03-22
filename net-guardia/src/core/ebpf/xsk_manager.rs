@@ -17,7 +17,7 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::ebpf::dns_filter::DnsFilter;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowTracker;
 use crate::model::config::NetworkConfig;
@@ -314,7 +314,7 @@ impl XskPair {
 
             for rx_desc in rx_descs.iter().take(rx_count) {
                 let lengths = rx_desc.lengths();
-                let packet_len = lengths.data() as usize;
+                let packet_len = lengths.data();
 
                 let data = unsafe { self.umem.data(rx_desc) };
                 let contents = data.contents();
@@ -326,20 +326,17 @@ impl XskPair {
                 let raw = &contents[..packet_len];
 
                 // DNS blacklist check — drop blacklisted DNS queries before forwarding
-                if let Some(ref dns) = self.dns_filter {
-                    if let Some((dns_name, name_len)) = DnsFilter::parse_query_name(raw) {
-                        if dns.is_blacklisted(&dns_name, name_len) {
-                            continue;
-                        }
-                    }
+                if let Some(ref dns) = self.dns_filter
+                    && let Some((dns_name, name_len)) = DnsFilter::parse_query_name(raw)
+                    && dns.is_blacklisted(&dns_name, name_len) {
+                        continue;
                 }
 
                 // Parse directly from UMEM (zero-copy for ML path).
                 // Only clone for the forwarding path afterwards.
-                if let Some(ref tracker) = self.tracker {
-                    if let Some((packet_info, _)) = parse_packet(raw) {
+                if let Some(ref tracker) = self.tracker
+                    && let Some((packet_info, _)) = parse_packet(raw) {
                         tracker.lock().process_packet(packet_info, is_ingress);
-                    }
                 }
 
                 // Clone into pooled buffer for forwarding
@@ -428,10 +425,9 @@ impl XskPair {
             }
         }
 
-        if let Err(e) = self.tx.wakeup() {
-            if e.kind() != std::io::ErrorKind::WouldBlock {
+        if let Err(e) = self.tx.wakeup()
+            && e.kind() != std::io::ErrorKind::WouldBlock {
                 log!(EbpfLog::TXWakeupFailed(e.to_string()));
-            }
         }
 
         // Log dropped packets when frames < packets

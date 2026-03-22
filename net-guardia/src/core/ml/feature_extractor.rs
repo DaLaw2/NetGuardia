@@ -43,10 +43,9 @@ impl FlowFeatures {
 
     pub fn winsorize(&mut self, clip_params: &HashMap<String, ClipParams>, feature_names: &[String]) {
         for (i, feature_name) in feature_names.iter().enumerate() {
-            if i < self.feature_num {
-                if let Some(params) = clip_params.get(feature_name) {
+            if i < self.feature_num
+                && let Some(params) = clip_params.get(feature_name) {
                     self.features[i] = self.features[i].clamp(params.lower, params.upper);
-                }
             }
         }
     }

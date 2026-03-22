@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dalaw2-dev]
+  pull_request:
+    branches: [master, dalaw2-dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc m4 clang llvm \
+            libelf-dev zlib1g-dev pkg-config
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: net-guardia-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: net-guardia-frontend
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Rust nightly toolchain (for eBPF)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      # Ensure stable is the default so cargo check/test/clippy use stable.
+      # Nightly is only needed for the eBPF subprocess (which uses
+      # rust-toolchain.toml in ingress-ebpf/egress-ebpf).
+      - name: Set stable as default toolchain
+        run: rustup default stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install bpf-linker
+        run: |
+          cargo install cargo-binstall --locked 2>/dev/null || true
+          if command -v cargo-binstall &>/dev/null; then
+            cargo binstall bpf-linker --no-confirm --force || cargo install bpf-linker --locked
+          else
+            cargo install bpf-linker --locked
+          fi
+          ls -la "$HOME/.cargo/bin/bpf-linker"
+        timeout-minutes: 45
+
+      - name: cargo check
+        run: cargo check --package net-guardia
+
+      - name: cargo test
+        run: cargo test --package net-guardia
+
+      - name: cargo clippy
+        run: cargo clippy --package net-guardia -- -D warnings -A dead_code
+
+  integration-test:
+    name: Integration Test (placeholder)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Integration test reminder
+        run: |
+          echo "============================================"
+          echo "  Integration tests are not run in CI."
+          echo "  They require the podman test environment."
+          echo ""
+          echo "  Run on the dev server:"
+          echo "    bash /home/dalaw2/test_netguardia.sh"
+          echo "============================================"

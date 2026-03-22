@@ -3,39 +3,15 @@ use std::mem;
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
-use serde::Serialize;
 use tokio::sync::{broadcast, oneshot};
 
 use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent as RawDropEvent;
 use parking_lot::Mutex;
 
+use crate::model::drop_event::{DropCounters, DropEventMessage};
+
 const DROP_CHANNEL_CAPACITY: usize = 100;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DropEventMessage {
-    pub timestamp_ns: u64,
-    pub src_ip: String,
-    pub dst_ip: String,
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub protocol: u8,
-    pub reason: String,
-    pub ip_version: u8,
-}
-
-#[derive(Default, Clone, Serialize)]
-pub struct DropCounters {
-    pub acl_blacklist: u64,
-    pub rate_limit_pkt: u64,
-    pub rate_limit_syn: u64,
-    pub rate_limit_udp: u64,
-    pub rate_limit_dns: u64,
-    pub protocol_filter: u64,
-    pub dns_blacklist: u64,
-    pub geo_block: u64,
-    pub total: u64,
-}
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,

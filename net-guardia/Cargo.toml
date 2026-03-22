@@ -43,6 +43,14 @@ tracing-subscriber = { workspace = true }
 # ML
 tract-onnx = { workspace = true }
 
+# Email
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Architecture
+async-trait = "0.1"
+dashmap = "6"
+
 # Utilities
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
@@ -50,9 +58,20 @@ sysinfo = { workspace = true }
 maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
+rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
+[features]
+default = []
+license = ["dep:ed25519-dalek", "dep:base64"]
 
 [build-dependencies]
 cargo_metadata = { workspace = true }
+which = { workspace = true }
 dotenvy = "0.15.7"
 
 [[bin]]

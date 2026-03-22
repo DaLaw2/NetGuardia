@@ -22,7 +22,7 @@ use crate::core::ebpf::geo_block::GeoBlock;
 use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::ebpf::xsk_manager::XskManager;
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
@@ -70,7 +70,8 @@ impl EbpfServices {
         let xsk_manager = self.xsk_manager.clone();
         xsk_manager.run(Some(ml_engine), Some(self.dns_filter.clone()), &self.shutdowns)?;
 
-        if let Some(ring_buf) = self.drop_ring_buf.lock().take() {
+        let ring_buf = self.drop_ring_buf.lock().take();
+        if let Some(ring_buf) = ring_buf {
             let shutdown = drop_monitor::start_consumer(ring_buf, self.drop_monitor.clone()).await;
             self.shutdowns.push(shutdown);
         }

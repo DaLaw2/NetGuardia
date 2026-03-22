@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::model::ml_detection::ClipParams;
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfigTable {
@@ -17,7 +21,11 @@ pub struct AppConfigTable {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpConfig {
     pub http_server_bind_port: u16,
+    #[serde(default = "default_jwt_expiry")]
+    pub jwt_expiry_hours: u64,
 }
+
+fn default_jwt_expiry() -> u64 { 24 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NetworkConfig {
@@ -58,10 +66,44 @@ pub struct InferenceConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MiscConfig {
     pub geoip_db_name: String,
+    #[serde(default = "default_db_path")]
+    pub database_path: String,
+    #[serde(default = "default_license_path")]
+    pub license_file: String,
 }
+
+fn default_db_path() -> String { "net-guardia.db".to_string() }
+fn default_license_path() -> String { "license.key".to_string() }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {
     pub ingress: Vec<String>,
     pub egress: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MLInferenceConfig {
+    pub ae_feature_names: Vec<String>,
+    pub ae_clip_params: HashMap<String, ClipParams>,
+    pub ae_scaler_mean: Vec<f64>,
+    pub ae_scaler_std: Vec<f64>,
+    pub ae_post_clip_min: f64,
+    pub ae_post_clip_max: f64,
+    pub ae_threshold: f32,
+    pub classifier_feature_names: Vec<String>,
+    pub attack_labels: HashMap<String, String>,
+}
+
+impl MLInferenceConfig {
+    pub fn num_ae_features(&self) -> usize {
+        self.ae_feature_names.len()
+    }
+
+    pub fn num_classifier_features(&self) -> usize {
+        self.classifier_feature_names.len()
+    }
+
+    pub fn num_attack_types(&self) -> usize {
+        self.attack_labels.len()
+    }
 }

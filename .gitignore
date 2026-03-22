@@ -26,3 +26,25 @@ net-guardia/static/web
 # Profiling
 *.profraw
 *.profdata
+
+# License keys
+license-generator/target/
+*.hex
+license.key
+license_priv.key
+license_pub.key
+.gstack/
+interfaces.txt
+traffic_log.csv
+
+# Project docs (local only)
+CLAUDE.md
+DESIGN.md
+TODOS.md
+VERSION
+CHANGELOG.md
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal

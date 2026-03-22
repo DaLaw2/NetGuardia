@@ -1,7 +1,7 @@
 use tract_onnx::prelude::*;
 use std::path::PathBuf;
 
-use crate::core::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::ml::MLError;
 use crate::model::ml_detection::RunnableModel;
 
@@ -24,7 +24,7 @@ impl MLModels {
 
         let load = || -> Result<RunnableModel, Box<dyn std::error::Error>> {
             let mut model = onnx().model_for_path(&model_path)?;
-            model.set_input_fact(0, f32::fact(&[1, features]).into())?;
+            model.set_input_fact(0, f32::fact([1, features]).into())?;
             Ok(model.into_optimized()?.into_runnable()?)
         };
 

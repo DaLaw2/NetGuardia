@@ -5,6 +5,7 @@ services:
     build:
       context: ..
       dockerfile: compose/Containerfile.netguardia
+    image: netguardia:latest
     container_name: netguardia
     hostname: netguardia
     privileged: true
@@ -32,6 +33,7 @@ services:
     build:
       context: ..
       dockerfile: compose/Containerfile.router
+    image: netguardia-router:latest
     container_name: router
     hostname: router
     cap_add:
@@ -43,6 +45,7 @@ services:
     build:
       context: ..
       dockerfile: compose/Containerfile.endpoint
+    image: netguardia-endpoint:latest
     container_name: external
     hostname: external
     cap_add:
@@ -55,6 +58,7 @@ services:
     build:
       context: ..
       dockerfile: compose/Containerfile.endpoint
+    image: netguardia-endpoint:latest
     container_name: internal
     hostname: internal
     cap_add:

@@ -1,10 +1,11 @@
 [Http]
 http_server_bind_port = 8080
+jwt_expiry_hours = 24
 
 [Network]
 ingress_ifname = "ng-ext"
 egress_ifname = "ng-int"
-combined_queue_count = 16
+combined_queue_count = 1
 channel_size = 4096
 fill_queue_size = 4096
 comp_queue_size = 4096
@@ -28,6 +29,8 @@ traffic_log_csv_path = "traffic_log.csv"
 
 [Misc]
 geoip_db_name = "net-guardia/static/geo/GeoLite2-City.mmdb"
+database_path = "net-guardia.db"
+license_file = "license.key"
 
 [Pipeline]
 ingress = ["access_control", "rate_limit", "service"]

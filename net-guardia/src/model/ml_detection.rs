@@ -139,3 +139,41 @@ impl InferenceStats {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AlertMessage {
+    pub timestamp: u64,
+    pub flow_key: String,
+    pub src_ip: String,
+    pub dst_ip: String,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub protocol: u8,
+    pub is_attack: bool,
+    pub attack_type: Option<String>,
+    pub confidence: f32,
+    pub ae_score: f32,
+}
+
+impl AlertMessage {
+    pub fn from_detection_result(result: &DetectionResult) -> Self {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        Self {
+            timestamp,
+            flow_key: result.flow_key.clone(),
+            src_ip: result.flow_key_raw.src_ip_string(),
+            dst_ip: result.flow_key_raw.dst_ip_string(),
+            src_port: result.flow_key_raw.src_port,
+            dst_port: result.flow_key_raw.dst_port,
+            protocol: result.flow_key_raw.protocol,
+            is_attack: result.is_attack,
+            attack_type: result.attack_type.clone(),
+            confidence: result.confidence,
+            ae_score: result.ae_score,
+        }
+    }
+}
