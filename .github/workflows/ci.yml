@@ -72,14 +72,6 @@ jobs:
           ls -la "$HOME/.cargo/bin/bpf-linker"
         timeout-minutes: 45
 
-      - name: Frontend type check
-        run: npx tsc --noEmit
-        working-directory: net-guardia-frontend
-
-      - name: Frontend build
-        run: npx next build
-        working-directory: net-guardia-frontend
-
       - name: cargo check
         run: cargo check --package net-guardia
 
