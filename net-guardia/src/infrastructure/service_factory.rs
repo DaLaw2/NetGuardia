@@ -92,10 +92,10 @@ impl ServiceFactory {
             let hash = password::hash_password("admin")?;
             let admin_user_id = db.insert_user("admin", &hash, "admin", true)?;
             // Assign to Administrator group
-            if let Ok(groups) = db.list_user_groups() {
-                if let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator") {
-                    let _ = db.set_user_groups(admin_user_id, &[group_id]);
-                }
+            if let Ok(groups) = db.list_user_groups()
+                && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator")
+            {
+                let _ = db.set_user_groups(admin_user_id, &[group_id]);
             }
             tracing::warn!("Default admin user created with password 'admin' — you must change it on first login");
         }

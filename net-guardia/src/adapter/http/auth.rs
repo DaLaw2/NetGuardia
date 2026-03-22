@@ -177,10 +177,10 @@ async fn register(
         Ok(new_user_id) => {
             // Auto-assign to default group based on role
             let default_group_name = if reg.role == "admin" { "Administrator" } else { "Viewer" };
-            if let Ok(groups) = db.list_user_groups() {
-                if let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == default_group_name) {
-                    let _ = db.set_user_groups(new_user_id, &[group_id]);
-                }
+            if let Ok(groups) = db.list_user_groups()
+                && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == default_group_name)
+            {
+                let _ = db.set_user_groups(new_user_id, &[group_id]);
             }
             HttpResponse::Created()
                 .json(serde_json::json!({"username": reg.username, "role": reg.role}))

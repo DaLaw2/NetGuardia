@@ -6,6 +6,12 @@ pub type AclRuleTuple = (u8, String, String, String, u16);
 /// Type alias for user record tuples: (id, username, password_hash, role, force_password_change)
 pub type UserTuple = (i64, String, String, String, bool);
 
+/// Type alias for user list items: (id, username, role, force_password_change, created_at)
+pub type UserListItem = (i64, String, String, bool, String);
+
+/// Type alias for user group tuples: (id, name, description, permissions, created_at)
+pub type UserGroupTuple = (i64, String, String, String, String);
+
 /// Port for persistent storage operations.
 /// Adapters: SQLite (current), could be Postgres, etc.
 pub trait RepositoryPort: Send + Sync {
@@ -39,18 +45,18 @@ pub trait RepositoryPort: Send + Sync {
     fn user_count(&self) -> Result<i64, Error>;
 
     // --- User Management ---
-    fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error>;
+    fn list_users(&self) -> Result<Vec<UserListItem>, Error>;
     fn delete_user(&self, user_id: i64) -> Result<bool, Error>;
     fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error>;
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
     fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error>;
 
     // --- User Groups ---
-    fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error>;
+    fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error>;
     fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error>;
     fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error>;
     fn delete_user_group(&self, id: i64) -> Result<bool, Error>;
-    fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error>;
+    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error>;
 
     // --- User Group Membership ---
     fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error>;

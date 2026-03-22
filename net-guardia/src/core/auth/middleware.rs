@@ -132,12 +132,12 @@ where
             };
 
             // Permission-based RBAC check
-            if let Some(required) = required_permission(&path, req.method()) {
-                if !claims.permissions.contains(&required) {
-                    let resp = HttpResponse::Forbidden()
-                        .json(serde_json::json!({"error": "Insufficient permissions"}));
-                    return Ok(req.into_response(resp).map_into_right_body());
-                }
+            if let Some(required) = required_permission(&path, req.method())
+                && !claims.permissions.contains(&required)
+            {
+                let resp = HttpResponse::Forbidden()
+                    .json(serde_json::json!({"error": "Insufficient permissions"}));
+                return Ok(req.into_response(resp).map_into_right_body());
             }
 
             // Store claims in request extensions

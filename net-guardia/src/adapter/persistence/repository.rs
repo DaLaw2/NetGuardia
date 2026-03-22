@@ -330,7 +330,7 @@ impl Database {
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
     }
 
-    pub fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error> {
+    pub fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
@@ -386,7 +386,7 @@ impl Database {
     }
 
     // --- User Groups ---
-    pub fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error> {
+    pub fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
@@ -436,7 +436,7 @@ impl Database {
         Ok(affected > 0)
     }
 
-    pub fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error> {
+    pub fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> {
         let conn = self.conn.lock();
         let result = conn.query_row(
             "SELECT id, name, description, permissions, created_at FROM user_groups WHERE id = ?1",
@@ -592,16 +592,16 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error> { self.insert_user(username, password_hash, role, force_password_change) }
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.update_user_password(user_id, password_hash) }
     fn user_count(&self) -> Result<i64, Error> { self.user_count() }
-    fn list_users(&self) -> Result<Vec<(i64, String, String, bool, String)>, Error> { self.list_users() }
+    fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> { self.list_users() }
     fn delete_user(&self, user_id: i64) -> Result<bool, Error> { self.delete_user(user_id) }
     fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> { self.update_user_role(user_id, role) }
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.reset_user_password(user_id, password_hash) }
     fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user_by_id(user_id) }
-    fn list_user_groups(&self) -> Result<Vec<(i64, String, String, String, String)>, Error> { self.list_user_groups() }
+    fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> { self.list_user_groups() }
     fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> { self.create_user_group(name, description, permissions) }
     fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> { self.update_user_group(id, name, description, permissions) }
     fn delete_user_group(&self, id: i64) -> Result<bool, Error> { self.delete_user_group(id) }
-    fn get_user_group(&self, id: i64) -> Result<Option<(i64, String, String, String, String)>, Error> { self.get_user_group(id) }
+    fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> { self.get_user_group(id) }
     fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> { self.get_user_groups(user_id) }
     fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> { self.set_user_groups(user_id, group_ids) }
     fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> { self.get_user_permissions(user_id) }
