@@ -36,3 +36,8 @@ license_pub.key
 .gstack/
 interfaces.txt
 traffic_log.csv
+
+# Project docs (local only)
+CLAUDE.md
+DESIGN.md
+TODOS.md
