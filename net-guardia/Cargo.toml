@@ -47,6 +47,9 @@ tract-onnx = { workspace = true }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+# HTTP client (Telegram, MCP proxy)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # Architecture
 async-trait = "0.1"
 dashmap = "6"
@@ -59,15 +62,16 @@ maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
 rusqlite = { workspace = true }
+r2d2 = "0.8"
+r2d2_sqlite = "0.27"
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
+sha2 = "0.10"
+sd-notify = "0.4"
 rand = { workspace = true }
-ed25519-dalek = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
 
 [features]
 default = []
-license = ["dep:ed25519-dalek", "dep:base64"]
 
 [build-dependencies]
 cargo_metadata = { workspace = true }

@@ -11,36 +11,6 @@ fn main() {
     build_ebpf_package("ingress-ebpf", "ingress-ebpf");
     build_ebpf_package("egress-ebpf", "egress-ebpf");
     build_frontend();
-    embed_license_public_key();
-}
-
-fn embed_license_public_key() {
-    let license_enabled = env::var("CARGO_FEATURE_LICENSE").is_ok();
-
-    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let key_path = project_root.join("license_pub.key");
-
-    println!("cargo:rerun-if-changed={}", key_path.display());
-
-    if key_path.exists() {
-        let key_hex = fs::read_to_string(&key_path)
-            .expect("Failed to read license_pub.key")
-            .trim()
-            .to_string();
-        println!("cargo:rustc-env=LICENSE_PUBLIC_KEY={}", key_hex);
-    } else if license_enabled {
-        panic!(
-            "license feature enabled but license_pub.key not found at {}.\n\
-             Generate it with: cd license-generator && cargo run -- keygen\n\
-             Then copy license_pub.key to the repo root.",
-            key_path.display()
-        );
-    } else {
-        println!("cargo:rustc-env=LICENSE_PUBLIC_KEY=DISABLED");
-    }
 }
 
 /// Resolve the absolute path of bpf-linker.
@@ -183,8 +153,12 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
 
         for (name, binary) in executables {
             let dst = out_dir.join(name);
-            let _: u64 =
-                fs::copy(&binary, &dst).unwrap_or_else(|err| panic!("failed to copy {binary:?} to {dst:?}: {err}"));
+            // Only copy if content actually changed to avoid updating mtime,
+            // which would cause cargo to unnecessarily relink the binary.
+            if !files_equal(&binary, &dst) {
+                let _: u64 =
+                    fs::copy(&binary, &dst).unwrap_or_else(|err| panic!("failed to copy {binary:?} to {dst:?}: {err}"));
+            }
         }
     } else {
         let Package { targets, .. } = ebpf_package;
@@ -214,16 +188,24 @@ fn build_frontend() {
         panic!("Frontend directory {:?} does not exist", frontend_dir);
     }
 
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("public").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("package.json").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("package-lock.json").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("next.config.js").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("tailwind.config.js").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("postcss.config.js").display());
-    println!("cargo:rerun-if-changed={}", frontend_dir.join("tsconfig.json").display());
+    // Emit rerun-if-changed for individual files so that edits inside
+    // subdirectories (e.g. src/components/Foo.vue) actually trigger a rebuild.
+    // Directory-level rerun-if-changed only watches the directory mtime, which
+    // doesn't change when files in subdirectories are modified on Linux.
+    for dir_name in ["src", "public"] {
+        let dir_path = frontend_dir.join(dir_name);
+        if dir_path.exists() {
+            emit_rerun_if_changed_recursive(&dir_path);
+        }
+    }
+    for file_name in ["package.json", "package-lock.json", "vite.config.ts", "tsconfig.json"] {
+        let file_path = frontend_dir.join(file_name);
+        if file_path.exists() {
+            println!("cargo:rerun-if-changed={}", file_path.display());
+        }
+    }
 
-    let out_dir = frontend_dir.join("out");
+    let out_dir = frontend_dir.join("dist");
     let need_build = needs_frontend_rebuild(&frontend_dir, &out_dir, &static_dir);
     if !need_build {
         return;
@@ -233,7 +215,7 @@ fn build_frontend() {
         .unwrap_or_else(|_| panic!("npm not found in PATH. Install Node.js first."));
 
     let status = Command::new(&npm)
-        .arg("install")
+        .args(["install", "--include=optional"])
         .current_dir(&frontend_dir)
         .status()
         .unwrap_or_else(|err| panic!("failed to run npm install: {err}"));
@@ -245,12 +227,12 @@ fn build_frontend() {
         .unwrap_or_else(|_| panic!("npx not found in PATH. Install Node.js first."));
 
     let status = Command::new(&npx)
-        .args(["next", "build"])
+        .args(["vite", "build"])
         .current_dir(&frontend_dir)
         .status()
-        .unwrap_or_else(|err| panic!("failed to run next build: {err}"));
+        .unwrap_or_else(|err| panic!("failed to run vite build: {err}"));
     if !status.success() {
-        panic!("next build failed with exit code: {:?}", status.code());
+        panic!("vite build failed with exit code: {:?}", status.code());
     }
 
     if static_dir.exists() {
@@ -259,6 +241,11 @@ fn build_frontend() {
     fs::create_dir_all(&static_dir).unwrap_or_else(|err| panic!("failed to create {:?}: {err}", static_dir));
 
     copy_dir_all(&out_dir, &static_dir).unwrap_or_else(|err| panic!("failed to copy frontend build: {err}"));
+
+    // rust_embed embeds static/ at compile time. After copying new frontend
+    // output into static/web/, we must tell cargo to recompile the crate so
+    // the embedded files are refreshed in the binary.
+    emit_rerun_if_changed_recursive(&static_dir);
 }
 
 fn needs_frontend_rebuild(frontend_dir: &std::path::Path, out_dir: &std::path::Path, static_dir: &std::path::Path) -> bool {
@@ -277,8 +264,8 @@ fn needs_frontend_rebuild(frontend_dir: &std::path::Path, out_dir: &std::path::P
     };
 
     let essential_items = [
-        "src", "public", "package.json", "next.config.js",
-        "tailwind.config.js", "postcss.config.js", "tsconfig.json", "package-lock.json",
+        "src", "public", "package.json", "vite.config.ts",
+        "tsconfig.json", "package-lock.json",
     ];
 
     for item_name in essential_items {
@@ -316,6 +303,32 @@ fn get_dir_last_modified(path: &std::path::Path) -> Option<SystemTime> {
     }
 
     None
+}
+
+/// Returns true if both files exist and have identical contents.
+fn files_equal(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let Ok(a_meta) = fs::metadata(a) else { return false };
+    let Ok(b_meta) = fs::metadata(b) else { return false };
+    if a_meta.len() != b_meta.len() {
+        return false;
+    }
+    let Ok(a_bytes) = fs::read(a) else { return false };
+    let Ok(b_bytes) = fs::read(b) else { return false };
+    a_bytes == b_bytes
+}
+
+fn emit_rerun_if_changed_recursive(path: &std::path::Path) {
+    if path.is_file() {
+        println!("cargo:rerun-if-changed={}", path.display());
+        return;
+    }
+    if path.is_dir()
+        && let Ok(entries) = fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            emit_rerun_if_changed_recursive(&entry.path());
+        }
+    }
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

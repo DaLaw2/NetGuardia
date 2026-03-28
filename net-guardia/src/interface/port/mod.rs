@@ -1,4 +1,3 @@
-pub mod repository;
-pub mod auth;
+pub mod access_control;
 pub mod notification;
-pub mod health;
+pub mod repository;

@@ -1,12 +1,15 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use macros::log;
+
 use crate::interface::communication::command::CommandHandler;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query::QueryHandler;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::repository::RepositoryPort;
 use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
 
 /// Handles enforce-mode commands and queries by delegating to the repository.
 pub struct EnforceModeHandler {
@@ -23,7 +26,7 @@ impl EnforceModeHandler {
 impl CommandHandler<ChangeEnforceModeCommand> for EnforceModeHandler {
     async fn handle_command(&self, command: ChangeEnforceModeCommand) -> Result<(), Error> {
         self.db.set_setting("enforce_mode", &command.mode)?;
-        tracing::info!("Enforce mode changed to: {}", command.mode);
+        log!(SystemLog::EnforceModeChanged(command.mode));
         Ok(())
     }
 }

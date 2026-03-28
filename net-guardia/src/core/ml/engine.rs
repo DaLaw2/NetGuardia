@@ -103,22 +103,19 @@ impl Engine {
     }
 
     fn run_inference_tick(&self) {
-        let mut all_snapshots = Vec::new();
+        let mut all_flows = Vec::new();
         let mut total_count = 0;
 
-        // Phase 1: O(1) lock per tracker — just swap
+        // Phase 1: short lock per tracker — clone uninferred flows, mark as inferred
         for tracker in &self.trackers {
             let mut t = tracker.lock();
             total_count += t.flow_count();
-            all_snapshots.push(t.take_snapshot());
+            all_flows.extend(
+                t.get_uninferred_flows().into_iter()
+                    .filter(|flow| flow.packet_count() >= self.min_packets)
+            );
             // lock released here
         }
-
-        // Phase 2: filter outside all locks — O(flows) but non-blocking
-        let all_flows: Vec<FlowData> = all_snapshots.into_iter()
-            .flat_map(|map| map.into_values())
-            .filter(|flow| flow.packet_count() >= self.min_packets)
-            .collect();
 
         log!(MLLog::FlowStats(
             total_count,

@@ -1,6 +1,7 @@
 use actix_web::{web, HttpResponse, Responder, Scope};
 use serde::Deserialize;
 
+use crate::core::config_service::ConfigService;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
@@ -14,16 +15,13 @@ struct EnforceModeRequest {
 }
 
 pub fn initialize() -> Scope {
-    let scope = web::scope("/system")
+    web::scope("/system")
         .route("/boot-time", web::get().to(get_boot_time))
         .route("/enforce-mode", web::get().to(get_enforce_mode))
         .route("/enforce-mode", web::put().to(set_enforce_mode))
-        .route("/xdp-mode", web::get().to(get_xdp_mode));
-
-    #[cfg(feature = "license")]
-    let scope = scope.route("/license", web::get().to(get_license_info));
-
-    scope
+        .route("/xdp-mode", web::get().to(get_xdp_mode))
+        .route("/config", web::get().to(get_config))
+        .route("/config", web::put().to(update_config))
 }
 
 async fn get_boot_time() -> impl Responder {
@@ -69,7 +67,21 @@ async fn get_xdp_mode(db: web::Data<Repo>) -> impl Responder {
     }))
 }
 
-#[cfg(feature = "license")]
-async fn get_license_info(license_info: web::Data<crate::core::license::LicenseInfo>) -> impl Responder {
-    HttpResponse::Ok().json(license_info.get_ref())
+async fn get_config(svc: web::Data<ConfigService>) -> impl Responder {
+    HttpResponse::Ok().json(svc.get_config())
+}
+
+async fn update_config(
+    body: web::Json<serde_json::Value>,
+    svc: web::Data<ConfigService>,
+) -> impl Responder {
+    match svc.update_config(&body) {
+        Ok(updated) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "updated": updated,
+                "message": if updated.is_empty() { "No changes" } else { "Settings updated. Restart required for changes to take effect." }
+            }))
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()})),
+    }
 }

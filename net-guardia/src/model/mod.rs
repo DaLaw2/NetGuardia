@@ -1,14 +1,21 @@
-pub mod auth;
-pub mod config;
-pub mod direction;
-pub mod drop_event;
+// Bounded Context subdirectories
+pub mod access_control;
+pub mod detection;
 pub mod error;
-pub mod flow_stats;
-pub mod health;
-pub mod ip_address;
-#[cfg(feature = "license")]
-pub mod license;
-pub mod list_type;
+pub mod identity;
 pub mod log;
-pub mod ml_detection;
-pub mod user_packet;
+pub mod monitoring;
+pub mod soar;
+pub mod system;
+
+// Backward-compatible re-exports (existing imports continue to work)
+pub use access_control::ip_address;
+pub use access_control::list_type;
+pub use detection::ml_detection;
+pub use identity::auth;
+pub use monitoring::direction;
+pub use monitoring::drop_event;
+pub use monitoring::flow_stats;
+pub use monitoring::user_packet;
+pub use system::config;
+pub use system::health;

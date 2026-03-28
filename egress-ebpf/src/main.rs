@@ -30,10 +30,12 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 
 #[inline(always)]
 unsafe fn compute_symmetric_queue_id(ctx: &XdpContext) -> Option<u32> {
-    let mut pkt = core::mem::zeroed::<ParsedPacket>();
-    parsing::parse_packet(ctx.data(), ctx.data_end(), &mut pkt).ok()?;
-    let num_q = *NUM_QUEUES.get(0)?;
-    symmetric_queue_id(&pkt, num_q)
+    unsafe {
+        let mut pkt = core::mem::zeroed::<ParsedPacket>();
+        parsing::parse_packet(ctx.data(), ctx.data_end(), &mut pkt).ok()?;
+        let num_q = *NUM_QUEUES.get(0)?;
+        symmetric_queue_id(&pkt, num_q)
+    }
 }
 
 #[cfg(not(test))]

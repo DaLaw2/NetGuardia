@@ -11,8 +11,7 @@ use crate::model::error::Error;
 ///   - `weekly_bandwidth_bytes`
 ///   - `weekly_system_health` (JSON object with cpu, memory, disk fields)
 ///
-/// If a key is missing the report falls back to placeholder data so it can
-/// be exercised before the ML aggregation pipeline is wired up.
+/// If a key is missing the report uses empty/zero defaults.
 pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> {
     let threats_count = db
         .get_setting("weekly_threats_count")
@@ -22,30 +21,12 @@ pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> 
     let top_ips_json = db
         .get_setting("weekly_top_ips")
 ?
-        .unwrap_or_else(|| {
-            serde_json::json!([
-                {"ip": "192.168.1.100", "count": 42},
-                {"ip": "10.0.0.55", "count": 31},
-                {"ip": "172.16.0.12", "count": 27},
-                {"ip": "192.168.2.200", "count": 19},
-                {"ip": "10.0.1.88", "count": 14}
-            ])
-            .to_string()
-        });
+        .unwrap_or_else(|| "[]".to_string());
 
     let threat_breakdown_json = db
         .get_setting("weekly_threat_breakdown")
 ?
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "Port Scan": 38,
-                "DDoS": 22,
-                "Brute Force": 15,
-                "DNS Tunneling": 8,
-                "Data Exfiltration": 3
-            })
-            .to_string()
-        });
+        .unwrap_or_else(|| "{}".to_string());
 
     let bandwidth = db
         .get_setting("weekly_bandwidth_bytes")
@@ -57,9 +38,9 @@ pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> 
 ?
         .unwrap_or_else(|| {
             serde_json::json!({
-                "cpu_percent": 24.5,
-                "memory_percent": 61.2,
-                "disk_percent": 43.8
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "disk_percent": 0.0
             })
             .to_string()
         });

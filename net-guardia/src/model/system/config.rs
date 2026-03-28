@@ -4,25 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ml_detection::ClipParams;
 
-#[derive(Debug, Deserialize)]
-pub struct AppConfigTable {
-    #[serde(rename = "Http")]
-    pub http: HttpConfig,
-    #[serde(rename = "Network")]
-    pub network: NetworkConfig,
-    #[serde(rename = "Inference")]
-    pub inference: InferenceConfig,
-    #[serde(rename = "Misc")]
-    pub misc: MiscConfig,
-    #[serde(rename = "Pipeline")]
-    pub pipeline: PipelineConfig,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpConfig {
     pub http_server_bind_port: u16,
     #[serde(default = "default_jwt_expiry")]
     pub jwt_expiry_hours: u64,
+    /// Explicit CORS allowed origins. Empty = allow RFC1918 private networks only.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 fn default_jwt_expiry() -> u64 { 24 }
@@ -68,12 +58,9 @@ pub struct MiscConfig {
     pub geoip_db_name: String,
     #[serde(default = "default_db_path")]
     pub database_path: String,
-    #[serde(default = "default_license_path")]
-    pub license_file: String,
 }
 
 fn default_db_path() -> String { "net-guardia.db".to_string() }
-fn default_license_path() -> String { "license.key".to_string() }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {

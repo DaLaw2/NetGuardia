@@ -42,5 +42,9 @@ traceable! {
         #[no_source]
         #[error("Event type not registered with communication manager")]
         TypeNotRegistered => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Validation error: {message}")]
+        ValidationError { message: String } => tracing::Level::WARN,
     }
 }

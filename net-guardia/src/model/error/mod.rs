@@ -3,10 +3,11 @@ pub mod database;
 pub mod ebpf;
 pub mod http;
 pub mod io;
-#[cfg(feature = "license")]
-pub mod license;
+pub mod mcp;
 pub mod misc;
 pub mod ml;
+pub mod notification;
+pub mod soar;
 pub mod system;
 
 use serde::{Deserialize, Serialize};
@@ -16,10 +17,11 @@ use crate::model::error::database::DatabaseError;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
 use crate::model::error::io::IOError;
-#[cfg(feature = "license")]
-use crate::model::error::license::LicenseError;
+use crate::model::error::mcp::McpError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::ml::MLError;
+use crate::model::error::notification::NotificationError;
+use crate::model::error::soar::SoarError;
 use crate::model::error::system::SystemError;
 
 #[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
@@ -36,11 +38,14 @@ pub enum Error {
     ML(MLError),
     #[error("{0}")]
     IO(IOError),
-    #[cfg(feature = "license")]
     #[error("{0}")]
-    License(LicenseError),
+    Mcp(McpError),
     #[error("{0}")]
     Misc(MiscError),
+    #[error("{0}")]
+    Notification(NotificationError),
+    #[error("{0}")]
+    Soar(SoarError),
     #[error("{0}")]
     System(SystemError),
 }
@@ -75,13 +80,6 @@ impl From<IOError> for Error {
     }
 }
 
-#[cfg(feature = "license")]
-impl From<LicenseError> for Error {
-    fn from(error: LicenseError) -> Self {
-        Self::License(error)
-    }
-}
-
 impl From<MiscError> for Error {
     fn from(error: MiscError) -> Self {
         Self::Misc(error)
@@ -97,5 +95,23 @@ impl From<SystemError> for Error {
 impl From<MLError> for Error {
     fn from(error: MLError) -> Self {
         Self::ML(error)
+    }
+}
+
+impl From<NotificationError> for Error {
+    fn from(error: NotificationError) -> Self {
+        Self::Notification(error)
+    }
+}
+
+impl From<SoarError> for Error {
+    fn from(error: SoarError) -> Self {
+        Self::Soar(error)
+    }
+}
+
+impl From<McpError> for Error {
+    fn from(error: McpError) -> Self {
+        Self::Mcp(error)
     }
 }

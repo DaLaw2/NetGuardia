@@ -5,6 +5,7 @@ use crate::model::direction::Direction;
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowStatsEntry {
     pub direction: Direction,
+    pub ip_version: u8,
     pub src_ip: String,
     pub dst_ip: String,
     pub src_port: u16,
@@ -26,6 +27,26 @@ pub struct StatsSummary {
     pub total_flows: usize,
     pub total_bytes: u64,
     pub total_packets: usize,
+}
+
+/// Real-time throughput summary pushed via WebSocket alongside flow data.
+/// Rates are calculated server-side using actual elapsed time.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowSummary {
+    pub ingress_bps_v4: u64,
+    pub egress_bps_v4: u64,
+    pub ingress_bps_v6: u64,
+    pub egress_bps_v6: u64,
+    pub total_flows: usize,
+    pub window_secs: u64,
+    pub timestamp_ms: u64,
+}
+
+/// Combined payload for the flow WebSocket: summary + individual flows.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowPushPayload {
+    pub summary: FlowSummary,
+    pub flows: Vec<FlowStatsEntry>,
 }
 
 /// Client subscription filter for WebSocket flow stats

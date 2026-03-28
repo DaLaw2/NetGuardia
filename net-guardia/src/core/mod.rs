@@ -1,7 +1,14 @@
+pub mod acl_service;
 pub mod auth;
+pub mod config_service;
+pub mod dns_filter_service;
 pub mod email;
 pub mod ebpf;
-#[cfg(feature = "license")]
-pub mod license;
 pub mod ml;
+pub mod notification_service;
+pub mod playbook_service;
+pub mod rate_limit_service;
+pub mod report;
+pub mod soar;
+pub mod stats_aggregator;
 pub mod system;

@@ -9,7 +9,7 @@ use aya_log::EbpfLogger;
 use common::define::pipeline::*;
 
 use crate::core::auth::jwt::JwtService;
-use crate::core::auth::password;
+
 use crate::adapter::persistence::Database;
 use crate::core::ebpf::EbpfServices;
 use crate::infrastructure::app_config::AppConfig;
@@ -19,16 +19,29 @@ use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::repository::RepositoryPort;
-#[cfg(feature = "license")]
-use crate::core::license::LicenseInfo;
-#[cfg(feature = "license")]
-use crate::core::license::validator::validate_license;
+use crate::core::acl_service::AclService;
+use crate::core::config_service::ConfigService;
+use crate::core::dns_filter_service::DnsFilterService;
+use crate::core::notification_service::NotificationService;
+use crate::core::playbook_service::PlaybookService;
+use crate::core::rate_limit_service::RateLimitService;
+use crate::interface::port::access_control::AccessControlPort;
+use crate::interface::port::notification::AlertNotifier;
+use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
+use crate::adapter::telegram::TelegramAdapter;
+use crate::core::soar::engine::SoarEngine;
+use crate::core::soar::scheduler::TtlScheduler;
+use crate::core::email::scheduler::ReportScheduler;
+use crate::infrastructure::geoip::GeoIpService;
 use crate::core::ml::config_loader::InferenceConfig;
 use crate::model::direction::FlowDirection;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
 use crate::model::list_type::ListType;
+use crate::model::log::ebpf::EbpfLog;
+use crate::model::log::system::SystemLog;
+use macros::log;
 
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
@@ -39,12 +52,19 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub jwt_service: Arc<JwtService>,
     pub comm: Arc<CommunicationManager>,
-    #[cfg(feature = "license")]
-    pub license_info: Arc<LicenseInfo>,
+    pub soar_engine: Arc<SoarEngine>,
+    pub ttl_scheduler: TtlScheduler,
+    pub report_scheduler: ReportScheduler,
+    pub acl_service: Arc<AclService>,
+    pub config_service: Arc<ConfigService>,
+    pub dns_filter_service: Arc<DnsFilterService>,
+    pub notification_service: Arc<NotificationService>,
+    pub playbook_service: Arc<PlaybookService>,
+    pub rate_limit_service: Arc<RateLimitService>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
-    #[allow(dead_code)]
-    pub ingress_program_array: ProgramArray<MapData>,
+    /// Held to keep the eBPF program array map FD alive.
+    pub _ingress_program_array: ProgramArray<MapData>,
 }
 
 /// Maps stage name (from config.toml) to (function_name, stage_id).
@@ -60,18 +80,15 @@ fn stage_registry() -> HashMap<&'static str, (&'static str, u32)> {
 pub struct ServiceFactory;
 
 impl ServiceFactory {
-    /// Build all services and return the complete application state.
-    pub async fn build() -> Result<AppState, Error> {
+    /// Build all services. DB is passed in (already created by main.rs).
+    /// Only called when setup is complete — all config values are in DB.
+    pub async fn build(db: Arc<Database>) -> Result<AppState, Error> {
+        // Ensure DB has all default config keys (INSERT OR IGNORE — never overwrites)
+        AppConfig::seed_defaults(&db)?;
+        let app_config = Arc::new(AppConfig::new(&db)?);
+
         let mut ingress_ebpf = Self::load_ebpf("ingress")?;
         let mut egress_ebpf = Self::load_ebpf("egress")?;
-        let app_config = Arc::new(AppConfig::new()?);
-
-        #[cfg(feature = "license")]
-        let license_info = Arc::new(validate_license(
-            &app_config.misc.license_file,
-            &app_config.network.ingress_ifname,
-            &app_config.network.egress_ifname,
-        )?);
 
         let ingress_program_array = Self::configure_ingress_pipeline(
             &mut ingress_ebpf,
@@ -84,21 +101,6 @@ impl ServiceFactory {
         let num_queues = app_config.network.combined_queue_count;
         Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
         Self::write_num_queues(&mut egress_ebpf, num_queues)?;
-
-        let db = Arc::new(Database::new(&app_config.misc.database_path)?);
-
-        // Create default admin user if no users exist
-        if db.user_count().unwrap_or(0) == 0 {
-            let hash = password::hash_password("admin")?;
-            let admin_user_id = db.insert_user("admin", &hash, "admin", true)?;
-            // Assign to Administrator group
-            if let Ok(groups) = db.list_user_groups()
-                && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator")
-            {
-                let _ = db.set_user_groups(admin_user_id, &[group_id]);
-            }
-            tracing::warn!("Default admin user created with password 'admin' — you must change it on first login");
-        }
 
         // Ensure enforce_mode setting exists (default: monitor)
         if db.get_setting("enforce_mode")?.is_none() {
@@ -124,11 +126,84 @@ impl ServiceFactory {
             .query::<GetEnforceModeQuery>()
             .build();
 
+        // Register ThreatDetectedEvent channel for SOAR
+        comm.register_event_type::<crate::interface::communication::event_types::ThreatDetectedEvent>();
+
+        // Seed default SOAR playbooks if empty
+        db.seed_default_playbooks()?;
+
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
         Self::restore_geo_countries(&db, &ebpf_services);
         Self::restore_rate_limits(&db, &ebpf_services);
         Self::restore_acl_rules(&db, &ebpf_services).await;
+
+        // Create TelegramAdapter as alert notifier (may fail if not configured yet)
+        let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(db.clone()) {
+            Ok(adapter) => Some(Arc::new(adapter)),
+            Err(e) => {
+                log!(SystemLog::TelegramUnavailable(e.to_string()));
+                None
+            }
+        };
+
+        // Try to initialize GeoIP service
+        let geoip: Option<Arc<GeoIpService>> = match GeoIpService::new(&app_config.misc.geoip_db_name) {
+            Ok(svc) => {
+                log!(SystemLog::GeoIpInitialized);
+                Some(Arc::new(svc))
+            }
+            Err(e) => {
+                log!(SystemLog::GeoIpUnavailable(e.to_string()));
+                None
+            }
+        };
+
+        // Create AccessControlPort adapter for SOAR/TTL (decoupled from eBPF)
+        let access_control_port: Arc<dyn AccessControlPort> = Arc::new(
+            EbpfAccessControlAdapter::new(ebpf_services.access_control.clone())
+        );
+
+        // Create SOAR engine
+        let soar_engine = Arc::new(SoarEngine::new(
+            db.clone(),
+            access_control_port.clone(),
+            alert_notifier.clone(),
+            geoip.clone(),
+            Some(ebpf_services.rate_limit.clone()),
+        )?);
+
+        // Create TTL scheduler
+        let ttl_scheduler = TtlScheduler::new(
+            db.clone(),
+            access_control_port.clone(),
+            soar_engine.clone(),
+        );
+
+        // Create Report scheduler
+        let report_scheduler = ReportScheduler::new(db.clone() as Arc<dyn RepositoryPort>);
+
+        // Create domain services (Phase 2B)
+        let acl_service = Arc::new(AclService::new(
+            db.clone() as Arc<dyn RepositoryPort>,
+            ebpf_services.access_control.clone(),
+            ebpf_services.geo_block.clone(),
+        ));
+        let dns_filter_service = Arc::new(DnsFilterService::new(
+            db.clone() as Arc<dyn RepositoryPort>,
+            ebpf_services.dns_filter.clone(),
+        ));
+        let rate_limit_service = Arc::new(RateLimitService::new(
+            db.clone() as Arc<dyn RepositoryPort>,
+            ebpf_services.rate_limit.clone(),
+        ));
+        let playbook_service = Arc::new(PlaybookService::new(
+            db.clone(),
+            soar_engine.clone(),
+            access_control_port,
+        ));
+        let config_service = Arc::new(ConfigService::new(db.clone() as Arc<dyn RepositoryPort>));
+        let notification_service = Arc::new(NotificationService::new(db.clone()));
 
         Ok(AppState {
             app_config,
@@ -138,11 +213,18 @@ impl ServiceFactory {
             db,
             jwt_service,
             comm,
-            #[cfg(feature = "license")]
-            license_info,
+            soar_engine,
+            ttl_scheduler,
+            report_scheduler,
+            acl_service,
+            config_service,
+            dns_filter_service,
+            notification_service,
+            playbook_service,
+            rate_limit_service,
             ingress_ebpf,
             egress_ebpf,
-            ingress_program_array,
+            _ingress_program_array: ingress_program_array,
         })
     }
 
@@ -265,35 +347,22 @@ impl ServiceFactory {
         // Try DRV_MODE first (native XDP, best performance)
         match xdp.attach(ifname, XdpFlags::DRV_MODE) {
             Ok(_) => {
-                tracing::info!("XDP attached to {} in native DRV_MODE", ifname);
+                log!(EbpfLog::XdpAttachedNative(ifname.to_string()));
                 return Ok("drv".to_string());
             }
             Err(drv_err) => {
-                tracing::warn!(
-                    "XDP DRV_MODE failed on {}: {}. Falling back to SKB_MODE.",
-                    ifname, drv_err
-                );
+                log!(EbpfLog::XdpDrvModeFailed(ifname.to_string(), drv_err.to_string()));
             }
         }
 
         // Fallback to SKB_MODE (generic XDP, reduced performance)
         match xdp.attach(ifname, XdpFlags::SKB_MODE) {
             Ok(_) => {
-                tracing::warn!(
-                    "XDP attached to {} in generic SKB_MODE (reduced performance). \
-                     For best performance, use a NIC with native XDP support (e.g., virtio-net, Intel i40e/ice).",
-                    ifname
-                );
+                log!(EbpfLog::XdpAttachedSkb(ifname.to_string()));
                 Ok("skb".to_string())
             }
             Err(skb_err) => {
-                tracing::error!(
-                    "XDP attach failed on {} with both DRV_MODE and SKB_MODE. \
-                     Ensure the interface exists and supports XDP. \
-                     Supported NICs: virtio-net, Intel i40e/ice/i350, Mellanox mlx5. \
-                     SKB error: {}",
-                    ifname, skb_err
-                );
+                log!(EbpfLog::XdpAttachFailed(ifname.to_string(), skb_err.to_string()));
                 Err(EbpfError::AttachProgramFailed(skb_err).into())
             }
         }
@@ -311,11 +380,11 @@ impl ServiceFactory {
         if let Ok(domains) = db.load_dns_domains() {
             for domain in &domains {
                 if let Err(e) = ebpf_services.dns_filter.add_domain(domain) {
-                    tracing::warn!("Failed to restore DNS domain '{}': {}", domain, e);
+                    log!(SystemLog::DnsRestoreFailed(domain.clone(), e.to_string()));
                 }
             }
             if !domains.is_empty() {
-                tracing::info!("Restored {} DNS blacklist domains from database", domains.len());
+                log!(SystemLog::DnsBlacklistRestored(domains.len()));
             }
         }
     }
@@ -324,9 +393,9 @@ impl ServiceFactory {
         if let Ok(countries) = db.load_geo_countries()
             && !countries.is_empty() {
                 if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
-                    tracing::warn!("Failed to restore geo-blocked countries: {}", e);
+                    log!(SystemLog::GeoRestoreFailed(e.to_string()));
                 } else {
-                    tracing::info!("Restored {} geo-blocked countries from database", countries.len());
+                    log!(SystemLog::GeoCountriesRestored(countries.len()));
                 }
         }
     }
@@ -343,11 +412,11 @@ impl ServiceFactory {
                     _ => Ok(()),
                 };
                 if let Err(e) = result {
-                    tracing::warn!("Failed to restore rate limit '{}': {}", key, e);
+                    log!(SystemLog::RateLimitRestoreFailed(key.clone(), e.to_string()));
                 }
             }
             if !configs.is_empty() {
-                tracing::info!("Restored {} rate limit settings from database", configs.len());
+                log!(SystemLog::RateLimitsRestored(configs.len()));
             }
         }
     }
@@ -360,7 +429,7 @@ impl ServiceFactory {
                     "source" => FlowDirection::Source,
                     "destination" => FlowDirection::Destination,
                     other => {
-                        tracing::warn!("Unknown ACL direction '{}', skipping", other);
+                        log!(SystemLog::AclUnknownDirection(other.to_string()));
                         continue;
                     }
                 };
@@ -368,7 +437,7 @@ impl ServiceFactory {
                     "whitelist" => ListType::White,
                     "blacklist" => ListType::Black,
                     other => {
-                        tracing::warn!("Unknown ACL list type '{}', skipping", other);
+                        log!(SystemLog::AclUnknownListType(other.to_string()));
                         continue;
                     }
                 };
@@ -377,7 +446,7 @@ impl ServiceFactory {
                         match ip_address.parse::<Ipv4Addr>() {
                             Ok(addr) => ebpf_services.access_control.add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)).await,
                             Err(e) => {
-                                tracing::warn!("Failed to parse IPv4 address '{}': {}", ip_address, e);
+                                log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
                                 continue;
                             }
                         }
@@ -386,24 +455,24 @@ impl ServiceFactory {
                         match ip_address.parse::<Ipv6Addr>() {
                             Ok(addr) => ebpf_services.access_control.add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0)).await,
                             Err(e) => {
-                                tracing::warn!("Failed to parse IPv6 address '{}': {}", ip_address, e);
+                                log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));
                                 continue;
                             }
                         }
                     }
                     other => {
-                        tracing::warn!("Unknown IP version {}, skipping", other);
+                        log!(SystemLog::AclUnknownIpVersion(*other));
                         continue;
                     }
                 };
                 if let Err(e) = result {
-                    tracing::warn!("Failed to restore ACL rule ({} {} {}:{}): {}", direction, list_type, ip_address, port, e);
+                    log!(SystemLog::AclRuleRestoreFailed(direction.clone(), list_type.clone(), ip_address.clone(), *port, e.to_string()));
                 } else {
                     restored += 1;
                 }
             }
             if restored > 0 {
-                tracing::info!("Restored {} ACL rules from database", restored);
+                log!(SystemLog::AclRulesRestored(restored as usize));
             }
         }
     }

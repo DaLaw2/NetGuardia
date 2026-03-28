@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["net-guardia", "common", "macros", "ingress-ebpf", "egress-ebpf"]
-default-members = ["net-guardia", "common"]
+members = ["net-guardia", "common", "macros", "ingress-ebpf", "egress-ebpf", "mcp-server", "cli"]
+default-members = ["net-guardia", "common", "mcp-server", "cli"]
 
 [workspace.dependencies]
 # eBPF - kernel side (pinned: aya-ebpf 0.1.2 was yanked, see aya-rs/aya#1400)

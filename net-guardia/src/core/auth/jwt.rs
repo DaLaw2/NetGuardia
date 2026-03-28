@@ -1,4 +1,4 @@
-use jsonwebtoken::{decode, encode, errors::ErrorKind, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
 use crate::interface::port::repository::RepositoryPort;
 use crate::model::auth::Claims;
@@ -13,21 +13,19 @@ pub struct JwtService {
 
 impl JwtService {
     pub fn new(db: &dyn RepositoryPort, expiry_hours: u64) -> Result<Self, Error> {
-        let secret = match db.get_setting("jwt_secret")? {
-            Some(s) => s,
+        let raw_bytes = match db.get_setting("jwt_secret")? {
+            Some(hex_str) => hex_decode(&hex_str).map_err(|_| AuthError::InvalidToken)?,
             None => {
                 use rand::Rng;
-                let secret: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-                let encoded = hex_encode(&secret);
-                db.set_setting("jwt_secret", &encoded)?;
-                encoded
+                let secret: [u8; 32] = rand::rng().random();
+                db.set_setting("jwt_secret", &hex_encode(&secret))?;
+                secret.to_vec()
             }
         };
 
-        let secret_bytes = secret.as_bytes();
         Ok(Self {
-            encoding_key: EncodingKey::from_secret(secret_bytes),
-            decoding_key: DecodingKey::from_secret(secret_bytes),
+            encoding_key: EncodingKey::from_secret(&raw_bytes),
+            decoding_key: DecodingKey::from_secret(&raw_bytes),
             expiry_hours,
         })
     }
@@ -51,7 +49,7 @@ impl JwtService {
     }
 
     pub fn validate_token(&self, token: &str) -> Result<Claims, Error> {
-        let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::default())
+        let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::new(Algorithm::HS256))
             .map_err(|e| {
                 match e.kind() {
                     ErrorKind::ExpiredSignature => Error::from(AuthError::TokenExpired),
@@ -69,6 +67,16 @@ fn hex_encode(data: &[u8]) -> String {
         write!(s, "{:02x}", b).unwrap();
     }
     s
+}
+
+fn hex_decode(hex: &str) -> Result<Vec<u8>, &'static str> {
+    if !hex.len().is_multiple_of(2) {
+        return Err("odd-length hex string");
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| "invalid hex"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -140,5 +148,37 @@ mod tests {
         let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
         let result = jwt2.validate_token(&token);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_decode_valid() {
+        let result = hex_decode("48656c6c6f").unwrap();
+        assert_eq!(result, b"Hello");
+    }
+
+    #[test]
+    fn test_hex_decode_empty() {
+        let result = hex_decode("").unwrap();
+        assert_eq!(result, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_hex_decode_odd_length() {
+        let result = hex_decode("abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_decode_invalid_chars() {
+        let result = hex_decode("gg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_roundtrip() {
+        let data = b"NetGuardia\x00\xff";
+        let encoded = hex_encode(data);
+        let decoded = hex_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
     }
 }

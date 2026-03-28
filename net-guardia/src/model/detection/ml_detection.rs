@@ -14,7 +14,6 @@ pub struct EngineConfig {
     pub batch_size: usize,
     pub inference_interval_secs: u64,
     pub aggregator_window_secs: u64,
-    pub flow_timeout_us: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,8 +112,6 @@ pub struct InferenceStats {
     pub total_flows: usize,
     pub malicious_flows: usize,
     pub benign_flows: usize,
-    #[allow(dead_code)]
-    pub inference_time_us: u64,
     pub flows_per_second: f32,
 }
 
@@ -134,7 +131,6 @@ impl InferenceStats {
             total_flows: total,
             malicious_flows: malicious,
             benign_flows: benign,
-            inference_time_us: elapsed_us,
             flows_per_second: fps,
         }
     }

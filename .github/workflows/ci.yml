@@ -79,7 +79,7 @@ jobs:
         run: cargo test --package net-guardia
 
       - name: cargo clippy
-        run: cargo clippy --package net-guardia -- -D warnings -A dead_code
+        run: cargo clippy --package net-guardia -- -D warnings
 
   integration-test:
     name: Integration Test (placeholder)

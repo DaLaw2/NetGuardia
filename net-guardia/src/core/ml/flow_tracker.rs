@@ -34,6 +34,9 @@ pub struct FlowData {
     pub bwd_bulk_state: BulkState,
     pub act_data_pkt_fwd: u32,
     is_first_packet: bool,
+    /// Timestamp (us) when this flow was last sent to ML inference.
+    /// 0 means never inferred. Used to avoid re-inferring unchanged flows.
+    pub last_inferred_us: u64,
 }
 
 impl FlowData {
@@ -66,6 +69,7 @@ impl FlowData {
             bwd_bulk_state: BulkState::default(),
             act_data_pkt_fwd: 0,
             is_first_packet: true,
+            last_inferred_us: 0,
         }
     }
 
@@ -186,14 +190,6 @@ impl FlowTracker {
         }
     }
 
-    /// Swap active flows with an empty map and return the old one.
-    /// This is O(1) — the caller filters outside the lock.
-    pub fn take_snapshot(&mut self) -> HashMap<FlowKey, FlowData> {
-        let mut snapshot = HashMap::with_capacity(self.active.capacity());
-        std::mem::swap(&mut self.active, &mut snapshot);
-        snapshot
-    }
-
     pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
         let reversed_key = packet_key.clone().reverse();
@@ -247,9 +243,22 @@ impl FlowTracker {
         }
     }
 
-    /// Get a snapshot without draining.
+    /// Get all active flows (clone, no drain). Used by WebSocket.
     pub fn get_flows(&self) -> Vec<FlowData> {
         self.active.values().cloned().collect()
+    }
+
+    /// Get flows that received new packets since their last inference,
+    /// and mark them as inferred. Used by ML engine.
+    pub fn get_uninferred_flows(&mut self) -> Vec<FlowData> {
+        let mut result = Vec::new();
+        for flow in self.active.values_mut() {
+            if flow.last_time_us > flow.last_inferred_us {
+                result.push(flow.clone());
+                flow.last_inferred_us = flow.last_time_us;
+            }
+        }
+        result
     }
 
     pub fn flow_count(&self) -> usize {
