@@ -1,10 +1,12 @@
-use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder, Scope};
+use actix_web::{web, HttpResponse, Responder, Scope};
+use macros::log;
 use serde::Deserialize;
 
+use crate::core::auth::extractor::AuthClaims;
 use crate::core::auth::jwt::JwtService;
-use crate::model::auth::Claims;
 use crate::core::auth::password;
 use crate::interface::port::repository::RepositoryPort;
+use crate::model::error::auth::AuthError;
 
 type Repo = dyn RepositoryPort;
 
@@ -62,13 +64,10 @@ fn validate_password(password: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn extract_claims(req: &HttpRequest) -> Option<Claims> {
-    req.extensions().get::<Claims>().cloned()
-}
-
-fn has_permission(claims: &Claims, permission: &str) -> bool {
-    claims.permissions.iter().any(|p| p == permission)
-}
+/// Dummy Argon2 hash used to prevent timing-based username enumeration.
+/// When a user doesn't exist, we still run verify_password against this
+/// so the response time is indistinguishable from a real user lookup.
+const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dW5rbm93bg$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
 
 async fn login(
     body: web::Json<LoginRequest>,
@@ -93,7 +92,11 @@ async fn login(
     let user = match db.find_user(&req.username) {
         Ok(Some(u)) => u,
         _ => {
-            let _ = db.record_login_failure(&req.username);
+            // Run dummy hash verification to prevent timing-based username enumeration
+            let _ = password::verify_password(&req.password, DUMMY_HASH);
+            if let Err(e) = db.record_login_failure(&req.username) {
+                log!(AuthError::LoginFailureTrackingError(e));
+            }
             return HttpResponse::Unauthorized()
                 .json(serde_json::json!({"error": "Invalid credentials"}));
         }
@@ -104,14 +107,18 @@ async fn login(
     match password::verify_password(&req.password, &hash) {
         Ok(true) => {}
         _ => {
-            let _ = db.record_login_failure(&req.username);
+            if let Err(e) = db.record_login_failure(&req.username) {
+                log!(AuthError::LoginFailureTrackingError(e));
+            }
             return HttpResponse::Unauthorized()
                 .json(serde_json::json!({"error": "Invalid credentials"}));
         }
     }
 
     // Clear login failures on success
-    let _ = db.clear_login_failures(&req.username);
+    if let Err(e) = db.clear_login_failures(&req.username) {
+        log!(AuthError::LoginClearError(e));
+    }
 
     // Permissions come exclusively from groups — no role-based fallback
     let permissions = db.get_user_permissions(id).unwrap_or_default();
@@ -136,19 +143,10 @@ async fn login(
 }
 
 async fn register(
-    req: HttpRequest,
+    auth: AuthClaims,
     body: web::Json<RegisterRequest>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    // Check caller has users:admin permission
-    let _claims = match extract_claims(&req) {
-        Some(c) if has_permission(&c, "users:admin") => c,
-        _ => {
-            return HttpResponse::Forbidden()
-                .json(serde_json::json!({"error": "Admin access required"}));
-        }
-    };
-
     let reg = body.into_inner();
 
     // Validate input
@@ -165,6 +163,12 @@ async fn register(
             .json(serde_json::json!({"error": "Role must be 'admin' or 'viewer'"}));
     }
 
+    // Only admins can create admin accounts
+    if reg.role == "admin" && auth.role != "admin" {
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "Only administrators can create admin accounts"}));
+    }
+
     let hash = match password::hash_password(&reg.password) {
         Ok(h) => h,
         Err(_) => {
@@ -179,8 +183,9 @@ async fn register(
             let default_group_name = if reg.role == "admin" { "Administrator" } else { "Viewer" };
             if let Ok(groups) = db.list_user_groups()
                 && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == default_group_name)
+                && let Err(e) = db.set_user_groups(new_user_id, &[group_id])
             {
-                let _ = db.set_user_groups(new_user_id, &[group_id]);
+                log!(AuthError::GroupAssignmentFailed(e));
             }
             HttpResponse::Created()
                 .json(serde_json::json!({"username": reg.username, "role": reg.role}))
@@ -191,47 +196,32 @@ async fn register(
     }
 }
 
-async fn me(req: HttpRequest, db: web::Data<Repo>) -> impl Responder {
-    match extract_claims(&req) {
-        Some(claims) => {
-            let user_groups = db.get_user_groups(claims.sub).unwrap_or_default();
-            let group_names: Vec<String> = user_groups.iter()
-                .map(|(_id, name, _desc, _perms)| name.clone())
-                .collect();
-            // Derive role from groups for backwards compat
-            let role = if group_names.iter().any(|n| n == "Administrator") {
-                "admin"
-            } else {
-                "viewer"
-            };
-            // Get fresh permissions from groups (not from JWT claims which may be stale)
-            let permissions = db.get_user_permissions(claims.sub).unwrap_or_default();
-            HttpResponse::Ok().json(serde_json::json!({
-                "id": claims.sub,
-                "username": claims.username,
-                "role": role,
-                "permissions": permissions,
-                "groups": group_names,
-            }))
-        }
-        None => HttpResponse::Unauthorized()
-            .json(serde_json::json!({"error": "Not authenticated"})),
-    }
+async fn me(auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
+    let user_groups = db.get_user_groups(auth.sub).unwrap_or_default();
+    let group_names: Vec<String> = user_groups.iter()
+        .map(|(_id, name, _desc, _perms)| name.clone())
+        .collect();
+    let role = if group_names.iter().any(|n| n == "Administrator") {
+        "admin"
+    } else {
+        "viewer"
+    };
+    let permissions = db.get_user_permissions(auth.sub).unwrap_or_default();
+    HttpResponse::Ok().json(serde_json::json!({
+        "id": auth.sub,
+        "username": auth.username,
+        "role": role,
+        "permissions": permissions,
+        "groups": group_names,
+    }))
 }
 
 async fn change_password(
-    req: HttpRequest,
+    auth: AuthClaims,
     body: web::Json<ChangePasswordRequest>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
+    let claims = &*auth;
     let change_req = body.into_inner();
 
     // Validate new password
@@ -278,31 +268,17 @@ async fn change_password(
 // --- User Management (admin only) ---
 
 async fn list_users(
-    req: HttpRequest,
+    _auth: AuthClaims,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
-    match db.list_users() {
+    match db.list_users_with_groups() {
         Ok(users) => {
-            let result: Vec<serde_json::Value> = users.into_iter().map(|(id, username, _role, force_pw, created_at)| {
-                let user_groups = db.get_user_groups(id).unwrap_or_default();
+            let result: Vec<serde_json::Value> = users.into_iter().map(|(id, username, _role, force_pw, created_at, user_groups)| {
                 let groups: Vec<serde_json::Value> = user_groups.iter()
-                    .map(|(gid, name, _desc, _perms)| serde_json::json!({"id": gid, "name": name}))
+                    .map(|(gid, name)| serde_json::json!({"id": gid, "name": name}))
                     .collect();
                 // Derive role from groups for backwards compat
-                let role = if user_groups.iter().any(|(_id, name, _desc, _perms)| name == "Administrator") {
+                let role = if user_groups.iter().any(|(_id, name)| name == "Administrator") {
                     "admin"
                 } else {
                     "viewer"
@@ -324,27 +300,14 @@ async fn list_users(
 }
 
 async fn delete_user(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let user_id = path.into_inner();
 
     // Can't delete self
-    if claims.sub == user_id {
+    if _auth.sub == user_id {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Cannot delete your own account"}));
     }
@@ -369,28 +332,15 @@ async fn delete_user(
 }
 
 async fn update_role(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     body: web::Json<serde_json::Value>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let user_id = path.into_inner();
 
     // Can't change own role
-    if claims.sub == user_id {
+    if _auth.sub == user_id {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Cannot change your own role"}));
     }
@@ -425,24 +375,11 @@ async fn update_role(
 }
 
 async fn reset_password(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     body: web::Json<serde_json::Value>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let user_id = path.into_inner();
 
     let new_password = match body.get("new_password").or_else(|| body.get("password")).and_then(|v| v.as_str()) {
@@ -489,32 +426,25 @@ async fn reset_password(
 // --- User Group Management (users:admin required) ---
 
 async fn list_groups(
-    req: HttpRequest,
+    _auth: AuthClaims,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     match db.list_user_groups() {
         Ok(groups) => {
             let result: Vec<serde_json::Value> = groups.into_iter().map(|(id, name, description, permissions, created_at)| {
                 let perms: serde_json::Value = serde_json::from_str(&permissions).unwrap_or(serde_json::json!([]));
+                let members: Vec<serde_json::Value> = db.get_group_members(id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(uid, username)| serde_json::json!({"id": uid, "username": username}))
+                    .collect();
                 serde_json::json!({
                     "id": id,
                     "name": name,
                     "description": description,
                     "permissions": perms,
                     "created_at": created_at,
+                    "members": members,
                 })
             }).collect();
             HttpResponse::Ok().json(result)
@@ -525,23 +455,10 @@ async fn list_groups(
 }
 
 async fn create_group(
-    req: HttpRequest,
+    _auth: AuthClaims,
     body: web::Json<serde_json::Value>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let name = match body.get("name").and_then(|v| v.as_str()) {
         Some(n) if !n.is_empty() => n,
         _ => {
@@ -569,23 +486,10 @@ async fn create_group(
 }
 
 async fn get_group(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let group_id = path.into_inner();
 
     match db.get_user_group(group_id) {
@@ -609,24 +513,11 @@ async fn get_group(
 }
 
 async fn update_group(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     body: web::Json<serde_json::Value>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let group_id = path.into_inner();
 
     // Check group exists
@@ -669,23 +560,10 @@ async fn update_group(
 }
 
 async fn delete_group(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let group_id = path.into_inner();
 
     // Protect built-in groups
@@ -708,24 +586,11 @@ async fn delete_group(
 }
 
 async fn set_user_groups(
-    req: HttpRequest,
+    _auth: AuthClaims,
     path: web::Path<i64>,
     body: web::Json<serde_json::Value>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = match extract_claims(&req) {
-        Some(c) => c,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Not authenticated"}));
-        }
-    };
-
-    if !has_permission(&claims, "users:admin") {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Admin access required"}));
-    }
-
     let user_id = path.into_inner();
 
     // Protect the default admin account
@@ -802,5 +667,14 @@ mod tests {
         assert!(validate_password("").is_err());
         assert!(validate_password("1234567").is_err());
         assert!(validate_password("a").is_err());
+    }
+
+    #[test]
+    fn test_dummy_hash_is_valid_argon2() {
+        use argon2::password_hash::PasswordHash;
+        // DUMMY_HASH must be parseable as a valid Argon2 hash structure
+        // so that timing-based username enumeration is prevented
+        let parsed = PasswordHash::new(DUMMY_HASH);
+        assert!(parsed.is_ok(), "DUMMY_HASH should be a valid Argon2 hash format, got error: {:?}", parsed.err());
     }
 }

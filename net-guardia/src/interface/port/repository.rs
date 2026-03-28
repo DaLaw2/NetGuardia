@@ -9,11 +9,17 @@ pub type UserTuple = (i64, String, String, String, bool);
 /// Type alias for user list items: (id, username, role, force_password_change, created_at)
 pub type UserListItem = (i64, String, String, bool, String);
 
+/// Type alias for user-with-groups: (id, username, role, force_password_change, created_at, groups: Vec<(group_id, group_name)>)
+pub type UserWithGroups = (i64, String, String, bool, String, Vec<(i64, String)>);
+
 /// Type alias for user group tuples: (id, name, description, permissions, created_at)
 pub type UserGroupTuple = (i64, String, String, String, String);
 
 /// Port for persistent storage operations.
 /// Adapters: SQLite (current), could be Postgres, etc.
+/// All methods are used via the concrete Database adapter; the trait
+/// defines the hexagonal-architecture boundary.
+#[allow(dead_code)]
 pub trait RepositoryPort: Send + Sync {
     // --- ACL ---
     fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error>;
@@ -46,6 +52,7 @@ pub trait RepositoryPort: Send + Sync {
 
     // --- User Management ---
     fn list_users(&self) -> Result<Vec<UserListItem>, Error>;
+    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error>;
     fn delete_user(&self, user_id: i64) -> Result<bool, Error>;
     fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error>;
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
@@ -64,6 +71,7 @@ pub trait RepositoryPort: Send + Sync {
     fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error>;
     fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error>;
     fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error>;
+    fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error>;
 
     // --- Login Rate Limiting ---
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error>;

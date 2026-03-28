@@ -21,16 +21,30 @@ pub fn initialize() -> Scope {
         .route("/drops", web::get().to(drops_ws))
 }
 
-fn validate_ws_token(query: &web::Query<WsQuery>, jwt: &web::Data<JwtService>) -> Result<(), HttpResponse> {
-    match &query.token {
-        Some(token) => {
-            jwt.validate_token(token)
-                .map(|_| ())
-                .map_err(|_| HttpResponse::Unauthorized()
-                    .json(serde_json::json!({"error": "Invalid or expired token"})))
-        }
+fn validate_ws_token(
+    req: &HttpRequest,
+    query: &web::Query<WsQuery>,
+    jwt: &web::Data<JwtService>,
+) -> Result<(), HttpResponse> {
+    // Prefer Authorization header over query parameter
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.to_string())
+        .or_else(|| query.token.clone());
+
+    match token {
+        Some(ref t) => jwt
+            .validate_token(t)
+            .map(|_| ())
+            .map_err(|_| {
+                HttpResponse::Unauthorized()
+                    .json(serde_json::json!({"error": "Invalid or expired token"}))
+            }),
         None => Err(HttpResponse::Unauthorized()
-            .json(serde_json::json!({"error": "Missing token query parameter"}))),
+            .json(serde_json::json!({"error": "Missing authentication: provide Authorization header or token query parameter"}))),
     }
 }
 
@@ -41,7 +55,7 @@ async fn health_ws(
     query: web::Query<WsQuery>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
-    if let Err(resp) = validate_ws_token(&query, &jwt) {
+    if let Err(resp) = validate_ws_token(&req, &query, &jwt) {
         return resp;
     }
     match health_websocket::websocket_system_health(req, stream, health).await {
@@ -57,7 +71,7 @@ async fn alerts_ws(
     query: web::Query<WsQuery>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
-    if let Err(resp) = validate_ws_token(&query, &jwt) {
+    if let Err(resp) = validate_ws_token(&req, &query, &jwt) {
         return resp;
     }
     match alert_websocket::websocket_alert(req, stream, ai).await {
@@ -73,7 +87,7 @@ async fn flows_ws(
     query: web::Query<WsQuery>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
-    if let Err(resp) = validate_ws_token(&query, &jwt) {
+    if let Err(resp) = validate_ws_token(&req, &query, &jwt) {
         return resp;
     }
     match flow_websocket::flow_stats_ws(req, stream, stats).await {
@@ -89,7 +103,7 @@ async fn drops_ws(
     query: web::Query<WsQuery>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
-    if let Err(resp) = validate_ws_token(&query, &jwt) {
+    if let Err(resp) = validate_ws_token(&req, &query, &jwt) {
         return resp;
     }
     match drop_websocket::websocket_drops(req, stream, monitor).await {

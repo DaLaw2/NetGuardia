@@ -18,6 +18,12 @@ fn default_subscription() -> FlowSubscription {
     }
 }
 
+/// Push { summary, flows } payload to the client.
+fn push_payload(stats: &FlowStatistics, sub: &FlowSubscription) -> Option<String> {
+    let payload = stats.get_flow_payload(sub);
+    serde_json::to_string(&payload).ok()
+}
+
 pub async fn flow_stats_ws(
     req: HttpRequest,
     body: web::Payload,
@@ -34,8 +40,7 @@ pub async fn flow_stats_ws(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let flows = stats.get_filtered_flows(&subscription);
-                    if let Ok(json) = serde_json::to_string(&flows)
+                    if let Some(json) = push_payload(&stats, &subscription)
                         && session.text(json).await.is_err() {
                             break;
                     }
@@ -50,8 +55,7 @@ pub async fn flow_stats_ws(
                                     subscription.interval_secs = Some(new_interval);
                                     ticker = interval(Duration::from_secs(new_interval));
 
-                                    let flows = stats.get_filtered_flows(&subscription);
-                                    if let Ok(json) = serde_json::to_string(&flows)
+                                    if let Some(json) = push_payload(&stats, &subscription)
                                         && session.text(json).await.is_err() {
                                             break;
                                     }

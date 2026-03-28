@@ -53,5 +53,17 @@ loggable! {
 
         #[error("Invalid packet length exceeds buffer")]
         InvalidPacketLength => tracing::Level::WARN,
+
+        #[error("XDP attached to {interface} in native DRV_MODE")]
+        XdpAttachedNative { interface: String } => tracing::Level::INFO,
+
+        #[error("XDP DRV_MODE failed on {interface}: {error}. Falling back to SKB_MODE.")]
+        XdpDrvModeFailed { interface: String, error: String } => tracing::Level::WARN,
+
+        #[error("XDP attached to {interface} in generic SKB_MODE (reduced performance). For best performance, use a NIC with native XDP support (e.g., virtio-net, Intel i40e/ice).")]
+        XdpAttachedSkb { interface: String } => tracing::Level::WARN,
+
+        #[error("XDP attach failed on {interface} with both DRV_MODE and SKB_MODE. Ensure the interface exists and supports XDP. Supported NICs: virtio-net, Intel i40e/ice/i350, Mellanox mlx5. SKB error: {error}")]
+        XdpAttachFailed { interface: String, error: String } => tracing::Level::ERROR,
     }
 }

@@ -38,10 +38,14 @@ impl Logging {
             .and_then(|s| s.parse::<Level>().ok())
             .unwrap_or(if cfg!(debug_assertions) { Level::DEBUG } else { Level::INFO });
 
+        let filter = EnvFilter::from_default_env()
+            .add_directive(level.into())
+            .add_directive("maxminddb=warn".parse().expect("valid directive"));
+
         tracing_subscriber::registry()
             .with(stdout_layer)
             .with(file_layer)
-            .with(EnvFilter::from_default_env().add_directive(level.into()))
+            .with(filter)
             .init();
 
         Ok(())

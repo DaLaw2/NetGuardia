@@ -1,5 +1,5 @@
 use crate::interface::port::repository::RepositoryPort;
-use crate::model::error::database::DatabaseError;
+use crate::model::error::notification::NotificationError;
 use crate::model::error::Error;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -53,14 +53,14 @@ impl SmtpClient {
     /// Send an HTML email using the configured SMTP transport.
     pub fn send(&self, to: &str, subject: &str, html_body: &str) -> Result<(), Error> {
         let from_addr = self.username.parse().map_err(|e| {
-            Error::Database(DatabaseError::QueryFailed {
+            NotificationError::InvalidAddress {
                 reason: format!("invalid from address: {e}"),
-            })
+            }
         })?;
         let to_addr = to.parse().map_err(|e| {
-            Error::Database(DatabaseError::QueryFailed {
+            NotificationError::InvalidAddress {
                 reason: format!("invalid to address: {e}"),
-            })
+            }
         })?;
 
         let email = Message::builder()
@@ -70,27 +70,27 @@ impl SmtpClient {
             .header(ContentType::TEXT_HTML)
             .body(html_body.to_string())
             .map_err(|e| {
-                Error::Database(DatabaseError::QueryFailed {
-                    reason: format!("failed to build email: {e}"),
-                })
+                NotificationError::MessageBuildFailed {
+                    reason: e.to_string(),
+                }
             })?;
 
         let creds = Credentials::new(self.username.clone(), self.password.clone());
 
         let mailer = SmtpTransport::starttls_relay(&self.host)
             .map_err(|e| {
-                Error::Database(DatabaseError::QueryFailed {
-                    reason: format!("SMTP relay error: {e}"),
-                })
+                NotificationError::SmtpConnectionFailed {
+                    reason: e.to_string(),
+                }
             })?
             .port(self.port)
             .credentials(creds)
             .build();
 
         mailer.send(&email).map_err(|e| {
-            Error::Database(DatabaseError::QueryFailed {
-                reason: format!("SMTP send error: {e}"),
-            })
+            NotificationError::SmtpSendFailed {
+                reason: e.to_string(),
+            }
         })?;
 
         Ok(())
@@ -175,6 +175,7 @@ impl ReportScheduler {
 /// Returns `true` when the current local time falls within the Monday 08:00
 /// hour (i.e. Monday, hour == 8).
 fn is_send_window() -> bool {
+    use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
-    now.format("%A").to_string() == "Monday" && now.format("%H").to_string() == "08"
+    now.weekday() == chrono::Weekday::Mon && now.hour() == 8
 }

@@ -48,15 +48,6 @@ impl CommunicationManager {
         }
     }
 
-    pub fn with_capacity(channel_capacity: usize) -> Self {
-        Self {
-            command_handlers: DashMap::new(),
-            query_handlers: DashMap::new(),
-            event_broadcasters: DashMap::new(),
-            channel_capacity,
-        }
-    }
-
     pub fn with_service<S: Send + Sync + 'static>(
         self: Arc<Self>,
         service: Arc<S>,
@@ -149,12 +140,6 @@ impl CommunicationManager {
             .ok_or(MiscError::TypeNotRegistered)?;
         broadcaster.broadcast_event(Box::new(event))
     }
-
-    pub fn clear_handlers(&self) {
-        self.command_handlers.clear();
-        self.query_handlers.clear();
-        self.event_broadcasters.clear();
-    }
 }
 
 /// Fluent builder for registering a service's command/query/event handlers.
@@ -186,10 +171,7 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
         self
     }
 
-    pub fn event<E: Event + 'static>(self) -> Self {
-        self.comm.register_event_type::<E>();
-        self
-    }
+
 
     pub fn build(self) -> Arc<CommunicationManager> {
         self.comm
@@ -348,13 +330,4 @@ mod tests {
         assert_eq!(msgs[0], "via_registrar");
     }
 
-    #[test]
-    fn test_clear_handlers() {
-        let comm = CommunicationManager::new();
-        comm.register_event_type::<TestEvent>();
-        assert!(comm.subscribe_event::<TestEvent>().is_ok());
-
-        comm.clear_handlers();
-        assert!(comm.subscribe_event::<TestEvent>().is_err());
-    }
 }

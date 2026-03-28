@@ -200,9 +200,11 @@ unsafe fn try_protocol_filter(ctx: &XdpContext) -> Result<u32, ()> {
 
 #[inline(always)]
 unsafe fn compute_symmetric_queue_id() -> Option<u32> {
-    let pkt = &*PARSED_PACKET.get_ptr(0)?;
-    let num_q = *NUM_QUEUES.get(0)?;
-    symmetric_queue_id(pkt, num_q)
+    unsafe {
+        let pkt = &*PARSED_PACKET.get_ptr(0)?;
+        let num_q = *NUM_QUEUES.get(0)?;
+        symmetric_queue_id(pkt, num_q)
+    }
 }
 
 #[xdp]

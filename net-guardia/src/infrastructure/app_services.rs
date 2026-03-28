@@ -57,7 +57,6 @@ impl AppServices {
             batch_size: app_config.inference.inference_batch_size,
             inference_interval_secs: app_config.inference.inference_interval_secs,
             aggregator_window_secs: app_config.inference.aggregator_window_secs,
-            flow_timeout_us: 60_000_000,
         };
 
         let ml_engine = Arc::new(Engine::new(

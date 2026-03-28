@@ -25,5 +25,26 @@ traceable! {
 
         #[error("Unexpected error")]
         UnexpectedError => tracing::Level::ERROR,
+
+        #[error("Failed to reload config after setup")]
+        ConfigReloadFailed => tracing::Level::ERROR,
+
+        #[error("HTTP server error")]
+        HttpServerError => tracing::Level::ERROR,
+
+        #[error("Failed to set user groups")]
+        SetUserGroupsFailed => tracing::Level::WARN,
+
+        #[error("Failed to bridge ML alert to SOAR")]
+        MlSoarBridgeFailed => tracing::Level::WARN,
+
+        #[error("Failed to store XDP mode")]
+        XdpModeStoreFailed => tracing::Level::WARN,
+
+        #[error("Failed to update admin password during setup: {err}")]
+        SetupPasswordUpdateFailed => tracing::Level::ERROR,
+
+        #[error("Failed to mark setup as complete: {err}")]
+        SetupCompleteFlagFailed => tracing::Level::ERROR,
     }
 }

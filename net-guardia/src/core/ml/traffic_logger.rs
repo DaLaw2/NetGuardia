@@ -5,6 +5,7 @@ use std::thread;
 use crossbeam::channel::{bounded, Sender, TrySendError};
 use macros::log;
 
+use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
 
 pub struct TrafficLogger {
@@ -33,7 +34,9 @@ impl TrafficLogger {
                         log!(MLLog::TrafficLogWriteError(e.to_string()));
                     }
                 }
-                let _ = writer.flush();
+                if let Err(e) = writer.flush() {
+                    log!(MLError::TrafficLogFlushFailed(e));
+                }
             })?;
 
         Ok(Self { sender })

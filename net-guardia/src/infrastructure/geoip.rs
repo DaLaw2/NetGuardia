@@ -11,7 +11,6 @@ use tokio::task;
 use crate::utils::ip_address;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct GeoLocation {
     pub country: Option<String>,
     pub country_code: Option<String>,
@@ -21,13 +20,11 @@ pub struct GeoLocation {
     pub timezone: Option<String>,
 }
 
-#[allow(dead_code)]
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,
     cache: Arc<RwLock<LruCache<IpAddr, Option<GeoLocation>>>>,
 }
 
-#[allow(dead_code)]
 impl GeoIpService {
     pub fn new(db_name: &str) -> Result<Self, MaxMindDbError> {
         let db_path = PathBuf::from("net-guardia/static/geo").join(db_name);
@@ -115,10 +112,5 @@ impl GeoIpService {
                 timezone,
             }
         }))
-    }
-
-    pub async fn cache_stats(&self) -> (usize, usize) {
-        let cache = self.cache.read().await;
-        (cache.len(), cache.cap().get())
     }
 }

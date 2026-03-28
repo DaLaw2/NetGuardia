@@ -54,6 +54,10 @@ traceable! {
         FillQueueInitFailed => tracing::Level::ERROR,
 
         #[no_source]
+        #[error("Invalid IP address: {ip}")]
+        InvalidIpAddress { ip: String } => tracing::Level::ERROR,
+
+        #[no_source]
         #[error("Unknown eBPF error")]
         UnknownError => tracing::Level::ERROR,
 
@@ -68,5 +72,8 @@ traceable! {
 
         #[error("TX queue processing failed")]
         TXQueueError => tracing::Level::ERROR,
+
+        #[error("eBPF rollback failed during ACL update: {err}")]
+        RollbackFailed => tracing::Level::ERROR,
     }
 }

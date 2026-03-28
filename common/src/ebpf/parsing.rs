@@ -28,27 +28,29 @@ unsafe fn parse_ipv4_packet(start: usize, end: usize, target: *mut ParsedPacket)
         return Err(());
     }
 
-    let ipv4 = &*((start + IPV4_HEADER_START) as *const Ipv4Hdr);
-    let packet_length = (end - start) as u32;
+    unsafe {
+        let ipv4 = &*((start + IPV4_HEADER_START) as *const Ipv4Hdr);
+        let packet_length = (end - start) as u32;
 
-    let t = &mut *target;
-    t.timestamp_ns = bpf_ktime_get_ns();
-    core::ptr::copy_nonoverlapping(ipv4.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 4);
-    core::ptr::copy_nonoverlapping(ipv4.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 4);
-    t.packet_length = packet_length;
-    t.ip_version = 4;
-    t.protocol = ipv4.proto;
+        let t = &mut *target;
+        t.timestamp_ns = bpf_ktime_get_ns();
+        core::ptr::copy_nonoverlapping(ipv4.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 4);
+        core::ptr::copy_nonoverlapping(ipv4.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 4);
+        t.packet_length = packet_length;
+        t.ip_version = 4;
+        t.protocol = ipv4.proto;
 
-    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
-        IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
-        IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
-        _ => (0, 0, 0, 0),
-    };
+        let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv4.proto {
+            IpProto::Tcp => parse_tcp(start, end, IPV4_TCP_HEADER_START, IPV4_TCP_HEADER_END)?,
+            IpProto::Udp => parse_udp(start, end, IPV4_UDP_HEADER_START, IPV4_UDP_HEADER_END)?,
+            _ => (0, 0, 0, 0),
+        };
 
-    t.payload_length = packet_length.saturating_sub((IPV4_HEADER_END + l4_header_len) as u32);
-    t.src_port = src_port;
-    t.dst_port = dst_port;
-    t.tcp_flags = tcp_flags;
+        t.payload_length = packet_length.saturating_sub((IPV4_HEADER_END + l4_header_len) as u32);
+        t.src_port = src_port;
+        t.dst_port = dst_port;
+        t.tcp_flags = tcp_flags;
+    }
 
     Ok(())
 }
@@ -59,27 +61,29 @@ unsafe fn parse_ipv6_packet(start: usize, end: usize, target: *mut ParsedPacket)
         return Err(());
     }
 
-    let ipv6 = &*((start + IPV6_HEADER_START) as *const Ipv6Hdr);
-    let packet_length = (end - start) as u32;
+    unsafe {
+        let ipv6 = &*((start + IPV6_HEADER_START) as *const Ipv6Hdr);
+        let packet_length = (end - start) as u32;
 
-    let t = &mut *target;
-    t.timestamp_ns = bpf_ktime_get_ns();
-    core::ptr::copy_nonoverlapping(ipv6.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 16);
-    core::ptr::copy_nonoverlapping(ipv6.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 16);
-    t.packet_length = packet_length;
-    t.ip_version = 6;
-    t.protocol = ipv6.next_hdr;
+        let t = &mut *target;
+        t.timestamp_ns = bpf_ktime_get_ns();
+        core::ptr::copy_nonoverlapping(ipv6.src_addr.as_ptr(), t.src_ip.as_mut_ptr(), 16);
+        core::ptr::copy_nonoverlapping(ipv6.dst_addr.as_ptr(), t.dst_ip.as_mut_ptr(), 16);
+        t.packet_length = packet_length;
+        t.ip_version = 6;
+        t.protocol = ipv6.next_hdr;
 
-    let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv6.next_hdr {
-        IpProto::Tcp => parse_tcp(start, end, IPV6_TCP_HEADER_START, IPV6_TCP_HEADER_END)?,
-        IpProto::Udp => parse_udp(start, end, IPV6_UDP_HEADER_START, IPV6_UDP_HEADER_END)?,
-        _ => (0, 0, 0, 0),
-    };
+        let (src_port, dst_port, tcp_flags, l4_header_len) = match ipv6.next_hdr {
+            IpProto::Tcp => parse_tcp(start, end, IPV6_TCP_HEADER_START, IPV6_TCP_HEADER_END)?,
+            IpProto::Udp => parse_udp(start, end, IPV6_UDP_HEADER_START, IPV6_UDP_HEADER_END)?,
+            _ => (0, 0, 0, 0),
+        };
 
-    t.payload_length = packet_length.saturating_sub((IPV6_HEADER_END + l4_header_len) as u32);
-    t.src_port = src_port;
-    t.dst_port = dst_port;
-    t.tcp_flags = tcp_flags;
+        t.payload_length = packet_length.saturating_sub((IPV6_HEADER_END + l4_header_len) as u32);
+        t.src_port = src_port;
+        t.dst_port = dst_port;
+        t.tcp_flags = tcp_flags;
+    }
 
     Ok(())
 }
@@ -89,22 +93,25 @@ unsafe fn parse_tcp(start: usize, end: usize, tcp_start: usize, tcp_end: usize) 
     if start + tcp_end > end {
         return Err(());
     }
-    let tcp = &*((start + tcp_start) as *const TcpHdr);
-    let data_offset = (*((start + tcp_start + 12) as *const u8) >> 4) as usize;
-    if data_offset < 5 || data_offset > 15 {
-        return Err(());
+
+    unsafe {
+        let tcp = &*((start + tcp_start) as *const TcpHdr);
+        let data_offset = (*((start + tcp_start + 12) as *const u8) >> 4) as usize;
+        if data_offset < 5 || data_offset > 15 {
+            return Err(());
+        }
+        let header_len = data_offset * 4;
+        if start + tcp_start + header_len > end {
+            return Err(());
+        }
+        let flags = *((start + tcp_start + 13) as *const u8);
+        Ok((
+            u16::from_be_bytes(tcp.source),
+            u16::from_be_bytes(tcp.dest),
+            flags,
+            header_len,
+        ))
     }
-    let header_len = data_offset * 4;
-    if start + tcp_start + header_len > end {
-        return Err(());
-    }
-    let flags = *((start + tcp_start + 13) as *const u8);
-    Ok((
-        u16::from_be_bytes(tcp.source),
-        u16::from_be_bytes(tcp.dest),
-        flags,
-        header_len,
-    ))
 }
 
 #[inline(always)]
@@ -112,6 +119,7 @@ unsafe fn parse_udp(start: usize, end: usize, udp_start: usize, udp_end: usize) 
     if start + udp_end > end {
         return Err(());
     }
-    let udp = &*((start + udp_start) as *const UdpHdr);
+
+    let udp = unsafe { &*((start + udp_start) as *const UdpHdr) };
     Ok((udp.src_port(), udp.dst_port(), 0u8, 8usize))
 }

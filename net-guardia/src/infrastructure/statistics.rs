@@ -3,7 +3,8 @@ use std::time;
 
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowData;
-use crate::model::flow_stats::{FlowStatsEntry, FlowSubscription, StatsSummary};
+use crate::model::direction::Direction;
+use crate::model::flow_stats::{FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary};
 
 /// Conversion from core::ml::FlowData to model::FlowStatsEntry.
 /// Placed here (core layer) to maintain dependency rule: model/ must not import core/.
@@ -11,6 +12,7 @@ impl From<&FlowData> for FlowStatsEntry {
     fn from(flow: &FlowData) -> Self {
         Self {
             direction: flow.direction,
+            ip_version: flow.flow_key.ip_version,
             src_ip: flow.flow_key.src_ip_string(),
             dst_ip: flow.flow_key.dst_ip_string(),
             src_port: flow.flow_key.src_port,
@@ -79,6 +81,43 @@ impl FlowStatistics {
             top_n: Some(n),
             interval_secs: None,
         })
+    }
+
+    pub fn get_flow_payload(&self, sub: &FlowSubscription) -> FlowPushPayload {
+        let flows = self.get_filtered_flows(sub);
+        let window_secs = sub.window_secs.unwrap_or(60).max(1);
+
+        let mut ingress_bytes_v4: u64 = 0;
+        let mut egress_bytes_v4: u64 = 0;
+        let mut ingress_bytes_v6: u64 = 0;
+        let mut egress_bytes_v6: u64 = 0;
+
+        for f in &flows {
+            let bytes = f.fwd_bytes + f.bwd_bytes;
+            match (f.direction, f.ip_version) {
+                (Direction::Ingress, 6) => ingress_bytes_v6 += bytes,
+                (Direction::Ingress, _) => ingress_bytes_v4 += bytes,
+                (Direction::Egress, 6) => egress_bytes_v6 += bytes,
+                (Direction::Egress, _) => egress_bytes_v4 += bytes,
+            }
+        }
+
+        let now_ms = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let summary = FlowSummary {
+            ingress_bps_v4: ingress_bytes_v4 / window_secs,
+            egress_bps_v4: egress_bytes_v4 / window_secs,
+            ingress_bps_v6: ingress_bytes_v6 / window_secs,
+            egress_bps_v6: egress_bytes_v6 / window_secs,
+            total_flows: flows.len(),
+            window_secs,
+            timestamp_ms: now_ms,
+        };
+
+        FlowPushPayload { summary, flows }
     }
 
     pub fn get_summary(&self) -> StatsSummary {
