@@ -45,6 +45,12 @@ loggable! {
         #[error("ML circuit breaker RESET: inference re-enabled after {cooldown_secs}s cooldown")]
         CircuitBreakerReset { cooldown_secs: u64 } => tracing::Level::WARN,
 
+        #[error("Loading ONNX model '{name}' (features={features}, batch_size={batch_size})...")]
+        ModelLoading { name: String, features: usize, batch_size: usize } => tracing::Level::INFO,
+
+        #[error("Model '{name}' loaded and optimized in {elapsed_ms}ms")]
+        ModelLoadComplete { name: String, elapsed_ms: u64 } => tracing::Level::INFO,
+
         #[error("Model watcher started, monitoring models/ for .onnx changes")]
         ModelWatcherStarted => tracing::Level::INFO,
 
