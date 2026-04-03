@@ -1,6 +1,7 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
+use crate::core::auth::extractor::AuthClaims;
 use crate::core::config_service::ConfigService;
 use crate::core::system::{ShutdownHandle, ShutdownMode};
 use crate::infrastructure::communication_manager::CommunicationManager;
@@ -133,7 +134,10 @@ async fn update_config(
     }
 }
 
-async fn shutdown(handle: web::Data<ShutdownHandle>) -> impl Responder {
+async fn shutdown(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
+    if !auth.permissions.iter().any(|p| p == "system:admin") {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
+    }
     if handle.trigger(ShutdownMode::Shutdown) {
         HttpResponse::Ok().json(serde_json::json!({"message": "Shutdown initiated"}))
     } else {
@@ -141,7 +145,10 @@ async fn shutdown(handle: web::Data<ShutdownHandle>) -> impl Responder {
     }
 }
 
-async fn restart(handle: web::Data<ShutdownHandle>) -> impl Responder {
+async fn restart(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
+    if !auth.permissions.iter().any(|p| p == "system:admin") {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
+    }
     if handle.trigger(ShutdownMode::Restart) {
         HttpResponse::Ok().json(serde_json::json!({"message": "Restart initiated"}))
     } else {

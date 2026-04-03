@@ -48,6 +48,8 @@ pub struct AuditLogEntry {
 
 pub struct Database {
     pool: Pool<SqliteConnectionManager>,
+    /// HMAC-SHA256 key for API key hashing, derived from NETGUARDIA_SECRETS_KEY.
+    api_key_hmac: [u8; 32],
 }
 
 impl Database {
@@ -92,9 +94,48 @@ impl Database {
                 })?;
         }
 
-        let db = Self { pool };
+        let api_key_hmac = Self::derive_api_key_hmac();
+        let db = Self { pool, api_key_hmac };
         db.create_tables()?;
         Ok(db)
+    }
+
+    /// Derive HMAC-SHA256 key for API key hashing from NETGUARDIA_SECRETS_KEY.
+    /// Falls back to a static dev key if the env var is unset.
+    fn derive_api_key_hmac() -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        let root_key = std::env::var("NETGUARDIA_SECRETS_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .or_else(|| std::env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()))
+            .unwrap_or_else(|| "netguardia-dev-api-key-secret".to_string());
+
+        let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), root_key.as_bytes());
+        let mut okm = [0u8; 32];
+        // SAFETY: 32 bytes is a valid output length for HKDF-SHA256
+        hk.expand(b"netguardia-apikey-hmac-v1", &mut okm).unwrap();
+        okm
+    }
+
+    /// Compute HMAC-SHA256 of an API key using the derived secret.
+    pub fn hmac_api_key(&self, raw_key: &str) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use std::fmt::Write;
+
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&self.api_key_hmac)
+            .unwrap_or_else(|_| unreachable!());
+        mac.update(raw_key.as_bytes());
+        let result = mac.finalize().into_bytes();
+
+        let mut hex = String::with_capacity(64);
+        for byte in result {
+            let _ = write!(&mut hex, "{:02x}", byte);
+        }
+        hex
     }
 
     /// One-time migration: if the DB file exists and is a *plaintext* SQLite database
@@ -414,6 +455,7 @@ impl Database {
                 "protocol_filter:write",
                 "system:read",
                 "system:write",
+                "system:admin",
                 "users:read",
                 "users:write",
                 "users:admin"
@@ -1047,22 +1089,9 @@ impl Database {
     // --- MCP API Keys ---
 
     /// Validate an API key and return Claims if valid.
-    /// Computes SHA-256 hash of the key and looks it up in api_keys table.
+    /// Computes HMAC-SHA256 of the key and looks it up in api_keys table.
     pub fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
-        use std::fmt::Write;
-
-        // SHA-256 hash the key
-        let digest = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(api_key.as_bytes());
-            let result = hasher.finalize();
-            let mut hex = String::with_capacity(64);
-            for byte in result {
-                write!(&mut hex, "{:02x}", byte).unwrap();
-            }
-            hex
-        };
+        let digest = self.hmac_api_key(api_key);
 
         let conn = self.conn()?;
         let result = conn.query_row(
@@ -2028,6 +2057,9 @@ impl crate::interface::port::audit::AuditPort for Database {
 impl crate::interface::port::api_key::ApiKeyPort for Database {
     fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
         self.validate_api_key(api_key)
+    }
+    fn hmac_api_key(&self, raw_key: &str) -> String {
+        self.hmac_api_key(raw_key)
     }
     fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
         self.insert_api_key(key_hash, name, permission_level)

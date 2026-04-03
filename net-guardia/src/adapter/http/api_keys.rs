@@ -52,12 +52,7 @@ async fn generate_key(
         .map(char::from)
         .collect();
 
-    use sha2::{Digest, Sha256};
-    let key_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(raw_key.as_bytes());
-        format!("{:x}", hasher.finalize())
-    };
+    let key_hash = db.hmac_api_key(&raw_key);
 
     let level = body.level.as_deref().unwrap_or("read_only");
     if !matches!(level, "read_only" | "read_write" | "full_access") {

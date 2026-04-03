@@ -67,6 +67,7 @@ r2d2_sqlite = "0.27"
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = "0.10"
+hmac = "0.12"
 aes-gcm = "0.10"
 hkdf = "0.12"
 base64 = { workspace = true }
