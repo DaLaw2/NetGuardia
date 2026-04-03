@@ -20,14 +20,18 @@ variable "ubuntu_iso_url" {
 }
 
 variable "ubuntu_iso_checksum" {
-  type    = string
-  default = "sha256:none"
-  description = "SHA-256 checksum of the Ubuntu 24.04 Server ISO. Update before building."
+  type        = string
+  description = "SHA-256 checksum of the Ubuntu 24.04 Server ISO (e.g. sha256:abcdef...). Must be provided explicitly."
+
+  validation {
+    condition     = can(regex("^sha256:[0-9a-fA-F]{64}$", var.ubuntu_iso_checksum))
+    error_message = "ubuntu_iso_checksum must be a valid SHA-256 checksum in the form 'sha256:<64 hex chars>'. Do not use 'sha256:none'."
+  }
 }
 
 variable "netguardia_binary" {
-  type    = string
-  default = "../target/release/net-guardia"
+  type        = string
+  default     = "../target/release/net-guardia"
   description = "Path to the pre-built NetGuardia binary."
 }
 
@@ -43,8 +47,8 @@ variable "ssh_password" {
 }
 
 variable "disk_size" {
-  type    = string
-  default = "20480"
+  type        = string
+  default     = "20480"
   description = "Virtual disk size in MB."
 }
 
@@ -56,6 +60,17 @@ variable "memory" {
 variable "cpus" {
   type    = string
   default = "2"
+}
+
+variable "accelerator" {
+  type        = string
+  default     = "kvm"
+  description = "QEMU accelerator: 'kvm' (default) or 'none' for environments without KVM support."
+
+  validation {
+    condition     = contains(["kvm", "none"], var.accelerator)
+    error_message = "accelerator must be 'kvm' or 'none'."
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -90,7 +105,7 @@ source "qemu" "netguardia" {
   vm_name          = "netguardia"
   net_device       = "virtio-net"
   disk_interface   = "virtio"
-  accelerator      = "kvm"
+  accelerator      = var.accelerator
 }
 
 # ---------------------------------------------------------------------------
@@ -138,6 +153,17 @@ build {
     "source.virtualbox-iso.netguardia"
   ]
 
+  # ------ KVM fallback warning ------
+
+  provisioner "shell" {
+    inline = [
+      "if [ '${var.accelerator}' = 'none' ]; then",
+      "  echo '⚠  WARNING: Building without KVM acceleration. This will be significantly slower.'",
+      "  echo '⚠  Set accelerator=kvm for production builds.'",
+      "fi"
+    ]
+  }
+
   # ------ Upload artifacts ------
 
   provisioner "file" {
@@ -146,8 +172,18 @@ build {
   }
 
   provisioner "file" {
+    source      = "../deploy/scripts/install.sh"
+    destination = "/tmp/install.sh"
+  }
+
+  provisioner "file" {
     source      = "../deploy/netguardia.service"
     destination = "/tmp/netguardia.service"
+  }
+
+  provisioner "file" {
+    source      = "../deploy/logrotate.conf"
+    destination = "/tmp/logrotate.conf"
   }
 
   provisioner "file" {
@@ -155,37 +191,50 @@ build {
     destination = "/tmp/setup-wizard.sh"
   }
 
-  provisioner "file" {
-    source      = "../deploy/logrotate.conf"
-    destination = "/tmp/netguardia-logrotate.conf"
-  }
-
-  # ------ Install everything ------
+  # ------ Debug binary gate ------
 
   provisioner "shell" {
     inline = [
-      "set -ex",
+      "set -e",
+      "echo 'Checking binary is not a debug build...'",
+      "if file /tmp/net-guardia | grep -q 'not stripped'; then",
+      "  echo 'FATAL: Binary is a debug build (not stripped). Use a release build for VM images.'",
+      "  exit 1",
+      "fi",
+      "echo 'Binary check passed: stripped release build.'"
+    ]
+  }
 
-      "# Create directories",
-      "sudo mkdir -p /opt/netguardia/bin",
-      "sudo mkdir -p /var/log/netguardia",
+  # ------ Install runtime dependencies (SQLCipher needs OpenSSL) ------
 
-      "# Install binary",
-      "sudo install -m 0755 /tmp/net-guardia /opt/netguardia/bin/net-guardia",
+  provisioner "shell" {
+    inline = [
+      "set -e",
+      "if command -v apt-get &>/dev/null; then",
+      "  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libssl3",
+      "elif command -v dnf &>/dev/null; then",
+      "  sudo dnf install -y openssl-libs",
+      "fi"
+    ]
+  }
 
-      "# Install systemd unit",
-      "sudo install -m 0644 /tmp/netguardia.service /etc/systemd/system/netguardia.service",
-      "sudo systemctl daemon-reload",
-      "sudo systemctl enable netguardia.service",
+  # ------ Install via install.sh --local ------
+
+  provisioner "shell" {
+    inline = [
+      "set -e",
+      "chmod +x /tmp/install.sh",
+
+      "# Lay out deploy dir structure so install.sh can find service/logrotate files",
+      "sudo mkdir -p /tmp/deploy/scripts",
+      "cp /tmp/install.sh /tmp/deploy/scripts/install.sh",
+      "cp /tmp/netguardia.service /tmp/deploy/netguardia.service",
+      "cp /tmp/logrotate.conf /tmp/deploy/logrotate.conf",
+
+      "sudo /tmp/deploy/scripts/install.sh --local /tmp/net-guardia",
 
       "# Install setup wizard",
       "sudo install -m 0755 /tmp/setup-wizard.sh /opt/netguardia/bin/setup-wizard.sh",
-
-      "# Install logrotate config",
-      "sudo install -m 0644 /tmp/netguardia-logrotate.conf /etc/logrotate.d/netguardia",
-
-      "# Cleanup temp files",
-      "rm -f /tmp/net-guardia /tmp/netguardia.service /tmp/setup-wizard.sh /tmp/netguardia-logrotate.conf",
 
       "# Configure first-boot setup wizard via rc.local",
       "sudo tee /etc/rc.local > /dev/null << 'RCEOF'",

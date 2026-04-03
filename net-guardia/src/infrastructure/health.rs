@@ -1,25 +1,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sysinfo::{Components, Networks, System};
-use tokio::sync::{broadcast, oneshot, RwLock};
-use tokio::time::interval;
 use macros::log;
+use sysinfo::{Components, Networks, System};
+use tokio::sync::{RwLock, broadcast, oneshot};
+use tokio::time::interval;
 
 use crate::infrastructure::app_config::AppConfig;
-use crate::model::log::health::Health;
 use crate::model::error::Error;
 use crate::model::health::{
-    ConfiguredNetworkStats,
-    CpuCoreInfo,
-    CpuDetails,
-    LoadAverage,
-    MemoryUsage,
-    NetworkStats,
-    SystemHealthMetrics,
-    SystemHealthStatus,
-    SystemInfo
+    ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, LoadAverage, MemoryUsage, NetworkStats, SystemHealthMetrics,
+    SystemHealthStatus, SystemInfo,
 };
+use crate::model::log::health::Health;
 
 pub struct SystemHealth {
     system: RwLock<System>,
@@ -91,8 +84,9 @@ impl SystemHealth {
         drop(components);
 
         if self.broadcast_tx.receiver_count() > 0
-            && let Err(e) = self.broadcast_tx.send(metrics) {
-                log!(Health::BroadcastFailed(e.to_string()));
+            && let Err(e) = self.broadcast_tx.send(metrics)
+        {
+            log!(Health::BroadcastFailed(e.to_string()));
         }
     }
 
@@ -123,11 +117,7 @@ impl SystemHealth {
             swap_used: system.used_swap(),
         };
 
-        let network_stats = Self::collect_configured_network_stats(
-            networks,
-            ingress_interface,
-            egress_interface,
-        );
+        let network_stats = Self::collect_configured_network_stats(networks, ingress_interface, egress_interface);
 
         let load_average = System::load_average();
         let load_average = if load_average.one != 0.0 || load_average.five != 0.0 || load_average.fifteen != 0.0 {
@@ -227,15 +217,18 @@ impl SystemHealth {
         let egress = create_network_stats(egress_interface);
 
         if ingress.is_none() {
-            log!(Health::InterfaceNotFound("Ingress".to_string(), ingress_interface.to_string()));
+            log!(Health::InterfaceNotFound(
+                "Ingress".to_string(),
+                ingress_interface.to_string()
+            ));
         }
         if egress.is_none() {
-            log!(Health::InterfaceNotFound("Egress".to_string(), egress_interface.to_string()));
+            log!(Health::InterfaceNotFound(
+                "Egress".to_string(),
+                egress_interface.to_string()
+            ));
         }
-        ConfiguredNetworkStats {
-            ingress,
-            egress,
-        }
+        ConfiguredNetworkStats { ingress, egress }
     }
 
     pub async fn get_current_metrics(&self) -> SystemHealthMetrics {
@@ -283,22 +276,17 @@ impl SystemHealth {
                 metrics.memory_usage.usage_percent
             ));
         } else if metrics.memory_usage.usage_percent > 80.0 {
-            status.warnings.push(format!(
-                "High memory usage: {:.1}%",
-                metrics.memory_usage.usage_percent
-            ));
+            status
+                .warnings
+                .push(format!("High memory usage: {:.1}%", metrics.memory_usage.usage_percent));
         }
 
         if let Some(temp) = metrics.temperature {
             if temp > 80.0 {
                 status.overall_healthy = false;
-                status
-                    .issues
-                    .push(format!("High CPU temperature: {:.1}°C", temp));
+                status.issues.push(format!("High CPU temperature: {:.1}°C", temp));
             } else if temp > 70.0 {
-                status
-                    .warnings
-                    .push(format!("Elevated CPU temperature: {:.1}°C", temp));
+                status.warnings.push(format!("Elevated CPU temperature: {:.1}°C", temp));
             }
         }
 

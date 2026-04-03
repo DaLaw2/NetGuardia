@@ -1,9 +1,9 @@
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
+use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
-use crate::model::error::auth::AuthError;
 use crate::model::error::Error;
+use crate::model::error::auth::AuthError;
 
 pub fn hash_password(password: &str) -> Result<String, Error> {
     let salt = SaltString::generate(&mut OsRng);
@@ -16,9 +16,7 @@ pub fn hash_password(password: &str) -> Result<String, Error> {
 
 pub fn verify_password(password: &str, hash: &str) -> Result<bool, Error> {
     let parsed = PasswordHash::new(hash).map_err(|_| AuthError::InvalidCredentials)?;
-    Ok(Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok())
+    Ok(Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
 }
 
 #[cfg(test)]

@@ -18,12 +18,6 @@ loggable! {
         #[error("Termination completed")]
         TerminateComplete => tracing::Level::INFO,
 
-        #[error("Invalid configuration")]
-        InvalidConfig => tracing::Level::ERROR,
-
-        #[error("Configuration not found")]
-        ConfigNotFound => tracing::Level::ERROR,
-
         #[error("Traffic logging mode enabled — writing packets to: {path}")]
         TrafficLoggingEnabled { path: String } => tracing::Level::INFO,
 
@@ -47,18 +41,6 @@ loggable! {
 
         #[error("Setup server stopped, starting full system...")]
         SetupServerStopped => tracing::Level::INFO,
-
-        #[error("ML → SOAR bridge started")]
-        MlSoarBridgeStarted => tracing::Level::INFO,
-
-        #[error("ML→SOAR bridge lagged by {count} events")]
-        MlSoarBridgeLagged { count: u64 } => tracing::Level::WARN,
-
-        #[error("ML alert channel closed, SOAR bridge shutting down")]
-        MlAlertChannelClosed => tracing::Level::INFO,
-
-        #[error("Unknown ML attack type '{attack_type}', mapping to 'threat_detected'")]
-        UnknownMlAttackType { attack_type: String } => tracing::Level::DEBUG,
 
         #[error("Enforce mode changed to: {mode}")]
         EnforceModeChanged { mode: String } => tracing::Level::INFO,
@@ -111,5 +93,13 @@ loggable! {
         #[error("Failed to restore ACL rule ({direction} {list_type} {address}:{port}): {error}")]
         AclRuleRestoreFailed { direction: String, list_type: String, address: String, port: u16, error: String } => tracing::Level::WARN,
 
+        #[error("API-triggered shutdown initiated")]
+        ApiShutdown => tracing::Level::INFO,
+
+        #[error("API-triggered restart initiated — process will exit and systemd will restart")]
+        ApiRestart => tracing::Level::INFO,
+
+        #[error("ML drift detected: {count} features drifted, max deviation {deviation:.2}σ")]
+        DriftDetected { count: usize, deviation: f64 } => tracing::Level::WARN,
     }
 }

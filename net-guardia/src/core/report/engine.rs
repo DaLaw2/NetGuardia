@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use tracing::info;
 
-use crate::core::report::data::ReportData;
 use crate::interface::port::repository::RepositoryPort;
-use crate::model::error::notification::NotificationError;
 use crate::model::error::Error;
+use crate::model::error::notification::NotificationError;
+use crate::model::report::data::ReportData;
 
 /// Generate a self-contained HTML security report and write to disk.
 /// Returns the path to the generated HTML file.
@@ -17,16 +17,12 @@ pub fn generate_html_report(db: &dyn RepositoryPort, output_dir: &str) -> Result
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
 
-    std::fs::create_dir_all(output_dir).map_err(|e| {
-        NotificationError::TelegramApiError {
-            reason: format!("Failed to create report directory: {}", e),
-        }
+    std::fs::create_dir_all(output_dir).map_err(|e| NotificationError::TelegramApiError {
+        reason: format!("Failed to create report directory: {}", e),
     })?;
 
-    std::fs::write(&html_path, &html).map_err(|e| {
-        NotificationError::TelegramApiError {
-            reason: format!("Failed to write HTML report: {}", e),
-        }
+    std::fs::write(&html_path, &html).map_err(|e| NotificationError::TelegramApiError {
+        reason: format!("Failed to write HTML report: {}", e),
     })?;
 
     info!("HTML report generated at {:?}", html_path);
@@ -41,11 +37,14 @@ fn render_html_report(data: &ReportData) -> String {
     for item in &data.threat_breakdown {
         breakdown_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
-            html_escape(&item.threat_type), item.count, html_escape(&item.trend)
+            html_escape(&item.threat_type),
+            item.count,
+            html_escape(&item.trend)
         ));
     }
     if data.threat_breakdown.is_empty() {
-        breakdown_rows.push_str("<tr><td colspan=\"3\" class=\"empty\">No threat data available for this period</td></tr>");
+        breakdown_rows
+            .push_str("<tr><td colspan=\"3\" class=\"empty\">No threat data available for this period</td></tr>");
     }
 
     // Top blocked IPs rows
@@ -53,7 +52,9 @@ fn render_html_report(data: &ReportData) -> String {
     for ip in &data.top_blocked_ips {
         ip_rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td class=\"num\">{}</td><td>{}</td></tr>",
-            html_escape(&ip.ip), ip.count, html_escape(&ip.country)
+            html_escape(&ip.ip),
+            ip.count,
+            html_escape(&ip.country)
         ));
     }
     if data.top_blocked_ips.is_empty() {
@@ -65,7 +66,8 @@ fn render_html_report(data: &ReportData) -> String {
     for geo in &data.geo_distribution {
         geo_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td></tr>",
-            html_escape(&geo.country), geo.threat_count
+            html_escape(&geo.country),
+            geo.threat_count
         ));
     }
     if data.geo_distribution.is_empty() {
@@ -204,6 +206,7 @@ pub fn generate_report_json(db: &dyn RepositoryPort) -> Result<serde_json::Value
     serde_json::to_value(&data).map_err(|e| {
         NotificationError::TelegramApiError {
             reason: format!("Failed to serialize report: {}", e),
-        }.into()
+        }
+        .into()
     })
 }

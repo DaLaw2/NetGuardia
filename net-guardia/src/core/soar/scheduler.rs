@@ -3,9 +3,9 @@ use std::sync::Arc;
 use macros::log;
 use tokio::time::{self, Duration};
 
-use crate::adapter::persistence::Database;
 use crate::core::soar::engine::SoarEngine;
 use crate::interface::port::access_control::AccessControlPort;
+use crate::interface::port::soar::SoarPort;
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::log::soar::SoarLog;
@@ -13,18 +13,22 @@ use crate::model::log::soar::SoarLog;
 /// TTL expiry scheduler: runs every 60 seconds, removes expired auto-block rules.
 /// Before removing from eBPF, checks if a manual ACL rule exists for the same IP.
 pub struct TtlScheduler {
-    db: Arc<Database>,
+    db: Arc<dyn SoarPort>,
     access_control: Arc<dyn AccessControlPort>,
     soar_engine: Arc<SoarEngine>,
 }
 
 impl TtlScheduler {
     pub fn new(
-        db: Arc<Database>,
+        db: Arc<dyn SoarPort>,
         access_control: Arc<dyn AccessControlPort>,
         soar_engine: Arc<SoarEngine>,
     ) -> Self {
-        Self { db, access_control, soar_engine }
+        Self {
+            db,
+            access_control,
+            soar_engine,
+        }
     }
 
     /// Spawn a background tokio task that runs the TTL sweep every 60 seconds.
@@ -42,12 +46,18 @@ impl TtlScheduler {
     }
 
     /// Sweep expired block rules and remove from eBPF if no manual ACL conflict.
-    /// Also checks for expired rate limit adjustments.
+    /// Also checks for expired rate limit adjustments and cleans up stale cooldowns.
     async fn sweep(&self) -> Result<(), Error> {
         // Check rate limit restoration
-        if let Err(e) = self.soar_engine.check_rate_limit_restoration() {
-            log!(SoarLog::EventHandlingFailed(format!("Rate limit restoration check failed: {}", e)));
+        if let Err(e) = self.soar_engine.check_rate_limit_restoration().await {
+            log!(SoarLog::EventHandlingFailed(format!(
+                "Rate limit restoration check failed: {}",
+                e
+            )));
         }
+
+        // Clean up expired cooldown + frequency tracker entries to prevent unbounded memory growth
+        self.soar_engine.cleanup_expired_cooldowns();
 
         let expired = self.db.get_expired_soar_blocks()?;
 
@@ -67,13 +77,19 @@ impl TtlScheduler {
                 self.db.mark_soar_block_unblocked(*id)?;
                 self.soar_engine.decrement_block_count();
                 skipped += 1;
-                log!(SoarLog::WhitelistSkipped(source_ip.clone(), "TTL expired but manual ACL exists".to_string()));
+                log!(SoarLog::WhitelistSkipped(
+                    source_ip.clone(),
+                    "TTL expired but manual ACL exists".to_string()
+                ));
                 continue;
             }
 
             // Remove from eBPF ACL via AccessControlPort
             if let Err(e) = self.access_control.unblock_ip(source_ip).await {
-                log!(SoarLog::RecoveryFailed(source_ip.clone(), format!("unblock failed: {}", e)));
+                log!(SoarLog::RecoveryFailed(
+                    source_ip.clone(),
+                    format!("unblock failed: {}", e)
+                ));
             }
 
             // Also remove from acl_rules DB table (the auto-added entry)

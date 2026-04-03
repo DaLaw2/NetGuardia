@@ -1,7 +1,10 @@
+pub mod audit;
+pub mod crypto;
+pub mod detection;
 pub mod ebpf;
+pub mod health;
 pub mod http;
+pub mod misc;
 pub mod ml;
 pub mod soar;
 pub mod system;
-pub mod misc;
-pub mod health;

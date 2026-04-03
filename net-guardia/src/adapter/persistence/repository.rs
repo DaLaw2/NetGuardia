@@ -1,20 +1,49 @@
-use std::collections::HashMap;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
+use std::collections::HashMap;
 
-use crate::model::error::database::DatabaseError;
+use macros::log;
+
 use crate::model::error::Error;
+use crate::model::error::database::DatabaseError;
+use crate::model::log::misc::MiscLog;
 
-/// Applies SQLite PRAGMAs to each new connection in the pool.
-#[derive(Debug)]
-struct SqlitePragmaCustomizer;
+/// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
+/// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).
+fn db_encryption_key() -> Option<String> {
+    match std::env::var("NETGUARDIA_DB_KEY") {
+        Ok(k) if !k.is_empty() => Some(k),
+        _ => None,
+    }
+}
+
+/// Applies the SQLCipher PRAGMA key (if configured) and standard PRAGMAs
+/// to every new connection obtained from the pool.
+#[derive(Debug, Clone)]
+struct SqlitePragmaCustomizer {
+    /// `None` means no encryption (dev mode).
+    encryption_key: Option<String>,
+}
 
 impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for SqlitePragmaCustomizer {
     fn on_acquire(&self, conn: &mut rusqlite::Connection) -> Result<(), rusqlite::Error> {
+        // SQLCipher: the very first statement on a connection MUST be PRAGMA key.
+        if let Some(ref key) = self.encryption_key {
+            // Use a parameterised query to avoid SQL-injection via the key value.
+            conn.pragma_update(None, "key", key)?;
+        }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Ok(())
     }
+}
+
+pub struct AuditLogEntry {
+    pub id: i64,
+    pub actor: String,
+    pub action: String,
+    pub detail: String,
+    pub created_at: String,
 }
 
 pub struct Database {
@@ -23,32 +52,193 @@ pub struct Database {
 
 impl Database {
     pub fn new(path: &str) -> Result<Self, Error> {
+        let encryption_key = db_encryption_key();
+
+        // For on-disk databases with an encryption key, attempt transparent migration
+        // from a plaintext SQLite database to an encrypted SQLCipher database.
+        if path != ":memory:" {
+            if let Some(ref key) = encryption_key {
+                Self::migrate_plaintext_to_encrypted(path, key)?;
+            } else {
+                log!(MiscLog::DbEncryptionDisabled);
+            }
+        }
+
         let manager = if path == ":memory:" {
             SqliteConnectionManager::memory()
         } else {
             SqliteConnectionManager::file(path)
         };
 
+        let customizer = SqlitePragmaCustomizer {
+            encryption_key: encryption_key.clone(),
+        };
+
         let pool = Pool::builder()
             .max_size(if path == ":memory:" { 1 } else { 6 })
-            .connection_customizer(Box::new(SqlitePragmaCustomizer))
+            .connection_customizer(Box::new(customizer))
             .build(manager)
             .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+
+        // Verify the pool is actually usable (catches wrong key / corrupt DB early).
+        {
+            let test_conn = pool
+                .get()
+                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            test_conn
+                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+                .map_err(|_| DatabaseError::QueryFailed {
+                    reason: "Database encryption key is incorrect or database is corrupted".to_string(),
+                })?;
+        }
 
         let db = Self { pool };
         db.create_tables()?;
         Ok(db)
     }
 
+    /// One-time migration: if the DB file exists and is a *plaintext* SQLite database
+    /// (i.e. opening it with the encryption key fails, but opening without a key
+    /// succeeds), export it to a new encrypted file and atomically replace the original.
+    fn migrate_plaintext_to_encrypted(path: &str, key: &str) -> Result<(), Error> {
+        use std::path::Path;
+
+        let db_path = Path::new(path);
+        if !db_path.exists() {
+            return Ok(()); // brand-new DB — nothing to migrate
+        }
+
+        // Try opening with the key — if it works, the DB is already encrypted.
+        {
+            let conn =
+                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            conn.pragma_update(None, "key", key)
+                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            if conn
+                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+                .is_ok()
+            {
+                return Ok(()); // already encrypted — nothing to do
+            }
+        }
+
+        // Try opening *without* a key — if this also fails the file is corrupted.
+        {
+            let conn =
+                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            if conn
+                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+                .is_err()
+            {
+                log!(MiscLog::DbMigrationSkipped);
+                return Err(DatabaseError::QueryFailed {
+                    reason: "Database encryption key is incorrect or database is corrupted".to_string(),
+                }
+                .into());
+            }
+        }
+
+        // The DB is plaintext and we have a key → migrate via temp file.
+        let tmp_path = format!("{path}.migrating");
+        log!(MiscLog::DbMigrationStarted);
+
+        let result = (|| -> Result<(), Error> {
+            let conn =
+                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+
+            // Attach a new encrypted database.
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS encrypted KEY '{}';",
+                tmp_path.replace('\'', "''"),
+                key.replace('\'', "''"),
+            ))
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+
+            // Export everything from the plaintext DB into the encrypted one.
+            conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))
+                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+
+            conn.execute_batch("DETACH DATABASE encrypted;")
+                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                // Atomic replace.
+                std::fs::rename(&tmp_path, path).map_err(|e| DatabaseError::QueryFailed {
+                    reason: format!("Failed to replace DB file after migration: {e}"),
+                })?;
+                log!(MiscLog::DbMigrationCompleted);
+                Ok(())
+            }
+            Err(e) => {
+                // Clean up temp file; leave original untouched.
+                let _ = std::fs::remove_file(&tmp_path);
+                log!(MiscLog::DbMigrationFailed { error: e.to_string() });
+                Err(e)
+            }
+        }
+    }
+
+    /// Export an encrypted database to a plaintext copy.
+    /// The original file is NOT modified.
+    pub fn decrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
+        let conn =
+            rusqlite::Connection::open(src_path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        conn.pragma_update(None, "key", key)
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        // Verify we can read the encrypted DB
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .map_err(|_| DatabaseError::QueryFailed {
+                reason: "Cannot read database with provided key — wrong key or not encrypted".to_string(),
+            })?;
+        // Attach a plaintext destination (empty key = no encryption)
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{}' AS plaintext KEY '';",
+            dest_path.replace('\'', "''"),
+        ))
+        .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        conn.query_row("SELECT sqlcipher_export('plaintext')", [], |_| Ok(()))
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        conn.execute_batch("DETACH DATABASE plaintext;")
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        Ok(())
+    }
+
+    /// Encrypt a plaintext database to a new encrypted copy.
+    /// The original file is NOT modified.
+    pub fn encrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
+        let conn =
+            rusqlite::Connection::open(src_path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        // Verify it's readable as plaintext
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .map_err(|_| DatabaseError::QueryFailed {
+                reason: "Cannot read source database — may already be encrypted".to_string(),
+            })?;
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{}' AS encrypted KEY '{}';",
+            dest_path.replace('\'', "''"),
+            key.replace('\'', "''"),
+        ))
+        .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        conn.execute_batch("DETACH DATABASE encrypted;")
+            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        Ok(())
+    }
+
     fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, Error> {
-        self.pool.get().map_err(|e| -> Error {
-            DatabaseError::QueryFailed { reason: e.to_string() }.into()
-        })
+        self.pool
+            .get()
+            .map_err(|e| -> Error { DatabaseError::QueryFailed { reason: e.to_string() }.into() })
     }
 
     fn create_tables(&self) -> Result<(), Error> {
         let conn = self.conn()?;
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -116,6 +306,15 @@ impl Database {
                 params TEXT NOT NULL DEFAULT '{}',
                 UNIQUE(playbook_id, action_order)
             );
+            CREATE TABLE IF NOT EXISTS playbook_conditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playbook_id INTEGER NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+                condition_type TEXT NOT NULL,
+                operator TEXT NOT NULL DEFAULT '>=',
+                value TEXT NOT NULL,
+                value2 TEXT,
+                UNIQUE(playbook_id, condition_type)
+            );
             CREATE TABLE IF NOT EXISTS soar_block_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_ip TEXT NOT NULL,
@@ -139,7 +338,7 @@ impl Database {
             );
 
             -- MCP API keys
-            CREATE TABLE IF NOT EXISTS mcp_keys (
+            CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_hash TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -164,7 +363,25 @@ impl Database {
                 value TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
-        ")?;
+
+            -- Pending unblock queue for orphan eBPF block recovery
+            CREATE TABLE IF NOT EXISTS pending_unblock (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_ip TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                retry_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- Audit trail
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '{}'
+            );
+        ",
+        )?;
 
         // Migration: add force_password_change column if missing (for existing DBs)
         let conn_ref = &*conn;
@@ -172,37 +389,58 @@ impl Database {
             .prepare("SELECT force_password_change FROM users LIMIT 0")
             .is_ok();
         if !has_column {
-            conn_ref.execute_batch(
-                "ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0;"
-            )?;
+            conn_ref.execute_batch("ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0;")?;
         }
 
         // Migration: seed default user groups if table is empty
-        let group_count: i64 = conn_ref.query_row(
-            "SELECT COUNT(*) FROM user_groups", [], |row| row.get(0),
-        )?;
+        let group_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
         if group_count == 0 {
             let all_permissions = serde_json::json!([
-                "dashboard:read", "statistics:read", "traffic_map:read", "drops:read",
-                "ai_detection:read", "ai_detection:write",
-                "access_control:read", "access_control:write",
-                "geo_block:read", "geo_block:write",
-                "dns_filter:read", "dns_filter:write",
-                "rate_limit:read", "rate_limit:write",
-                "protocol_filter:read", "protocol_filter:write",
-                "system:read", "system:write",
-                "users:read", "users:write", "users:admin"
-            ]).to_string();
+                "dashboard:read",
+                "statistics:read",
+                "traffic_map:read",
+                "drops:read",
+                "ai_detection:read",
+                "ai_detection:write",
+                "access_control:read",
+                "access_control:write",
+                "geo_block:read",
+                "geo_block:write",
+                "dns_filter:read",
+                "dns_filter:write",
+                "rate_limit:read",
+                "rate_limit:write",
+                "protocol_filter:read",
+                "protocol_filter:write",
+                "system:read",
+                "system:write",
+                "users:read",
+                "users:write",
+                "users:admin"
+            ])
+            .to_string();
             let viewer_permissions = serde_json::json!([
-                "dashboard:read", "statistics:read", "traffic_map:read", "drops:read",
-                "ai_detection:read", "access_control:read", "geo_block:read",
-                "dns_filter:read", "rate_limit:read", "protocol_filter:read",
+                "dashboard:read",
+                "statistics:read",
+                "traffic_map:read",
+                "drops:read",
+                "ai_detection:read",
+                "access_control:read",
+                "geo_block:read",
+                "dns_filter:read",
+                "rate_limit:read",
+                "protocol_filter:read",
                 "system:read"
-            ]).to_string();
+            ])
+            .to_string();
 
             conn_ref.execute(
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
-                params!["Administrator", "Full system access with all permissions", &all_permissions],
+                params![
+                    "Administrator",
+                    "Full system access with all permissions",
+                    &all_permissions
+                ],
             )?;
             conn_ref.execute(
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
@@ -211,24 +449,21 @@ impl Database {
         }
 
         // Migration: assign existing users to default groups if user_group_members is empty
-        let member_count: i64 = conn_ref.query_row(
-            "SELECT COUNT(*) FROM user_group_members", [], |row| row.get(0),
-        )?;
+        let member_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_group_members", [], |row| row.get(0))?;
         if member_count == 0 {
             // Get admin group id and viewer group id
-            let admin_group_id: Option<i64> = conn_ref.query_row(
-                "SELECT id FROM user_groups WHERE name = 'Administrator'", [],
-                |row| row.get(0),
-            ).ok();
-            let viewer_group_id: Option<i64> = conn_ref.query_row(
-                "SELECT id FROM user_groups WHERE name = 'Viewer'", [],
-                |row| row.get(0),
-            ).ok();
+            let admin_group_id: Option<i64> = conn_ref
+                .query_row("SELECT id FROM user_groups WHERE name = 'Administrator'", [], |row| {
+                    row.get(0)
+                })
+                .ok();
+            let viewer_group_id: Option<i64> = conn_ref
+                .query_row("SELECT id FROM user_groups WHERE name = 'Viewer'", [], |row| row.get(0))
+                .ok();
 
             if let Some(ag_id) = admin_group_id {
                 let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'admin'")?;
-                let admin_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?
-                    .filter_map(|r| r.ok()).collect();
+                let admin_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.filter_map(|r| r.ok()).collect();
                 for uid in admin_ids {
                     conn_ref.execute(
                         "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
@@ -238,8 +473,7 @@ impl Database {
             }
             if let Some(vg_id) = viewer_group_id {
                 let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'viewer'")?;
-                let viewer_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?
-                    .filter_map(|r| r.ok()).collect();
+                let viewer_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.filter_map(|r| r.ok()).collect();
                 for uid in viewer_ids {
                     conn_ref.execute(
                         "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
@@ -253,7 +487,14 @@ impl Database {
     }
 
     // --- ACL ---
-    pub fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> {
+    pub fn insert_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT OR IGNORE INTO acl_rules (ip_version, direction, list_type, ip_address, port) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -262,7 +503,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> {
+    pub fn delete_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
         let conn = self.conn()?;
         conn.execute(
             "DELETE FROM acl_rules WHERE ip_version = ?1 AND direction = ?2 AND list_type = ?3 AND ip_address = ?4 AND port = ?5",
@@ -303,9 +551,7 @@ impl Database {
     pub fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT key, value FROM rate_limit_config")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -316,7 +562,10 @@ impl Database {
     // --- DNS ---
     pub fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> {
         let conn = self.conn()?;
-        conn.execute("INSERT OR IGNORE INTO dns_blacklist (domain) VALUES (?1)", params![domain])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO dns_blacklist (domain) VALUES (?1)",
+            params![domain],
+        )?;
         Ok(())
     }
 
@@ -340,13 +589,19 @@ impl Database {
     // --- Geo ---
     pub fn insert_geo_country(&self, code: &str) -> Result<(), Error> {
         let conn = self.conn()?;
-        conn.execute("INSERT OR IGNORE INTO geo_blocked_countries (country_code) VALUES (?1)", params![code])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO geo_blocked_countries (country_code) VALUES (?1)",
+            params![code],
+        )?;
         Ok(())
     }
 
     pub fn delete_geo_country(&self, code: &str) -> Result<(), Error> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM geo_blocked_countries WHERE country_code = ?1", params![code])?;
+        conn.execute(
+            "DELETE FROM geo_blocked_countries WHERE country_code = ?1",
+            params![code],
+        )?;
         Ok(())
     }
 
@@ -364,11 +619,9 @@ impl Database {
     // --- Settings ---
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
         let conn = self.conn()?;
-        let result = conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |row| row.get(0),
-        );
+        let result = conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| {
+            row.get(0)
+        });
         match result {
             Ok(val) => Ok(Some(val)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -385,13 +638,44 @@ impl Database {
         Ok(())
     }
 
+    // --- App Secrets ---
+
+    pub fn get_app_secret(&self, key: &str) -> Result<Option<String>, Error> {
+        let conn = self.conn()?;
+        let result = conn.query_row("SELECT value FROM app_secrets WHERE key = ?1", params![key], |row| {
+            row.get(0)
+        });
+        match result {
+            Ok(val) => Ok(Some(val)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_app_secret(&self, key: &str, value: &str) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     // --- Users ---
     pub fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, username, password_hash, role, force_password_change FROM users WHERE username = ?1",
             params![username],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get::<_, i64>(4)? != 0)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                ))
+            },
         );
         match result {
             Ok(user) => Ok(Some(user)),
@@ -400,14 +684,24 @@ impl Database {
         }
     }
 
-    pub fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error> {
+    pub fn insert_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+        force_password_change: bool,
+    ) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO users (username, password_hash, role, force_password_change) VALUES (?1, ?2, ?3, ?4)",
             params![username, password_hash, role, force_password_change as i64],
-        ).map_err(|e| -> Error {
+        )
+        .map_err(|e| -> Error {
             if e.to_string().contains("UNIQUE constraint") {
-                DatabaseError::UserAlreadyExists { username: username.to_string() }.into()
+                DatabaseError::UserAlreadyExists {
+                    username: username.to_string(),
+                }
+                .into()
             } else {
                 e.into()
             }
@@ -431,7 +725,8 @@ impl Database {
 
     pub fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
+        let mut stmt =
+            conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -456,7 +751,7 @@ impl Database {
              FROM users u \
              LEFT JOIN user_group_members m ON u.id = m.user_id \
              LEFT JOIN user_groups g ON g.id = m.group_id \
-             ORDER BY u.id, g.id"
+             ORDER BY u.id, g.id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -509,12 +804,23 @@ impl Database {
         Ok(())
     }
 
-    pub fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+    pub fn find_user_by_id(
+        &self,
+        user_id: i64,
+    ) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, username, password_hash, role, force_password_change FROM users WHERE id = ?1",
             params![user_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get::<_, i64>(4)? != 0)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                ))
+            },
         );
         match result {
             Ok(user) => Ok(Some(user)),
@@ -526,7 +832,8 @@ impl Database {
     // --- User Groups ---
     pub fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -548,9 +855,13 @@ impl Database {
         conn.execute(
             "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
             params![name, description, permissions],
-        ).map_err(|e| -> Error {
+        )
+        .map_err(|e| -> Error {
             if e.to_string().contains("UNIQUE constraint") {
-                DatabaseError::QueryFailed { reason: format!("Group '{}' already exists", name) }.into()
+                DatabaseError::QueryFailed {
+                    reason: format!("Group '{}' already exists", name),
+                }
+                .into()
             } else {
                 e.into()
             }
@@ -579,13 +890,15 @@ impl Database {
         let result = conn.query_row(
             "SELECT id, name, description, permissions, created_at FROM user_groups WHERE id = ?1",
             params![id],
-            |row| Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            )),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
         );
         match result {
             Ok(group) => Ok(Some(group)),
@@ -600,7 +913,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT g.id, g.name, g.description, g.permissions FROM user_groups g \
              INNER JOIN user_group_members m ON g.id = m.group_id \
-             WHERE m.user_id = ?1 ORDER BY g.id"
+             WHERE m.user_id = ?1 ORDER BY g.id",
         )?;
         let rows = stmt.query_map(params![user_id], |row| {
             Ok((
@@ -666,7 +979,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username FROM users u \
              INNER JOIN user_group_members m ON u.id = m.user_id \
-             WHERE m.group_id = ?1 ORDER BY u.username"
+             WHERE m.group_id = ?1 ORDER BY u.username",
         )?;
         let rows = stmt.query_map(params![group_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -683,16 +996,14 @@ impl Database {
         let key_count = format!("login_failures:{}", username);
         let key_locked = format!("login_locked_until:{}", username);
 
-        let count: u32 = self.get_setting(&key_count)?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0) + 1;
+        let count: u32 = self.get_setting(&key_count)?.and_then(|v| v.parse().ok()).unwrap_or(0) + 1;
 
         self.set_setting(&key_count, &count.to_string())?;
 
         if count >= 5 {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::ZERO)
                 .as_secs();
             let locked_until = now + 900; // 15 minutes
             self.set_setting(&key_locked, &locked_until.to_string())?;
@@ -705,37 +1016,44 @@ impl Database {
     pub fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> {
         let key_locked = format!("login_locked_until:{}", username);
         if let Some(locked_str) = self.get_setting(&key_locked)?
-            && let Ok(locked_until) = locked_str.parse::<u64>() {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                if now < locked_until {
-                    return Ok(Some(locked_until - now));
-                }
-                // Lock expired, clear it
-                self.clear_login_failures(username)?;
+            && let Ok(locked_until) = locked_str.parse::<u64>()
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or(std::time::Duration::ZERO)
+                .as_secs();
+            if now < locked_until {
+                return Ok(Some(locked_until - now));
+            }
+            // Lock expired, clear it
+            self.clear_login_failures(username)?;
         }
         Ok(None)
     }
 
     pub fn clear_login_failures(&self, username: &str) -> Result<(), Error> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("login_failures:{}", username)])?;
-        conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("login_locked_until:{}", username)])?;
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![format!("login_failures:{}", username)],
+        )?;
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![format!("login_locked_until:{}", username)],
+        )?;
         Ok(())
     }
 
     // --- MCP API Keys ---
 
     /// Validate an API key and return Claims if valid.
-    /// Computes SHA-256 hash of the key and looks it up in mcp_keys table.
+    /// Computes SHA-256 hash of the key and looks it up in api_keys table.
     pub fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::auth::Claims>, Error> {
         use std::fmt::Write;
 
         // SHA-256 hash the key
         let digest = {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(api_key.as_bytes());
             let result = hasher.finalize();
@@ -748,7 +1066,7 @@ impl Database {
 
         let conn = self.conn()?;
         let result = conn.query_row(
-            "SELECT id, name, permission_level FROM mcp_keys WHERE key_hash = ?1",
+            "SELECT id, name, permission_level FROM api_keys WHERE key_hash = ?1",
             params![digest],
             |row| {
                 Ok((
@@ -763,32 +1081,43 @@ impl Database {
             Ok((id, name, level)) => {
                 // Update last_used_at
                 let _ = conn.execute(
-                    "UPDATE mcp_keys SET last_used_at = datetime('now') WHERE id = ?1",
+                    "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?1",
                     params![id],
                 );
 
                 // Build permissions based on permission level
                 let permissions = match level.as_str() {
-                    "read_write" => vec![
-                        "dashboard:read".into(), "statistics:read".into(),
-                        "ai_detection:read".into(), "ai_detection:write".into(),
-                        "access_control:read".into(), "access_control:write".into(),
-                        "geo_block:read".into(), "geo_block:write".into(),
-                        "dns_filter:read".into(), "dns_filter:write".into(),
-                        "rate_limit:read".into(), "rate_limit:write".into(),
-                        "system:read".into(), "system:write".into(),
+                    "read_write" | "full_access" => vec![
+                        "dashboard:read".into(),
+                        "statistics:read".into(),
+                        "ai_detection:read".into(),
+                        "ai_detection:write".into(),
+                        "access_control:read".into(),
+                        "access_control:write".into(),
+                        "geo_block:read".into(),
+                        "geo_block:write".into(),
+                        "dns_filter:read".into(),
+                        "dns_filter:write".into(),
+                        "rate_limit:read".into(),
+                        "rate_limit:write".into(),
+                        "system:read".into(),
+                        "system:write".into(),
                     ],
                     _ => vec![
-                        "dashboard:read".into(), "statistics:read".into(),
-                        "ai_detection:read".into(), "access_control:read".into(),
-                        "geo_block:read".into(), "dns_filter:read".into(),
-                        "rate_limit:read".into(), "system:read".into(),
+                        "dashboard:read".into(),
+                        "statistics:read".into(),
+                        "ai_detection:read".into(),
+                        "access_control:read".into(),
+                        "geo_block:read".into(),
+                        "dns_filter:read".into(),
+                        "rate_limit:read".into(),
+                        "system:read".into(),
                     ],
                 };
 
                 Ok(Some(crate::model::auth::Claims {
                     sub: -id, // negative ID to distinguish from user IDs
-                    username: format!("mcp:{}", name),
+                    username: format!("api:{}", name),
                     role: level,
                     permissions,
                     exp: usize::MAX, // API keys don't expire (revocation via DB deletion)
@@ -801,7 +1130,15 @@ impl Database {
 
     // --- SOAR ---
 
-    pub fn insert_playbook(&self, name: &str, trigger_event: &str, threshold: Option<f64>, count: Option<i64>, window: Option<i64>, cooldown: i64) -> Result<i64, Error> {
+    pub fn insert_playbook(
+        &self,
+        name: &str,
+        trigger_event: &str,
+        threshold: Option<f64>,
+        count: Option<i64>,
+        window: Option<i64>,
+        cooldown: i64,
+    ) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -810,7 +1147,13 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn insert_playbook_action(&self, playbook_id: i64, action_order: i64, action_type: &str, params_json: &str) -> Result<i64, Error> {
+    pub fn insert_playbook_action(
+        &self,
+        playbook_id: i64,
+        action_order: i64,
+        action_type: &str,
+        params_json: &str,
+    ) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
@@ -847,18 +1190,24 @@ impl Database {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
     /// Get a single SOAR block rule by ID, returning (id, source_ip, playbook_id, expires_at).
     pub fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE id = ?1"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE id = ?1")?;
         let mut rows = stmt.query_map(params![id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
         })?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
@@ -869,7 +1218,25 @@ impl Database {
     /// Load all playbooks with their actions in a single JOIN query (avoids N+1).
     /// Returns Vec of (playbook fields..., action fields...).
     #[allow(clippy::type_complexity)]
-    pub fn load_playbooks_with_actions(&self) -> Result<Vec<(i64, String, bool, String, Option<f64>, Option<i64>, Option<i64>, i64, Option<i64>, Option<i64>, Option<String>, Option<String>)>, Error> {
+    pub fn load_playbooks_with_actions(
+        &self,
+    ) -> Result<
+        Vec<(
+            i64,
+            String,
+            bool,
+            String,
+            Option<f64>,
+            Option<i64>,
+            Option<i64>,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        )>,
+        Error,
+    > {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT p.id, p.name, p.enabled, p.trigger_event, p.condition_threshold, \
@@ -877,7 +1244,7 @@ impl Database {
                     a.id, a.action_order, a.action_type, a.params \
              FROM playbooks p \
              LEFT JOIN playbook_actions a ON a.playbook_id = p.id \
-             ORDER BY p.id, a.action_order"
+             ORDER BY p.id, a.action_order",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -896,7 +1263,9 @@ impl Database {
             ))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
@@ -915,14 +1284,65 @@ impl Database {
             "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE unblocked_at IS NULL AND expires_at > datetime('now')"
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
-    pub fn insert_soar_execution(&self, playbook_id: i64, source_ip: Option<&str>, trigger_event: &str, actions_json: &str) -> Result<i64, Error> {
+    // --- Pending Unblock ---
+    pub fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO pending_unblock (source_ip) VALUES (?1)",
+            params![source_ip],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn load_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT id, source_ip, retry_count FROM pending_unblock ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn delete_pending_unblock(&self, id: i64) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM pending_unblock WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn increment_pending_unblock_retry(&self, id: i64) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pending_unblock SET retry_count = retry_count + 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_soar_execution(
+        &self,
+        playbook_id: i64,
+        source_ip: Option<&str>,
+        trigger_event: &str,
+        actions_json: &str,
+    ) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO soar_executions (playbook_id, source_ip, trigger_event, actions_executed) VALUES (?1, ?2, ?3, ?4)",
@@ -931,17 +1351,110 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+    pub fn update_playbook(
+        &self,
+        id: i64,
+        row: &crate::model::soar::playbook_data::UpdatePlaybookRow,
+    ) -> Result<bool, Error> {
         let conn = self.conn()?;
         let rows = conn.execute(
-            "DELETE FROM playbooks WHERE id = ?1",
-            params![id],
+            "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
+             condition_count = ?5, condition_window_secs = ?6, cooldown_secs = ?7, \
+             updated_at = datetime('now') WHERE id = ?1",
+            params![
+                id,
+                row.name,
+                row.trigger_event,
+                row.condition_threshold,
+                row.condition_count,
+                row.condition_window_secs,
+                row.cooldown_secs
+            ],
         )?;
         Ok(rows > 0)
     }
 
+    pub fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
+        let conn = self.conn()?;
+        let rows = conn.execute(
+            "UPDATE playbooks SET enabled = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, enabled as i32],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+        let conn = self.conn()?;
+        let rows = conn.execute("DELETE FROM playbooks WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn delete_playbook_actions(&self, playbook_id: i64) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM playbook_actions WHERE playbook_id = ?1",
+            params![playbook_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_playbook_conditions(&self, playbook_id: i64) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM playbook_conditions WHERE playbook_id = ?1",
+            params![playbook_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_playbook_condition(
+        &self,
+        playbook_id: i64,
+        condition_type: &str,
+        operator: &str,
+        value: &str,
+        value2: Option<&str>,
+    ) -> Result<i64, Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![playbook_id, condition_type, operator, value, value2],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
     #[allow(clippy::type_complexity)]
-    pub fn list_soar_executions(&self, limit: i64) -> Result<Vec<(i64, i64, Option<String>, String, String, String)>, Error> {
+    pub fn load_all_playbook_conditions(
+        &self,
+    ) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, playbook_id, condition_type, operator, value, value2 \
+             FROM playbook_conditions ORDER BY playbook_id, id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn list_soar_executions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(i64, i64, Option<String>, String, String, String)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, playbook_id, source_ip, trigger_event, actions_executed, executed_at FROM soar_executions ORDER BY executed_at DESC LIMIT ?1"
@@ -957,7 +1470,9 @@ impl Database {
             ))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
@@ -978,7 +1493,9 @@ impl Database {
         let mut stmt = conn.prepare("SELECT ip FROM admin_whitelist")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
@@ -1019,21 +1536,21 @@ impl Database {
         Ok(())
     }
 
-    // --- MCP Key Management ---
+    // --- API Key Management ---
 
-    pub fn insert_mcp_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
+    pub fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO mcp_keys (key_hash, name, permission_level) VALUES (?1, ?2, ?3)",
+            "INSERT INTO api_keys (key_hash, name, permission_level) VALUES (?1, ?2, ?3)",
             params![key_hash, name, permission_level],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn list_mcp_keys(&self) -> Result<Vec<(i64, String, String, String, Option<String>)>, Error> {
+    pub fn list_api_keys(&self) -> Result<Vec<(i64, String, String, String, Option<String>)>, Error> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT id, name, permission_level, created_at, last_used_at FROM mcp_keys")?;
+        let mut stmt = conn.prepare("SELECT id, name, permission_level, created_at, last_used_at FROM api_keys")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -1044,13 +1561,15 @@ impl Database {
             ))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
-    pub fn delete_mcp_key(&self, id: i64) -> Result<bool, Error> {
+    pub fn delete_api_key(&self, id: i64) -> Result<bool, Error> {
         let conn = self.conn()?;
-        let affected = conn.execute("DELETE FROM mcp_keys WHERE id = ?1", params![id])?;
+        let affected = conn.execute("DELETE FROM api_keys WHERE id = ?1", params![id])?;
         Ok(affected > 0)
     }
 
@@ -1099,7 +1618,9 @@ impl Database {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
@@ -1113,7 +1634,9 @@ impl Database {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
         })?;
         let mut result = Vec::new();
-        for row in rows { result.push(row?); }
+        for row in rows {
+            result.push(row?);
+        }
         Ok(result)
     }
 
@@ -1138,62 +1661,383 @@ impl Database {
         let pb1 = self.insert_playbook("default_block", "threat_detected", Some(0.85), None, None, 300)?;
         self.insert_playbook_action(pb1, 1, "block_ip", r#"{"ttl_secs": 1800}"#)?;
         self.insert_playbook_action(pb1, 2, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb1, "threshold", ">=", "0.85", None)?;
 
         // 2. brute_force_block: brute_force, count 5 in 60s → block_ip(3600s) + send_telegram + log
         let pb2 = self.insert_playbook("brute_force_block", "brute_force", None, Some(5), Some(60), 600)?;
         self.insert_playbook_action(pb2, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
         self.insert_playbook_action(pb2, 2, "send_telegram", "{}")?;
         self.insert_playbook_action(pb2, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb2, "frequency", ">=", "5", Some("60"))?;
 
         // 3. port_scan_alert: port_scan, threshold 0.7 → send_telegram + log (no block)
         let pb3 = self.insert_playbook("port_scan_alert", "port_scan", Some(0.7), None, None, 300)?;
         self.insert_playbook_action(pb3, 1, "send_telegram", "{}")?;
         self.insert_playbook_action(pb3, 2, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb3, "threshold", ">=", "0.7", None)?;
 
         Ok(())
+    }
+
+    // --- Audit Log ---
+
+    /// Insert an audit trail entry.
+    pub fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO audit_log (actor, action, detail) VALUES (?1, ?2, ?3)",
+            params![actor, action, detail],
+        )?;
+        Ok(())
+    }
+
+    /// List recent audit log entries (most recent first, max 200).
+    pub fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT id, actor, action, detail, created_at FROM audit_log ORDER BY id DESC LIMIT 200")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AuditLogEntry {
+                    id: row.get(0)?,
+                    actor: row.get(1)?,
+                    action: row.get(2)?,
+                    detail: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 }
 
 /// Implement the RepositoryPort trait, proving Database satisfies the port contract.
 /// This enables adapter-level testing with mock implementations.
 impl crate::interface::port::repository::RepositoryPort for Database {
-    fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.insert_acl_rule(ip_version, direction, list_type, ip_address, port) }
-    fn delete_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error> { self.delete_acl_rule(ip_version, direction, list_type, ip_address, port) }
-    fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> { self.load_acl_rules() }
-    fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> { self.set_rate_limit(key, value) }
-    fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> { self.load_rate_limit_config() }
-    fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> { self.insert_dns_domain(domain) }
-    fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> { self.delete_dns_domain(domain) }
-    fn load_dns_domains(&self) -> Result<Vec<String>, Error> { self.load_dns_domains() }
-    fn insert_geo_country(&self, code: &str) -> Result<(), Error> { self.insert_geo_country(code) }
-    fn delete_geo_country(&self, code: &str) -> Result<(), Error> { self.delete_geo_country(code) }
-    fn load_geo_countries(&self) -> Result<Vec<String>, Error> { self.load_geo_countries() }
-    fn get_setting(&self, key: &str) -> Result<Option<String>, Error> { self.get_setting(key) }
-    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> { self.set_setting(key, value) }
-    fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user(username) }
-    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error> { self.insert_user(username, password_hash, role, force_password_change) }
-    fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.update_user_password(user_id, password_hash) }
-    fn user_count(&self) -> Result<i64, Error> { self.user_count() }
-    fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> { self.list_users() }
-    fn list_users_with_groups(&self) -> Result<Vec<crate::interface::port::repository::UserWithGroups>, Error> { self.list_users_with_groups() }
-    fn delete_user(&self, user_id: i64) -> Result<bool, Error> { self.delete_user(user_id) }
-    fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> { self.update_user_role(user_id, role) }
-    fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> { self.reset_user_password(user_id, password_hash) }
-    fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> { self.find_user_by_id(user_id) }
-    fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> { self.list_user_groups() }
-    fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> { self.create_user_group(name, description, permissions) }
-    fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> { self.update_user_group(id, name, description, permissions) }
-    fn delete_user_group(&self, id: i64) -> Result<bool, Error> { self.delete_user_group(id) }
-    fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> { self.get_user_group(id) }
-    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> { self.get_user_groups(user_id) }
-    fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> { self.set_user_groups(user_id, group_ids) }
-    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> { self.get_user_permissions(user_id) }
-    fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error> { self.cleanup_user_memberships(user_id) }
-    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> { self.get_group_member_ids(group_id) }
-    fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> { self.get_group_members(group_id) }
-    fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> { self.record_login_failure(username) }
-    fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> { self.check_login_locked(username) }
-    fn clear_login_failures(&self, username: &str) -> Result<(), Error> { self.clear_login_failures(username) }
+    fn insert_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
+        self.insert_acl_rule(ip_version, direction, list_type, ip_address, port)
+    }
+    fn delete_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
+        self.delete_acl_rule(ip_version, direction, list_type, ip_address, port)
+    }
+    fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> {
+        self.load_acl_rules()
+    }
+    fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> {
+        self.set_rate_limit(key, value)
+    }
+    fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> {
+        self.load_rate_limit_config()
+    }
+    fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> {
+        self.insert_dns_domain(domain)
+    }
+    fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> {
+        self.delete_dns_domain(domain)
+    }
+    fn load_dns_domains(&self) -> Result<Vec<String>, Error> {
+        self.load_dns_domains()
+    }
+    fn insert_geo_country(&self, code: &str) -> Result<(), Error> {
+        self.insert_geo_country(code)
+    }
+    fn delete_geo_country(&self, code: &str) -> Result<(), Error> {
+        self.delete_geo_country(code)
+    }
+    fn load_geo_countries(&self) -> Result<Vec<String>, Error> {
+        self.load_geo_countries()
+    }
+    fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
+        self.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.set_setting(key, value)
+    }
+    fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+        self.find_user(username)
+    }
+    fn insert_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+        force_password_change: bool,
+    ) -> Result<i64, Error> {
+        self.insert_user(username, password_hash, role, force_password_change)
+    }
+    fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
+        self.update_user_password(user_id, password_hash)
+    }
+    fn user_count(&self) -> Result<i64, Error> {
+        self.user_count()
+    }
+    fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> {
+        self.list_users()
+    }
+    fn list_users_with_groups(&self) -> Result<Vec<crate::interface::port::repository::UserWithGroups>, Error> {
+        self.list_users_with_groups()
+    }
+    fn delete_user(&self, user_id: i64) -> Result<bool, Error> {
+        self.delete_user(user_id)
+    }
+    fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> {
+        self.update_user_role(user_id, role)
+    }
+    fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
+        self.reset_user_password(user_id, password_hash)
+    }
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+        self.find_user_by_id(user_id)
+    }
+    fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> {
+        self.list_user_groups()
+    }
+    fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> {
+        self.create_user_group(name, description, permissions)
+    }
+    fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> {
+        self.update_user_group(id, name, description, permissions)
+    }
+    fn delete_user_group(&self, id: i64) -> Result<bool, Error> {
+        self.delete_user_group(id)
+    }
+    fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> {
+        self.get_user_group(id)
+    }
+    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+        self.get_user_groups(user_id)
+    }
+    fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> {
+        self.set_user_groups(user_id, group_ids)
+    }
+    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
+        self.get_user_permissions(user_id)
+    }
+    fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error> {
+        self.cleanup_user_memberships(user_id)
+    }
+    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
+        self.get_group_member_ids(group_id)
+    }
+    fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
+        self.get_group_members(group_id)
+    }
+    fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> {
+        self.record_login_failure(username)
+    }
+    fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> {
+        self.check_login_locked(username)
+    }
+    fn clear_login_failures(&self, username: &str) -> Result<(), Error> {
+        self.clear_login_failures(username)
+    }
+}
+
+impl crate::interface::port::soar::SoarPort for Database {
+    fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
+        self.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.set_setting(key, value)
+    }
+    fn insert_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
+        self.insert_acl_rule(ip_version, direction, list_type, ip_address, port)
+    }
+    fn delete_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error> {
+        self.delete_acl_rule(ip_version, direction, list_type, ip_address, port)
+    }
+    fn insert_playbook(
+        &self,
+        name: &str,
+        trigger_event: &str,
+        threshold: Option<f64>,
+        count: Option<i64>,
+        window: Option<i64>,
+        cooldown: i64,
+    ) -> Result<i64, Error> {
+        self.insert_playbook(name, trigger_event, threshold, count, window, cooldown)
+    }
+    fn insert_playbook_action(
+        &self,
+        playbook_id: i64,
+        action_order: i64,
+        action_type: &str,
+        params_json: &str,
+    ) -> Result<i64, Error> {
+        self.insert_playbook_action(playbook_id, action_order, action_type, params_json)
+    }
+    fn load_playbooks_with_actions(&self) -> Result<Vec<crate::interface::port::soar::PlaybookRow>, Error> {
+        self.load_playbooks_with_actions()
+    }
+    fn update_playbook(
+        &self,
+        id: i64,
+        row: &crate::model::soar::playbook_data::UpdatePlaybookRow,
+    ) -> Result<bool, Error> {
+        self.update_playbook(id, row)
+    }
+    fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
+        self.update_playbook_enabled(id, enabled)
+    }
+    fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+        self.delete_playbook(id)
+    }
+    fn delete_playbook_actions(&self, playbook_id: i64) -> Result<(), Error> {
+        self.delete_playbook_actions(playbook_id)
+    }
+    fn delete_playbook_conditions(&self, playbook_id: i64) -> Result<(), Error> {
+        self.delete_playbook_conditions(playbook_id)
+    }
+    fn seed_default_playbooks(&self) -> Result<(), Error> {
+        self.seed_default_playbooks()
+    }
+    fn insert_playbook_condition(
+        &self,
+        playbook_id: i64,
+        condition_type: &str,
+        operator: &str,
+        value: &str,
+        value2: Option<&str>,
+    ) -> Result<i64, Error> {
+        self.insert_playbook_condition(playbook_id, condition_type, operator, value, value2)
+    }
+    fn load_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
+        self.load_all_playbook_conditions()
+    }
+    fn insert_soar_block_rule(&self, source_ip: &str, playbook_id: i64, expires_at: &str) -> Result<i64, Error> {
+        self.insert_soar_block_rule(source_ip, playbook_id, expires_at)
+    }
+    fn count_active_soar_blocks(&self) -> Result<u32, Error> {
+        self.count_active_soar_blocks()
+    }
+    fn get_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
+        self.get_active_soar_blocks()
+    }
+    fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
+        self.get_soar_block_by_id(id)
+    }
+    fn get_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+        self.get_expired_soar_blocks()
+    }
+    fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error> {
+        self.mark_soar_block_unblocked(id)
+    }
+    fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error> {
+        self.has_manual_acl_rule(ip_address)
+    }
+    fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error> {
+        self.insert_pending_unblock(source_ip)
+    }
+    fn load_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+        self.load_pending_unblocks()
+    }
+    fn delete_pending_unblock(&self, id: i64) -> Result<(), Error> {
+        self.delete_pending_unblock(id)
+    }
+    fn increment_pending_unblock_retry(&self, id: i64) -> Result<(), Error> {
+        self.increment_pending_unblock_retry(id)
+    }
+    fn insert_soar_execution(
+        &self,
+        playbook_id: i64,
+        source_ip: Option<&str>,
+        trigger_event: &str,
+        actions_json: &str,
+    ) -> Result<i64, Error> {
+        self.insert_soar_execution(playbook_id, source_ip, trigger_event, actions_json)
+    }
+    fn list_soar_executions(&self, limit: i64) -> Result<Vec<crate::interface::port::soar::SoarExecutionRow>, Error> {
+        self.list_soar_executions(limit)
+    }
+    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
+        self.load_admin_whitelist()
+    }
+    fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.insert_admin_whitelist(ip)
+    }
+    fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.delete_admin_whitelist(ip)
+    }
+}
+
+impl crate::interface::port::stats::StatsPort for Database {
+    fn count_weekly_executions(&self, days: i64) -> Result<u64, Error> {
+        self.count_weekly_executions(days)
+    }
+    fn count_weekly_blocks(&self, days: i64) -> Result<u64, Error> {
+        self.count_weekly_blocks(days)
+    }
+    fn count_weekly_unblocks(&self, days: i64) -> Result<u64, Error> {
+        self.count_weekly_unblocks(days)
+    }
+    fn weekly_threat_breakdown(&self, days: i64) -> Result<Vec<(String, u64)>, Error> {
+        self.weekly_threat_breakdown(days)
+    }
+    fn weekly_top_ips(&self, days: i64, limit: i64) -> Result<Vec<(String, u64)>, Error> {
+        self.weekly_top_ips(days, limit)
+    }
+    fn count_acl_rules(&self) -> Result<u64, Error> {
+        self.count_acl_rules()
+    }
+}
+
+impl crate::interface::port::notification::NotificationConfigPort for Database {
+    fn get_notification_config(&self, channel: &str) -> Result<Option<String>, Error> {
+        self.get_notification_config(channel)
+    }
+    fn set_notification_config(&self, channel: &str, config_json: &str) -> Result<(), Error> {
+        self.set_notification_config(channel, config_json)
+    }
+}
+
+impl crate::interface::port::audit::AuditPort for Database {
+    fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
+        self.insert_audit_log(actor, action, detail)
+    }
+}
+
+impl crate::interface::port::api_key::ApiKeyPort for Database {
+    fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::auth::Claims>, Error> {
+        self.validate_api_key(api_key)
+    }
+    fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
+        self.insert_api_key(key_hash, name, permission_level)
+    }
+    fn list_api_keys(&self) -> Result<Vec<crate::interface::port::api_key::ApiKeyListItem>, Error> {
+        self.list_api_keys()
+    }
+    fn delete_api_key(&self, id: i64) -> Result<bool, Error> {
+        self.delete_api_key(id)
+    }
 }
 
 #[cfg(test)]
@@ -1266,7 +2110,16 @@ mod tests {
         db.insert_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
         let rules = db.load_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0], (4, "source".to_string(), "blacklist".to_string(), "192.168.1.1".to_string(), 80));
+        assert_eq!(
+            rules[0],
+            (
+                4,
+                "source".to_string(),
+                "blacklist".to_string(),
+                "192.168.1.1".to_string(),
+                80
+            )
+        );
 
         db.delete_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
         let rules = db.load_acl_rules().unwrap();

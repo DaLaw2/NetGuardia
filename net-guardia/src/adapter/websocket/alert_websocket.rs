@@ -1,20 +1,16 @@
-use actix_web::{web, HttpRequest, HttpResponse, Result};
-use actix_ws::{handle, Message, MessageStream, Session};
+use actix_web::{HttpRequest, HttpResponse, Result, web};
+use actix_ws::{Message, MessageStream, Session, handle};
 use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
 
 use crate::core::ml::alert::MLAlert;
-use crate::model::ml_detection::AlertMessage;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
+use crate::model::ml_detection::AlertMessage;
 
-pub async fn websocket_alert(
-    req: HttpRequest,
-    body: web::Payload,
-    ai: web::Data<MLAlert>,
-) -> Result<HttpResponse> {
+pub async fn websocket_alert(req: HttpRequest, body: web::Payload, ai: web::Data<MLAlert>) -> Result<HttpResponse> {
     let (response, session, msg_stream) = handle(&req, body)?;
 
     let broadcast_rx = ai.subscribe_to_alerts();

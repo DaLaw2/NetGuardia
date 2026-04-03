@@ -14,54 +14,40 @@ use crate::model::error::Error;
 /// If a key is missing the report uses empty/zero defaults.
 pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> {
     let threats_count = db
-        .get_setting("weekly_threats_count")
-?
+        .get_setting("weekly_threats_count")?
         .unwrap_or_else(|| "0".to_string());
 
-    let top_ips_json = db
-        .get_setting("weekly_top_ips")
-?
-        .unwrap_or_else(|| "[]".to_string());
+    let top_ips_json = db.get_setting("weekly_top_ips")?.unwrap_or_else(|| "[]".to_string());
 
     let threat_breakdown_json = db
-        .get_setting("weekly_threat_breakdown")
-?
+        .get_setting("weekly_threat_breakdown")?
         .unwrap_or_else(|| "{}".to_string());
 
     let bandwidth = db
-        .get_setting("weekly_bandwidth_bytes")
-?
+        .get_setting("weekly_bandwidth_bytes")?
         .unwrap_or_else(|| "0".to_string());
 
-    let health_json = db
-        .get_setting("weekly_system_health")
-?
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "cpu_percent": 0.0,
-                "memory_percent": 0.0,
-                "disk_percent": 0.0
-            })
-            .to_string()
-        });
+    let health_json = db.get_setting("weekly_system_health")?.unwrap_or_else(|| {
+        serde_json::json!({
+            "cpu_percent": 0.0,
+            "memory_percent": 0.0,
+            "disk_percent": 0.0
+        })
+        .to_string()
+    });
 
     // ── Parse JSON blobs ───────────────────────────────────────────────
 
-    let top_ips: Vec<serde_json::Value> =
-        serde_json::from_str(&top_ips_json).unwrap_or_default();
+    let top_ips: Vec<serde_json::Value> = serde_json::from_str(&top_ips_json).unwrap_or_default();
 
     let threat_breakdown: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&threat_breakdown_json).unwrap_or_default();
 
-    let health: serde_json::Value =
-        serde_json::from_str(&health_json).unwrap_or_default();
+    let health: serde_json::Value = serde_json::from_str(&health_json).unwrap_or_default();
 
     // ── Build HTML ─────────────────────────────────────────────────────
 
-    let bandwidth_mb = bandwidth
-        .parse::<f64>()
-        .unwrap_or(0.0)
-        / 1_048_576.0;
+    let bandwidth_mb = bandwidth.parse::<f64>().unwrap_or(0.0) / 1_048_576.0;
 
     let mut top_ips_rows = String::new();
     for (i, entry) in top_ips.iter().enumerate().take(5) {

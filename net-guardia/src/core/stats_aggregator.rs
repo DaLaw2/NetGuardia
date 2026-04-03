@@ -3,18 +3,20 @@ use std::sync::Arc;
 use tokio::time::{self, Duration};
 use tracing::{error, info};
 
-use crate::adapter::persistence::Database;
+use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::stats::StatsPort;
 use crate::model::error::Error;
 
 /// Background service that periodically aggregates statistics from SOAR/ML tables
 /// and writes them to the settings table for the Report engine to consume.
 pub struct StatsAggregator {
-    db: Arc<Database>,
+    stats: Arc<dyn StatsPort>,
+    repo: Arc<dyn RepositoryPort>,
 }
 
 impl StatsAggregator {
-    pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+    pub fn new(stats: Arc<dyn StatsPort>, repo: Arc<dyn RepositoryPort>) -> Self {
+        Self { stats, repo }
     }
 
     /// Spawn a background task that runs aggregation every hour.
@@ -40,31 +42,35 @@ impl StatsAggregator {
         let days = 7;
 
         // SOAR execution counts
-        let threats_count = self.db.count_weekly_executions(days)?;
-        self.db.set_setting("weekly_threats_count", &threats_count.to_string())?;
+        let threats_count = self.stats.count_weekly_executions(days)?;
+        self.repo
+            .set_setting("weekly_threats_count", &threats_count.to_string())?;
 
-        let blocks_count = self.db.count_weekly_blocks(days)?;
-        self.db.set_setting("weekly_soar_blocks", &blocks_count.to_string())?;
-        self.db.set_setting("weekly_soar_triggers", &threats_count.to_string())?;
+        let blocks_count = self.stats.count_weekly_blocks(days)?;
+        self.repo.set_setting("weekly_soar_blocks", &blocks_count.to_string())?;
+        self.repo
+            .set_setting("weekly_soar_triggers", &threats_count.to_string())?;
 
-        let unblocks_count = self.db.count_weekly_unblocks(days)?;
-        self.db.set_setting("weekly_soar_unblocks", &unblocks_count.to_string())?;
+        let unblocks_count = self.stats.count_weekly_unblocks(days)?;
+        self.repo
+            .set_setting("weekly_soar_unblocks", &unblocks_count.to_string())?;
 
-        self.db.set_setting("weekly_blocked_count", &blocks_count.to_string())?;
+        self.repo
+            .set_setting("weekly_blocked_count", &blocks_count.to_string())?;
 
         // Threat breakdown by type
-        let breakdown = self.db.weekly_threat_breakdown(days)?;
+        let breakdown = self.stats.weekly_threat_breakdown(days)?;
         let breakdown_json: serde_json::Map<String, serde_json::Value> = breakdown
             .into_iter()
             .map(|(k, v)| (k, serde_json::Value::Number(v.into())))
             .collect();
-        self.db.set_setting(
+        self.repo.set_setting(
             "weekly_threat_breakdown",
             &serde_json::to_string(&breakdown_json).unwrap_or_else(|_| "{}".to_string()),
         )?;
 
         // Top blocked IPs
-        let top_ips = self.db.weekly_top_ips(days, 10)?;
+        let top_ips = self.stats.weekly_top_ips(days, 10)?;
         let top_ips_json: Vec<serde_json::Value> = top_ips
             .into_iter()
             .map(|(ip, count)| {
@@ -75,14 +81,14 @@ impl StatsAggregator {
                 })
             })
             .collect();
-        self.db.set_setting(
+        self.repo.set_setting(
             "weekly_top_ips",
             &serde_json::to_string(&top_ips_json).unwrap_or_else(|_| "[]".to_string()),
         )?;
 
         // Active rules count
-        let active_rules = self.db.count_acl_rules()?;
-        self.db.set_setting("active_rules_count", &active_rules.to_string())?;
+        let active_rules = self.stats.count_acl_rules()?;
+        self.repo.set_setting("active_rules_count", &active_rules.to_string())?;
 
         // System health snapshot using sysinfo
         {
@@ -105,7 +111,7 @@ impl StatsAggregator {
                 "disk_usage_percent": 0.0,
                 "ebpf_status": "running",
             });
-            self.db.set_setting(
+            self.repo.set_setting(
                 "weekly_system_health",
                 &serde_json::to_string(&health_json).unwrap_or_else(|_| "{}".to_string()),
             )?;
@@ -118,12 +124,13 @@ impl StatsAggregator {
             } else {
                 (uptime_secs as f64 / week_secs as f64) * 100.0
             };
-            self.db.set_setting("system_uptime_percent", &format!("{:.1}", uptime_percent))?;
+            self.repo
+                .set_setting("system_uptime_percent", &format!("{:.1}", uptime_percent))?;
         }
 
         // Geo distribution (initialize if not present)
-        if self.db.get_setting("weekly_geo_distribution")?.is_none() {
-            self.db.set_setting("weekly_geo_distribution", "[]")?;
+        if self.repo.get_setting("weekly_geo_distribution")?.is_none() {
+            self.repo.set_setting("weekly_geo_distribution", "[]")?;
         }
 
         info!(
@@ -138,6 +145,7 @@ impl StatsAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::persistence::Database;
 
     #[test]
     fn aggregator_writes_weekly_stats() {
@@ -145,11 +153,12 @@ mod tests {
 
         // Seed some SOAR executions
         db.seed_default_playbooks().ok();
-        db.insert_soar_execution(1, Some("1.2.3.4"), "threat_detected", "[]").ok();
+        db.insert_soar_execution(1, Some("1.2.3.4"), "threat_detected", "[]")
+            .ok();
         db.insert_soar_execution(1, Some("5.6.7.8"), "brute_force", "[]").ok();
         db.insert_soar_block_rule("1.2.3.4", 1, "2099-01-01 00:00:00").ok();
 
-        let aggregator = StatsAggregator::new(db.clone());
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
         aggregator.aggregate().expect("aggregation should succeed");
 
         // Verify settings were written
@@ -178,8 +187,10 @@ mod tests {
     #[test]
     fn aggregator_handles_empty_db() {
         let db = Arc::new(Database::new(":memory:").expect("test db"));
-        let aggregator = StatsAggregator::new(db.clone());
-        aggregator.aggregate().expect("aggregation should succeed with empty data");
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
+        aggregator
+            .aggregate()
+            .expect("aggregation should succeed with empty data");
 
         let threats = db.get_setting("weekly_threats_count").unwrap().unwrap();
         assert_eq!(threats, "0");

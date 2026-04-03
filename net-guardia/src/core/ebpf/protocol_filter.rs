@@ -8,8 +8,8 @@ use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
 use common::model::placeholder::PlaceHolder;
 use tokio::sync::RwLock;
 
-use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
+use crate::model::error::ebpf::EbpfError;
 use crate::model::ip_address::NativeConvert;
 
 pub struct ProtocolFilter {
@@ -190,9 +190,7 @@ impl WhiteListControl {
 
     fn is_white_list_enable(&self) -> bool {
         match self.map.get(&0, 0) {
-            Ok(status) => {
-                status != 0
-            }
+            Ok(status) => status != 0,
             Err(_) => false,
         }
     }
@@ -280,9 +278,7 @@ impl<T: NativeConvert + Pod> EntryMap<T> {
 
     fn add(&mut self, key: T::Native) -> Result<(), Error> {
         let key = T::from_native(key);
-        self.map
-            .insert(key, 0_u8, 0)
-            .map_err(EbpfError::MapOperationError)?;
+        self.map.insert(key, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 

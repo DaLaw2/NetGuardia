@@ -23,9 +23,9 @@ impl EbpfAccessControlAdapter {
 #[async_trait]
 impl AccessControlPort for EbpfAccessControlAdapter {
     async fn block_ip(&self, ip: &str) -> Result<(), Error> {
-        let addr: IpAddr = ip.parse().map_err(|_| {
-            Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() })
-        })?;
+        let addr: IpAddr = ip
+            .parse()
+            .map_err(|_| Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);
@@ -43,9 +43,9 @@ impl AccessControlPort for EbpfAccessControlAdapter {
     }
 
     async fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
-        let addr: IpAddr = ip.parse().map_err(|_| {
-            Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() })
-        })?;
+        let addr: IpAddr = ip
+            .parse()
+            .map_err(|_| Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);

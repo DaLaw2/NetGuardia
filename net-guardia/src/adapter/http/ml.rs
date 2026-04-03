@@ -1,20 +1,15 @@
-use actix_web::{web, HttpResponse, Responder, Scope};
+use actix_web::{HttpResponse, Responder, Scope, web};
 
 use crate::core::ml::engine::Engine;
 
 pub fn initialize() -> Scope {
-    web::scope("/ml")
-        .route("/status", web::get().to(get_status))
+    web::scope("/ml").route("/status", web::get().to(get_status))
 }
 
-async fn get_status(
-    engine: web::Data<Engine>,
-) -> impl Responder {
+async fn get_status(engine: web::Data<Engine>) -> impl Responder {
     let trackers = engine.trackers();
     let num_trackers = trackers.len();
-    let total_flows: usize = trackers.iter()
-        .map(|t| t.lock().flow_count())
-        .sum();
+    let total_flows: usize = trackers.iter().map(|t| t.lock().flow_count()).sum();
     let has_traffic_logger = engine.has_traffic_logger();
 
     HttpResponse::Ok().json(serde_json::json!({

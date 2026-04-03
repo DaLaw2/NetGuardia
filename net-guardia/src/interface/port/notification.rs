@@ -20,3 +20,9 @@ pub trait AlertNotifier: Send + Sync {
     async fn send_alert(&self, payload: &AlertPayload) -> Result<(), Error>;
     async fn send_test_message(&self) -> Result<(), Error>;
 }
+
+/// Port for notification channel configuration (Telegram, email, etc.).
+pub trait NotificationConfigPort: Send + Sync {
+    fn get_notification_config(&self, channel: &str) -> Result<Option<String>, Error>;
+    fn set_notification_config(&self, channel: &str, config_json: &str) -> Result<(), Error>;
+}

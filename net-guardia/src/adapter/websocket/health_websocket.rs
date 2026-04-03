@@ -1,5 +1,5 @@
-use actix_web::{web, HttpRequest, HttpResponse, Result};
-use actix_ws::{handle, Message, MessageStream, Session};
+use actix_web::{HttpRequest, HttpResponse, Result, web};
+use actix_ws::{Message, MessageStream, Session, handle};
 use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
@@ -7,8 +7,8 @@ use tokio::sync::broadcast;
 use crate::infrastructure::health::SystemHealth;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
-use crate::model::log::http::HttpLog;
 use crate::model::health::SystemHealthMetrics;
+use crate::model::log::http::HttpLog;
 
 pub async fn websocket_system_health(
     req: HttpRequest,

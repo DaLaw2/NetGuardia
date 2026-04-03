@@ -63,9 +63,7 @@ impl FlowStatistics {
             flows.retain(|f| f.last_seen_us >= cutoff);
         }
 
-        flows.sort_by(|a, b| {
-            (b.fwd_bytes + b.bwd_bytes).cmp(&(a.fwd_bytes + a.bwd_bytes))
-        });
+        flows.sort_by(|a, b| (b.fwd_bytes + b.bwd_bytes).cmp(&(a.fwd_bytes + a.bwd_bytes)));
 
         if let Some(n) = sub.top_n {
             flows.truncate(n.min(10000));

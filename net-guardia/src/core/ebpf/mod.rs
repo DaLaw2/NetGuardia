@@ -2,8 +2,8 @@ pub mod access_control;
 pub mod dns_filter;
 pub mod drop_monitor;
 pub mod geo_block;
-pub mod rate_limit;
 pub mod protocol_filter;
+pub mod rate_limit;
 pub mod xsk_manager;
 
 use std::sync::Arc;
@@ -19,14 +19,14 @@ use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ebpf::drop_monitor::DropMonitor;
 use crate::core::ebpf::geo_block::GeoBlock;
-use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::protocol_filter::ProtocolFilter;
+use crate::core::ebpf::rate_limit::RateLimitConfig;
 use crate::core::ebpf::xsk_manager::XskManager;
-use crate::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
+use crate::infrastructure::app_config::AppConfig;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
-use crate::model::error::Error;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,

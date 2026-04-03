@@ -33,7 +33,7 @@ actix-ws = "0.4.0"
 # Logging / tracing
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
 
 # ML
 tract-onnx = "0.22.1"
@@ -68,10 +68,10 @@ quote = "1.0.45"
 syn = { version = "2.0.117", features = ["full"] }
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"
 
 [profile.release]
-panic = "abort"
+panic = "unwind"
 opt-level = 3
 lto = "thin"
 strip = true

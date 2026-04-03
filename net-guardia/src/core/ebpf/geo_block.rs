@@ -1,21 +1,21 @@
 use std::collections::{HashMap as StdHashMap, HashSet};
 use std::sync::Arc;
 
-use aya::maps::lpm_trie::{Key, LpmTrie};
-use aya::maps::MapData;
 use aya::Ebpf;
+use aya::maps::MapData;
+use aya::maps::lpm_trie::{Key, LpmTrie};
 use ipnetwork::IpNetwork;
-use maxminddb::{geoip2, Reader};
+use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
 
 use crate::infrastructure::app_config::AppConfig;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::error::Error;
 
 /// Pre-indexed GeoIP prefix table, built once at startup.
 struct GeoIndex {
-    v4: StdHashMap<String, Vec<(u32, u32)>>,  // country -> [(ip_be, prefix_len)]
+    v4: StdHashMap<String, Vec<(u32, u32)>>, // country -> [(ip_be, prefix_len)]
     v6: StdHashMap<String, Vec<(u128, u32)>>,
 }
 
@@ -35,11 +35,10 @@ impl GeoBlock {
         let v6_trie = LpmTrie::try_from(v6_map).map_err(EbpfError::MapOperationError)?;
 
         let db_path = &app_config.misc.geoip_db_name;
-        let reader = Reader::open_readfile(db_path)
-            .map_err(|e| MiscError::GeoIPDatabaseError {
-                path: db_path.clone(),
-                reason: e.to_string(),
-            })?;
+        let reader = Reader::open_readfile(db_path).map_err(|e| MiscError::GeoIPDatabaseError {
+            path: db_path.clone(),
+            reason: e.to_string(),
+        })?;
 
         let index = Self::build_index(&reader)?;
 
@@ -61,7 +60,9 @@ impl GeoBlock {
             for result in iter {
                 let Ok(lookup) = result else { continue };
                 let Ok(network) = lookup.network() else { continue };
-                let Ok(Some(city)) = lookup.decode::<geoip2::City>() else { continue };
+                let Ok(Some(city)) = lookup.decode::<geoip2::City>() else {
+                    continue;
+                };
                 let Some(code) = city.country.iso_code else { continue };
                 let code = code.to_uppercase();
 
@@ -77,7 +78,9 @@ impl GeoBlock {
             for result in iter {
                 let Ok(lookup) = result else { continue };
                 let Ok(network) = lookup.network() else { continue };
-                let Ok(Some(city)) = lookup.decode::<geoip2::City>() else { continue };
+                let Ok(Some(city)) = lookup.decode::<geoip2::City>() else {
+                    continue;
+                };
                 let Some(code) = city.country.iso_code else { continue };
                 let code = code.to_uppercase();
 
@@ -163,20 +166,14 @@ impl GeoBlock {
     }
 
     fn clear_trie_v4(trie: &mut LpmTrie<MapData, u32, u8>) {
-        let keys: Vec<Key<u32>> = trie.iter()
-            .filter_map(|r| r.ok())
-            .map(|(k, _)| k)
-            .collect();
+        let keys: Vec<Key<u32>> = trie.iter().filter_map(|r| r.ok()).map(|(k, _)| k).collect();
         for key in keys {
             let _ = trie.remove(&key);
         }
     }
 
     fn clear_trie_v6(trie: &mut LpmTrie<MapData, u128, u8>) {
-        let keys: Vec<Key<u128>> = trie.iter()
-            .filter_map(|r| r.ok())
-            .map(|(k, _)| k)
-            .collect();
+        let keys: Vec<Key<u128>> = trie.iter().filter_map(|r| r.ok()).map(|(k, _)| k).collect();
         for key in keys {
             let _ = trie.remove(&key);
         }

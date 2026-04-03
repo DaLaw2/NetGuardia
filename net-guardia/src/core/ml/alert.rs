@@ -1,22 +1,19 @@
 use macros::log;
 use tokio::sync::broadcast;
 
+use crate::model::config::constants::ML_ALERT_CHANNEL_CAPACITY;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::{AlertMessage, DetectionResult};
 
-const ALERT_CHANNEL_CAPACITY: usize = 100;
-
-pub struct MLAlert  {
+pub struct MLAlert {
     broadcast_tx: broadcast::Sender<AlertMessage>,
 }
 
 impl MLAlert {
     pub fn new() -> Self {
-        let (broadcast_tx, _) = broadcast::channel(ALERT_CHANNEL_CAPACITY);
+        let (broadcast_tx, _) = broadcast::channel(ML_ALERT_CHANNEL_CAPACITY);
 
-        MLAlert {
-            broadcast_tx,
-        }
+        MLAlert { broadcast_tx }
     }
 
     pub fn subscribe_to_alerts(&self) -> broadcast::Receiver<AlertMessage> {

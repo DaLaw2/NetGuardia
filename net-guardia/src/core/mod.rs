@@ -1,9 +1,11 @@
 pub mod acl_service;
 pub mod auth;
 pub mod config_service;
+pub mod correlation;
+pub mod detection;
 pub mod dns_filter_service;
-pub mod email;
 pub mod ebpf;
+pub mod email;
 pub mod ml;
 pub mod notification_service;
 pub mod playbook_service;

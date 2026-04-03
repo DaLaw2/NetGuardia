@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::Message;
 use futures_util::StreamExt;
 use tokio::time::interval;
@@ -33,9 +33,7 @@ pub async fn flow_stats_ws(
 
     actix_web::rt::spawn(async move {
         let mut subscription = default_subscription();
-        let mut ticker = interval(Duration::from_secs(
-            subscription.interval_secs.unwrap_or(5),
-        ));
+        let mut ticker = interval(Duration::from_secs(subscription.interval_secs.unwrap_or(5)));
 
         loop {
             tokio::select! {

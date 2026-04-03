@@ -27,8 +27,6 @@ autoinstall:
         dhcp4: true
 
   packages:
-    - whiptail
-    - jq
     - curl
     - net-tools
     - iproute2
@@ -43,14 +41,6 @@ autoinstall:
     - >-
       curtin in-target -- systemctl enable serial-getty@ttyS0.service
 
-  user-data:
-    runcmd:
-      # Run the setup wizard on first boot if not already configured
-      - |
-        if [ ! -f /opt/netguardia/config.toml ]; then
-          /opt/netguardia/bin/setup-wizard.sh
-        fi
-
   final_message: |
     NetGuardia image provisioning complete.
-    Run /opt/netguardia/bin/setup-wizard.sh to configure.
+    The HTTP setup wizard starts automatically on port 8080.

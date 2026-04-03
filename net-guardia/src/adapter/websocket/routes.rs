@@ -1,12 +1,12 @@
-use actix_web::{web, HttpRequest, HttpResponse, Responder, Scope};
+use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
+use super::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
 use crate::core::auth::jwt::JwtService;
 use crate::core::ebpf::drop_monitor::DropMonitor;
+use crate::core::ml::alert::MLAlert;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
-use crate::core::ml::alert::MLAlert;
-use super::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
 
 #[derive(Deserialize)]
 struct WsQuery {
@@ -60,7 +60,9 @@ async fn health_ws(
     }
     match health_websocket::websocket_system_health(req, stream, health).await {
         Ok(response) => response,
-        Err(err) => HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)})),
+        Err(err) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)}))
+        }
     }
 }
 
@@ -76,7 +78,9 @@ async fn alerts_ws(
     }
     match alert_websocket::websocket_alert(req, stream, ai).await {
         Ok(response) => response,
-        Err(err) => HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)})),
+        Err(err) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)}))
+        }
     }
 }
 
@@ -92,7 +96,9 @@ async fn flows_ws(
     }
     match flow_websocket::flow_stats_ws(req, stream, stats).await {
         Ok(response) => response,
-        Err(err) => HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)})),
+        Err(err) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)}))
+        }
     }
 }
 
@@ -108,6 +114,8 @@ async fn drops_ws(
     }
     match drop_websocket::websocket_drops(req, stream, monitor).await {
         Ok(response) => response,
-        Err(err) => HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)})),
+        Err(err) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)}))
+        }
     }
 }

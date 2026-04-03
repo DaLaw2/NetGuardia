@@ -1,15 +1,9 @@
-use std::collections::HashMap;
-
 use common::define::tcp_flags::*;
 
 use super::flow_tracker::FlowData;
-use crate::model::ml_detection::{ClipParams, PacketData};
+use crate::model::ml_detection::PacketData;
 
-#[derive(Debug, Clone)]
-pub struct FlowFeatures {
-    pub features: Vec<f64>,
-    pub feature_num: usize,
-}
+use crate::model::detection::flow_features::FlowFeatures;
 
 impl FlowFeatures {
     pub fn extract(flow: &FlowData, feature_names: &[String]) -> Self {
@@ -23,125 +17,6 @@ impl FlowFeatures {
         }
 
         Self { features, feature_num }
-    }
-
-    pub fn normalize(&mut self, means: &[f64], stds: &[f64]) {
-        for i in 0..self.feature_num {
-            if stds[i] > 0.0 {
-                self.features[i] = (self.features[i] - means[i]) / stds[i];
-            } else {
-                self.features[i] = 0.0;
-            }
-        }
-    }
-
-    pub fn clip(&mut self, clip_min: f64, clip_max: f64) {
-        for i in 0..self.feature_num {
-            self.features[i] = self.features[i].max(clip_min).min(clip_max);
-        }
-    }
-
-    pub fn winsorize(&mut self, clip_params: &HashMap<String, ClipParams>, feature_names: &[String]) {
-        for (i, feature_name) in feature_names.iter().enumerate() {
-            if i < self.feature_num
-                && let Some(params) = clip_params.get(feature_name) {
-                    self.features[i] = self.features[i].clamp(params.lower, params.upper);
-            }
-        }
-    }
-
-    pub fn all_feature_names() -> Vec<&'static str> {
-        vec![
-            "Destination Port",
-            "Protocol",
-            "Flow Duration",
-            "Total Fwd Packets",
-            "Total Backward Packets",
-            "Total Length of Fwd Packets",
-            "Total Length of Bwd Packets",
-            "Fwd Packet Length Max",
-            "Fwd Packet Length Min",
-            "Fwd Packet Length Mean",
-            "Fwd Packet Length Std",
-            "Bwd Packet Length Max",
-            "Bwd Packet Length Min",
-            "Bwd Packet Length Mean",
-            "Bwd Packet Length Std",
-            "Flow Bytes/s",
-            "Flow Packets/s",
-            "Flow IAT Mean",
-            "Flow IAT Std",
-            "Flow IAT Max",
-            "Flow IAT Min",
-            "Fwd IAT Total",
-            "Fwd IAT Mean",
-            "Fwd IAT Std",
-            "Fwd IAT Max",
-            "Fwd IAT Min",
-            "Bwd IAT Total",
-            "Bwd IAT Mean",
-            "Bwd IAT Std",
-            "Bwd IAT Max",
-            "Bwd IAT Min",
-            "Fwd PSH Flags",
-            "Bwd PSH Flags",
-            "Fwd URG Flags",
-            "Bwd URG Flags",
-            "Fwd Header Length",
-            "Bwd Header Length",
-            "Fwd Packets/s",
-            "Bwd Packets/s",
-            "Min Packet Length",
-            "Max Packet Length",
-            "Packet Length Mean",
-            "Packet Length Std",
-            "Packet Length Variance",
-            "FIN Flag Count",
-            "SYN Flag Count",
-            "RST Flag Count",
-            "PSH Flag Count",
-            "ACK Flag Count",
-            "URG Flag Count",
-            "CWE Flag Count",
-            "ECE Flag Count",
-            "Down/Up Ratio",
-            "Average Packet Size",
-            "Avg Fwd Segment Size",
-            "Avg Bwd Segment Size",
-            "Fwd Header Length.1",
-            "Fwd Avg Bytes/Bulk",
-            "Fwd Avg Packets/Bulk",
-            "Fwd Avg Bulk Rate",
-            "Bwd Avg Bytes/Bulk",
-            "Bwd Avg Packets/Bulk",
-            "Bwd Avg Bulk Rate",
-            "Subflow Fwd Packets",
-            "Subflow Fwd Bytes",
-            "Subflow Bwd Packets",
-            "Subflow Bwd Bytes",
-            "Init_Win_bytes_forward",
-            "Init_Win_bytes_backward",
-            "act_data_pkt_fwd",
-            "min_seg_size_forward",
-            "Active Mean",
-            "Active Std",
-            "Active Max",
-            "Active Min",
-            "Idle Mean",
-            "Idle Std",
-            "Idle Max",
-            "Idle Min",
-        ]
-    }
-
-    pub fn all_feature_names_owned() -> Vec<String> {
-        Self::all_feature_names().iter().map(|s| s.to_string()).collect()
-    }
-
-    pub fn to_csv_record(&self) -> Vec<String> {
-        let mut record: Vec<String> = self.features.iter().map(|f| f.to_string()).collect();
-        record.push("BENIGN".to_string());
-        record
     }
 }
 
@@ -244,6 +119,10 @@ struct PrecomputedStats {
     idle_min: f64,
     idle_mean: f64,
     idle_std: f64,
+
+    // Phase 2: new features for C2/Cryptomining detection
+    fwd_bwd_bytes_ratio: f64,
+    fwd_iat_skewness: f64,
 }
 
 impl PrecomputedStats {
@@ -328,6 +207,10 @@ impl PrecomputedStats {
         let (idle_max, idle_min, idle_mean, idle_std) =
             compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
+        // Phase 2: new features for C2/Cryptomining detection
+        let fwd_bwd_bytes_ratio = safe_div(fwd_total_bytes, fwd_total_bytes + bwd_total_bytes);
+        let fwd_iat_skewness = compute_bowley_skewness(&fwd_iats);
+
         Self {
             dst_port: flow.flow_key.dst_port as f64,
             protocol: flow.flow_key.protocol as f64,
@@ -397,6 +280,8 @@ impl PrecomputedStats {
             idle_min,
             idle_mean,
             idle_std,
+            fwd_bwd_bytes_ratio,
+            fwd_iat_skewness,
         }
     }
 
@@ -484,6 +369,16 @@ impl PrecomputedStats {
             "Idle Max" => self.idle_max,
             "Idle Min" => self.idle_min,
 
+            // Phase 2: unified names for IAT std (already computed, add aliases)
+            "fwd_iat_std" => self.fwd_iat_std,
+            "bwd_iat_std" => self.bwd_iat_std,
+            "flow_iat_std" => self.flow_iat_std,
+
+            // Phase 2: new features for C2/Cryptomining detection
+            "fwd_bwd_bytes_ratio" => self.fwd_bwd_bytes_ratio,
+            "pkt_len_variance" => self.all_len_std * self.all_len_std,
+            "fwd_iat_skewness" => self.fwd_iat_skewness,
+
             _ => 0.0,
         }
     }
@@ -522,6 +417,23 @@ fn compute_iats(packets: &[PacketData]) -> Vec<f64> {
         .collect()
 }
 
+/// Bowley (quartile) skewness: (Q3 + Q1 - 2*Q2) / (Q3 - Q1)
+/// Returns 0.0 for insufficient data or zero IQR.
+/// Used for C2 beacon detection — regular beacons have skewness near 0.
+fn compute_bowley_skewness(values: &[f64]) -> f64 {
+    if values.len() < 4 {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let q1 = sorted[n / 4];
+    let q2 = sorted[n / 2];
+    let q3 = sorted[3 * n / 4];
+    let iqr = q3 - q1;
+    if iqr <= 0.0 { 0.0 } else { (q3 + q1 - 2.0 * q2) / iqr }
+}
+
 fn compute_flow_iats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]) -> Vec<f64> {
     let mut all_packets: Vec<&PacketData> = fwd_packets.iter().chain(bwd_packets.iter()).collect();
     all_packets.sort_by_key(|p| p.timestamp_us);
@@ -534,4 +446,39 @@ fn compute_flow_iats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]) -> 
         .windows(2)
         .map(|w| (w[1].timestamp_us - w[0].timestamp_us) as f64)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bowley_skewness_insufficient_data() {
+        assert_eq!(compute_bowley_skewness(&[]), 0.0);
+        assert_eq!(compute_bowley_skewness(&[1.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&[1.0, 2.0, 3.0]), 0.0);
+    }
+
+    #[test]
+    fn bowley_skewness_zero_iqr() {
+        // All identical values → Q1 == Q3 → IQR = 0
+        assert_eq!(compute_bowley_skewness(&[5.0, 5.0, 5.0, 5.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn bowley_skewness_known_output() {
+        // Symmetric distribution: [1, 2, 3, 4, 5, 6, 7, 8] (n=8)
+        // Q1 = sorted[2] = 3, Q2 = sorted[4] = 5, Q3 = sorted[6] = 7
+        // Bowley = (7 + 3 - 2*5) / (7 - 3) = 0 / 4 = 0.0
+        let symmetric = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        assert!((compute_bowley_skewness(&symmetric)).abs() < 1e-10);
+
+        // Right-skewed: [1, 1, 1, 1, 2, 5, 10, 20] (n=8)
+        // Q1 = sorted[2] = 1, Q2 = sorted[4] = 2, Q3 = sorted[6] = 10
+        // Bowley = (10 + 1 - 2*2) / (10 - 1) = 7 / 9 ≈ 0.778
+        let right_skewed = vec![1.0, 1.0, 1.0, 1.0, 2.0, 5.0, 10.0, 20.0];
+        let skew = compute_bowley_skewness(&right_skewed);
+        assert!((skew - 7.0 / 9.0).abs() < 1e-10);
+    }
 }

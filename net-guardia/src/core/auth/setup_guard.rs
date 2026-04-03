@@ -1,11 +1,11 @@
-use std::future::{ready, Future, Ready};
+use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
-use actix_web::{web, Error as ActixError, HttpResponse};
+use actix_web::{Error as ActixError, HttpResponse, web};
 
 /// Shared flag indicating whether setup has completed.
 /// When false, only setup wizard routes are allowed; all others get 503.
@@ -44,10 +44,7 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(
-        &self,
-        ctx: &mut core::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
@@ -67,8 +64,7 @@ where
                 // Normal mode: pass through, but block setup mutation endpoints.
                 // Allow /api/setup/status (read-only) so frontend can check setup state.
                 if path.starts_with("/api/setup/") && path != "/api/setup/status" {
-                    let resp = HttpResponse::Gone()
-                        .json(serde_json::json!({"error": "Setup already completed"}));
+                    let resp = HttpResponse::Gone().json(serde_json::json!({"error": "Setup already completed"}));
                     return Ok(req.into_response(resp).map_into_right_body());
                 }
                 let res = service.call(req).await?.map_into_left_body();
@@ -86,12 +82,11 @@ where
             }
 
             // Block all other API routes with 503
-            let resp = HttpResponse::ServiceUnavailable()
-                .json(serde_json::json!({
-                    "error": "System setup in progress",
-                    "setup_required": true,
-                    "message": "Please complete the setup wizard at /setup"
-                }));
+            let resp = HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "error": "System setup in progress",
+                "setup_required": true,
+                "message": "Please complete the setup wizard at /setup"
+            }));
             Ok(req.into_response(resp).map_into_right_body())
         })
     }

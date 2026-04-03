@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Scope};
+use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::core::auth::extractor::AuthClaims;
@@ -12,10 +12,7 @@ pub fn initialize() -> Scope {
         .route("/smtp/test", web::post().to(test_smtp))
 }
 
-async fn get_telegram_config(
-    _auth: AuthClaims,
-    svc: web::Data<NotificationService>,
-) -> HttpResponse {
+async fn get_telegram_config(_auth: AuthClaims, svc: web::Data<NotificationService>) -> HttpResponse {
     match svc.get_telegram_config() {
         Ok(config) => HttpResponse::Ok().json(config),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -39,20 +36,14 @@ async fn set_telegram_config(
     }
 }
 
-async fn test_telegram(
-    _auth: AuthClaims,
-    svc: web::Data<NotificationService>,
-) -> HttpResponse {
+async fn test_telegram(_auth: AuthClaims, svc: web::Data<NotificationService>) -> HttpResponse {
     match svc.test_telegram().await {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({"success": true, "message": "Test message sent"})),
         Err(e) => HttpResponse::BadRequest().json(serde_json::json!({"success": false, "error": e.to_string()})),
     }
 }
 
-async fn test_smtp(
-    _auth: AuthClaims,
-    svc: web::Data<NotificationService>,
-) -> HttpResponse {
+async fn test_smtp(_auth: AuthClaims, svc: web::Data<NotificationService>) -> HttpResponse {
     match svc.test_smtp() {
         Ok(msg) => HttpResponse::Ok().json(serde_json::json!({"success": true, "message": msg})),
         Err(e) => HttpResponse::BadRequest().json(serde_json::json!({"success": false, "error": e.to_string()})),

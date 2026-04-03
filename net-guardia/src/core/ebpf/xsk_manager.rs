@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use aya::maps::{MapData, XskMap};
 use aya::Ebpf;
-use crossbeam::channel::{bounded, Receiver, Sender};
+use aya::maps::{MapData, XskMap};
+use crossbeam::channel::{Receiver, Sender, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
@@ -17,14 +17,14 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::core::ebpf::dns_filter::DnsFilter;
-use crate::infrastructure::app_config::AppConfig;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowTracker;
+use crate::infrastructure::app_config::AppConfig;
 use crate::model::config::NetworkConfig;
 use crate::model::direction::Direction;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
-use crate::model::error::Error;
 use crate::model::log::ebpf::EbpfLog;
 use crate::utils::packet_parser::parse_packet;
 
@@ -37,10 +37,12 @@ struct BufferPool {
 
 impl BufferPool {
     fn new(capacity: usize, buffer_size: usize) -> Self {
-        let buffers = (0..capacity)
-            .map(|_| Vec::with_capacity(buffer_size))
-            .collect();
-        Self { buffers, buffer_size, max_capacity: capacity * 2 }
+        let buffers = (0..capacity).map(|_| Vec::with_capacity(buffer_size)).collect();
+        Self {
+            buffers,
+            buffer_size,
+            max_capacity: capacity * 2,
+        }
     }
 
     fn get(&mut self) -> Vec<u8> {
@@ -80,7 +82,12 @@ impl XskManager {
         })
     }
 
-    pub fn run(&self, ml_engine: Option<Arc<Engine>>, dns_filter: Option<Arc<DnsFilter>>, shutdowns: &SegQueue<oneshot::Sender<()>>) -> Result<(), Error> {
+    pub fn run(
+        &self,
+        ml_engine: Option<Arc<Engine>>,
+        dns_filter: Option<Arc<DnsFilter>>,
+        shutdowns: &SegQueue<oneshot::Sender<()>>,
+    ) -> Result<(), Error> {
         let network = self.app_config.network.clone();
         let combined_queue_count = network.combined_queue_count;
 
@@ -306,7 +313,12 @@ impl XskPair {
         Ok(nb_completed)
     }
 
-    fn process_rx_queue(&mut self, forward_tx: &Sender<Vec<u8>>, buffer_pool: &mut BufferPool, rx_descs: &mut [FrameDesc]) -> Result<usize, EbpfError> {
+    fn process_rx_queue(
+        &mut self,
+        forward_tx: &Sender<Vec<u8>>,
+        buffer_pool: &mut BufferPool,
+        rx_descs: &mut [FrameDesc],
+    ) -> Result<usize, EbpfError> {
         let rx_count = unsafe { self.rx.consume(rx_descs) };
 
         if rx_count > 0 {
@@ -328,15 +340,17 @@ impl XskPair {
                 // DNS blacklist check — drop blacklisted DNS queries before forwarding
                 if let Some(ref dns) = self.dns_filter
                     && let Some((dns_name, name_len)) = DnsFilter::parse_query_name(raw)
-                    && dns.is_blacklisted(&dns_name, name_len) {
-                        continue;
+                    && dns.is_blacklisted(&dns_name, name_len)
+                {
+                    continue;
                 }
 
                 // Parse directly from UMEM (zero-copy for ML path).
                 // Only clone for the forwarding path afterwards.
                 if let Some(ref tracker) = self.tracker
-                    && let Some((packet_info, _)) = parse_packet(raw) {
-                        tracker.lock().process_packet(packet_info, is_ingress);
+                    && let Some((packet_info, _)) = parse_packet(raw)
+                {
+                    tracker.lock().process_packet(packet_info, is_ingress);
                 }
 
                 // Clone into pooled buffer for forwarding
@@ -367,7 +381,12 @@ impl XskPair {
         Ok(rx_count)
     }
 
-    fn process_tx_queue(&mut self, forward_rx: &Receiver<Vec<u8>>, buffer_pool: &mut BufferPool, comp_descs: &mut [FrameDesc]) -> Result<usize, EbpfError> {
+    fn process_tx_queue(
+        &mut self,
+        forward_rx: &Receiver<Vec<u8>>,
+        buffer_pool: &mut BufferPool,
+        comp_descs: &mut [FrameDesc],
+    ) -> Result<usize, EbpfError> {
         let mut packets_to_send = Vec::with_capacity(64);
         while let Ok(packet) = forward_rx.try_recv() {
             packets_to_send.push(packet);
@@ -426,8 +445,9 @@ impl XskPair {
         }
 
         if let Err(e) = self.tx.wakeup()
-            && e.kind() != std::io::ErrorKind::WouldBlock {
-                log!(EbpfLog::TXWakeupFailed(e.to_string()));
+            && e.kind() != std::io::ErrorKind::WouldBlock
+        {
+            log!(EbpfLog::TXWakeupFailed(e.to_string()));
         }
 
         // Log dropped packets when frames < packets
