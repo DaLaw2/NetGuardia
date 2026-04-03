@@ -1,18 +1,19 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use macros::log;
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio::time::interval;
 
 use super::aggregator::AttackAggregator;
 use super::config_loader::InferenceConfig;
-use super::feature_extractor::FlowFeatures;
+use super::drift_detector::DriftDetector;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
 use super::model_loader::MLModels;
 use super::traffic_logger::TrafficLogger;
+use crate::model::detection::flow_features::FlowFeatures;
 
 use super::alert::MLAlert;
 use crate::model::log::ml::MLLog;
@@ -26,6 +27,7 @@ pub struct Engine {
     trackers: Vec<ThreadTracker>,
     inference_pipeline: Arc<Inference>,
     aggregator: Mutex<AttackAggregator>,
+    drift_detector: Arc<Mutex<DriftDetector>>,
     ml_alert: Arc<MLAlert>,
     min_packets: usize,
     batch_size: usize,
@@ -38,14 +40,19 @@ impl Engine {
         models: Arc<MLModels>,
         config: Arc<InferenceConfig>,
         ml_alert: Arc<MLAlert>,
+        drift_detector: Arc<Mutex<DriftDetector>>,
         engine_config: EngineConfig,
         traffic_logger: Option<Arc<TrafficLogger>>,
         num_threads: u32,
     ) -> Self {
         let inference_pipeline = Arc::new(Inference::new(models, config));
 
-        let min_detections = ((engine_config.aggregator_window_secs / engine_config.inference_interval_secs) / 2).max(1) as usize;
-        let aggregator = Mutex::new(AttackAggregator::new(engine_config.aggregator_window_secs, min_detections));
+        let min_detections =
+            ((engine_config.aggregator_window_secs / engine_config.inference_interval_secs) / 2).max(1) as usize;
+        let aggregator = Mutex::new(AttackAggregator::new(
+            engine_config.aggregator_window_secs,
+            min_detections,
+        ));
 
         let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
         let trackers: Vec<ThreadTracker> = (0..num_threads)
@@ -56,6 +63,7 @@ impl Engine {
             trackers,
             inference_pipeline,
             aggregator,
+            drift_detector,
             ml_alert,
             min_packets: engine_config.min_packets,
             batch_size: engine_config.batch_size,
@@ -89,7 +97,7 @@ impl Engine {
         shutdown_tx
     }
 
-    async fn run_inference_loop(&self, mut shutdown_rx: oneshot::Receiver<()>) {
+    async fn run_inference_loop(self: Arc<Self>, mut shutdown_rx: oneshot::Receiver<()>) {
         let mut ticker = interval(Duration::from_secs(self.inference_interval_secs));
 
         loop {
@@ -98,21 +106,37 @@ impl Engine {
                 _ = ticker.tick() => {}
             }
 
-            self.run_inference_tick();
+            // Move CPU-bound ML inference off the tokio executor
+            let engine = Arc::clone(&self);
+            let _ = tokio::task::spawn_blocking(move || {
+                engine.run_inference_tick();
+            })
+            .await;
         }
     }
 
     fn run_inference_tick(&self) {
         let mut all_flows = Vec::new();
         let mut total_count = 0;
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+
+        // Phase 0: clean up stale / terminated flows
+        for tracker in &self.trackers {
+            let mut t = tracker.lock();
+            t.cleanup_stale_flows(now_us);
+        }
 
         // Phase 1: short lock per tracker — clone uninferred flows, mark as inferred
         for tracker in &self.trackers {
             let mut t = tracker.lock();
             total_count += t.flow_count();
             all_flows.extend(
-                t.get_uninferred_flows().into_iter()
-                    .filter(|flow| flow.packet_count() >= self.min_packets)
+                t.get_uninferred_flows()
+                    .into_iter()
+                    .filter(|flow| flow.packet_count() >= self.min_packets),
             );
             // lock released here
         }
@@ -148,6 +172,22 @@ impl Engine {
 
         log!(MLLog::RunningInference(batch.len()));
 
+        // Feed normalized features into drift detector for each flow in the batch
+        {
+            let config = &self.inference_pipeline.config;
+            let mut dd = self.drift_detector.lock();
+            for flow in batch.iter() {
+                let features = FlowFeatures::extract(flow, &config.ae_feature_names);
+                let normalized: Vec<f64> = features
+                    .features
+                    .iter()
+                    .zip(config.ae_scaler_mean.iter().zip(config.ae_scaler_std.iter()))
+                    .map(|(&val, (&mean, &std))| if std.abs() > 1e-12 { (val - mean) / std } else { 0.0 })
+                    .collect();
+                dd.update(&normalized);
+            }
+        }
+
         let start = Instant::now();
         let results = self.inference_pipeline.infer_batch(batch);
         let elapsed_us = start.elapsed().as_micros() as u64;
@@ -170,8 +210,12 @@ impl Engine {
             let mut aggregator = self.aggregator.lock();
             for result in &results {
                 if result.is_attack {
-                    let should_alert =
-                        aggregator.should_alert(&result.flow_key_raw, result.ae_score, result.threshold);
+                    let should_alert = aggregator.should_alert(
+                        &result.flow_key_raw,
+                        result.ae_score,
+                        result.threshold,
+                        result.attack_type.as_deref(),
+                    );
 
                     if should_alert {
                         log!(MLLog::ThreatDetected(
@@ -190,5 +234,4 @@ impl Engine {
             aggregator.cleanup();
         }
     }
-
 }

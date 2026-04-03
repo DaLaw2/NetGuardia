@@ -28,7 +28,7 @@ loggable! {
         CooldownActive { name: String, source_ip: String } => tracing::Level::DEBUG,
 
         #[error("IP {ip} is in admin whitelist, skipping playbook '{name}'")]
-        WhitelistSkipped { ip: String, name: String } => tracing::Level::INFO,
+        WhitelistSkipped { ip: String, name: String } => tracing::Level::DEBUG,
 
         #[error("Blocked IP {ip} for {ttl_secs}s")]
         IpBlocked { ip: String, ttl_secs: u64 } => tracing::Level::INFO,
@@ -42,11 +42,8 @@ loggable! {
         #[error("Telegram not configured, skipping send_telegram action")]
         TelegramNotConfigured => tracing::Level::DEBUG,
 
-        #[error("Logged at level '{level}'")]
-        ActionLogged { level: String } => tracing::Level::INFO,
-
         #[error("SOAR fallback executed for IP {ip} (no matching playbook)")]
-        FallbackExecuted { ip: String } => tracing::Level::WARN,
+        FallbackExecuted { ip: String } => tracing::Level::INFO,
 
         #[error("SOAR recovery: re-applied {count} active block rules to eBPF")]
         RecoveryComplete { count: usize } => tracing::Level::INFO,
@@ -64,15 +61,36 @@ loggable! {
         RateLimitRestoreFailed { errors: String } => tracing::Level::ERROR,
 
         #[error("[monitor] Action '{action_type}' skipped for IP {source_ip} — enforce mode is not active")]
-        MonitorModeSkipped { action_type: String, source_ip: String } => tracing::Level::INFO,
+        MonitorModeSkipped { action_type: String, source_ip: String } => tracing::Level::DEBUG,
 
         #[error("SOAR event handling failed: {error}")]
         EventHandlingFailed { error: String } => tracing::Level::ERROR,
 
         #[error("TTL sweep: {removed} blocks removed, {skipped} kept (manual ACL conflict)")]
-        TtlSweepComplete { removed: u32, skipped: u32 } => tracing::Level::INFO,
+        TtlSweepComplete { removed: u32, skipped: u32 } => tracing::Level::DEBUG,
 
         #[error("SOAR log action [{level}]: threat from {source_ip} — {attack_type} (confidence: {confidence})")]
-        ActionLog { level: String, source_ip: String, attack_type: String, confidence: String } => tracing::Level::WARN,
+        ActionLog { level: String, source_ip: String, attack_type: String, confidence: String } => tracing::Level::INFO,
+
+        #[error("SOAR cooldown cleanup: {removed} expired entries removed")]
+        CooldownCleanup { removed: u32 } => tracing::Level::DEBUG,
+
+        #[error("Webhook sent to {url} (HTTP {status})")]
+        WebhookSent { url: String, status: u16 } => tracing::Level::INFO,
+
+        #[error("Webhook to {url} failed: {error}")]
+        WebhookFailed { url: String, error: String } => tracing::Level::WARN,
+
+        #[error("Condition '{condition_type}' not met for playbook '{name}' (value: {value})")]
+        ConditionNotMet { condition_type: String, name: String, value: String } => tracing::Level::DEBUG,
+
+        #[error("Frequency condition not met: {count}/{required} in {window_secs}s for playbook '{name}'")]
+        FrequencyNotMet { name: String, count: u64, required: u64, window_secs: u64 } => tracing::Level::DEBUG,
+
+        #[error("Frequency cleanup: {removed} expired entries")]
+        FrequencyCleanup { removed: u32 } => tracing::Level::DEBUG,
+
+        #[error("Invalid operator '{operator}' for condition type '{condition_type}' on playbook '{name}', condition skipped")]
+        InvalidConditionOperator { name: String, condition_type: String, operator: String } => tracing::Level::WARN,
     }
 }

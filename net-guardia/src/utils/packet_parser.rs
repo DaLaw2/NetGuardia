@@ -155,4 +155,3 @@ fn parse_ipv6(packet_data: &[u8], timestamp_us: u64) -> Option<(UserPacket, usiz
 
     Some((packet, payload_start))
 }
-

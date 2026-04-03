@@ -61,12 +61,15 @@ sysinfo = { workspace = true }
 maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
-rusqlite = { workspace = true }
+rusqlite = { version = "0.34", features = ["bundled-sqlcipher"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.27"
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = "0.10"
+aes-gcm = "0.10"
+hkdf = "0.12"
+base64 = { workspace = true }
 sd-notify = "0.4"
 rand = { workspace = true }
 

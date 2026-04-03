@@ -23,6 +23,7 @@ RUN dnf install -y epel-release && \
     nodejs24-npm \
     m4 \
     make pkg-config \
+    openssl-devel \
     && dnf clean all
 
 # Rust toolchain

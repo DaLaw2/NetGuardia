@@ -14,6 +14,8 @@ use crate::adapter::persistence::Database;
 use crate::core::auth::jwt::JwtService;
 use crate::core::auth::password;
 use crate::core::system::System;
+use crate::infrastructure::secret_store::SecretStore;
+use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 use crate::model::log::system::SystemLog;
@@ -41,9 +43,45 @@ use crate::utils::logging::Logging;
 async fn main() -> Result<(), Error> {
     Logging::initialize()?;
 
+    // Handle DB encrypt/decrypt subcommands before full startup
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 {
+        let db_path = std::env::var("NETGUARDIA_DB_PATH").unwrap_or_else(|_| "net-guardia.db".to_string());
+        match args[1].as_str() {
+            "--decrypt-db" => {
+                let key = match std::env::var("NETGUARDIA_DB_KEY") {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => {
+                        eprintln!("Error: NETGUARDIA_DB_KEY must be set for decrypt");
+                        std::process::exit(1);
+                    }
+                };
+                let dest = args.get(2).map(|s| s.as_str()).unwrap_or("net-guardia-decrypted.db");
+                println!("Decrypting {} → {}", db_path, dest);
+                Database::decrypt_to_file(&db_path, &key, dest)?;
+                println!("Done. Decrypted database written to {}", dest);
+                return Ok(());
+            }
+            "--encrypt-db" => {
+                let key = match std::env::var("NETGUARDIA_DB_KEY") {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => {
+                        eprintln!("Error: NETGUARDIA_DB_KEY must be set for encrypt");
+                        std::process::exit(1);
+                    }
+                };
+                let dest = args.get(2).map(|s| s.as_str()).unwrap_or("net-guardia-encrypted.db");
+                println!("Encrypting {} → {}", db_path, dest);
+                Database::encrypt_to_file(&db_path, &key, dest)?;
+                println!("Done. Encrypted database written to {}", dest);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     // Phase 1: Create DB (fast — needed for setup check and setup server)
-    let db_path = std::env::var("NETGUARDIA_DB_PATH")
-        .unwrap_or_else(|_| "net-guardia.db".to_string());
+    let db_path = std::env::var("NETGUARDIA_DB_PATH").unwrap_or_else(|_| "net-guardia.db".to_string());
     let db = Arc::new(Database::new(&db_path)?);
 
     // Seed default admin user if no users exist
@@ -59,20 +97,24 @@ async fn main() -> Result<(), Error> {
         log!(SystemLog::DefaultAdminCreated);
     }
 
-    let setup_complete = db.get_setting("setup_complete")?
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    let setup_complete = db.get_setting("setup_complete")?.map(|v| v == "true").unwrap_or(false);
 
     // Phase 2: If setup not complete, run lightweight setup server immediately
     if !setup_complete {
         log!(SystemLog::SetupMode);
 
-        let jwt_service = Arc::new(JwtService::new(db.as_ref(), 24)?);
+        let secret_store = Arc::new(SecretStore::new(db.clone()));
+        let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
+        let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
         let setup_flag = Arc::new(AtomicBool::new(false));
 
         // Start setup server — returns handle for graceful shutdown
         let handle = infrastructure::http_server::start_setup_server(
-            db.clone(), jwt_service, setup_flag.clone(), 8080,
+            db.clone(),
+            secret_store,
+            jwt_service,
+            setup_flag.clone(),
+            8080,
         )?;
 
         // Wait for setup completion or shutdown signal
@@ -80,7 +122,9 @@ async fn main() -> Result<(), Error> {
         let setup_done = async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if flag.load(Ordering::SeqCst) { return; }
+                if flag.load(Ordering::SeqCst) {
+                    return;
+                }
             }
         };
 
@@ -102,7 +146,29 @@ async fn main() -> Result<(), Error> {
 
     // Phase 3: Full system build and run (setup is complete, DB has config)
     let mut system = System::new(db).await?;
-    system.run().await?;
+    let mode = system.run().await?;
     system.terminate().await?;
+
+    match mode {
+        crate::core::system::ShutdownMode::Restart => {
+            log!(SystemLog::ApiRestart);
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Reloading]);
+            // Drop System to detach eBPF XDP programs before re-exec
+            drop(system);
+            // Brief delay for kernel to release XDP/AF_XDP resources
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Re-exec self — works with or without systemd
+            use std::os::unix::process::CommandExt;
+            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("net-guardia"));
+            let err = std::process::Command::new(exe).args(std::env::args().skip(1)).exec(); // replaces current process
+            // If exec fails, fall through to exit
+            log!(SystemError::UnexpectedError(err));
+            std::process::exit(1);
+        }
+        crate::core::system::ShutdownMode::Shutdown => {
+            log!(SystemLog::ApiShutdown);
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        }
+    }
     Ok(())
 }

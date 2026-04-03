@@ -1,12 +1,14 @@
-use std::sync::atomic::Ordering;
-use actix_web::{web, HttpResponse, Scope};
+use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
+use std::sync::atomic::Ordering;
 
 use macros::log;
 
 use crate::adapter::persistence::Database;
 use crate::core::auth::password;
 use crate::core::auth::setup_guard::SetupCompleteFlag;
+use crate::infrastructure::secret_store::SecretStore;
+use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::error::system::SystemError;
 
 pub fn initialize() -> Scope {
@@ -16,9 +18,7 @@ pub fn initialize() -> Scope {
         .route("/complete", web::post().to(complete_setup))
 }
 
-async fn setup_status(
-    setup_flag: web::Data<SetupCompleteFlag>,
-) -> HttpResponse {
+async fn setup_status(setup_flag: web::Data<SetupCompleteFlag>) -> HttpResponse {
     let complete = setup_flag.load(Ordering::SeqCst);
     HttpResponse::Ok().json(serde_json::json!({
         "setup_complete": complete,
@@ -28,18 +28,16 @@ async fn setup_status(
 async fn list_interfaces() -> HttpResponse {
     // List available network interfaces
     let interfaces: Vec<serde_json::Value> = match std::fs::read_dir("/sys/class/net") {
-        Ok(entries) => {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    serde_json::json!({
-                        "name": name,
-                        "is_loopback": name == "lo",
-                    })
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                serde_json::json!({
+                    "name": name,
+                    "is_loopback": name == "lo",
                 })
-                .collect()
-        }
+            })
+            .collect(),
         Err(_) => Vec::new(),
     };
 
@@ -74,11 +72,14 @@ struct SetupRequest {
 fn is_valid_interface_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 16
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 async fn complete_setup(
     db: web::Data<Database>,
+    secret_store: web::Data<SecretStore>,
     setup_flag: web::Data<SetupCompleteFlag>,
     body: web::Json<SetupRequest>,
 ) -> HttpResponse {
@@ -128,7 +129,7 @@ async fn complete_setup(
     }
 
     // Save configuration to database
-    if let Err(e) = save_config(&db, &body) {
+    if let Err(e) = save_config(&db, secret_store.as_ref(), &body) {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("Failed to save configuration: {}", e)
         }));
@@ -212,7 +213,11 @@ mod tests {
     }
 }
 
-fn save_config(db: &Database, req: &SetupRequest) -> Result<(), crate::model::error::Error> {
+fn save_config(
+    db: &Database,
+    secrets: &dyn SecretStorePort,
+    req: &SetupRequest,
+) -> Result<(), crate::model::error::Error> {
     // Save network config
     db.set_setting("ingress_interface", &req.ingress_interface)?;
     db.set_setting("egress_interface", &req.egress_interface)?;
@@ -221,7 +226,7 @@ fn save_config(db: &Database, req: &SetupRequest) -> Result<(), crate::model::er
         db.set_setting("http_port", &port.to_string())?;
     }
 
-    // Save SMTP config
+    // Save SMTP config (non-secret fields go to settings)
     if let Some(host) = &req.smtp_host {
         db.set_setting("smtp_host", host)?;
     }
@@ -232,18 +237,22 @@ fn save_config(db: &Database, req: &SetupRequest) -> Result<(), crate::model::er
         db.set_setting("smtp_username", user)?;
     }
     if let Some(pass) = &req.smtp_password {
-        db.set_setting("smtp_password", pass)?;
+        // Store password through secret store (encrypted)
+        secrets.set_secret("smtp_password", pass)?;
+        db.set_setting("smtp_password", "__encrypted__")?;
     }
     if let Some(recipient) = &req.smtp_recipient {
         db.set_setting("smtp_recipient", recipient)?;
     }
 
-    // Save Telegram config
+    // Save Telegram config (bot_token through secret store, chat_id in JSON)
     if let (Some(token), Some(chat_id)) = (&req.telegram_bot_token, &req.telegram_chat_id) {
+        secrets.set_secret("telegram_bot_token", token)?;
         let config_json = serde_json::json!({
-            "bot_token": token,
+            "bot_token": "__encrypted__",
             "chat_id": chat_id,
-        }).to_string();
+        })
+        .to_string();
         db.set_notification_config("telegram", &config_json)?;
     }
 

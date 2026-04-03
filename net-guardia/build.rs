@@ -63,8 +63,7 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
 
         // Find bpf-linker once, pass its path to the subprocess explicitly.
         let bpf_linker = find_bpf_linker();
-        let bpf_linker_str = bpf_linker.to_str()
-            .expect("bpf-linker path is not valid UTF-8");
+        let bpf_linker_str = bpf_linker.to_str().expect("bpf-linker path is not valid UTF-8");
 
         let Package { manifest_path, .. } = ebpf_package;
         let ebpf_dir = manifest_path.parent().unwrap();
@@ -211,8 +210,7 @@ fn build_frontend() {
         return;
     }
 
-    let npm = which::which("npm")
-        .unwrap_or_else(|_| panic!("npm not found in PATH. Install Node.js first."));
+    let npm = which::which("npm").unwrap_or_else(|_| panic!("npm not found in PATH. Install Node.js first."));
 
     let status = Command::new(&npm)
         .args(["install", "--include=optional"])
@@ -223,8 +221,7 @@ fn build_frontend() {
         panic!("npm install failed with exit code: {:?}", status.code());
     }
 
-    let npx = which::which("npx")
-        .unwrap_or_else(|_| panic!("npx not found in PATH. Install Node.js first."));
+    let npx = which::which("npx").unwrap_or_else(|_| panic!("npx not found in PATH. Install Node.js first."));
 
     let status = Command::new(&npx)
         .args(["vite", "build"])
@@ -248,7 +245,11 @@ fn build_frontend() {
     emit_rerun_if_changed_recursive(&static_dir);
 }
 
-fn needs_frontend_rebuild(frontend_dir: &std::path::Path, out_dir: &std::path::Path, static_dir: &std::path::Path) -> bool {
+fn needs_frontend_rebuild(
+    frontend_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    static_dir: &std::path::Path,
+) -> bool {
     if !out_dir.exists() || !static_dir.exists() {
         return true;
     }
@@ -264,8 +265,12 @@ fn needs_frontend_rebuild(frontend_dir: &std::path::Path, out_dir: &std::path::P
     };
 
     let essential_items = [
-        "src", "public", "package.json", "vite.config.ts",
-        "tsconfig.json", "package-lock.json",
+        "src",
+        "public",
+        "package.json",
+        "vite.config.ts",
+        "tsconfig.json",
+        "package-lock.json",
     ];
 
     for item_name in essential_items {

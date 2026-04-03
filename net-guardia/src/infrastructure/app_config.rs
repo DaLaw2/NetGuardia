@@ -1,9 +1,7 @@
 use crate::adapter::persistence::Database;
-use crate::model::config::{
-    HttpConfig, InferenceConfig as InfConfig, MiscConfig, NetworkConfig, PipelineConfig,
-};
-use crate::model::error::system::SystemError;
+use crate::model::config::{HttpConfig, InferenceConfig as InfConfig, MiscConfig, NetworkConfig, PipelineConfig};
 use crate::model::error::Error;
+use crate::model::error::system::SystemError;
 
 pub struct AppConfig {
     pub http: HttpConfig,
@@ -55,13 +53,27 @@ impl AppConfig {
             ("inference_interval_secs", "5".into()),
             ("aggregator_window_secs", "30".into()),
             ("inference_batch_size", "200".into()),
-            ("traffic_logging_mode", "true".into()),
+            ("traffic_logging_mode", "false".into()),
             ("traffic_log_csv_path", "traffic_log.csv".into()),
             // Misc
             ("geoip_db_name", "net-guardia/static/geo/dbip-city-lite.mmdb".into()),
             // Pipeline
             ("pipeline_ingress", "access_control,rate_limit,service".into()),
             ("pipeline_egress", "".into()),
+            // SOAR
+            ("soar_max_auto_block_cap", "100".into()),
+            ("soar_max_ttl_secs", "86400".into()),
+            // ML
+            ("ml_drift_window_secs", "3600".into()),
+            // Telegram
+            ("telegram_max_messages_per_minute", "20".into()),
+            // Directories
+            ("report_dir", "/var/lib/netguardia/reports".into()),
+            ("log_dir", "logs".into()),
+            // DNS
+            ("dns_max_domains_per_request", "1000".into()),
+            // HTTPS redirect
+            ("force_https", "false".into()),
         ];
 
         for (key, value) in defaults {
@@ -106,7 +118,7 @@ impl AppConfig {
                 inference_interval_secs: 5,
                 aggregator_window_secs: 30,
                 inference_batch_size: 200,
-                traffic_logging_mode: true,
+                traffic_logging_mode: false,
                 traffic_log_csv_path: "traffic_log.csv".into(),
             },
             misc: MiscConfig {
@@ -133,12 +145,14 @@ impl AppConfig {
 
         // HTTP
         if let Ok(Some(v)) = db.get_setting("http_port")
-            && let Ok(port) = v.parse::<u16>() {
-                config.http.http_server_bind_port = port;
+            && let Ok(port) = v.parse::<u16>()
+        {
+            config.http.http_server_bind_port = port;
         }
         if let Ok(Some(v)) = db.get_setting("jwt_expiry_hours")
-            && let Ok(hours) = v.parse::<u64>() {
-                config.http.jwt_expiry_hours = hours;
+            && let Ok(hours) = v.parse::<u64>()
+        {
+            config.http.jwt_expiry_hours = hours;
         }
         if let Ok(Some(v)) = db.get_setting("cors_allowed_origins") {
             config.http.cors_allowed_origins = if v.is_empty() {
@@ -150,39 +164,87 @@ impl AppConfig {
 
         // XDP tuning
         if let Ok(Some(v)) = db.get_setting("combined_queue_count")
-            && let Ok(n) = v.parse::<u32>() { config.network.combined_queue_count = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.combined_queue_count = n;
+        }
         if let Ok(Some(v)) = db.get_setting("fill_queue_size")
-            && let Ok(n) = v.parse::<u32>() { config.network.fill_queue_size = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.fill_queue_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("comp_queue_size")
-            && let Ok(n) = v.parse::<u32>() { config.network.comp_queue_size = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.comp_queue_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("tx_queue_size")
-            && let Ok(n) = v.parse::<u32>() { config.network.tx_queue_size = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.tx_queue_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("rx_queue_size")
-            && let Ok(n) = v.parse::<u32>() { config.network.rx_queue_size = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.rx_queue_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("frame_size")
-            && let Ok(n) = v.parse::<u32>() { config.network.frame_size = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.frame_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("frame_count")
-            && let Ok(n) = v.parse::<u32>() { config.network.frame_count = n; }
+            && let Ok(n) = v.parse::<u32>()
+        {
+            config.network.frame_count = n;
+        }
 
         // Inference tuning
         if let Ok(Some(v)) = db.get_setting("max_concurrent_flows")
-            && let Ok(n) = v.parse::<usize>() { config.inference.max_concurrent_flows = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.max_concurrent_flows = n;
+        }
         if let Ok(Some(v)) = db.get_setting("min_packets_for_inference")
-            && let Ok(n) = v.parse::<usize>() { config.inference.min_packets_for_inference = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.min_packets_for_inference = n;
+        }
         if let Ok(Some(v)) = db.get_setting("inference_interval_secs")
-            && let Ok(n) = v.parse::<u64>() { config.inference.inference_interval_secs = n; }
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.inference_interval_secs = n;
+        }
         if let Ok(Some(v)) = db.get_setting("aggregator_window_secs")
-            && let Ok(n) = v.parse::<u64>() { config.inference.aggregator_window_secs = n; }
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.aggregator_window_secs = n;
+        }
         if let Ok(Some(v)) = db.get_setting("inference_batch_size")
-            && let Ok(n) = v.parse::<usize>() { config.inference.inference_batch_size = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.inference_batch_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("refresh_interval")
-            && let Ok(n) = v.parse::<u64>() { config.network.refresh_interval = n; }
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.network.refresh_interval = n;
+        }
         if let Ok(Some(v)) = db.get_setting("channel_size")
-            && let Ok(n) = v.parse::<usize>() { config.network.channel_size = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.network.channel_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("packet_buffer_size")
-            && let Ok(n) = v.parse::<usize>() { config.network.packet_buffer_size = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.network.packet_buffer_size = n;
+        }
         if let Ok(Some(v)) = db.get_setting("buffer_pool_capacity")
-            && let Ok(n) = v.parse::<usize>() { config.network.buffer_pool_capacity = n; }
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.network.buffer_pool_capacity = n;
+        }
 
         // Bool settings
         if let Ok(Some(v)) = db.get_setting("traffic_logging_mode") {
@@ -191,15 +253,30 @@ impl AppConfig {
 
         // File path settings
         if let Ok(Some(v)) = db.get_setting("deep_autoencoder_name")
-            && !v.is_empty() { config.inference.deep_autoencoder_name = v; }
+            && !v.is_empty()
+        {
+            config.inference.deep_autoencoder_name = v;
+        }
         if let Ok(Some(v)) = db.get_setting("classifier_name")
-            && !v.is_empty() { config.inference.classifier_name = v; }
+            && !v.is_empty()
+        {
+            config.inference.classifier_name = v;
+        }
         if let Ok(Some(v)) = db.get_setting("models_config_name")
-            && !v.is_empty() { config.inference.models_config_name = v; }
+            && !v.is_empty()
+        {
+            config.inference.models_config_name = v;
+        }
         if let Ok(Some(v)) = db.get_setting("traffic_log_csv_path")
-            && !v.is_empty() { config.inference.traffic_log_csv_path = v; }
+            && !v.is_empty()
+        {
+            config.inference.traffic_log_csv_path = v;
+        }
         if let Ok(Some(v)) = db.get_setting("geoip_db_name")
-            && !v.is_empty() { config.misc.geoip_db_name = v; }
+            && !v.is_empty()
+        {
+            config.misc.geoip_db_name = v;
+        }
 
         // Pipeline (stored as comma-separated)
         if let Ok(Some(v)) = db.get_setting("pipeline_ingress") {
@@ -312,9 +389,18 @@ mod tests {
         let db = test_db();
         AppConfig::seed_defaults(&db).expect("seed should succeed");
         assert_eq!(db.get_setting("http_port").unwrap(), Some("8080".to_string()));
-        assert_eq!(db.get_setting("traffic_logging_mode").unwrap(), Some("true".to_string()));
-        assert_eq!(db.get_setting("pipeline_ingress").unwrap(), Some("access_control,rate_limit,service".to_string()));
-        assert_eq!(db.get_setting("geoip_db_name").unwrap(), Some("net-guardia/static/geo/dbip-city-lite.mmdb".to_string()));
+        assert_eq!(
+            db.get_setting("traffic_logging_mode").unwrap(),
+            Some("false".to_string())
+        );
+        assert_eq!(
+            db.get_setting("pipeline_ingress").unwrap(),
+            Some("access_control,rate_limit,service".to_string())
+        );
+        assert_eq!(
+            db.get_setting("geoip_db_name").unwrap(),
+            Some("net-guardia/static/geo/dbip-city-lite.mmdb".to_string())
+        );
     }
 
     #[test]
@@ -327,8 +413,17 @@ mod tests {
 
     #[test]
     fn db_overrides_traffic_logging_mode() {
+        // Default is false (ML inference enabled). Override to true enables CSV logging only.
         let db = test_db();
-        db.set_setting("traffic_logging_mode", "false").unwrap();
+        db.set_setting("traffic_logging_mode", "true").unwrap();
+        let config = AppConfig::new(&db).unwrap();
+        assert!(config.inference.traffic_logging_mode);
+    }
+
+    #[test]
+    fn default_traffic_logging_mode_is_false() {
+        // ML inference should be enabled by default, not CSV logging
+        let db = test_db();
         let config = AppConfig::new(&db).unwrap();
         assert!(!config.inference.traffic_logging_mode);
     }

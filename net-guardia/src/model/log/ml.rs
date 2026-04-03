@@ -10,13 +10,13 @@ loggable! {
         ConfigLoaded { features: usize, attacks: usize } => tracing::Level::INFO,
 
         #[error("Running inference on {size} flows")]
-        RunningInference { size: usize } => tracing::Level::INFO,
+        RunningInference { size: usize } => tracing::Level::TRACE,
 
         #[error("Inference completed: {total_flows} flows ({anomaly} anomaly, {benign} benign) in {duration_ms}ms ({throughput:.1} flows/s)")]
-        InferenceCompleted { total_flows: usize, anomaly: usize, benign: usize, duration_ms: u32, throughput: f32 } => tracing::Level::INFO,
+        InferenceCompleted { total_flows: usize, anomaly: usize, benign: usize, duration_ms: u32, throughput: f32 } => tracing::Level::TRACE,
 
         #[error("Inference returned fewer results: expected {size}, got {len}")]
-        InferenceResults { size: usize, len: usize } => tracing::Level::WARN,
+        InferenceResults { size: usize, len: usize } => tracing::Level::DEBUG,
 
         #[error("{model} inference failed: {error}")]
         InferenceFailed { model: String, error: String } => tracing::Level::ERROR,
@@ -25,10 +25,10 @@ loggable! {
         ThreatDetected { direction: String, flow: String, attack_type: String, confidence: f32, ae_score: f32 } => tracing::Level::WARN,
 
         #[error("Flow stats: total={total_flows}, qualified={flows_len}, min_packets={min_packets}, packet_counts: {counts}")]
-        FlowStats { total_flows: usize, flows_len: usize, min_packets: usize, counts: String } => tracing::Level::INFO,
+        FlowStats { total_flows: usize, flows_len: usize, min_packets: usize, counts: String } => tracing::Level::TRACE,
 
         #[error("Failed to parse packet (length: {len})")]
-        ParsePacketFailed { len: usize } => tracing::Level::WARN,
+        ParsePacketFailed { len: usize } => tracing::Level::DEBUG,
 
         #[error("Failed to broadcast ML alert: {error}")]
         BroadcastAlertFailed { error: String } => tracing::Level::ERROR,

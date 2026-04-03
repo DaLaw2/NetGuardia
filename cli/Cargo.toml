@@ -9,7 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
-rand = { workspace = true }
+libc = { workspace = true }
 
 [[bin]]
 name = "ng"

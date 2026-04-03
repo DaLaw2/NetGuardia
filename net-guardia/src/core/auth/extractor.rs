@@ -1,4 +1,4 @@
-use std::future::{ready, Ready};
+use std::future::{Ready, ready};
 
 use actix_web::dev::Payload;
 use actix_web::{FromRequest, HttpMessage, HttpRequest};

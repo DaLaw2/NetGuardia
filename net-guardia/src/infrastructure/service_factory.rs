@@ -1,43 +1,49 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 
+use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
-use aya::Ebpf;
 use aya_log::EbpfLogger;
 use common::define::pipeline::*;
 
 use crate::core::auth::jwt::JwtService;
 
+use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
 use crate::adapter::persistence::Database;
+use crate::adapter::telegram::TelegramAdapter;
+use crate::core::acl_service::AclService;
+use crate::core::config_service::ConfigService;
+use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
+use crate::core::email::scheduler::ReportScheduler;
+use crate::core::ml::config_loader::InferenceConfig;
+use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::notification_service::NotificationService;
+use crate::core::playbook_service::PlaybookService;
+use crate::core::rate_limit_service::RateLimitService;
+use crate::core::soar::engine::SoarEngine;
+use crate::core::soar::scheduler::TtlScheduler;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
+use crate::infrastructure::geoip::GeoIpService;
+use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
-use crate::interface::port::repository::RepositoryPort;
-use crate::core::acl_service::AclService;
-use crate::core::config_service::ConfigService;
-use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::notification_service::NotificationService;
-use crate::core::playbook_service::PlaybookService;
-use crate::core::rate_limit_service::RateLimitService;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::notification::AlertNotifier;
-use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
-use crate::adapter::telegram::TelegramAdapter;
-use crate::core::soar::engine::SoarEngine;
-use crate::core::soar::scheduler::TtlScheduler;
-use crate::core::email::scheduler::ReportScheduler;
-use crate::infrastructure::geoip::GeoIpService;
-use crate::core::ml::config_loader::InferenceConfig;
+use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
+use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::soar::SoarPort;
+use crate::model::detection::drift::FeatureBaselines;
 use crate::model::direction::FlowDirection;
+use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::error::Error;
 use crate::model::list_type::ListType;
 use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::system::SystemLog;
@@ -50,6 +56,7 @@ pub struct AppState {
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
+    pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
     pub comm: Arc<CommunicationManager>,
     pub soar_engine: Arc<SoarEngine>,
@@ -61,6 +68,8 @@ pub struct AppState {
     pub notification_service: Arc<NotificationService>,
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
+    pub geoip: Option<Arc<GeoIpService>>,
+    pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
     pub ingress_ebpf: Ebpf,
     pub egress_ebpf: Ebpf,
     /// Held to keep the eBPF program array map FD alive.
@@ -90,10 +99,7 @@ impl ServiceFactory {
         let mut ingress_ebpf = Self::load_ebpf("ingress")?;
         let mut egress_ebpf = Self::load_ebpf("egress")?;
 
-        let ingress_program_array = Self::configure_ingress_pipeline(
-            &mut ingress_ebpf,
-            &app_config.pipeline.ingress,
-        )?;
+        let ingress_program_array = Self::configure_ingress_pipeline(&mut ingress_ebpf, &app_config.pipeline.ingress)?;
 
         let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
@@ -107,7 +113,12 @@ impl ServiceFactory {
             db.set_setting("enforce_mode", "monitor")?;
         }
 
-        let jwt_service = Arc::new(JwtService::new(db.as_ref(), app_config.http.jwt_expiry_hours)?);
+        // Create secret store and run plaintext migration before anything reads secrets
+        let secret_store = Arc::new(SecretStore::new(db.clone()));
+        secret_store.migrate_plaintext_secrets()?;
+        let secret_store_port: Arc<dyn SecretStorePort> = secret_store.clone();
+
+        let jwt_service = Arc::new(JwtService::new(&secret_store_port, app_config.http.jwt_expiry_hours)?);
 
         let ebpf_services = Arc::new(EbpfServices::new(
             app_config.clone(),
@@ -115,22 +126,53 @@ impl ServiceFactory {
             &mut egress_ebpf,
         )?);
 
-        let app_services = Arc::new(AppServices::new(app_config.clone(), inference_config.clone())?);
+        // Initialize ML drift detector from inference config baselines
+        let baselines = FeatureBaselines::from_inference_config(&inference_config);
+        let drift_window_secs: u64 = db
+            .get_setting("ml_drift_window_secs")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+        let drift_detector = Arc::new(parking_lot::Mutex::new(DriftDetector::new(
+            baselines,
+            std::time::Duration::from_secs(drift_window_secs),
+        )));
+
+        let app_services = Arc::new(AppServices::new(
+            app_config.clone(),
+            inference_config.clone(),
+            drift_detector.clone(),
+        )?);
+
+        // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
+        let enforce_level_cache = Arc::new(AtomicU8::new({
+            use crate::infrastructure::enforce_mode_handler::enforce_mode_to_u8;
+            let mode_str = db.get_setting("enforce_mode")?.unwrap_or_default();
+            enforce_mode_to_u8(&mode_str)
+        }));
 
         // Create CommunicationManager and register enforce-mode handler
         let comm = Arc::new(CommunicationManager::new());
-        let enforce_handler = Arc::new(EnforceModeHandler::new(db.clone() as Arc<dyn RepositoryPort>));
-        let _ = comm.clone()
+        let enforce_handler = Arc::new(EnforceModeHandler::new(
+            db.clone() as Arc<dyn RepositoryPort>,
+            comm.clone(),
+            enforce_level_cache.clone(),
+        ));
+        let _ = comm
+            .clone()
             .with_service(enforce_handler)
             .command::<ChangeEnforceModeCommand>()
             .query::<GetEnforceModeQuery>()
             .build();
 
-        // Register ThreatDetectedEvent channel for SOAR
-        comm.register_event_type::<crate::interface::communication::event_types::ThreatDetectedEvent>();
+        // Register event type channels
+        comm.register_event_type::<crate::model::event::ThreatDetectedEvent>();
+        comm.register_event_type::<crate::model::event::DriftDetectedEvent>();
+        comm.register_event_type::<crate::model::event::AuditEvent>();
 
         // Seed default SOAR playbooks if empty
-        db.seed_default_playbooks()?;
+        (db.as_ref() as &dyn SoarPort).seed_default_playbooks()?;
 
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
@@ -139,7 +181,11 @@ impl ServiceFactory {
         Self::restore_acl_rules(&db, &ebpf_services).await;
 
         // Create TelegramAdapter as alert notifier (may fail if not configured yet)
-        let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(db.clone()) {
+        let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(
+            db.clone() as Arc<dyn NotificationConfigPort>,
+            db.clone() as Arc<dyn RepositoryPort>,
+            Some(secret_store_port.clone()),
+        ) {
             Ok(adapter) => Some(Arc::new(adapter)),
             Err(e) => {
                 log!(SystemLog::TelegramUnavailable(e.to_string()));
@@ -160,9 +206,8 @@ impl ServiceFactory {
         };
 
         // Create AccessControlPort adapter for SOAR/TTL (decoupled from eBPF)
-        let access_control_port: Arc<dyn AccessControlPort> = Arc::new(
-            EbpfAccessControlAdapter::new(ebpf_services.access_control.clone())
-        );
+        let access_control_port: Arc<dyn AccessControlPort> =
+            Arc::new(EbpfAccessControlAdapter::new(ebpf_services.access_control.clone()));
 
         // Create SOAR engine
         let soar_engine = Arc::new(SoarEngine::new(
@@ -171,17 +216,16 @@ impl ServiceFactory {
             alert_notifier.clone(),
             geoip.clone(),
             Some(ebpf_services.rate_limit.clone()),
+            enforce_level_cache,
+            Some(secret_store_port.clone()),
         )?);
 
         // Create TTL scheduler
-        let ttl_scheduler = TtlScheduler::new(
-            db.clone(),
-            access_control_port.clone(),
-            soar_engine.clone(),
-        );
+        let ttl_scheduler = TtlScheduler::new(db.clone(), access_control_port.clone(), soar_engine.clone());
 
         // Create Report scheduler
-        let report_scheduler = ReportScheduler::new(db.clone() as Arc<dyn RepositoryPort>);
+        let report_scheduler =
+            ReportScheduler::new(db.clone() as Arc<dyn RepositoryPort>, Some(secret_store_port.clone()));
 
         // Create domain services (Phase 2B)
         let acl_service = Arc::new(AclService::new(
@@ -202,8 +246,14 @@ impl ServiceFactory {
             soar_engine.clone(),
             access_control_port,
         ));
-        let config_service = Arc::new(ConfigService::new(db.clone() as Arc<dyn RepositoryPort>));
-        let notification_service = Arc::new(NotificationService::new(db.clone()));
+        let config_service = Arc::new(
+            ConfigService::new(db.clone() as Arc<dyn RepositoryPort>).with_secret_store(secret_store_port.clone()),
+        );
+        let notification_service = Arc::new(NotificationService::new(
+            db.clone() as Arc<dyn NotificationConfigPort>,
+            db.clone() as Arc<dyn RepositoryPort>,
+            secret_store_port,
+        ));
 
         Ok(AppState {
             app_config,
@@ -211,6 +261,7 @@ impl ServiceFactory {
             ebpf_services,
             app_services,
             db,
+            secret_store,
             jwt_service,
             comm,
             soar_engine,
@@ -222,6 +273,8 @@ impl ServiceFactory {
             notification_service,
             playbook_service,
             rate_limit_service,
+            geoip,
+            drift_detector,
             ingress_ebpf,
             egress_ebpf,
             _ingress_program_array: ingress_program_array,
@@ -239,10 +292,7 @@ impl ServiceFactory {
         Ok(Ebpf::load(bytes).map_err(EbpfError::EbpfNotFound)?)
     }
 
-    fn configure_ingress_pipeline(
-        ebpf: &mut Ebpf,
-        stages: &[String],
-    ) -> Result<ProgramArray<MapData>, Error> {
+    fn configure_ingress_pipeline(ebpf: &mut Ebpf, stages: &[String]) -> Result<ProgramArray<MapData>, Error> {
         let registry = stage_registry();
 
         let entry: &mut Xdp = ebpf
@@ -269,9 +319,7 @@ impl ServiceFactory {
 
         let mut slots: Vec<(u32, u32)> = Vec::new();
         for (i, stage_name) in stages.iter().enumerate() {
-            let (func_name, stage_id) = registry
-                .get(stage_name.as_str())
-                .ok_or(EbpfError::ProgramNotFound)?;
+            let (func_name, stage_id) = registry.get(stage_name.as_str()).ok_or(EbpfError::ProgramNotFound)?;
             let slot = (i + 1) as u32;
             Self::load_program(ebpf, &mut program_array, func_name, slot)?;
             slots.push((*stage_id, slot));
@@ -309,9 +357,7 @@ impl ServiceFactory {
             .map_err(EbpfError::MapOperationError)?;
         program.load().map_err(EbpfError::AttachProgramFailed)?;
         let fd = program.fd().map_err(|_| EbpfError::UnknownError)?;
-        program_array
-            .set(slot, fd, 0)
-            .map_err(EbpfError::MapOperationError)?;
+        program_array.set(slot, fd, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
@@ -391,12 +437,13 @@ impl ServiceFactory {
 
     fn restore_geo_countries(db: &Database, ebpf_services: &EbpfServices) {
         if let Ok(countries) = db.load_geo_countries()
-            && !countries.is_empty() {
-                if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
-                    log!(SystemLog::GeoRestoreFailed(e.to_string()));
-                } else {
-                    log!(SystemLog::GeoCountriesRestored(countries.len()));
-                }
+            && !countries.is_empty()
+        {
+            if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
+                log!(SystemLog::GeoRestoreFailed(e.to_string()));
+            } else {
+                log!(SystemLog::GeoCountriesRestored(countries.len()));
+            }
         }
     }
 
@@ -442,31 +489,43 @@ impl ServiceFactory {
                     }
                 };
                 let result = match ip_version {
-                    4 => {
-                        match ip_address.parse::<Ipv4Addr>() {
-                            Ok(addr) => ebpf_services.access_control.add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)).await,
-                            Err(e) => {
-                                log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
-                                continue;
-                            }
+                    4 => match ip_address.parse::<Ipv4Addr>() {
+                        Ok(addr) => {
+                            ebpf_services
+                                .access_control
+                                .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port))
+                                .await
                         }
-                    }
-                    6 => {
-                        match ip_address.parse::<Ipv6Addr>() {
-                            Ok(addr) => ebpf_services.access_control.add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0)).await,
-                            Err(e) => {
-                                log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));
-                                continue;
-                            }
+                        Err(e) => {
+                            log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
+                            continue;
                         }
-                    }
+                    },
+                    6 => match ip_address.parse::<Ipv6Addr>() {
+                        Ok(addr) => {
+                            ebpf_services
+                                .access_control
+                                .add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0))
+                                .await
+                        }
+                        Err(e) => {
+                            log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));
+                            continue;
+                        }
+                    },
                     other => {
                         log!(SystemLog::AclUnknownIpVersion(*other));
                         continue;
                     }
                 };
                 if let Err(e) = result {
-                    log!(SystemLog::AclRuleRestoreFailed(direction.clone(), list_type.clone(), ip_address.clone(), *port, e.to_string()));
+                    log!(SystemLog::AclRuleRestoreFailed(
+                        direction.clone(),
+                        list_type.clone(),
+                        ip_address.clone(),
+                        *port,
+                        e.to_string()
+                    ));
                 } else {
                     restored += 1;
                 }

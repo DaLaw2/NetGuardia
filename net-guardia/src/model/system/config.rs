@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ml_detection::ClipParams;
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpConfig {
     pub http_server_bind_port: u16,
@@ -15,7 +14,9 @@ pub struct HttpConfig {
     pub cors_allowed_origins: Vec<String>,
 }
 
-fn default_jwt_expiry() -> u64 { 24 }
+fn default_jwt_expiry() -> u64 {
+    24
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NetworkConfig {
@@ -36,8 +37,12 @@ pub struct NetworkConfig {
     pub buffer_pool_capacity: usize,
 }
 
-fn default_packet_buffer_size() -> usize { 2048 }
-fn default_buffer_pool_capacity() -> usize { 1024 }
+fn default_packet_buffer_size() -> usize {
+    2048
+}
+fn default_buffer_pool_capacity() -> usize {
+    1024
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct InferenceConfig {
@@ -60,7 +65,9 @@ pub struct MiscConfig {
     pub database_path: String,
 }
 
-fn default_db_path() -> String { "net-guardia.db".to_string() }
+fn default_db_path() -> String {
+    "net-guardia.db".to_string()
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {

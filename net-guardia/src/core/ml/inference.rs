@@ -4,9 +4,9 @@ use macros::log;
 use tract_onnx::prelude::*;
 
 use super::config_loader::InferenceConfig;
-use super::feature_extractor::FlowFeatures;
 use super::flow_tracker::FlowData;
 use super::model_loader::MLModels;
+use crate::model::detection::flow_features::FlowFeatures;
 use crate::model::log::ml::MLLog;
 use crate::model::ml_detection::DetectionResult;
 
@@ -25,6 +25,21 @@ impl Inference {
     }
 
     pub fn infer_single(&self, flow: &FlowData) -> Option<DetectionResult> {
+        // catch_unwind protects against tract-onnx internal panics on edge-case inputs.
+        // Without this, panic=abort config would kill the entire process.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.infer_single_inner(flow))) {
+            Ok(result) => result,
+            Err(_) => {
+                log!(MLLog::InferenceFailed(
+                    "ONNX".to_string(),
+                    "inference panicked (caught)".to_string(),
+                ));
+                None
+            }
+        }
+    }
+
+    fn infer_single_inner(&self, flow: &FlowData) -> Option<DetectionResult> {
         let ae_features = self.preprocess_ae_features(flow);
 
         let ae_input = Self::vec_to_array2(&ae_features);
@@ -67,6 +82,8 @@ impl Inference {
             confidence,
             ae_score,
             threshold: self.config.ae_threshold,
+            packet_count: flow.packet_count() as u64,
+            flow_duration_us: flow.duration_us(),
         })
     }
 
@@ -96,10 +113,7 @@ impl Inference {
 
     fn run_autoencoder(&self, input: &tract_ndarray::Array2<f32>) -> TractResult<f32> {
         let input_tensor = input.clone().into_tensor();
-        let result = self
-            .models
-            .deep_autoencoder
-            .run(tvec![input_tensor.into()])?;
+        let result = self.models.deep_autoencoder.run(tvec![input_tensor.into()])?;
 
         let output = result[0]
             .to_array_view::<f32>()?

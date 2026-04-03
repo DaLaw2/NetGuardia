@@ -6,15 +6,6 @@ loggable! {
         #[error("Attach XDP program success")]
         AttachProgramSuccess => tracing::Level::INFO,
 
-        #[error("Queue initialization incomplete")]
-        QueueInitIncomplete => tracing::Level::WARN,
-
-        #[error("Queue refill incomplete")]
-        QueueRefillIncomplete => tracing::Level::WARN,
-
-        #[error("No frames submit to queue")]
-        NoFrameSubmit => tracing::Level::WARN,
-
         #[error("Queue pair {queue_id} started successfully")]
         QueuePairStarted { queue_id: u32 } => tracing::Level::INFO,
 
@@ -22,11 +13,11 @@ loggable! {
         XSKShutdown => tracing::Level::INFO,
 
         #[error("Frame pool exhausted! Pending TX: {send_len} packets")]
-        FramePoolExhausted { send_len: usize } => tracing::Level::WARN,
+        FramePoolExhausted { send_len: usize } => tracing::Level::DEBUG,
 
         #[error("No frames available for TX")]
-        NoFramesAvailable => tracing::Level::WARN,
-        
+        NoFramesAvailable => tracing::Level::DEBUG,
+
         #[error("TX wakeup failed: {error}")]
         TXWakeupFailed { error: String } => tracing::Level::WARN,
 
@@ -43,7 +34,7 @@ loggable! {
         ThreadSpawnFailed { thread_name: String, error: String } => tracing::Level::ERROR,
 
         #[error("Forward channel full, dropping packet")]
-        ForwardChannelFull => tracing::Level::WARN,
+        ForwardChannelFull => tracing::Level::DEBUG,
 
         #[error("Forward channel disconnected")]
         ForwardChannelDisconnected => tracing::Level::ERROR,
@@ -52,7 +43,7 @@ loggable! {
         FillQueueIncomplete { produced: usize, expected: usize } => tracing::Level::WARN,
 
         #[error("Invalid packet length exceeds buffer")]
-        InvalidPacketLength => tracing::Level::WARN,
+        InvalidPacketLength => tracing::Level::DEBUG,
 
         #[error("XDP attached to {interface} in native DRV_MODE")]
         XdpAttachedNative { interface: String } => tracing::Level::INFO,

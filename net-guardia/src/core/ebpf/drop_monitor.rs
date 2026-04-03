@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::mem;
+use std::sync::Arc;
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
@@ -9,9 +9,8 @@ use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent as RawDropEvent;
 use parking_lot::Mutex;
 
+use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
 use crate::model::drop_event::{DropCounters, DropEventMessage};
-
-const DROP_CHANNEL_CAPACITY: usize = 100;
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,
@@ -82,8 +81,14 @@ impl Default for DropMonitor {
 fn format_ips(raw: &RawDropEvent) -> (String, String) {
     match raw.ip_version {
         4 => {
-            let src = format!("{}.{}.{}.{}", raw.src_ip[0], raw.src_ip[1], raw.src_ip[2], raw.src_ip[3]);
-            let dst = format!("{}.{}.{}.{}", raw.dst_ip[0], raw.dst_ip[1], raw.dst_ip[2], raw.dst_ip[3]);
+            let src = format!(
+                "{}.{}.{}.{}",
+                raw.src_ip[0], raw.src_ip[1], raw.src_ip[2], raw.src_ip[3]
+            );
+            let dst = format!(
+                "{}.{}.{}.{}",
+                raw.dst_ip[0], raw.dst_ip[1], raw.dst_ip[2], raw.dst_ip[3]
+            );
             (src, dst)
         }
         _ => {
@@ -114,10 +119,7 @@ fn reason_to_str(reason: u8) -> &'static str {
 }
 
 /// Start the ring buffer consumer as a tokio task. Returns a shutdown sender.
-pub async fn start_consumer(
-    ring_buf: RingBuf<MapData>,
-    monitor: Arc<DropMonitor>,
-) -> oneshot::Sender<()> {
+pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor>) -> oneshot::Sender<()> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     tokio::spawn(async move {

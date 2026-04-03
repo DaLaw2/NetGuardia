@@ -46,5 +46,8 @@ traceable! {
 
         #[error("Failed to mark setup as complete: {err}")]
         SetupCompleteFlagFailed => tracing::Level::ERROR,
+
+        #[error("Failed to publish drift detected event")]
+        DriftEventPublishFailed => tracing::Level::WARN,
     }
 }

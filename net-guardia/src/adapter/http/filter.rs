@@ -1,7 +1,7 @@
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
-use actix_web::{web, HttpResponse, Responder, Scope};
+use actix_web::{HttpResponse, Responder, Scope, web};
 use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
@@ -12,8 +12,7 @@ use crate::core::ebpf::protocol_filter::ProtocolFilter;
 fn ok_or_error<T, E: fmt::Display>(result: Result<T, E>) -> HttpResponse {
     match result {
         Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
@@ -30,13 +29,12 @@ struct DnsDomainsPayload {
 }
 
 fn dns_scope() -> Scope {
-    web::scope("/dns")
-        .service(
-            web::scope("/blacklist")
-                .route("", web::get().to(get_dns_blacklist))
-                .route("", web::put().to(add_dns_blacklist))
-                .route("", web::delete().to(remove_dns_blacklist))
-        )
+    web::scope("/dns").service(
+        web::scope("/blacklist")
+            .route("", web::get().to(get_dns_blacklist))
+            .route("", web::put().to(add_dns_blacklist))
+            .route("", web::delete().to(remove_dns_blacklist)),
+    )
 }
 
 async fn get_dns_blacklist(service: web::Data<DnsFilterService>) -> impl Responder {
@@ -50,8 +48,7 @@ async fn add_dns_blacklist(
     let domains = payload.into_inner().domains;
     match service.add_domains(&domains) {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({"added": count})),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
@@ -62,8 +59,7 @@ async fn remove_dns_blacklist(
     let domains = payload.into_inner().domains;
     match service.remove_domains(&domains) {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({"removed": count})),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
@@ -122,22 +118,34 @@ async fn get_ipv6_http_service(service: web::Data<ProtocolFilter>) -> impl Respo
     HttpResponse::Ok().json(service.get_ipv6_http_service().await)
 }
 
-async fn add_ipv4_http_service(payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn add_ipv4_http_service(
+    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     ok_or_error(service.add_ipv4_http_service(addr, methods).await)
 }
 
-async fn add_ipv6_http_service(payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn add_ipv6_http_service(
+    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     ok_or_error(service.add_ipv6_http_service(addr, methods).await)
 }
 
-async fn remove_ipv4_http_service(payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv4_http_service(
+    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     ok_or_error(service.remove_ipv4_http_service(addr, methods).await)
 }
 
-async fn remove_ipv6_http_service(payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv6_http_service(
+    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     let (addr, methods) = payload.into_inner();
     ok_or_error(service.remove_ipv6_http_service(addr, methods).await)
 }
@@ -160,11 +168,17 @@ async fn add_ipv6_ssh_service(ip_addr: web::Json<SocketAddrV6>, service: web::Da
     ok_or_error(service.add_ipv6_ssh_service(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv4_ssh_service(ip_addr: web::Json<SocketAddrV4>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv4_ssh_service(
+    ip_addr: web::Json<SocketAddrV4>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv4_ssh_service(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv6_ssh_service(ip_addr: web::Json<SocketAddrV6>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv6_ssh_service(
+    ip_addr: web::Json<SocketAddrV6>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv6_ssh_service(ip_addr.into_inner()).await)
 }
 
@@ -198,11 +212,17 @@ async fn add_ipv6_ssh_white_list(ip_addr: web::Json<Ipv6Addr>, service: web::Dat
     ok_or_error(service.add_ipv6_ssh_white_list(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv4_ssh_white_list(ip_addr: web::Json<Ipv4Addr>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv4_ssh_white_list(
+    ip_addr: web::Json<Ipv4Addr>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv4_ssh_white_list(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv6_ssh_white_list(ip_addr: web::Json<Ipv6Addr>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv6_ssh_white_list(
+    ip_addr: web::Json<Ipv6Addr>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv6_ssh_white_list(ip_addr.into_inner()).await)
 }
 
@@ -224,10 +244,16 @@ async fn add_ipv6_ssh_black_list(ip_addr: web::Json<Ipv6Addr>, service: web::Dat
     ok_or_error(service.add_ipv6_ssh_black_list(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv4_ssh_black_list(ip_addr: web::Json<Ipv4Addr>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv4_ssh_black_list(
+    ip_addr: web::Json<Ipv4Addr>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv4_ssh_black_list(ip_addr.into_inner()).await)
 }
 
-async fn remove_ipv6_ssh_black_list(ip_addr: web::Json<Ipv6Addr>, service: web::Data<ProtocolFilter>) -> impl Responder {
+async fn remove_ipv6_ssh_black_list(
+    ip_addr: web::Json<Ipv6Addr>,
+    service: web::Data<ProtocolFilter>,
+) -> impl Responder {
     ok_or_error(service.remove_ipv6_ssh_black_list(ip_addr.into_inner()).await)
 }

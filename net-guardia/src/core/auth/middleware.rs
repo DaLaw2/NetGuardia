@@ -1,15 +1,16 @@
-use std::future::{ready, Future, Ready};
+use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
-use actix_web::{web, Error as ActixError, HttpMessage, HttpResponse};
+use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 
 use macros::log;
 
-use crate::adapter::persistence::Database;
 use crate::core::auth::jwt::JwtService;
+use crate::interface::port::api_key::ApiKeyPort;
+use crate::interface::port::repository::RepositoryPort;
 use crate::model::error::auth::AuthError;
 
 pub struct AuthMiddleware;
@@ -64,7 +65,9 @@ fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<S
     } else if path.starts_with("/api/soar/")
         || path.starts_with("/api/notifications/")
         || path.starts_with("/api/report/")
-        || path.starts_with("/api/mcp/")
+        || path.starts_with("/api/api-keys/")
+        || path.starts_with("/api/logs/")
+        || path.starts_with("/api/audit/")
     {
         "system"
     } else {
@@ -88,10 +91,7 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(
-        &self,
-        ctx: &mut core::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
@@ -102,10 +102,7 @@ where
             let path = req.path().to_string();
 
             // Skip auth for public endpoints
-            if path == "/api/auth/login"
-                || path.starts_with("/api/setup/")
-                || !path.starts_with("/api/")
-            {
+            if path == "/api/auth/login" || path.starts_with("/api/setup/") || !path.starts_with("/api/") {
                 let res = service.call(req).await?.map_into_left_body();
                 return Ok(res);
             }
@@ -114,8 +111,8 @@ where
             let jwt_service = match req.app_data::<web::Data<JwtService>>() {
                 Some(s) => s.clone(),
                 None => {
-                    let resp = HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": "Auth not configured"}));
+                    let resp =
+                        HttpResponse::InternalServerError().json(serde_json::json!({"error": "Auth not configured"}));
                     return Ok(req.into_response(resp).map_into_right_body());
                 }
             };
@@ -135,43 +132,53 @@ where
                 match jwt_service.validate_token(token) {
                     Ok(c) => c,
                     Err(_) => {
-                        let resp = HttpResponse::Unauthorized()
-                            .json(serde_json::json!({"error": "Invalid or expired token"}));
+                        let resp =
+                            HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid or expired token"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 }
             } else if let Some(api_key_header) = req.headers().get("X-API-Key") {
-                // MCP API key auth with rate limiting
+                // API key auth with rate limiting
                 let api_key = api_key_header.to_str().unwrap_or("");
-                let db = match req.app_data::<web::Data<Database>>() {
+                let api_key_port = match req.app_data::<web::Data<dyn ApiKeyPort>>() {
                     Some(d) => d.clone(),
                     None => {
                         let resp = HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "Database not configured"}));
+                            .json(serde_json::json!({"error": "ApiKeyPort not configured"}));
+                        return Ok(req.into_response(resp).map_into_right_body());
+                    }
+                };
+                let repo = match req.app_data::<web::Data<dyn RepositoryPort>>() {
+                    Some(d) => d.clone(),
+                    None => {
+                        let resp = HttpResponse::InternalServerError()
+                            .json(serde_json::json!({"error": "RepositoryPort not configured"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 };
 
                 // Rate limit check for API key attempts (reuse login failure tracking)
-                let rate_key = format!("apikey:{}", req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default());
-                if let Ok(Some(remaining)) = db.check_login_locked(&rate_key) {
-                    let resp = HttpResponse::TooManyRequests()
-                        .json(serde_json::json!({
-                            "error": "Too many failed API key attempts",
-                            "retry_after_secs": remaining,
-                        }));
+                let rate_key = format!(
+                    "apikey:{}",
+                    req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default()
+                );
+                if let Ok(Some(remaining)) = repo.check_login_locked(&rate_key) {
+                    let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
+                        "error": "Too many failed API key attempts",
+                        "retry_after_secs": remaining,
+                    }));
                     return Ok(req.into_response(resp).map_into_right_body());
                 }
 
-                match db.validate_api_key(api_key) {
+                match api_key_port.validate_api_key(api_key) {
                     Ok(Some(key_claims)) => {
-                        if let Err(e) = db.clear_login_failures(&rate_key) {
+                        if let Err(e) = repo.clear_login_failures(&rate_key) {
                             log!(AuthError::LoginClearError(e));
                         }
                         key_claims
                     }
                     Ok(None) => {
-                        if let Err(e) = db.record_login_failure(&rate_key) {
+                        if let Err(e) = repo.record_login_failure(&rate_key) {
                             log!(AuthError::LoginFailureTrackingError(e));
                         }
                         let resp = HttpResponse::Unauthorized()
@@ -185,8 +192,8 @@ where
                     }
                 }
             } else {
-                let resp = HttpResponse::Unauthorized()
-                    .json(serde_json::json!({"error": "Missing authorization header"}));
+                let resp =
+                    HttpResponse::Unauthorized().json(serde_json::json!({"error": "Missing authorization header"}));
                 return Ok(req.into_response(resp).map_into_right_body());
             };
 
@@ -194,8 +201,7 @@ where
             if let Some(required) = required_permission(&path, req.method())
                 && !claims.permissions.contains(&required)
             {
-                let resp = HttpResponse::Forbidden()
-                    .json(serde_json::json!({"error": "Insufficient permissions"}));
+                let resp = HttpResponse::Forbidden().json(serde_json::json!({"error": "Insufficient permissions"}));
                 return Ok(req.into_response(resp).map_into_right_body());
             }
 

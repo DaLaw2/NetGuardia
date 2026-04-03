@@ -1,9 +1,11 @@
-use jsonwebtoken::{decode, encode, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use std::sync::Arc;
 
-use crate::interface::port::repository::RepositoryPort;
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode, errors::ErrorKind};
+
+use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::auth::Claims;
-use crate::model::error::auth::AuthError;
 use crate::model::error::Error;
+use crate::model::error::auth::AuthError;
 
 pub struct JwtService {
     encoding_key: EncodingKey,
@@ -12,13 +14,13 @@ pub struct JwtService {
 }
 
 impl JwtService {
-    pub fn new(db: &dyn RepositoryPort, expiry_hours: u64) -> Result<Self, Error> {
-        let raw_bytes = match db.get_setting("jwt_secret")? {
+    pub fn new(secrets: &Arc<dyn SecretStorePort>, expiry_hours: u64) -> Result<Self, Error> {
+        let raw_bytes = match secrets.get_secret("jwt_secret")? {
             Some(hex_str) => hex_decode(&hex_str).map_err(|_| AuthError::InvalidToken)?,
             None => {
                 use rand::Rng;
                 let secret: [u8; 32] = rand::rng().random();
-                db.set_setting("jwt_secret", &hex_encode(&secret))?;
+                secrets.set_secret("jwt_secret", &hex_encode(&secret))?;
                 secret.to_vec()
             }
         };
@@ -30,10 +32,16 @@ impl JwtService {
         })
     }
 
-    pub fn create_token(&self, user_id: i64, username: &str, role: &str, permissions: Vec<String>) -> Result<String, Error> {
+    pub fn create_token(
+        &self,
+        user_id: i64,
+        username: &str,
+        role: &str,
+        permissions: Vec<String>,
+    ) -> Result<String, Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::ZERO)
             .as_secs();
 
         let claims = Claims {
@@ -44,13 +52,12 @@ impl JwtService {
             exp: (now + self.expiry_hours * 3600) as usize,
         };
 
-        encode(&Header::default(), &claims, &self.encoding_key)
-            .map_err(|_| AuthError::InvalidToken.into())
+        encode(&Header::default(), &claims, &self.encoding_key).map_err(|_| AuthError::InvalidToken.into())
     }
 
     pub fn validate_token(&self, token: &str) -> Result<Claims, Error> {
-        let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::new(Algorithm::HS256))
-            .map_err(|e| {
+        let token_data =
+            decode::<Claims>(token, &self.decoding_key, &Validation::new(Algorithm::HS256)).map_err(|e| {
                 match e.kind() {
                     ErrorKind::ExpiredSignature => Error::from(AuthError::TokenExpired),
                     _ => Error::from(AuthError::InvalidToken),
@@ -83,10 +90,12 @@ fn hex_decode(hex: &str) -> Result<Vec<u8>, &'static str> {
 mod tests {
     use super::*;
     use crate::adapter::persistence::Database;
+    use crate::infrastructure::secret_store::SecretStore;
 
     fn test_jwt_service() -> JwtService {
-        let db = Database::new(":memory:").unwrap();
-        JwtService::new(&db, 24).unwrap()
+        let db = Arc::new(Database::new(":memory:").unwrap());
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
+        JwtService::new(&secrets, 24).unwrap()
     }
 
     #[test]
@@ -110,8 +119,9 @@ mod tests {
 
     #[test]
     fn test_expired_token() {
-        let db = Database::new(":memory:").unwrap();
-        let jwt = JwtService::new(&db, 0).unwrap(); // 0 hours = immediate expiry
+        let db = Arc::new(Database::new(":memory:").unwrap());
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
+        let jwt = JwtService::new(&secrets, 0).unwrap(); // 0 hours = immediate expiry
 
         // Create token with 0 hour expiry — it expires in the past
         let claims = Claims {
@@ -128,14 +138,15 @@ mod tests {
 
     #[test]
     fn test_jwt_secret_persistence() {
-        let db = Database::new(":memory:").unwrap();
+        let db = Arc::new(Database::new(":memory:").unwrap());
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
 
         // First creation generates and stores secret
-        let jwt1 = JwtService::new(&db, 24).unwrap();
+        let jwt1 = JwtService::new(&secrets, 24).unwrap();
         let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
 
         // Second creation reuses stored secret
-        let jwt2 = JwtService::new(&db, 24).unwrap();
+        let jwt2 = JwtService::new(&secrets, 24).unwrap();
         let claims = jwt2.validate_token(&token).unwrap();
         assert_eq!(claims.username, "admin");
     }

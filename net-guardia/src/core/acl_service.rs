@@ -20,12 +20,12 @@ pub struct AclService {
 }
 
 impl AclService {
-    pub fn new(
-        db: Arc<dyn RepositoryPort>,
-        access_control: Arc<AccessControl>,
-        geo_block: Arc<GeoBlock>,
-    ) -> Self {
-        Self { db, access_control, geo_block }
+    pub fn new(db: Arc<dyn RepositoryPort>, access_control: Arc<AccessControl>, geo_block: Arc<GeoBlock>) -> Self {
+        Self {
+            db,
+            access_control,
+            geo_block,
+        }
     }
 
     pub async fn add_ipv4(
@@ -42,7 +42,11 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self.access_control.remove_ipv4_list(direction, list_type, address).await {
+            if let Err(rollback_err) = self
+                .access_control
+                .remove_ipv4_list(direction, list_type, address)
+                .await
+            {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
@@ -64,7 +68,11 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self.access_control.remove_ipv6_list(direction, list_type, address).await {
+            if let Err(rollback_err) = self
+                .access_control
+                .remove_ipv6_list(direction, list_type, address)
+                .await
+            {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
@@ -78,7 +86,9 @@ impl AclService {
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error> {
-        self.access_control.remove_ipv4_list(direction, list_type, address).await?;
+        self.access_control
+            .remove_ipv4_list(direction, list_type, address)
+            .await?;
         if let Err(e) = self.db.delete_acl_rule(
             4,
             direction_str(direction),
@@ -100,7 +110,9 @@ impl AclService {
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error> {
-        self.access_control.remove_ipv6_list(direction, list_type, address).await?;
+        self.access_control
+            .remove_ipv6_list(direction, list_type, address)
+            .await?;
         if let Err(e) = self.db.delete_acl_rule(
             6,
             direction_str(direction),

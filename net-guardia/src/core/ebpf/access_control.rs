@@ -8,8 +8,8 @@ use common::model::port_rule::PortRule;
 use tokio::sync::RwLock;
 
 use crate::model::direction::FlowDirection;
-use crate::model::error::ebpf::EbpfError;
 use crate::model::error::Error;
+use crate::model::error::ebpf::EbpfError;
 use crate::model::ip_address::NativeConvert;
 use crate::model::list_type::ListType;
 
@@ -165,9 +165,7 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
             Err(EbpfError::RuleReachLimit)?;
         }
 
-        self.map
-            .insert(ip, rule, 0)
-            .map_err(EbpfError::MapOperationError)?;
+        self.map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
@@ -189,9 +187,7 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
         if rule.is_empty() {
             self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
         } else {
-            self.map
-                .insert(ip, rule, 0)
-                .map_err(EbpfError::MapOperationError)?;
+            self.map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
         }
         Ok(())
     }

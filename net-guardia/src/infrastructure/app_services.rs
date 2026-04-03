@@ -5,20 +5,21 @@ use crossbeam::queue::SegQueue;
 use macros::log;
 use tokio::sync::oneshot;
 
+use crate::core::ml::alert::MLAlert;
+use crate::core::ml::config_loader::InferenceConfig;
+use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::engine::Engine;
+use crate::core::ml::model_loader::MLModels;
+use crate::core::ml::traffic_logger::TrafficLogger;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::health::SystemHealth;
-use crate::core::ml::alert::MLAlert;
 use crate::infrastructure::statistics::FlowStatistics;
-use crate::core::ml::config_loader::InferenceConfig;
-use crate::core::ml::engine::Engine;
-use crate::model::ml_detection::EngineConfig;
-use crate::core::ml::feature_extractor::FlowFeatures;
-use crate::core::ml::model_loader::MLModels;
+use crate::model::detection::flow_features::FlowFeatures;
+use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 use crate::model::error::system::SystemError;
-use crate::model::error::Error;
 use crate::model::log::system::SystemLog;
-use crate::core::ml::traffic_logger::TrafficLogger;
+use crate::model::ml_detection::EngineConfig;
 
 /// Application-level service orchestrator.
 /// Holds all runtime services (health monitoring, ML inference, flow statistics)
@@ -33,7 +34,11 @@ pub struct AppServices {
 }
 
 impl AppServices {
-    pub fn new(app_config: Arc<AppConfig>, inference_config: Arc<InferenceConfig>) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<AppConfig>,
+        inference_config: Arc<InferenceConfig>,
+        drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+    ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone())?;
 
         let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
@@ -63,6 +68,7 @@ impl AppServices {
             ml_models.clone(),
             inference_config.clone(),
             ml_alert.clone(),
+            drift_detector,
             engine_config,
             traffic_logger,
             app_config.network.combined_queue_count,

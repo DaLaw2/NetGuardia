@@ -1,33 +1,69 @@
 use std::sync::Arc;
 
-use aya::maps::{MapData, ProgramArray};
 use aya::Ebpf;
+use aya::maps::{MapData, ProgramArray};
 use macros::log;
 
+use crate::adapter::persistence::Database;
 use crate::core::acl_service::AclService;
 use crate::core::auth::jwt::JwtService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
+use crate::core::ebpf::EbpfServices;
+use crate::core::email::scheduler::ReportScheduler;
+use crate::core::ml::config_loader::InferenceConfig;
+use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
-use crate::adapter::persistence::Database;
-use crate::core::ebpf::EbpfServices;
-use crate::infrastructure::app_config::AppConfig;
-use crate::infrastructure::app_services::AppServices;
-use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::core::ml::config_loader::InferenceConfig;
-use crate::infrastructure::http_server::HttpServerParams;
-use crate::infrastructure::service_factory::ServiceFactory;
-use crate::core::email::scheduler::ReportScheduler;
 use crate::core::soar::engine::SoarEngine;
 use crate::core::soar::scheduler::TtlScheduler;
-use crate::interface::communication::event_types::ThreatDetectedEvent;
+use crate::infrastructure::app_config::AppConfig;
+use crate::infrastructure::app_services::AppServices;
+use crate::infrastructure::audit_logger::AuditLogger;
+use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::geoip::GeoIpService;
+use crate::infrastructure::http_server::HttpServerParams;
+use crate::infrastructure::secret_store::SecretStore;
+use crate::infrastructure::service_factory::ServiceFactory;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
+use crate::model::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
+use crate::model::log::detection::DetectionLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::model::ml_detection::AlertMessage;
+use crate::model::system::readiness::ReadinessState;
+
+/// API-triggered shutdown mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownMode {
+    Shutdown,
+    Restart,
+}
+
+/// Handle for triggering shutdown from HTTP endpoints.
+/// Uses a parking_lot::Mutex<Option<oneshot::Sender>> so it can be shared as app_data.
+pub struct ShutdownHandle {
+    tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<ShutdownMode>>>,
+}
+
+impl ShutdownHandle {
+    fn new(tx: tokio::sync::oneshot::Sender<ShutdownMode>) -> Self {
+        Self {
+            tx: parking_lot::Mutex::new(Some(tx)),
+        }
+    }
+
+    /// Trigger shutdown. Returns false if already triggered.
+    pub fn trigger(&self, mode: ShutdownMode) -> bool {
+        if let Some(tx) = self.tx.lock().take() {
+            tx.send(mode).is_ok()
+        } else {
+            false
+        }
+    }
+}
 
 /// Orchestrates system lifecycle: startup ordering and shutdown.
 /// Construction is delegated to `ServiceFactory::build()`.
@@ -38,6 +74,7 @@ pub struct System {
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
+    pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
     pub comm: Arc<CommunicationManager>,
     pub soar_engine: Arc<SoarEngine>,
@@ -51,6 +88,9 @@ pub struct System {
     pub notification_service: Arc<NotificationService>,
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
+    pub geoip: Option<Arc<GeoIpService>>,
+    pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+    pub shutdown_handle: Option<Arc<ShutdownHandle>>,
     _ingress_program_array: ProgramArray<MapData>,
 }
 
@@ -64,6 +104,7 @@ impl System {
             ebpf_services: state.ebpf_services,
             app_services: state.app_services,
             db: state.db,
+            secret_store: state.secret_store,
             jwt_service: state.jwt_service,
             comm: state.comm,
             soar_engine: state.soar_engine,
@@ -77,12 +118,16 @@ impl System {
             notification_service: state.notification_service,
             playbook_service: state.playbook_service,
             rate_limit_service: state.rate_limit_service,
+            geoip: state.geoip,
+            drift_detector: state.drift_detector,
+            shutdown_handle: None,
             _ingress_program_array: state._ingress_program_array,
         })
     }
 
     /// Start all services and HTTP server. Setup is already complete at this point.
-    pub async fn run(&mut self) -> Result<(), Error> {
+    /// Returns the shutdown mode requested (Shutdown or Restart).
+    pub async fn run(&mut self) -> Result<ShutdownMode, Error> {
         log!(SystemLog::Initializing);
 
         log!(MLLog::ModelsLoaded(
@@ -122,15 +167,90 @@ impl System {
             report.run();
         }
 
+        // Start audit logger (subscribe to AuditEvent + DriftDetectedEvent, persist to DB)
+        let audit_logger = Arc::new(AuditLogger::new(
+            self.db.clone() as Arc<dyn crate::interface::port::audit::AuditPort>
+        ));
+        audit_logger.start(&self.comm);
+
         // Start stats aggregator (writes weekly_* settings for Report engine)
-        let stats_aggregator = crate::core::stats_aggregator::StatsAggregator::new(self.db.clone());
+        let stats_aggregator = crate::core::stats_aggregator::StatsAggregator::new(
+            self.db.clone() as Arc<dyn crate::interface::port::stats::StatsPort>,
+            self.db.clone() as Arc<dyn crate::interface::port::repository::RepositoryPort>,
+        );
         stats_aggregator.start();
 
-        // Bridge ML alerts → SOAR
-        let comm_for_bridge = self.comm.clone();
+        // Start drift detection background task
+        {
+            let drift_detector = self.drift_detector.clone();
+            let comm_drift = self.comm.clone();
+            tokio::spawn(async move {
+                Self::run_drift_monitor(drift_detector, comm_drift).await;
+            });
+        }
+
+        // Start detection orchestrator (dedup + enrichment + source attribution)
+        let (detection_tx, detection_rx) = tokio::sync::mpsc::channel::<DetectionEvent>(1024);
+        let orchestrator = crate::core::detection::orchestrator::DetectionOrchestrator::new(
+            detection_rx,
+            self.comm.clone(),
+            self.geoip.clone(),
+        );
+        orchestrator.start();
+
+        // Clone detection_tx for correlation engine and beaconing detector
+        let correlation_detection_tx = detection_tx.clone();
+        let beaconing_detection_tx = detection_tx.clone();
+
+        // Start cross-flow correlation engine (botnet, scan, lateral movement detection)
+        let correlation_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
+        let correlation_engine =
+            crate::core::correlation::engine::CorrelationEngine::new(correlation_alert_rx, correlation_detection_tx);
+        correlation_engine.start();
+
+        // Start temporal beaconing detector (CV-based C2 periodicity detection)
+        let beaconing_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
+        let beaconing_detector =
+            crate::core::detection::beaconing::BeaconingDetector::new(beaconing_alert_rx, beaconing_detection_tx);
+        beaconing_detector.start();
+
+        // Bridge ML alerts → DetectionEvent (thin adapter, no enrichment)
         tokio::spawn(async move {
-            Self::bridge_ml_to_soar(ml_alert_rx, comm_for_bridge).await;
+            Self::bridge_ml_to_detection(ml_alert_rx, detection_tx).await;
         });
+
+        // Initialize force_https flag from DB setting
+        let force_https = Arc::new(std::sync::atomic::AtomicBool::new(
+            self.db
+                .get_setting("force_https")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false),
+        ));
+
+        // Build per-subsystem readiness flags for /health/ready
+        let readiness_state = Arc::new(ReadinessState::new());
+        // DB is connected (System::new succeeded), ML models loaded (AppServices::new succeeded)
+        readiness_state
+            .db_connected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        readiness_state
+            .ml_model_loaded
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // eBPF was attached above (self.attach_ebpf succeeded)
+        readiness_state
+            .ebpf_attached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // SOAR engine started above (self.soar_engine.start succeeded)
+        readiness_state
+            .soar_engine_running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Create shutdown channel for API-triggered shutdown/restart
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<ShutdownMode>();
+        let shutdown_handle = Arc::new(ShutdownHandle::new(shutdown_tx));
+        self.shutdown_handle = Some(shutdown_handle.clone());
 
         // Start HTTP server in background (!Send, use actix::spawn)
         let setup_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -142,16 +262,20 @@ impl System {
             ebpf_services: self.ebpf_services.clone(),
             app_services: self.app_services.clone(),
             db: self.db.clone(),
+            secret_store: self.secret_store.clone(),
             jwt_service: self.jwt_service.clone(),
             comm: self.comm.clone(),
             setup_complete: setup_flag,
             ready: ready_flag,
+            readiness_state,
             acl_service: self.acl_service.clone(),
             config_service: self.config_service.clone(),
             dns_filter_service: self.dns_filter_service.clone(),
             notification_service: self.notification_service.clone(),
             playbook_service: self.playbook_service.clone(),
             rate_limit_service: self.rate_limit_service.clone(),
+            force_https,
+            shutdown_handle: shutdown_handle.clone(),
         };
         let ready_for_http = ready_flag_for_set.clone();
         actix::spawn(async move {
@@ -187,9 +311,15 @@ impl System {
             }
         }
 
-        // Wait for shutdown signal
-        tokio::signal::ctrl_c().await.ok();
-        Ok(())
+        // Wait for shutdown signal (ctrl-c OR API-triggered)
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                Ok(ShutdownMode::Shutdown)
+            }
+            mode = shutdown_rx => {
+                Ok(mode.unwrap_or(ShutdownMode::Shutdown))
+            }
+        }
     }
 
     pub async fn terminate(&self) -> Result<(), Error> {
@@ -211,37 +341,69 @@ impl System {
             "Exploitation" => "threat_detected".to_string(),
             "Reconnaissance" => "port_scan".to_string(),
             other => {
-                log!(SystemLog::UnknownMlAttackType(other.to_string()));
+                log!(DetectionLog::UnknownMlAttackType(other.to_string()));
                 "threat_detected".to_string()
             }
         }
     }
 
-    async fn bridge_ml_to_soar(
-        mut rx: tokio::sync::broadcast::Receiver<AlertMessage>,
+    /// Periodically check the drift detector and publish DriftDetectedEvent when drift is found.
+    async fn run_drift_monitor(
+        drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
         comm: Arc<CommunicationManager>,
     ) {
-        log!(SystemLog::MlSoarBridgeStarted);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let report = drift_detector.lock().check_drift();
+            if let Some(report) = report {
+                log!(SystemLog::DriftDetected(
+                    report.drifted_features.len(),
+                    report.max_deviation
+                ));
+                let event = DriftDetectedEvent {
+                    drifted_features: report.drifted_features,
+                    max_deviation: report.max_deviation,
+                };
+                if let Err(e) = comm.publish_event(event).await {
+                    log!(SystemError::DriftEventPublishFailed(e));
+                }
+            }
+        }
+    }
+
+    /// Thin ML bridge: converts AlertMessage → DetectionEvent and sends to orchestrator.
+    /// Enrichment (GeoIP, hit count, repeat offender) is handled by the DetectionOrchestrator.
+    async fn bridge_ml_to_detection(
+        mut rx: tokio::sync::broadcast::Receiver<AlertMessage>,
+        tx: tokio::sync::mpsc::Sender<DetectionEvent>,
+    ) {
+        log!(DetectionLog::MlBridgeStarted);
+
         loop {
             match rx.recv().await {
                 Ok(alert) => {
-                    let event = ThreatDetectedEvent {
+                    let event = DetectionEvent {
+                        source: DetectionSource::ML,
                         attack_type: Self::normalize_attack_type(
                             &alert.attack_type.unwrap_or_else(|| "unknown".into()),
                         ),
                         confidence: alert.confidence,
                         source_ip: alert.src_ip,
                         dest_ip: alert.dst_ip,
+                        protocol: alert.protocol,
+                        packet_count: alert.packet_count,
+                        flow_duration_us: alert.flow_duration_us,
                     };
-                    if let Err(e) = comm.publish_event(event).await {
-                        log!(SystemError::MlSoarBridgeFailed(e));
+                    if tx.send(event).await.is_err() {
+                        break; // Orchestrator dropped
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    log!(SystemLog::MlSoarBridgeLagged(n));
+                    log!(DetectionLog::MlBridgeLagged(n));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    log!(SystemLog::MlAlertChannelClosed);
+                    log!(DetectionLog::MlAlertChannelClosed);
                     break;
                 }
             }

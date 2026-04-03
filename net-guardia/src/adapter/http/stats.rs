@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder, Scope};
+use actix_web::{HttpResponse, Responder, Scope, web};
 
 use crate::core::ebpf::drop_monitor::DropMonitor;
 use crate::infrastructure::statistics::FlowStatistics;
@@ -15,10 +15,7 @@ async fn get_all_flows(stats: web::Data<FlowStatistics>) -> impl Responder {
     HttpResponse::Ok().json(stats.get_all_flows())
 }
 
-async fn get_top_flows(
-    stats: web::Data<FlowStatistics>,
-    path: web::Path<usize>,
-) -> impl Responder {
+async fn get_top_flows(stats: web::Data<FlowStatistics>, path: web::Path<usize>) -> impl Responder {
     let n = path.into_inner();
     HttpResponse::Ok().json(stats.get_top_flows(n))
 }

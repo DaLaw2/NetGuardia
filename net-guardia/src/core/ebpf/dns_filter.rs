@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use common::model::dns_name::DnsName;
 use parking_lot::RwLock;
 
-use crate::model::error::misc::MiscError;
 use crate::model::error::Error;
+use crate::model::error::misc::MiscError;
 
 pub struct DnsFilter {
     blacklist: RwLock<HashSet<DnsName>>,
@@ -30,11 +30,7 @@ impl DnsFilter {
     }
 
     pub fn list_domains(&self) -> Vec<String> {
-        self.blacklist
-            .read()
-            .iter()
-            .filter_map(wire_format_to_domain)
-            .collect()
+        self.blacklist.read().iter().filter_map(wire_format_to_domain).collect()
     }
 
     /// Check if a DNS query name (in wire format) or any of its parent domains is blacklisted.
@@ -67,8 +63,7 @@ impl DnsFilter {
 
             let mut parent = DnsName::zeroed();
             let remaining = name_len - offset;
-            parent.data[..remaining.min(128)]
-                .copy_from_slice(&name.data[offset..offset + remaining.min(128)]);
+            parent.data[..remaining.min(128)].copy_from_slice(&name.data[offset..offset + remaining.min(128)]);
             if bl.contains(&parent) {
                 return true;
             }

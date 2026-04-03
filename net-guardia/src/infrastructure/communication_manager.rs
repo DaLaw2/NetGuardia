@@ -2,15 +2,13 @@ use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;
 use crate::interface::communication::query::*;
-use crate::model::error::misc::MiscError;
+use crate::model::config::constants::DEFAULT_EVENT_CHANNEL_CAPACITY;
 use crate::model::error::Error;
+use crate::model::error::misc::MiscError;
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-
-/// Default broadcast channel capacity for event types.
-const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Inline TypedEventBroadcaster (adapted from MirrorSphere's model).
 pub struct TypedEventBroadcaster<E: Event> {
@@ -44,28 +42,20 @@ impl CommunicationManager {
             command_handlers: DashMap::new(),
             query_handlers: DashMap::new(),
             event_broadcasters: DashMap::new(),
-            channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
         }
     }
 
-    pub fn with_service<S: Send + Sync + 'static>(
-        self: Arc<Self>,
-        service: Arc<S>,
-    ) -> ServiceRegistrar<S> {
+    pub fn with_service<S: Send + Sync + 'static>(self: Arc<Self>, service: Arc<S>) -> ServiceRegistrar<S> {
         ServiceRegistrar::new(service, self)
     }
 
-    pub fn register_command_handler<C: Command + 'static>(
-        &self,
-        handler: Arc<dyn CommandHandler<C> + Send + Sync>,
-    ) {
+    pub fn register_command_handler<C: Command + 'static>(&self, handler: Arc<dyn CommandHandler<C> + Send + Sync>) {
         let type_id = TypeId::of::<C>();
         let boxed_handler: CommandHandlerFn = Box::new(move |command: Box<dyn Any + Send>| {
             let handler = handler.clone();
             Box::pin(async move {
-                let command = *command
-                    .downcast::<C>()
-                    .map_err(|_| MiscError::TypeMismatch)?;
+                let command = *command.downcast::<C>().map_err(|_| MiscError::TypeMismatch)?;
                 handler.handle_command(command).await
             }) as CommandFuture
         });
@@ -82,10 +72,7 @@ impl CommunicationManager {
         }
     }
 
-    pub fn register_query_handler<Q: Query + 'static>(
-        &self,
-        handler: Arc<dyn QueryHandler<Q> + Send + Sync>,
-    ) {
+    pub fn register_query_handler<Q: Query + 'static>(&self, handler: Arc<dyn QueryHandler<Q> + Send + Sync>) {
         let type_id = TypeId::of::<Q>();
         let boxed_handler: QueryHandlerFn = Box::new(move |query: Box<dyn Any + Send>| {
             let handler = handler.clone();
@@ -115,8 +102,7 @@ impl CommunicationManager {
         let type_id = TypeId::of::<E>();
         let (tx, _) = broadcast::channel::<E>(self.channel_capacity);
         let broadcaster = TypedEventBroadcaster { sender: tx };
-        self.event_broadcasters
-            .insert(type_id, Box::new(broadcaster));
+        self.event_broadcasters.insert(type_id, Box::new(broadcaster));
     }
 
     pub fn subscribe_event<E: Event + 'static>(&self) -> Result<broadcast::Receiver<E>, Error> {
@@ -171,8 +157,6 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
         self
     }
 
-
-
     pub fn build(self) -> Arc<CommunicationManager> {
         self.comm
     }
@@ -181,10 +165,10 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::communication::message::Message;
     use crate::interface::communication::command::Command;
-    use crate::interface::communication::query::Query;
     use crate::interface::communication::event::Event;
+    use crate::interface::communication::message::Message;
+    use crate::interface::communication::query::Query;
     use async_trait::async_trait;
 
     // ── Test Command ─────────────────────────────────────────────────
@@ -243,7 +227,9 @@ mod tests {
     #[tokio::test]
     async fn test_command_dispatch() {
         let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let handler = Arc::new(TestCommandHandler { received: received.clone() });
+        let handler = Arc::new(TestCommandHandler {
+            received: received.clone(),
+        });
 
         let comm = Arc::new(CommunicationManager::new());
         comm.register_command_handler::<TestCommand>(handler);
@@ -307,7 +293,11 @@ mod tests {
         let mut rx1 = comm.subscribe_event::<TestEvent>().unwrap();
         let mut rx2 = comm.subscribe_event::<TestEvent>().unwrap();
 
-        comm.publish_event(TestEvent { message: "broadcast".into() }).await.unwrap();
+        comm.publish_event(TestEvent {
+            message: "broadcast".into(),
+        })
+        .await
+        .unwrap();
 
         assert_eq!(rx1.recv().await.unwrap().message, "broadcast");
         assert_eq!(rx2.recv().await.unwrap().message, "broadcast");
@@ -316,18 +306,20 @@ mod tests {
     #[tokio::test]
     async fn test_service_registrar() {
         let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let handler = Arc::new(TestCommandHandler { received: received.clone() });
+        let handler = Arc::new(TestCommandHandler {
+            received: received.clone(),
+        });
 
         let comm = Arc::new(CommunicationManager::new());
-        let _comm = comm.clone()
-            .with_service(handler)
-            .command::<TestCommand>()
-            .build();
+        let _comm = comm.clone().with_service(handler).command::<TestCommand>().build();
 
-        comm.send_command(TestCommand { value: "via_registrar".into() }).await.unwrap();
+        comm.send_command(TestCommand {
+            value: "via_registrar".into(),
+        })
+        .await
+        .unwrap();
 
         let msgs = received.lock().unwrap();
         assert_eq!(msgs[0], "via_registrar");
     }
-
 }

@@ -12,8 +12,6 @@ pub struct DnsFilterService {
     dns_filter: Arc<DnsFilter>,
 }
 
-const MAX_DNS_DOMAINS_PER_REQUEST: usize = 1000;
-
 impl DnsFilterService {
     pub fn new(db: Arc<dyn RepositoryPort>, dns_filter: Arc<DnsFilter>) -> Self {
         Self { db, dns_filter }
@@ -24,10 +22,18 @@ impl DnsFilterService {
     }
 
     pub fn add_domains(&self, domains: &[String]) -> Result<usize, Error> {
-        if domains.len() > MAX_DNS_DOMAINS_PER_REQUEST {
+        let max_domains: usize = self
+            .db
+            .get_setting("dns_max_domains_per_request")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        if domains.len() > max_domains {
             return Err(MiscError::ValidationError {
-                message: format!("too many domains (max {})", MAX_DNS_DOMAINS_PER_REQUEST),
-            }.into());
+                message: format!("too many domains (max {})", max_domains),
+            }
+            .into());
         }
         // eBPF first
         for domain in domains {

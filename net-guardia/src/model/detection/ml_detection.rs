@@ -105,6 +105,8 @@ pub struct DetectionResult {
     pub confidence: f32,
     pub ae_score: f32,
     pub threshold: f32,
+    pub packet_count: u64,
+    pub flow_duration_us: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,6 +151,8 @@ pub struct AlertMessage {
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
+    pub packet_count: u64,
+    pub flow_duration_us: u64,
 }
 
 impl AlertMessage {
@@ -170,6 +174,8 @@ impl AlertMessage {
             attack_type: result.attack_type.clone(),
             confidence: result.confidence,
             ae_score: result.ae_score,
+            packet_count: result.packet_count,
+            flow_duration_us: result.flow_duration_us,
         }
     }
 }

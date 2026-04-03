@@ -22,8 +22,22 @@ pub type UserGroupTuple = (i64, String, String, String, String);
 #[allow(dead_code)]
 pub trait RepositoryPort: Send + Sync {
     // --- ACL ---
-    fn insert_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error>;
-    fn delete_acl_rule(&self, ip_version: u8, direction: &str, list_type: &str, ip_address: &str, port: u16) -> Result<(), Error>;
+    fn insert_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error>;
+    fn delete_acl_rule(
+        &self,
+        ip_version: u8,
+        direction: &str,
+        list_type: &str,
+        ip_address: &str,
+        port: u16,
+    ) -> Result<(), Error>;
     fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error>;
 
     // --- Rate Limit ---
@@ -46,7 +60,13 @@ pub trait RepositoryPort: Send + Sync {
 
     // --- Users ---
     fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error>;
-    fn insert_user(&self, username: &str, password_hash: &str, role: &str, force_password_change: bool) -> Result<i64, Error>;
+    fn insert_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+        force_password_change: bool,
+    ) -> Result<i64, Error>;
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
     fn user_count(&self) -> Result<i64, Error>;
 

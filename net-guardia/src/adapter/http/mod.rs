@@ -1,9 +1,11 @@
 pub mod acl;
+pub mod api_keys;
+pub mod audit;
 pub mod auth;
 pub mod default;
 pub mod filter;
 pub mod health;
-pub mod mcp_keys;
+pub mod logs;
 pub mod ml;
 pub mod notification;
 pub mod rate_limit;

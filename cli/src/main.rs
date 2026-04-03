@@ -19,28 +19,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// System health + enforce mode + uptime
+    /// System health + enforce mode
     Status,
-    /// Recent threat alerts
-    Alerts {
-        #[arg(long, default_value = "20")]
-        limit: u32,
-    },
-    /// Add IP to blacklist
+    /// ML engine status
+    Ml,
+    /// Add IP to source blacklist
     Block {
         ip: String,
-        #[arg(long, default_value = "1800")]
-        ttl: u64,
     },
-    /// Remove IP from blacklist
+    /// Remove IP from source blacklist
     Unblock { ip: String },
-    /// List all ACL rules
-    Rules,
-    /// Generate security report
-    Report {
-        #[arg(long, default_value = "text")]
-        format: String,
+    /// List ACL rules (source blacklist by default)
+    Rules {
+        #[arg(long, default_value = "source")]
+        direction: String,
+        #[arg(long, default_value = "blacklist")]
+        list_type: String,
     },
+    /// Generate security report (JSON data)
+    Report,
     /// Get or set enforce mode
     Mode {
         /// Set mode to "monitor" or "enforce"
@@ -48,25 +45,31 @@ enum Commands {
     },
     /// Authenticate and save JWT
     Login,
-    /// MCP API key management
-    McpKey {
+    /// List SOAR active blocks
+    Blocks,
+    /// List SOAR playbooks
+    Playbooks,
+    /// List SOAR execution history
+    Executions,
+    /// API key management
+    ApiKey {
         #[command(subcommand)]
-        action: McpKeyAction,
+        action: ApiKeyAction,
     },
 }
 
 #[derive(Subcommand)]
-enum McpKeyAction {
-    /// Generate a new MCP API key
+enum ApiKeyAction {
+    /// Generate a new API key
     Generate {
         #[arg(long, default_value = "default")]
         name: String,
         #[arg(long, default_value = "read_only")]
         level: String,
     },
-    /// List all MCP API keys
+    /// List all API keys
     List,
-    /// Revoke an MCP API key
+    /// Revoke an API key
     Revoke { id: i64 },
 }
 
@@ -106,36 +109,36 @@ impl ApiClient {
             req = req.header("Authorization", format!("Bearer {}", token.trim()));
         }
         let resp = req.send().await.map_err(|e| format!("Connection error: {}", e))?;
-        if resp.status().as_u16() == 401 {
+        let status = resp.status().as_u16();
+        if status == 401 {
             return Err("Session expired. Run `ng login` to re-authenticate.".into());
         }
-        resp.json().await.map_err(|e| format!("Parse error: {}", e))
+        let text = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
+        serde_json::from_str(&text).map_err(|_| format!("Unexpected response (HTTP {}): {}", status, &text[..text.len().min(200)]))
     }
 
-    async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+    async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.client.post(&url).json(&body);
+        let mut req = self.client.request(method, &url);
         if let Some(token) = self.load_token() {
             req = req.header("Authorization", format!("Bearer {}", token.trim()));
         }
-        let resp = req.send().await.map_err(|e| format!("Connection error: {}", e))?;
-        if resp.status().as_u16() == 401 {
-            return Err("Session expired. Run `ng login` to re-authenticate.".into());
-        }
-        resp.json().await.map_err(|e| format!("Parse error: {}", e))
-    }
-
-    async fn delete(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
-        let mut req = self.client.delete(&url);
-        if let Some(token) = self.load_token() {
-            req = req.header("Authorization", format!("Bearer {}", token.trim()));
+        if let Some(b) = body {
+            req = req.json(&b);
         }
         let resp = req.send().await.map_err(|e| format!("Connection error: {}", e))?;
-        if resp.status().as_u16() == 401 {
+        let status = resp.status().as_u16();
+        if status == 401 {
             return Err("Session expired. Run `ng login` to re-authenticate.".into());
         }
-        resp.json().await.map_err(|e| format!("Parse error: {}", e))
+        let text = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
+        if text.is_empty() {
+            if (200..300).contains(&status) {
+                return Ok(Value::Null);
+            }
+            return Err(format!("Empty response (HTTP {})", status));
+        }
+        serde_json::from_str(&text).map_err(|_| format!("Unexpected response (HTTP {}): {}", status, &text[..text.len().min(200)]))
     }
 
     async fn login(&self, username: &str, password: &str) -> Result<String, String> {
@@ -154,42 +157,35 @@ fn dirs_next() -> PathBuf {
     PathBuf::from(home).join(".ng")
 }
 
-fn format_report_text(data: &Value) -> String {
-    let mut out = String::new();
-    out.push_str("=== NetGuardia Security Report ===\n\n");
+fn print_json(data: &Value) {
+    println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
+}
 
-    if let Some(obj) = data.as_object() {
-        for (key, value) in obj {
-            let label = key.replace('_', " ");
-            match value {
-                Value::String(s) => {
-                    out.push_str(&format!("{}: {}\n", label, s));
-                }
-                Value::Number(n) => {
-                    out.push_str(&format!("{}: {}\n", label, n));
-                }
-                Value::Bool(b) => {
-                    out.push_str(&format!("{}: {}\n", label, b));
-                }
-                Value::Array(arr) => {
-                    out.push_str(&format!("{}:\n", label));
-                    for item in arr {
-                        out.push_str(&format!("  - {}\n", item));
-                    }
-                }
-                Value::Object(_) => {
-                    out.push_str(&format!("{}:\n{}\n", label, serde_json::to_string_pretty(value).unwrap_or_default()));
-                }
-                Value::Null => {
-                    out.push_str(&format!("{}: N/A\n", label));
-                }
-            }
-        }
-    } else {
-        out.push_str(&serde_json::to_string_pretty(data).unwrap_or_default());
+fn read_password() -> String {
+    // Disable echo for password input
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = std::io::stdin().as_raw_fd();
+        let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
+        unsafe { libc::tcgetattr(fd, &mut termios) };
+        let old = termios;
+        termios.c_lflag &= !libc::ECHO;
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) };
+
+        let mut password = String::new();
+        std::io::stdin().read_line(&mut password).unwrap();
+        println!(); // newline after hidden input
+
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old) };
+        password.trim().to_string()
     }
-
-    out
+    #[cfg(not(unix))]
+    {
+        let mut password = String::new();
+        std::io::stdin().read_line(&mut password).unwrap();
+        password.trim().to_string()
+    }
 }
 
 #[tokio::main]
@@ -199,82 +195,54 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Status => {
-            match api.get("/api/health/status").await {
-                Ok(data) => {
-                    println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            api.get("/api/health/status").await.map(|d| print_json(&d))
         }
-        // Issue 8: Use limit parameter in alerts query
-        Commands::Alerts { limit } => {
-            match api.get(&format!("/api/ml/alerts?limit={}", limit)).await {
-                Ok(data) => {
-                    println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+        Commands::Ml => {
+            api.get("/api/ml/status").await.map(|d| print_json(&d))
         }
-        // Issue 9: Use ttl parameter in block request body
-        Commands::Block { ip, ttl } => {
-            let ip_ver = if ip.contains(':') { 6 } else { 4 };
-            let body = serde_json::json!({
-                "ip_version": ip_ver, "direction": "source",
-                "list_type": "blacklist", "ip_address": ip, "port": 0,
-                "ttl_secs": ttl
-            });
-            match api.post("/api/acl/add", body).await {
-                Ok(data) => { println!("Blocked: {}", serde_json::to_string(&data).unwrap_or_default()); Ok(()) }
-                Err(e) => Err(e),
-            }
+        Commands::Block { ip } => {
+            let is_v6 = ip.contains(':');
+            let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
+            let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
+            api.request(reqwest::Method::PUT, &format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
+                .await.map(|_| println!("Blocked: {}", ip))
         }
         Commands::Unblock { ip } => {
-            let ip_ver = if ip.contains(':') { 6 } else { 4 };
-            let body = serde_json::json!({
-                "ip_version": ip_ver, "direction": "source",
-                "list_type": "blacklist", "ip_address": ip, "port": 0
-            });
-            match api.post("/api/acl/delete", body).await {
-                Ok(data) => { println!("Unblocked: {}", serde_json::to_string(&data).unwrap_or_default()); Ok(()) }
-                Err(e) => Err(e),
-            }
+            let is_v6 = ip.contains(':');
+            let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
+            let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
+            api.request(reqwest::Method::DELETE, &format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
+                .await.map(|_| println!("Unblocked: {}", ip))
         }
-        Commands::Rules => {
-            match api.get("/api/acl/list").await {
-                Ok(data) => { println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default()); Ok(()) }
-                Err(e) => Err(e),
+        Commands::Rules { direction, list_type } => {
+            // Try both IPv4 and IPv6
+            let v4 = api.get(&format!("/api/acl/ipv4/{}/{}", direction, list_type)).await;
+            let v6 = api.get(&format!("/api/acl/ipv6/{}/{}", direction, list_type)).await;
+            println!("=== IPv4 {} {} ===", direction, list_type);
+            match v4 {
+                Ok(d) => print_json(&d),
+                Err(e) => eprintln!("{}", e),
             }
+            println!("\n=== IPv6 {} {} ===", direction, list_type);
+            match v6 {
+                Ok(d) => print_json(&d),
+                Err(e) => eprintln!("{}", e),
+            }
+            Ok(())
         }
-        // Issue 10: Use format parameter for report output
-        Commands::Report { format } => {
-            match api.post("/api/report/generate", serde_json::json!({})).await {
-                Ok(data) => {
-                    if format == "json" {
-                        println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
-                    } else {
-                        print!("{}", format_report_text(&data));
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+        Commands::Report => {
+            // Use /api/report/data for JSON output
+            api.get("/api/report/data").await.map(|d| print_json(&d))
         }
         Commands::Mode { mode } => {
             match mode {
                 Some(m) => {
                     let body = serde_json::json!({"mode": m});
-                    match api.post("/api/system/enforce-mode", body).await {
-                        Ok(data) => { println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default()); Ok(()) }
-                        Err(e) => Err(e),
-                    }
+                    api.request(reqwest::Method::PUT, "/api/system/enforce-mode", Some(body))
+                        .await.map(|d| print_json(&d))
                 }
                 None => {
-                    match api.get("/api/system/enforce-mode").await {
-                        Ok(data) => { println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default()); Ok(()) }
-                        Err(e) => Err(e),
-                    }
+                    api.get("/api/system/enforce-mode").await.map(|d| print_json(&d))
                 }
             }
         }
@@ -285,14 +253,11 @@ async fn main() {
             std::io::stdin().read_line(&mut username).unwrap();
             let username = username.trim();
 
-            // Read password without echo (simple version)
             print!("Password: ");
             std::io::Write::flush(&mut std::io::stdout()).unwrap();
-            let mut password = String::new();
-            std::io::stdin().read_line(&mut password).unwrap();
-            let password = password.trim();
+            let password = read_password();
 
-            match api.login(username, password).await {
+            match api.login(username, &password).await {
                 Ok(token) => {
                     api.save_token(&token);
                     println!("Login successful. Token saved to ~/.ng/token");
@@ -301,69 +266,62 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
-        Commands::McpKey { action } => {
+        Commands::Blocks => {
+            api.get("/api/soar/blocks").await.map(|d| print_json(&d))
+        }
+        Commands::Playbooks => {
+            api.get("/api/soar/playbooks").await.map(|d| print_json(&d))
+        }
+        Commands::Executions => {
+            api.get("/api/soar/executions").await.map(|d| print_json(&d))
+        }
+        Commands::ApiKey { action } => {
             match action {
-                // Issue 13: Generate key via API so it persists
-                McpKeyAction::Generate { name, level } => {
-                    let body = serde_json::json!({
-                        "name": name,
-                        "level": level,
-                    });
-                    match api.post("/api/mcp-keys/generate", body).await {
-                        Ok(data) => {
+                ApiKeyAction::Generate { name, level } => {
+                    let body = serde_json::json!({"name": name, "level": level});
+                    api.request(reqwest::Method::POST, "/api/api-keys/generate", Some(body))
+                        .await.map(|data| {
                             if let Some(key) = data.get("key").and_then(|k| k.as_str()) {
-                                println!("Generated MCP API key: {}", key);
+                                println!("Generated API key: {}", key);
                                 println!("Name: {}, Level: {}", name, level);
-                                println!("Set NETGUARDIA_MCP_KEY={} in your MCP client config", key);
+                                println!("Set NETGUARDIA_API_KEY={} in your client config", key);
                             } else {
-                                println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+                                print_json(&data);
                             }
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
+                        })
                 }
-                // Issue 11: List keys via API
-                McpKeyAction::List => {
-                    match api.get("/api/mcp-keys").await {
-                        Ok(data) => {
-                            if let Some(keys) = data.as_array() {
-                                if keys.is_empty() {
-                                    println!("No MCP keys found.");
-                                } else {
-                                    println!("{:<6} {:<20} {:<15} {:<22} Last Used", "ID", "Name", "Level", "Created");
-                                    println!("{}", "-".repeat(80));
-                                    for key in keys {
-                                        println!("{:<6} {:<20} {:<15} {:<22} {}",
-                                            key.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-                                            key.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
-                                            key.get("permission_level").and_then(|v| v.as_str()).unwrap_or("-"),
-                                            key.get("created_at").and_then(|v| v.as_str()).unwrap_or("-"),
-                                            key.get("last_used_at").and_then(|v| v.as_str()).unwrap_or("never"),
-                                        );
-                                    }
+                ApiKeyAction::List => {
+                    api.get("/api/api-keys").await.map(|data| {
+                        if let Some(keys) = data.as_array() {
+                            if keys.is_empty() {
+                                println!("No API keys found.");
+                            } else {
+                                println!("{:<6} {:<20} {:<15} {:<22} Last Used", "ID", "Name", "Level", "Created");
+                                println!("{}", "-".repeat(80));
+                                for key in keys {
+                                    println!("{:<6} {:<20} {:<15} {:<22} {}",
+                                        key.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                                        key.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
+                                        key.get("permission_level").and_then(|v| v.as_str()).unwrap_or("-"),
+                                        key.get("created_at").and_then(|v| v.as_str()).unwrap_or("-"),
+                                        key.get("last_used_at").and_then(|v| v.as_str()).unwrap_or("never"),
+                                    );
                                 }
-                            } else {
-                                println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
                             }
-                            Ok(())
+                        } else {
+                            print_json(&data);
                         }
-                        Err(e) => Err(e),
-                    }
+                    })
                 }
-                // Issue 12: Revoke key via API
-                McpKeyAction::Revoke { id } => {
-                    match api.delete(&format!("/api/mcp-keys/{}", id)).await {
-                        Ok(data) => {
+                ApiKeyAction::Revoke { id } => {
+                    api.request(reqwest::Method::DELETE, &format!("/api/api-keys/{}", id), None)
+                        .await.map(|data| {
                             if data.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
                                 println!("Key #{} revoked successfully.", id);
                             } else {
-                                println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+                                print_json(&data);
                             }
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
+                        })
                 }
             }
         }

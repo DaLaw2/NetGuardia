@@ -2,23 +2,14 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use maxminddb::{geoip2, MaxMindDbError, Reader};
-use tokio::sync::RwLock;
 use lru::LruCache;
+use maxminddb::{MaxMindDbError, Reader, geoip2};
 use std::num::NonZeroUsize;
+use tokio::sync::RwLock;
 use tokio::task;
 
+use crate::model::monitoring::geolocation::GeoLocation;
 use crate::utils::ip_address;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GeoLocation {
-    pub country: Option<String>,
-    pub country_code: Option<String>,
-    pub city: Option<String>,
-    pub latitude: Option<f64>,
-    pub longitude: Option<f64>,
-    pub timezone: Option<String>,
-}
 
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,
@@ -31,13 +22,9 @@ impl GeoIpService {
         Self::with_cache_size(db_path, 10000)
     }
 
-    pub fn with_cache_size<P: AsRef<Path>>(
-        db_path: P,
-        cache_size: usize,
-    ) -> Result<Self, MaxMindDbError> {
+    pub fn with_cache_size<P: AsRef<Path>>(db_path: P, cache_size: usize) -> Result<Self, MaxMindDbError> {
         let reader = Reader::open_readfile(db_path)?;
-        let cache_capacity = NonZeroUsize::new(cache_size)
-            .unwrap_or_else(|| NonZeroUsize::new(10000).unwrap());
+        let cache_capacity = NonZeroUsize::new(cache_size).unwrap_or_else(|| NonZeroUsize::new(10000).unwrap());
 
         Ok(Self {
             reader: Arc::new(reader),
@@ -65,9 +52,7 @@ impl GeoIpService {
         }
 
         let reader = self.reader.clone();
-        let result = task::spawn_blocking(move || {
-            Self::lookup_from_db_blocking(&reader, ip)
-        })
+        let result = task::spawn_blocking(move || Self::lookup_from_db_blocking(&reader, ip))
             .await
             .map_err(|e| MaxMindDbError::InvalidDatabase {
                 message: format!("Task join error: {}", e),
@@ -82,22 +67,16 @@ impl GeoIpService {
         Ok(result)
     }
 
-    fn lookup_from_db_blocking(
-        reader: &Reader<Vec<u8>>,
-        ip: IpAddr,
-    ) -> Result<Option<GeoLocation>, MaxMindDbError> {
+    fn lookup_from_db_blocking(reader: &Reader<Vec<u8>>, ip: IpAddr) -> Result<Option<GeoLocation>, MaxMindDbError> {
         let lookup_result = reader.lookup(ip)?;
         let city_option: Option<geoip2::City> = lookup_result.decode()?;
 
         Ok(city_option.map(|city| {
-            let country_name = city.country.names.english
-                .map(|s| s.to_string());
+            let country_name = city.country.names.english.map(|s| s.to_string());
 
-            let country_code = city.country.iso_code
-                .map(|s| s.to_string());
+            let country_code = city.country.iso_code.map(|s| s.to_string());
 
-            let city_name = city.city.names.english
-                .map(|s| s.to_string());
+            let city_name = city.city.names.english.map(|s| s.to_string());
 
             let latitude = city.location.latitude;
             let longitude = city.location.longitude;

@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::thread;
 
-use crossbeam::channel::{bounded, Sender, TrySendError};
+use crossbeam::channel::{Sender, TrySendError, bounded};
 use macros::log;
 
 use crate::model::error::ml::MLError;

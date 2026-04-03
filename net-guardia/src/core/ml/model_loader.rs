@@ -1,5 +1,5 @@
-use tract_onnx::prelude::*;
 use std::path::PathBuf;
+use tract_onnx::prelude::*;
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::ml::MLError;
@@ -14,8 +14,14 @@ pub struct MLModels {
 impl MLModels {
     pub fn load_models(app_config: &Arc<AppConfig>, inference_config: &Arc<InferenceConfig>) -> Result<Self, MLError> {
         Ok(Self {
-            deep_autoencoder: Self::loader(&app_config.inference.deep_autoencoder_name, inference_config.num_ae_features())?,
-            classifier: Self::loader(&app_config.inference.classifier_name, inference_config.num_classifier_features())?
+            deep_autoencoder: Self::loader(
+                &app_config.inference.deep_autoencoder_name,
+                inference_config.num_ae_features(),
+            )?,
+            classifier: Self::loader(
+                &app_config.inference.classifier_name,
+                inference_config.num_classifier_features(),
+            )?,
         })
     }
 

@@ -37,17 +37,11 @@ impl NativeConvert for AddrPortV4 {
     type Native = SocketAddrV4;
 
     fn into_native(self) -> Self::Native {
-        SocketAddrV4::new(
-            Ipv4Addr::from(u32::from_be(self.ip())),
-            self.port()
-        )
+        SocketAddrV4::new(Ipv4Addr::from(u32::from_be(self.ip())), self.port())
     }
 
     fn from_native(native: Self::Native) -> Self {
-        AddrPortV4::new(
-            native.ip().to_bits().to_be(),
-            native.port()
-        )
+        AddrPortV4::new(native.ip().to_bits().to_be(), native.port())
     }
 }
 
@@ -55,18 +49,10 @@ impl NativeConvert for AddrPortV6 {
     type Native = SocketAddrV6;
 
     fn into_native(self) -> Self::Native {
-        SocketAddrV6::new(
-            Ipv6Addr::from(u128::from_be(self.ip())),
-            self.port(),
-            0,
-            0
-        )
+        SocketAddrV6::new(Ipv6Addr::from(u128::from_be(self.ip())), self.port(), 0, 0)
     }
 
     fn from_native(native: Self::Native) -> Self {
-        AddrPortV6::new(
-            native.ip().to_bits().to_be(),
-            native.port()
-        )
+        AddrPortV6::new(native.ip().to_bits().to_be(), native.port())
     }
 }

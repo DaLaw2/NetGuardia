@@ -1,3 +1,5 @@
+use crate::model::soar::condition::PlaybookCondition;
+
 /// In-memory playbook representation.
 #[derive(Debug, Clone)]
 pub struct Playbook {
@@ -8,6 +10,8 @@ pub struct Playbook {
     pub condition_threshold: Option<f64>,
     pub cooldown_secs: i64,
     pub actions: Vec<PlaybookAction>,
+    /// Multi-condition rules (AND logic). Empty = legacy threshold-only mode.
+    pub conditions: Vec<PlaybookCondition>,
 }
 
 #[derive(Debug, Clone)]

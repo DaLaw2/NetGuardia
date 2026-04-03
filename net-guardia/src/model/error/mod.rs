@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod crypto;
 pub mod database;
 pub mod ebpf;
 pub mod http;
@@ -13,6 +14,7 @@ pub mod system;
 use serde::{Deserialize, Serialize};
 
 use crate::model::error::auth::AuthError;
+use crate::model::error::crypto::CryptoError;
 use crate::model::error::database::DatabaseError;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::http::HttpError;
@@ -28,6 +30,8 @@ use crate::model::error::system::SystemError;
 pub enum Error {
     #[error("{0}")]
     Auth(AuthError),
+    #[error("{0}")]
+    Crypto(CryptoError),
     #[error("{0}")]
     Database(DatabaseError),
     #[error("{0}")]
@@ -53,6 +57,12 @@ pub enum Error {
 impl From<AuthError> for Error {
     fn from(error: AuthError) -> Self {
         Self::Auth(error)
+    }
+}
+
+impl From<CryptoError> for Error {
+    fn from(error: CryptoError) -> Self {
+        Self::Crypto(error)
     }
 }
 

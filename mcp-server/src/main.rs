@@ -15,7 +15,7 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:8080")]
     api_url: String,
 
-    /// API key for authentication (prefer NETGUARDIA_MCP_KEY env var)
+    /// API key for authentication (prefer NETGUARDIA_API_KEY env var)
     #[arg(long)]
     api_key: Option<String>,
 }
@@ -97,12 +97,12 @@ impl McpServer {
                 { "name": "get_stats", "description": "Traffic statistics summary", "inputSchema": { "type": "object", "properties": {} } },
                 { "name": "list_alerts", "description": "Recent threat alerts with details", "inputSchema": { "type": "object", "properties": { "limit": { "type": "integer", "default": 20 } } } },
                 { "name": "list_blocked_ips", "description": "Currently blocked IPs (manual + auto)", "inputSchema": { "type": "object", "properties": {} } },
-                { "name": "get_geo_stats", "description": "GeoIP traffic breakdown", "inputSchema": { "type": "object", "properties": {} } },
+                { "name": "get_geo_stats", "description": "List GeoIP blocked countries", "inputSchema": { "type": "object", "properties": {} } },
                 { "name": "get_flow_summary", "description": "Top talkers, protocols, ports", "inputSchema": { "type": "object", "properties": {} } },
                 { "name": "get_enforce_mode", "description": "Current mode (monitor/enforce)", "inputSchema": { "type": "object", "properties": {} } },
                 { "name": "list_playbooks", "description": "SOAR playbook configurations", "inputSchema": { "type": "object", "properties": {} } },
                 { "name": "generate_report", "description": "Generate security summary report", "inputSchema": { "type": "object", "properties": {} } },
-                { "name": "block_ip", "description": "Add IP to blacklist", "inputSchema": { "type": "object", "properties": { "ip": { "type": "string" }, "ttl_secs": { "type": "integer", "default": 1800 } }, "required": ["ip"] } },
+                { "name": "block_ip", "description": "Add IP to blacklist", "inputSchema": { "type": "object", "properties": { "ip": { "type": "string" } }, "required": ["ip"] } },
                 { "name": "unblock_ip", "description": "Remove IP from blacklist", "inputSchema": { "type": "object", "properties": { "ip": { "type": "string" } }, "required": ["ip"] } },
                 { "name": "set_enforce_mode", "description": "Toggle monitor/enforce mode", "inputSchema": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["monitor", "enforce"] } }, "required": ["mode"] } },
                 { "name": "add_dns_filter", "description": "Add domain to DNS blacklist", "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] } },
@@ -122,52 +122,41 @@ impl McpServer {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let arguments = params.get("arguments").cloned().unwrap_or(Value::Object(Default::default()));
 
-        let (method, path, body) = match tool_name {
-            "get_health" => ("GET", "/api/health/status", None),
-            "get_stats" => ("GET", "/api/stats/summary", None),
-            "list_alerts" => ("GET", "/api/ml/alerts", None),
-            "list_blocked_ips" => ("GET", "/api/soar/blocks", None),
-            "get_geo_stats" => ("GET", "/api/stats/geo", None),
-            "get_flow_summary" => ("GET", "/api/stats/flows", None),
-            "get_enforce_mode" => ("GET", "/api/system/enforce-mode", None),
-            "list_playbooks" => ("GET", "/api/soar/playbooks", None),
-            "generate_report" => ("POST", "/api/report/generate", None),
+        let (method, path, body): (&str, String, Option<Value>) = match tool_name {
+            "get_health" => ("GET", "/api/health/status".into(), None),
+            "get_stats" => ("GET", "/api/stats/summary".into(), None),
+            "list_alerts" => ("GET", "/api/soar/executions".into(), None),
+            "list_blocked_ips" => ("GET", "/api/soar/blocks".into(), None),
+            "get_geo_stats" => ("GET", "/api/acl/geo/blocked".into(), None),
+            "get_flow_summary" => ("GET", "/api/stats/flows".into(), None),
+            "get_enforce_mode" => ("GET", "/api/system/enforce-mode".into(), None),
+            "list_playbooks" => ("GET", "/api/soar/playbooks".into(), None),
+            "generate_report" => ("POST", "/api/report/generate".into(), None),
             "block_ip" => {
                 let ip = arguments.get("ip").and_then(|v| v.as_str()).unwrap_or("");
-                let body = serde_json::json!({
-                    "ip_version": if ip.contains(':') { 6 } else { 4 },
-                    "direction": "source",
-                    "list_type": "blacklist",
-                    "ip_address": ip,
-                    "port": 0
-                });
-                ("POST", "/api/acl/add", Some(body))
+                let is_v6 = ip.contains(':');
+                let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
+                let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
+                ("PUT", format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
             }
             "unblock_ip" => {
                 let ip = arguments.get("ip").and_then(|v| v.as_str()).unwrap_or("");
-                let body = serde_json::json!({
-                    "ip_version": if ip.contains(':') { 6 } else { 4 },
-                    "direction": "source",
-                    "list_type": "blacklist",
-                    "ip_address": ip,
-                    "port": 0
-                });
-                ("POST", "/api/acl/delete", Some(body))
+                let is_v6 = ip.contains(':');
+                let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
+                let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
+                ("DELETE", format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
             }
             "set_enforce_mode" => {
                 let mode = arguments.get("mode").and_then(|v| v.as_str()).unwrap_or("monitor");
-                let body = serde_json::json!({"mode": mode});
-                ("POST", "/api/system/enforce-mode", Some(body))
+                ("PUT", "/api/system/enforce-mode".into(), Some(serde_json::json!({"mode": mode})))
             }
             "add_dns_filter" => {
                 let domain = arguments.get("domain").and_then(|v| v.as_str()).unwrap_or("");
-                let body = serde_json::json!({"domain": domain});
-                ("POST", "/api/filter/dns/add", Some(body))
+                ("PUT", "/api/filter/dns/blacklist".into(), Some(serde_json::json!({"domains": [domain]})))
             }
             "add_geo_block" => {
                 let code = arguments.get("country_code").and_then(|v| v.as_str()).unwrap_or("");
-                let body = serde_json::json!({"codes": [code]});
-                ("POST", "/api/acl/geo/block", Some(body))
+                ("PUT", "/api/acl/geo/block".into(), Some(serde_json::json!({"country_codes": [code]})))
             }
             _ => {
                 return JsonRpcResponse {
@@ -181,6 +170,8 @@ impl McpServer {
 
         let url = format!("{}{}", self.api_url, path);
         let mut req_builder = match method {
+            "PUT" => self.client.put(&url),
+            "DELETE" => self.client.delete(&url),
             "POST" => self.client.post(&url),
             _ => self.client.get(&url),
         };
@@ -237,9 +228,9 @@ async fn main() {
     let args = Args::parse();
 
     let api_key = args.api_key
-        .or_else(|| std::env::var("NETGUARDIA_MCP_KEY").ok())
+        .or_else(|| std::env::var("NETGUARDIA_API_KEY").ok())
         .unwrap_or_else(|| {
-            eprintln!("Error: No API key provided. Set NETGUARDIA_MCP_KEY env var or use --api-key flag.");
+            eprintln!("Error: No API key provided. Set NETGUARDIA_API_KEY env var or use --api-key flag.");
             std::process::exit(1);
         });
 
