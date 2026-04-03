@@ -91,6 +91,9 @@ impl BotnetDetector {
                 protocol: alert.protocol,
                 packet_count: 0,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = detection_tx.try_send(event);
@@ -142,6 +145,8 @@ mod tests {
             attack_type: Some("DDoS".to_string()),
             confidence: 0.9,
             ae_score: 0.5,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
             packet_count: 100,
             flow_duration_us: 1_000_000,
         }

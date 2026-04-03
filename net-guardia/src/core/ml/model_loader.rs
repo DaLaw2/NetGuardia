@@ -2,35 +2,43 @@ use std::path::PathBuf;
 use tract_onnx::prelude::*;
 
 use crate::infrastructure::app_config::AppConfig;
-use crate::model::error::ml::MLError;
 use crate::model::detection::ml_detection::RunnableModel;
-
+use crate::model::error::ml::MLError;
 use crate::model::system::config::MLInferenceConfig;
 
 pub struct MLModels {
     pub deep_autoencoder: RunnableModel,
     pub classifier: RunnableModel,
+    pub batch_size: usize,
 }
+
 impl MLModels {
-    pub fn load_models(app_config: &Arc<AppConfig>, inference_config: &Arc<MLInferenceConfig>) -> Result<Self, MLError> {
+    pub fn load_models(
+        app_config: &Arc<AppConfig>,
+        inference_config: &Arc<MLInferenceConfig>,
+        batch_size: usize,
+    ) -> Result<Self, MLError> {
         Ok(Self {
             deep_autoencoder: Self::loader(
                 &app_config.inference.deep_autoencoder_name,
                 inference_config.num_ae_features(),
+                batch_size,
             )?,
             classifier: Self::loader(
                 &app_config.inference.classifier_name,
                 inference_config.num_classifier_features(),
+                batch_size,
             )?,
+            batch_size,
         })
     }
 
-    pub fn loader(model: &str, features: usize) -> Result<RunnableModel, MLError> {
+    fn loader(model: &str, features: usize, batch_size: usize) -> Result<RunnableModel, MLError> {
         let model_path = PathBuf::from("models").join(model);
 
         let load = || -> Result<RunnableModel, Box<dyn std::error::Error>> {
             let mut model = onnx().model_for_path(&model_path)?;
-            model.set_input_fact(0, f32::fact([1, features]).into())?;
+            model.set_input_fact(0, f32::fact([batch_size, features]).into())?;
             Ok(model.into_optimized()?.into_runnable()?)
         };
 
@@ -46,6 +54,6 @@ impl MLModels {
 
         let inputs = model.model().inputs.len();
         let outputs = model.model().outputs.len();
-        format!("{}: inputs: {}, outputs: {}", name, inputs, outputs)
+        format!("{name}: inputs: {inputs}, outputs: {outputs}, batch_size: {}", self.batch_size)
     }
 }

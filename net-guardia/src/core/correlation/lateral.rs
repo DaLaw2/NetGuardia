@@ -89,6 +89,9 @@ impl LateralMovementDetector {
                 protocol: alert.protocol,
                 packet_count: 0,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = detection_tx.try_send(event);
@@ -201,6 +204,8 @@ mod tests {
             attack_type: Some("Exploitation".to_string()),
             confidence: 0.8,
             ae_score: 0.4,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
             packet_count: 50,
             flow_duration_us: 500_000,
         }

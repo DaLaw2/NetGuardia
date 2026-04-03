@@ -38,6 +38,10 @@ pub struct DetectionEvent {
     pub protocol: u8,
     pub packet_count: u64,
     pub flow_duration_us: u64,
+    /// Per-model scores for observability (ML source only)
+    pub ae_score: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
 }
 
 // -- Threat Events ------------------------------------------------------------
@@ -64,6 +68,10 @@ pub struct ThreatDetectedEvent {
     pub is_repeat_offender: bool,
     /// Which detection sources contributed to this threat (for attribution)
     pub sources: Vec<DetectionSource>,
+    /// Per-model scores for debugging false positives
+    pub ae_score: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
 }
 
 impl Event for ThreatDetectedEvent {}

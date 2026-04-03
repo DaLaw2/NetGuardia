@@ -9,8 +9,8 @@ loggable! {
         #[error("Detection deduplicated: {source_ip} {attack_type} (within window)")]
         DetectionDeduplicated { source_ip: String, attack_type: String } => tracing::Level::DEBUG,
 
-        #[error("Detection emitted: {source_ip} {attack_type} confidence={confidence:.2} sources={sources_count}")]
-        DetectionEmitted { source_ip: String, attack_type: String, confidence: f32, sources_count: usize } => tracing::Level::DEBUG,
+        #[error("Detection emitted: {source_ip} {attack_type} confidence={confidence:.2} ae={ae_score:.3} anomaly={anomaly_score:.3} c2={c2_score:.3} sources={sources_count}")]
+        DetectionEmitted { source_ip: String, attack_type: String, confidence: f32, ae_score: f32, anomaly_score: f32, c2_score: f32, sources_count: usize } => tracing::Level::DEBUG,
 
         #[error("ML detection bridge started")]
         MlBridgeStarted => tracing::Level::INFO,

@@ -403,6 +403,9 @@ impl System {
                         protocol: alert.protocol,
                         packet_count: alert.packet_count,
                         flow_duration_us: alert.flow_duration_us,
+                        ae_score: alert.ae_score,
+                        anomaly_score: alert.anomaly_score,
+                        c2_score: alert.c2_score,
                     };
                     if tx.send(event).await.is_err() {
                         break; // Orchestrator dropped

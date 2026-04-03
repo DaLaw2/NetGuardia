@@ -87,6 +87,9 @@ impl ScanDetector {
                 protocol: alert.protocol,
                 packet_count: 0,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = detection_tx.try_send(event);
@@ -137,6 +140,8 @@ mod tests {
             attack_type: Some("Reconnaissance".to_string()),
             confidence: 0.7,
             ae_score: 0.3,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
             packet_count: 5,
             flow_duration_us: 100_000,
         }

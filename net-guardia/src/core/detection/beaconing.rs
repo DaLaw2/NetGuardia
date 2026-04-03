@@ -141,6 +141,9 @@ impl BeaconingDetector {
                 protocol: 6,
                 packet_count: count as u64,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = self.detection_tx.try_send(event);

@@ -41,7 +41,8 @@ impl AppServices {
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone())?;
 
-        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
+        let batch_size = app_config.inference.inference_batch_size;
+        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config, batch_size)?);
         let ml_alert = Arc::new(MLAlert::new());
 
         let traffic_logger = if app_config.inference.traffic_logging_mode {

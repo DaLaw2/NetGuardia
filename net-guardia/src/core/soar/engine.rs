@@ -905,6 +905,9 @@ impl SoarEngine {
             event.source_ip.clone(),
             event.attack_type.clone(),
             format!("{:.2}", event.confidence),
+            format!("{:.3}", event.ae_score),
+            format!("{:.3}", event.anomaly_score),
+            format!("{:.3}", event.c2_score),
         ));
 
         Ok(format!("Logged at level '{}'", level))
@@ -1215,6 +1218,9 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         };
 
         let action = PlaybookAction {
@@ -1247,6 +1253,9 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         };
 
         let action = PlaybookAction {
@@ -1326,6 +1335,9 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         };
 
         let action = PlaybookAction {
@@ -1358,6 +1370,9 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         };
 
         // Find a matching playbook — default "threat_detected" playbook should exist
@@ -1400,6 +1415,9 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         };
 
         let playbooks = engine.find_matching_playbooks(&event);
@@ -1473,6 +1491,9 @@ mod tests {
             geoip_country: country.map(|s| s.to_string()),
             is_repeat_offender: repeat,
             sources: vec![crate::model::event::DetectionSource::ML],
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
         }
     }
 

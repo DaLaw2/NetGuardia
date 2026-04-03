@@ -117,6 +117,9 @@ impl DetectionOrchestrator {
             source_ip: event.source_ip.clone(),
             attack_type: event.attack_type.clone(),
             confidence: event.confidence,
+            ae_score: event.ae_score,
+            anomaly_score: event.anomaly_score,
+            c2_score: event.c2_score,
             sources_count: sources.len(),
         });
 
@@ -187,6 +190,9 @@ impl DetectionOrchestrator {
             geoip_country,
             is_repeat_offender: is_repeat,
             sources: vec![event.source.clone()],
+            ae_score: event.ae_score,
+            anomaly_score: event.anomaly_score,
+            c2_score: event.c2_score,
         }
     }
 

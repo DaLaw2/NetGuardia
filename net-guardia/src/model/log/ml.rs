@@ -38,5 +38,11 @@ loggable! {
 
         #[error("Traffic logger channel disconnected")]
         TrafficLogChannelDisconnected => tracing::Level::WARN,
+
+        #[error("ML circuit breaker OPEN: {failures} failures in {window_secs}s, inference disabled until reset")]
+        CircuitBreakerOpen { failures: u32, window_secs: u64 } => tracing::Level::ERROR,
+
+        #[error("ML circuit breaker RESET: inference re-enabled after {cooldown_secs}s cooldown")]
+        CircuitBreakerReset { cooldown_secs: u64 } => tracing::Level::WARN,
     }
 }
