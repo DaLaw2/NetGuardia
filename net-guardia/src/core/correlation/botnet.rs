@@ -78,11 +78,13 @@ impl BotnetDetector {
                 window_secs: BOTNET_WINDOW_SECS,
             });
 
+            // source_ip = the latest attacker; dest_ip = the victim being targeted.
+            // SOAR blocks source_ip, so we must NOT put the victim here.
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
                 attack_type: "threat_detected".to_string(),
                 confidence: 0.85,
-                source_ip: key.clone(),
+                source_ip: alert.src_ip.clone(),
                 dest_ip: key.clone(),
                 protocol: alert.protocol,
                 packet_count: 0,
@@ -160,6 +162,9 @@ mod tests {
         detector.process(&alert, &tx);
         let event = rx.try_recv().expect("Should alert at threshold");
         assert_eq!(event.source, DetectionSource::Correlation);
+        // source_ip must be the attacker, NOT the victim
+        assert_eq!(event.source_ip, "10.0.0.9");
+        assert_eq!(event.dest_ip, "192.168.1.1");
     }
 
     #[tokio::test]

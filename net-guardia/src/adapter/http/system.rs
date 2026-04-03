@@ -112,11 +112,15 @@ async fn update_config(
             let needs_restart = updated.iter().any(|k| HTTP_RELOAD_KEYS.contains(&k.as_str()));
             if needs_restart {
                 // Auto-trigger restart for HTTP config changes
-                handle.trigger(ShutdownMode::Restart);
+                let triggered = handle.trigger(ShutdownMode::Restart);
                 HttpResponse::Ok().json(serde_json::json!({
                     "updated": updated,
-                    "message": "Settings updated. Server restarting to apply HTTP config changes.",
-                    "restarting": true,
+                    "message": if triggered {
+                        "Settings updated. Server restarting to apply HTTP config changes."
+                    } else {
+                        "Settings updated. Restart already in progress."
+                    },
+                    "restarting": triggered,
                 }))
             } else {
                 HttpResponse::Ok().json(serde_json::json!({

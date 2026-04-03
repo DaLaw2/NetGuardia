@@ -4,6 +4,9 @@ use serde::Serialize;
 /// Hardcoded log directory — not configurable via API to prevent directory traversal.
 const LOG_DIR: &str = "logs";
 
+/// Maximum downloadable log file size (50 MB). Prevents OOM from reading huge files.
+const MAX_DOWNLOAD_SIZE: u64 = 50 * 1024 * 1024;
+
 /// Validate log filename: only alphanumeric, dots, underscores, hyphens.
 /// Prevents path traversal.
 fn is_valid_log_filename(name: &str) -> bool {
@@ -84,14 +87,29 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
         }));
     }
 
+    // Check file size before reading to prevent OOM on large logs
+    match std::fs::metadata(&canonical) {
+        Ok(meta) if meta.len() > MAX_DOWNLOAD_SIZE => {
+            return HttpResponse::PayloadTooLarge().json(serde_json::json!({
+                "error": format!("Log file exceeds maximum download size ({}MB)", MAX_DOWNLOAD_SIZE / 1024 / 1024)
+            }));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": format!("Log file '{}' not found", filename)
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to read log file: {}", e)
+            }));
+        }
+        Ok(_) => {}
+    }
+
     let content = match std::fs::read(&canonical) {
         Ok(bytes) => bytes,
         Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return HttpResponse::NotFound().json(serde_json::json!({
-                    "error": format!("Log file '{}' not found", filename)
-                }));
-            }
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Failed to read log file: {}", e)
             }));

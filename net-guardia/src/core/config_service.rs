@@ -174,6 +174,9 @@ impl ConfigService {
                     .and_then(json_value_as_string)
                 {
                     secrets.set_secret(key, &val)?;
+                    // Clear plaintext residue from settings table to prevent
+                    // pre-migration plaintext passwords from persisting.
+                    let _ = self.db.set_setting(key, "");
                     updated.push(key.to_string());
                 }
             }

@@ -52,6 +52,8 @@ fi
 
 # ── Install runtime dependencies (SQLCipher needs OpenSSL) ──────────────────
 if command -v apt-get &>/dev/null; then
+    info "Refreshing apt package metadata"
+    DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 || warn "Could not refresh apt metadata"
     info "Installing runtime dependencies (libssl)"
     DEBIAN_FRONTEND=noninteractive apt-get install -y libssl3 >/dev/null 2>&1 || warn "Could not install libssl3"
 elif command -v dnf &>/dev/null; then
