@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
 use macros::log;
 use tract_onnx::prelude::*;
 
@@ -23,15 +24,12 @@ const CIRCUIT_BREAKER_WINDOW_SECS: u64 = 60;
 const CIRCUIT_BREAKER_COOLDOWN_SECS: u64 = 120;
 
 pub struct Inference {
-    pub models: Arc<MLModels>,
+    models: ArcSwap<MLModels>,
     pub config: Arc<MLInferenceConfig>,
     c2_class_idx: Option<usize>,
     normal_class_idx: Option<usize>,
-    /// Consecutive failure count within the current window.
     failure_count: AtomicU32,
-    /// Timestamp (epoch secs) of first failure in current window. 0 = no failures.
     failure_window_start: AtomicU64,
-    /// Timestamp (epoch secs) when circuit breaker tripped. 0 = not tripped.
     circuit_open_since: AtomicU64,
 }
 
@@ -40,7 +38,7 @@ impl Inference {
         let c2_class_idx = Self::find_label_index(&config, "C2 Communication");
         let normal_class_idx = Self::find_label_index(&config, "Normal");
         Self {
-            models,
+            models: ArcSwap::from(models),
             config,
             c2_class_idx,
             normal_class_idx,
@@ -48,6 +46,15 @@ impl Inference {
             failure_window_start: AtomicU64::new(0),
             circuit_open_since: AtomicU64::new(0),
         }
+    }
+
+    /// Atomically swap to new models. Old models are dropped when the last reader finishes.
+    pub fn swap_models(&self, new_models: Arc<MLModels>) {
+        self.models.store(new_models);
+        // Reset circuit breaker on successful model swap
+        self.failure_count.store(0, Ordering::Relaxed);
+        self.failure_window_start.store(0, Ordering::Relaxed);
+        self.circuit_open_since.store(0, Ordering::Relaxed);
     }
 
     fn find_label_index(config: &MLInferenceConfig, label: &str) -> Option<usize> {
@@ -83,8 +90,9 @@ impl Inference {
     }
 
     fn infer_batch_inner(&self, flows: &[FlowData]) -> Vec<DetectionResult> {
+        let models = self.models.load();
         let n = flows.len();
-        let batch_size = self.models.batch_size;
+        let batch_size = models.batch_size;
         let n_ae = self.config.num_ae_features();
         let n_cls = self.config.num_classifier_features();
 
@@ -106,7 +114,7 @@ impl Inference {
                 }
             });
 
-            match self.run_ae_batch(&ae_input, actual, n_ae) {
+            match Self::run_ae_batch(&models, &ae_input, actual, n_ae) {
                 Ok(scores) => ae_scores.extend_from_slice(&scores),
                 Err(e) => {
                     log!(MLLog::InferenceFailed("DeepAutoEncoder".to_string(), e.to_string()));
@@ -138,7 +146,7 @@ impl Inference {
                 }
             });
 
-            match self.run_classifier_batch(&cls_input, actual) {
+            match Self::run_classifier_batch(&models, &cls_input, actual) {
                 Ok((anomaly, class_probs, c2)) => {
                     all_anomaly.extend_from_slice(&anomaly);
                     all_class_probs.extend(class_probs);
@@ -182,12 +190,12 @@ impl Inference {
 
     /// Run AE on a padded batch, return MSE scores for the first `actual` rows.
     fn run_ae_batch(
-        &self,
+        models: &MLModels,
         input: &tract_ndarray::Array2<f32>,
         actual: usize,
         n_features: usize,
     ) -> TractResult<Vec<f32>> {
-        let result = self.models.deep_autoencoder.run(tvec![input.clone().into_tensor().into()])?;
+        let result = models.deep_autoencoder.run(tvec![input.clone().into_tensor().into()])?;
 
         let output = result[0]
             .to_array_view::<f32>()?
@@ -205,14 +213,13 @@ impl Inference {
         Ok(scores)
     }
 
-    /// Run multi-task classifier on a padded batch, return (anomaly, class_probs, c2) for first `actual` rows.
     /// Returns (anomaly_scores, per_class_probs, c2_scores) for the first `actual` rows.
     fn run_classifier_batch(
-        &self,
+        models: &MLModels,
         input: &tract_ndarray::Array2<f32>,
         actual: usize,
     ) -> TractResult<ClassifierBatchOutput> {
-        let result = self.models.classifier.run(tvec![input.clone().into_tensor().into()])?;
+        let result = models.classifier.run(tvec![input.clone().into_tensor().into()])?;
 
         // Output 0: anomaly (batch_size, 1)
         let anomaly_view = result[0].to_array_view::<f32>()?;

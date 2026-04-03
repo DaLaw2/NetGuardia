@@ -219,6 +219,14 @@ impl System {
             Self::bridge_ml_to_detection(ml_alert_rx, detection_tx).await;
         });
 
+        // Start model hot-reload watcher (monitors models/ for .onnx changes)
+        let model_watcher = crate::core::ml::model_watcher::ModelWatcher::new(
+            self.app_services.ml_engine.inference_pipeline().clone(),
+            self.app_config.clone(),
+            self.inference_config.clone(),
+        );
+        model_watcher.start();
+
         // Initialize force_https flag from DB setting
         let force_https = Arc::new(std::sync::atomic::AtomicBool::new(
             self.db

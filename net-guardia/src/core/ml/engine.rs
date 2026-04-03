@@ -72,6 +72,10 @@ impl Engine {
         }
     }
 
+    pub fn inference_pipeline(&self) -> &Arc<Inference> {
+        &self.inference_pipeline
+    }
+
     /// xsk_manager calls this per queue_id; with symmetric hash each queue has its own tracker.
     pub fn tracker(&self, queue_id: u32) -> &ThreadTracker {
         &self.trackers[queue_id as usize % self.trackers.len()]

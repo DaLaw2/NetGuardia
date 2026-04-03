@@ -44,5 +44,17 @@ loggable! {
 
         #[error("ML circuit breaker RESET: inference re-enabled after {cooldown_secs}s cooldown")]
         CircuitBreakerReset { cooldown_secs: u64 } => tracing::Level::WARN,
+
+        #[error("Model watcher started, monitoring models/ for .onnx changes")]
+        ModelWatcherStarted => tracing::Level::INFO,
+
+        #[error("Model reload triggered, loading new ONNX models...")]
+        ModelReloadStarting => tracing::Level::INFO,
+
+        #[error("Model reload successful, inference pipeline updated")]
+        ModelReloadSuccess => tracing::Level::INFO,
+
+        #[error("Model reload failed, keeping current models: {error}")]
+        ModelReloadFailed { error: String } => tracing::Level::ERROR,
     }
 }

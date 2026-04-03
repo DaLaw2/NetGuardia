@@ -7,4 +7,5 @@ pub mod feature_extractor;
 pub mod flow_tracker;
 pub mod inference;
 pub mod model_loader;
+pub mod model_watcher;
 pub mod traffic_logger;
