@@ -89,6 +89,36 @@ impl Engine {
         self.traffic_logger.is_some()
     }
 
+    /// Protocol/port-aware min_packets: some traffic patterns are meaningful
+    /// at very low packet counts and would be invisible to ML at the global threshold.
+    fn effective_min_packets(flow_key: &crate::model::detection::ml_detection::FlowKey, global: usize) -> usize {
+        match flow_key.protocol {
+            // ICMP: single-packet SYN scans, ping sweeps
+            1 => 1,
+            // UDP
+            17 => match flow_key.dst_port {
+                // DNS: amplification, DGA, tunneling can be 1-2 packets
+                53 => 1,
+                // NTP amplification
+                123 => 2,
+                // Known mining pool ports
+                3333 | 45700 => 2,
+                _ => global,
+            },
+            // TCP
+            6 => match flow_key.dst_port {
+                // DNS over TCP
+                53 => 2,
+                // Common C2 ports: Metasploit, Cobalt Strike, reverse shells
+                4444 | 8443 | 8080 | 1337 | 31337 => 2,
+                // Stratum mining
+                3333 | 45700 => 2,
+                _ => global,
+            },
+            _ => global,
+        }
+    }
+
     pub async fn run(self: Arc<Self>) -> oneshot::Sender<()> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -136,7 +166,7 @@ impl Engine {
             all_flows.extend(
                 t.get_uninferred_flows()
                     .into_iter()
-                    .filter(|flow| flow.packet_count() >= self.min_packets),
+                    .filter(|flow| flow.packet_count() >= Self::effective_min_packets(&flow.flow_key, self.min_packets)),
             );
             // lock released here
         }
