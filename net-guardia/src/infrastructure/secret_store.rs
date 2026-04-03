@@ -186,17 +186,6 @@ impl SecretStore {
             count += 1;
         }
 
-        // 3. Migrate jwt_secret
-        if let Some(secret) = self.db.get_setting("jwt_secret")?
-            && secret != "__encrypted__"
-            && !secret.is_empty()
-        {
-            self.set_secret("jwt_secret", &secret)?;
-            self.db.set_setting("jwt_secret", "__encrypted__")?;
-            log!(CryptoLog::SecretMigrated("jwt_secret".to_string()));
-            count += 1;
-        }
-
         self.db.set_setting("secrets_migrated", "true")?;
         log!(CryptoLog::MigrationComplete(count));
         Ok(())
