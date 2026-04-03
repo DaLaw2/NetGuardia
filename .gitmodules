@@ -1,3 +1,7 @@
 [submodule "net-guardia-frontend"]
 	path = net-guardia-frontend
 	url = https://github.com/DaLaw2/NetGuardia-FrontEnd.git
+[submodule "net-guardia-trainer"]
+	path = net-guardia-trainer
+	url = https://github.com/ParrotXray/NetGuardia-Trainer.git
+	branch = dalaw2-dev
