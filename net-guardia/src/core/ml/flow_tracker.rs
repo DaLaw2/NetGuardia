@@ -7,9 +7,9 @@ use crate::model::config::constants::{
     FLOW_BULK_MIN_BYTES, FLOW_BULK_MIN_PACKETS, FLOW_IDLE_THRESHOLD_US, FLOW_IDLE_TIMEOUT_US,
     FLOW_MAX_PACKETS_PER_DIRECTION, FLOW_MAX_PERIODS, FLOW_TERMINATED_TIMEOUT_US,
 };
-use crate::model::direction::Direction;
-use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
-use crate::model::user_packet::UserPacket;
+use crate::model::monitoring::direction::Direction;
+use crate::model::detection::ml_detection::{BulkState, FlowKey, PacketData};
+use crate::model::monitoring::user_packet::UserPacket;
 
 #[derive(Debug, Clone)]
 pub struct FlowData {

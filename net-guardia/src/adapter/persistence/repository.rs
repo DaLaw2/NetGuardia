@@ -1048,7 +1048,7 @@ impl Database {
 
     /// Validate an API key and return Claims if valid.
     /// Computes SHA-256 hash of the key and looks it up in api_keys table.
-    pub fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::auth::Claims>, Error> {
+    pub fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
         use std::fmt::Write;
 
         // SHA-256 hash the key
@@ -1115,7 +1115,7 @@ impl Database {
                     ],
                 };
 
-                Ok(Some(crate::model::auth::Claims {
+                Ok(Some(crate::model::identity::auth::Claims {
                     sub: -id, // negative ID to distinguish from user IDs
                     username: format!("api:{}", name),
                     role: level,
@@ -2026,7 +2026,7 @@ impl crate::interface::port::audit::AuditPort for Database {
 }
 
 impl crate::interface::port::api_key::ApiKeyPort for Database {
-    fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::auth::Claims>, Error> {
+    fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
         self.validate_api_key(api_key)
     }
     fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {

@@ -6,7 +6,7 @@ use macros::log;
 use tokio::sync::oneshot;
 
 use crate::core::ml::alert::MLAlert;
-use crate::core::ml::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::model_loader::MLModels;
@@ -19,7 +19,7 @@ use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 use crate::model::error::system::SystemError;
 use crate::model::log::system::SystemLog;
-use crate::model::ml_detection::EngineConfig;
+use crate::model::detection::ml_detection::EngineConfig;
 
 /// Application-level service orchestrator.
 /// Holds all runtime services (health monitoring, ML inference, flow statistics)
@@ -36,7 +36,7 @@ pub struct AppServices {
 impl AppServices {
     pub fn new(
         app_config: Arc<AppConfig>,
-        inference_config: Arc<InferenceConfig>,
+        inference_config: Arc<MLInferenceConfig>,
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone())?;

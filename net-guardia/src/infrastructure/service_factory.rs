@@ -19,7 +19,7 @@ use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -40,11 +40,11 @@ use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::soar::SoarPort;
 use crate::model::detection::drift::FeatureBaselines;
-use crate::model::direction::FlowDirection;
+use crate::model::monitoring::direction::FlowDirection;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::list_type::ListType;
+use crate::model::access_control::list_type::ListType;
 use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::system::SystemLog;
 use macros::log;
@@ -52,7 +52,7 @@ use macros::log;
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
     pub app_config: Arc<AppConfig>,
-    pub inference_config: Arc<InferenceConfig>,
+    pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
@@ -101,7 +101,7 @@ impl ServiceFactory {
 
         let ingress_program_array = Self::configure_ingress_pipeline(&mut ingress_ebpf, &app_config.pipeline.ingress)?;
 
-        let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
+        let inference_config = Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
         // Write queue count to eBPF maps for symmetric hash redirect
         let num_queues = app_config.network.combined_queue_count;

@@ -3,16 +3,16 @@ use tract_onnx::prelude::*;
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::ml::MLError;
-use crate::model::ml_detection::RunnableModel;
+use crate::model::detection::ml_detection::RunnableModel;
 
-use super::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 
 pub struct MLModels {
     pub deep_autoencoder: RunnableModel,
     pub classifier: RunnableModel,
 }
 impl MLModels {
-    pub fn load_models(app_config: &Arc<AppConfig>, inference_config: &Arc<InferenceConfig>) -> Result<Self, MLError> {
+    pub fn load_models(app_config: &Arc<AppConfig>, inference_config: &Arc<MLInferenceConfig>) -> Result<Self, MLError> {
         Ok(Self {
             deep_autoencoder: Self::loader(
                 &app_config.inference.deep_autoencoder_name,

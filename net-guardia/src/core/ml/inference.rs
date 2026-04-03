@@ -3,20 +3,20 @@ use std::sync::Arc;
 use macros::log;
 use tract_onnx::prelude::*;
 
-use super::config_loader::InferenceConfig;
 use super::flow_tracker::FlowData;
 use super::model_loader::MLModels;
 use crate::model::detection::flow_features::FlowFeatures;
+use crate::model::detection::ml_detection::DetectionResult;
 use crate::model::log::ml::MLLog;
-use crate::model::ml_detection::DetectionResult;
+use crate::model::system::config::MLInferenceConfig;
 
 pub struct Inference {
     pub models: Arc<MLModels>,
-    pub config: Arc<InferenceConfig>,
+    pub config: Arc<MLInferenceConfig>,
 }
 
 impl Inference {
-    pub fn new(models: Arc<MLModels>, config: Arc<InferenceConfig>) -> Self {
+    pub fn new(models: Arc<MLModels>, config: Arc<MLInferenceConfig>) -> Self {
         Self { models, config }
     }
 
@@ -53,16 +53,6 @@ impl Inference {
 
         let cls_input = self.build_classifier_input(&ae_features, ae_score);
 
-        let (attack_type, confidence) = match self.run_classifier(cls_input) {
-            Ok(result) => result,
-            Err(e) => {
-                log!(MLLog::InferenceFailed("LightGBM".to_string(), e.to_string()));
-                return None;
-            }
-        };
-
-        let is_attack = ae_score >= self.config.ae_threshold;
-
         let flow_key = format!(
             "{}:{} -> {}:{} (proto {}) [{}]",
             flow.flow_key.src_ip_string(),
@@ -73,6 +63,86 @@ impl Inference {
             flow.direction
         );
 
+        let result = match self.models.classifier.run(tvec![cls_input.into_tensor().into()]) {
+            Ok(r) => r,
+            Err(e) => {
+                log!(MLLog::InferenceFailed("MultiTaskModel".to_string(), e.to_string()));
+                return None;
+            }
+        };
+
+        // Output 0: anomaly (shape [1,1], sigmoid)
+        let anomaly_score = match result[0].to_array_view::<f32>() {
+            Ok(v) => *v.iter().next().unwrap_or(&0.0),
+            Err(e) => {
+                log!(MLLog::InferenceFailed("anomaly_head".to_string(), e.to_string()));
+                return None;
+            }
+        };
+
+        // Output 1: class_probs (shape [1, n_classes], softmax)
+        let class_probs = match result[1].to_array_view::<f32>() {
+            Ok(v) => v.iter().copied().collect::<Vec<f32>>(),
+            Err(e) => {
+                log!(MLLog::InferenceFailed("class_head".to_string(), e.to_string()));
+                return None;
+            }
+        };
+
+        // Output 2: c2_score (shape [1,1], sigmoid)
+        let c2_score = match result[2].to_array_view::<f32>() {
+            Ok(v) => *v.iter().next().unwrap_or(&0.0),
+            Err(e) => {
+                log!(MLLog::InferenceFailed("c2_head".to_string(), e.to_string()));
+                return None;
+            }
+        };
+
+        let is_attack = anomaly_score > self.config.anomaly_threshold;
+
+        // Determine attack type from class_head argmax
+        let (predicted_class, class_confidence) = class_probs
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, &p)| (i, p))
+            .unwrap_or((0, 0.0));
+
+        let mut attack_type = self
+            .config
+            .attack_labels
+            .get(&predicted_class.to_string())
+            .cloned()
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        let mut confidence = class_confidence;
+
+        // C2 head override: if C2 head fires and its confidence exceeds the class head's
+        // C2 probability, prefer the dedicated C2 head judgment.
+        if c2_score > self.config.c2_threshold {
+            let c2_class_prob = self.find_class_prob_for("C2 Communication", &class_probs);
+            if c2_score > c2_class_prob {
+                attack_type = "C2 Communication".to_string();
+                confidence = c2_score;
+            }
+        }
+
+        // "Normal" class prediction means benign
+        if attack_type == "Normal" {
+            return Some(DetectionResult {
+                flow_key,
+                flow_key_raw: flow.flow_key.clone(),
+                direction: flow.direction,
+                is_attack: false,
+                attack_type: None,
+                confidence: class_confidence,
+                ae_score,
+                threshold: self.config.anomaly_threshold,
+                packet_count: flow.packet_count() as u64,
+                flow_duration_us: flow.duration_us(),
+            });
+        }
+
         Some(DetectionResult {
             flow_key,
             flow_key_raw: flow.flow_key.clone(),
@@ -81,10 +151,20 @@ impl Inference {
             attack_type: if is_attack { Some(attack_type) } else { None },
             confidence,
             ae_score,
-            threshold: self.config.ae_threshold,
+            threshold: self.config.anomaly_threshold,
             packet_count: flow.packet_count() as u64,
             flow_duration_us: flow.duration_us(),
         })
+    }
+
+    /// Find the softmax probability for a given label name in class_probs.
+    fn find_class_prob_for(&self, label: &str, class_probs: &[f32]) -> f32 {
+        for (key, name) in &self.config.attack_labels {
+            if name == label && let Ok(idx) = key.parse::<usize>() {
+                return class_probs.get(idx).copied().unwrap_or(0.0);
+            }
+        }
+        0.0
     }
 
     fn preprocess_ae_features(&self, flow: &FlowData) -> Vec<f32> {
@@ -99,7 +179,7 @@ impl Inference {
         tract_ndarray::Array2::from_shape_fn((1, v.len()), |(_, j)| v[j])
     }
 
-    /// Classifier 輸入 = 已預處理的 ae_features ++ [ae_anomaly_score]
+    /// Classifier input = preprocessed ae_features ++ [ae_anomaly_score]
     fn build_classifier_input(&self, ae_features: &[f32], ae_score: f32) -> tract_ndarray::Array2<f32> {
         let n = ae_features.len() + 1;
         tract_ndarray::Array2::from_shape_fn((1, n), |(_, j)| {
@@ -123,30 +203,5 @@ impl Inference {
         let mse = (&diff * &diff).sum() / self.config.ae_feature_names.len() as f32;
 
         Ok(mse)
-    }
-
-    fn run_classifier(&self, input: tract_ndarray::Array2<f32>) -> TractResult<(String, f32)> {
-        let result = self.models.classifier.run(tvec![input.into_tensor().into()])?;
-
-        let output = result[0].to_array_view::<f32>()?;
-
-        let mut max_prob: f32 = 0.0;
-        let mut predicted_class: usize = 0;
-
-        for (i, &prob) in output.iter().enumerate() {
-            if prob > max_prob {
-                max_prob = prob;
-                predicted_class = i;
-            }
-        }
-
-        let attack_type = self
-            .config
-            .attack_labels
-            .get(&predicted_class.to_string())
-            .cloned()
-            .unwrap_or_else(|| "UNKNOWN".to_string());
-
-        Ok((attack_type, max_prob))
     }
 }

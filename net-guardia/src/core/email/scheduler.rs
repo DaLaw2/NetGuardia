@@ -25,8 +25,7 @@ impl SmtpClient {
     ///
     /// Returns `None` if any required setting (`smtp_host`, `smtp_port`,
     /// `smtp_username`, `smtp_password`) is missing.
-    /// If a `SecretStorePort` is provided, reads the password from the secret store
-    /// (falling back to the settings table for backward compat before migration).
+    /// If a `SecretStorePort` is provided, reads the password from the secret store.
     pub fn from_database(
         db: &dyn RepositoryPort,
         secrets: Option<&dyn SecretStorePort>,

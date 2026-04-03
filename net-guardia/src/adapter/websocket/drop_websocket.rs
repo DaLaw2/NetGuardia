@@ -5,7 +5,7 @@ use macros::log;
 use tokio::sync::broadcast;
 
 use crate::core::ebpf::drop_monitor::DropMonitor;
-use crate::model::drop_event::DropEventMessage;
+use crate::model::monitoring::drop_event::DropEventMessage;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;

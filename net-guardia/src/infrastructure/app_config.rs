@@ -1,12 +1,12 @@
 use crate::adapter::persistence::Database;
-use crate::model::config::{HttpConfig, InferenceConfig as InfConfig, MiscConfig, NetworkConfig, PipelineConfig};
+use crate::model::system::config::{HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig};
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 
 pub struct AppConfig {
     pub http: HttpConfig,
     pub network: NetworkConfig,
-    pub inference: InfConfig,
+    pub inference: InferenceConfig,
     pub misc: MiscConfig,
     pub pipeline: PipelineConfig,
 }
@@ -109,7 +109,7 @@ impl AppConfig {
                 packet_buffer_size: 2048,
                 buffer_pool_capacity: 1024,
             },
-            inference: InfConfig {
+            inference: InferenceConfig {
                 deep_autoencoder_name: "deep_autoencoder.onnx".into(),
                 classifier_name: "classifier.onnx".into(),
                 models_config_name: "inference_config.json".into(),

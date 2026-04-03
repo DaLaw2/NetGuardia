@@ -8,7 +8,7 @@ use tokio::time::interval;
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::Error;
-use crate::model::health::{
+use crate::model::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, LoadAverage, MemoryUsage, NetworkStats, SystemHealthMetrics,
     SystemHealthStatus, SystemInfo,
 };

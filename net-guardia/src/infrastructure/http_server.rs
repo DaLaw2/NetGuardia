@@ -17,7 +17,7 @@ use crate::core::auth::setup_guard::{SetupCompleteFlag, SetupGuard};
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
-use crate::core::ml::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
@@ -42,7 +42,7 @@ use crate::model::system::readiness::ReadinessState;
 /// Parameters for starting the HTTP server, avoiding `#[cfg]` on function params.
 pub struct HttpServerParams {
     pub app_config: Arc<AppConfig>,
-    pub inference_config: Arc<InferenceConfig>,
+    pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,

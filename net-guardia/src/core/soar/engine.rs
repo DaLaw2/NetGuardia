@@ -107,12 +107,12 @@ impl SoarEngine {
             // Check if this row belongs to the same playbook as the last one
             let needs_new = playbooks.last().is_none_or(|last| last.id != pb_id);
             if needs_new {
+                let _ = threshold; // stored in DB but no longer used at runtime
                 playbooks.push(Playbook {
                     id: pb_id,
                     name,
                     enabled,
                     trigger_event,
-                    condition_threshold: threshold,
                     cooldown_secs: cooldown,
                     actions: Vec::new(),
                     conditions: Vec::new(),
@@ -265,13 +265,9 @@ impl SoarEngine {
     }
 
     /// Evaluate all conditions on a playbook (AND logic).
-    /// If conditions vec is empty, falls back to legacy `condition_threshold` check.
+    /// If no conditions are configured, the playbook matches unconditionally.
     fn evaluate_conditions(&self, pb: &Playbook, event: &ThreatDetectedEvent) -> bool {
         if pb.conditions.is_empty() {
-            // Legacy: use inline threshold if present
-            if let Some(threshold) = pb.condition_threshold {
-                return (event.confidence as f64) >= threshold;
-            }
             return true;
         }
 
@@ -1485,7 +1481,6 @@ mod tests {
             id: 999,
             name: "test-playbook".to_string(),
             trigger_event: "threat_detected".to_string(),
-            condition_threshold: None,
             cooldown_secs: 60,
             enabled: true,
             actions: vec![],

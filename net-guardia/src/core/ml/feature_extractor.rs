@@ -1,7 +1,7 @@
 use common::define::tcp_flags::*;
 
 use super::flow_tracker::FlowData;
-use crate::model::ml_detection::PacketData;
+use crate::model::detection::ml_detection::PacketData;
 
 use crate::model::detection::flow_features::FlowFeatures;
 
@@ -356,10 +356,10 @@ impl PrecomputedStats {
             "Subflow Fwd Bytes" => self.fwd_total_bytes,
             "Subflow Bwd Packets" => self.bwd_count,
             "Subflow Bwd Bytes" => self.bwd_total_bytes,
-            "Init_Win_bytes_forward" | "Init Fwd Win Byts" | "fwd_win_bytes" => self.init_win_bytes_fwd,
-            "Init_Win_bytes_backward" | "Init Bwd Win Byts" | "bwd_win_bytes" => self.init_win_bytes_bwd,
-            "act_data_pkt_fwd" | "Fwd Act Data Pkts" | "fwd_act_data_pkts" => self.act_data_pkt_fwd,
-            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => self.min_seg_size_forward,
+            "fwd_win_bytes" => self.init_win_bytes_fwd,
+            "bwd_win_bytes" => self.init_win_bytes_bwd,
+            "fwd_act_data_pkts" => self.act_data_pkt_fwd,
+            "fwd_seg_size_min" => self.min_seg_size_forward,
             "Active Mean" => self.active_mean,
             "Active Std" => self.active_std,
             "Active Max" => self.active_max,

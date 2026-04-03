@@ -1,6 +1,6 @@
 use std::time;
 
-use crate::model::user_packet::UserPacket;
+use crate::model::monitoring::user_packet::UserPacket;
 
 pub fn parse_packet(packet_data: &[u8]) -> Option<(UserPacket, usize)> {
     if packet_data.len() < 14 {

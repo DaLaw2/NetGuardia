@@ -2,11 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::model::error::ml::MLError;
-
-use crate::model::config::MLInferenceConfig;
-
-/// Backward-compatible alias so existing `use config_loader::InferenceConfig` paths still compile.
-pub type InferenceConfig = MLInferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 
 impl MLInferenceConfig {
     pub fn load_file(file: &str) -> Result<Self, MLError> {
@@ -22,6 +18,11 @@ impl MLInferenceConfig {
         }
         if config.ae_scaler_std.len() != config.ae_feature_names.len() {
             return Err(MLError::ConfigParseFailed("scaler std length mismatch"));
+        }
+        if config.output_names.len() != 3 {
+            return Err(MLError::ConfigParseFailed(
+                "MultiTaskModel requires exactly 3 output_names (anomaly, class_probs, c2_score)",
+            ));
         }
         Ok(config)
     }

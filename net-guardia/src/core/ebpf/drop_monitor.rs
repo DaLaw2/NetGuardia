@@ -10,7 +10,7 @@ use common::model::drop_event::DropEvent as RawDropEvent;
 use parking_lot::Mutex;
 
 use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
-use crate::model::drop_event::{DropCounters, DropEventMessage};
+use crate::model::monitoring::drop_event::{DropCounters, DropEventMessage};
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,

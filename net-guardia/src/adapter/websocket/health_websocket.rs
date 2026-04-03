@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 use crate::infrastructure::health::SystemHealth;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
-use crate::model::health::SystemHealthMetrics;
+use crate::model::system::health::SystemHealthMetrics;
 use crate::model::log::http::HttpLog;
 
 pub async fn websocket_system_health(

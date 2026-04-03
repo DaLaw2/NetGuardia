@@ -3,8 +3,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
 
-use crate::model::direction::Direction;
-use crate::model::user_packet::UserPacket;
+use crate::model::monitoring::direction::Direction;
+use crate::model::monitoring::user_packet::UserPacket;
 
 pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 

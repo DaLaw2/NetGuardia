@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::model::ml_detection::ClipParams;
+use crate::model::detection::ml_detection::ClipParams;
 
 #[derive(Debug, Clone)]
 pub struct FlowFeatures {

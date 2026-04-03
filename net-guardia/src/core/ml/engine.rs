@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use tokio::time::interval;
 
 use super::aggregator::AttackAggregator;
-use super::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 use super::drift_detector::DriftDetector;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
@@ -17,7 +17,7 @@ use crate::model::detection::flow_features::FlowFeatures;
 
 use super::alert::MLAlert;
 use crate::model::log::ml::MLLog;
-use crate::model::ml_detection::{EngineConfig, InferenceStats};
+use crate::model::detection::ml_detection::{EngineConfig, InferenceStats};
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
@@ -38,7 +38,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         models: Arc<MLModels>,
-        config: Arc<InferenceConfig>,
+        config: Arc<MLInferenceConfig>,
         ml_alert: Arc<MLAlert>,
         drift_detector: Arc<Mutex<DriftDetector>>,
         engine_config: EngineConfig,

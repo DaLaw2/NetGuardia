@@ -3,7 +3,7 @@ use std::future::{Ready, ready};
 use actix_web::dev::Payload;
 use actix_web::{FromRequest, HttpMessage, HttpRequest};
 
-use crate::model::auth::Claims;
+use crate::model::identity::auth::Claims;
 
 /// Actix-web extractor that pulls `Claims` from request extensions.
 ///

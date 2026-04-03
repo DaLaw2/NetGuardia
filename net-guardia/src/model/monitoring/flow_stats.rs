@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::direction::Direction;
+use crate::model::monitoring::direction::Direction;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowStatsEntry {

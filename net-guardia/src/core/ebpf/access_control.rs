@@ -7,11 +7,11 @@ use common::model::ip_address::{IPv4, IPv6, Port};
 use common::model::port_rule::PortRule;
 use tokio::sync::RwLock;
 
-use crate::model::direction::FlowDirection;
+use crate::model::access_control::ip_address::NativeConvert;
+use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
-use crate::model::ip_address::NativeConvert;
-use crate::model::list_type::ListType;
+use crate::model::monitoring::direction::FlowDirection;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::model::ml_detection::FlowKey;
+use crate::model::detection::ml_detection::FlowKey;
 
 pub struct AttackAggregator {
     detections: HashMap<FlowKey, Vec<(Instant, f32)>>,
@@ -31,7 +31,7 @@ impl AttackAggregator {
         // DDoS/DoS: high frequency, need more confirmations to avoid alert storms
         // C2/Cryptomining: low frequency, alert on first detection
         let effective_min = match attack_type {
-            Some("DDoS") | Some("DoS") => self.min_detections.saturating_mul(2).max(1),
+            Some("DoS/DDoS") => self.min_detections.saturating_mul(2).max(1),
             Some("C2 Communication") | Some("Cryptomining") => 1,
             _ => self.min_detections,
         };
@@ -80,14 +80,14 @@ mod tests {
     }
 
     #[test]
-    fn ddos_requires_double_min_detections() {
+    fn dos_ddos_requires_double_min_detections() {
         let mut agg = AttackAggregator::new(60, 3);
         let key = test_key();
-        // DDoS needs 6 detections (3 * 2)
+        // DoS/DDoS needs 6 detections (3 * 2)
         for _ in 0..5 {
-            assert!(!agg.should_alert(&key, 5.0, 1.0, Some("DDoS")));
+            assert!(!agg.should_alert(&key, 5.0, 1.0, Some("DoS/DDoS")));
         }
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("DDoS")));
+        assert!(agg.should_alert(&key, 5.0, 1.0, Some("DoS/DDoS")));
     }
 
     #[test]

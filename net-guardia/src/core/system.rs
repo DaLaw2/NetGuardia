@@ -11,7 +11,7 @@ use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::config_loader::InferenceConfig;
+use crate::model::system::config::MLInferenceConfig;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -32,7 +32,7 @@ use crate::model::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
 use crate::model::log::detection::DetectionLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
-use crate::model::ml_detection::AlertMessage;
+use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::system::readiness::ReadinessState;
 
 /// API-triggered shutdown mode.
@@ -70,7 +70,7 @@ impl ShutdownHandle {
 /// Setup mode is handled by main.rs — System only runs when setup is complete.
 pub struct System {
     pub app_config: Arc<AppConfig>,
-    pub inference_config: Arc<InferenceConfig>,
+    pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
@@ -337,9 +337,12 @@ impl System {
     fn normalize_attack_type(raw: &str) -> String {
         match raw {
             "Brute Force" => "brute_force".to_string(),
-            "DDoS" | "DoS" => "threat_detected".to_string(),
+            "C2 Communication" => "c2_communication".to_string(),
+            "Cryptomining" => "cryptomining".to_string(),
+            "DoS/DDoS" => "threat_detected".to_string(),
             "Exploitation" => "threat_detected".to_string(),
             "Reconnaissance" => "port_scan".to_string(),
+            "Normal" => "normal".to_string(),
             other => {
                 log!(DetectionLog::UnknownMlAttackType(other.to_string()));
                 "threat_detected".to_string()
@@ -383,11 +386,17 @@ impl System {
         loop {
             match rx.recv().await {
                 Ok(alert) => {
+                    let raw_type = alert.attack_type.as_deref().unwrap_or("unknown");
+                    let normalized = Self::normalize_attack_type(raw_type);
+
+                    // "Normal" class means benign — no SOAR trigger needed
+                    if normalized == "normal" {
+                        continue;
+                    }
+
                     let event = DetectionEvent {
                         source: DetectionSource::ML,
-                        attack_type: Self::normalize_attack_type(
-                            &alert.attack_type.unwrap_or_else(|| "unknown".into()),
-                        ),
+                        attack_type: normalized,
                         confidence: alert.confidence,
                         source_ip: alert.src_ip,
                         dest_ip: alert.dst_ip,
@@ -439,13 +448,18 @@ mod tests {
     }
 
     #[test]
-    fn normalize_ddos() {
-        assert_eq!(System::normalize_attack_type("DDoS"), "threat_detected");
+    fn normalize_c2_communication() {
+        assert_eq!(System::normalize_attack_type("C2 Communication"), "c2_communication");
     }
 
     #[test]
-    fn normalize_dos() {
-        assert_eq!(System::normalize_attack_type("DoS"), "threat_detected");
+    fn normalize_cryptomining() {
+        assert_eq!(System::normalize_attack_type("Cryptomining"), "cryptomining");
+    }
+
+    #[test]
+    fn normalize_dos_ddos() {
+        assert_eq!(System::normalize_attack_type("DoS/DDoS"), "threat_detected");
     }
 
     #[test]
@@ -456,6 +470,11 @@ mod tests {
     #[test]
     fn normalize_reconnaissance() {
         assert_eq!(System::normalize_attack_type("Reconnaissance"), "port_scan");
+    }
+
+    #[test]
+    fn normalize_normal() {
+        assert_eq!(System::normalize_attack_type("Normal"), "normal");
     }
 
     #[test]

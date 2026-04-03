@@ -3,7 +3,7 @@ use std::sync::Arc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode, errors::ErrorKind};
 
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::auth::Claims;
+use crate::model::identity::auth::Claims;
 use crate::model::error::Error;
 use crate::model::error::auth::AuthError;
 

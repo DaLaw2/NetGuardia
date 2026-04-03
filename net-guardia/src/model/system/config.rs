@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::ml_detection::ClipParams;
+use crate::model::detection::ml_detection::ClipParams;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpConfig {
@@ -86,6 +86,11 @@ pub struct MLInferenceConfig {
     pub ae_threshold: f32,
     pub classifier_feature_names: Vec<String>,
     pub attack_labels: HashMap<String, String>,
+    pub anomaly_threshold: f32,
+    pub c2_threshold: f32,
+    pub model_type: String,
+    pub output_names: Vec<String>,
+    pub ae_feature_weights: HashMap<String, f64>,
 }
 
 impl MLInferenceConfig {

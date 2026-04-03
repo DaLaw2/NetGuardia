@@ -1,4 +1,4 @@
-use crate::model::auth::Claims;
+use crate::model::identity::auth::Claims;
 use crate::model::error::Error;
 
 /// Type alias for API key list items: (id, name, permission_level, created_at, last_used_at)

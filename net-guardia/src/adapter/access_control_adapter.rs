@@ -5,9 +5,9 @@ use async_trait::async_trait;
 
 use crate::core::ebpf::access_control::AccessControl;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::model::direction::FlowDirection;
+use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
-use crate::model::list_type::ListType;
+use crate::model::monitoring::direction::FlowDirection;
 
 /// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
 pub struct EbpfAccessControlAdapter {

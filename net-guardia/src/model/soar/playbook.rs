@@ -7,10 +7,8 @@ pub struct Playbook {
     pub name: String,
     pub enabled: bool,
     pub trigger_event: String,
-    pub condition_threshold: Option<f64>,
     pub cooldown_secs: i64,
     pub actions: Vec<PlaybookAction>,
-    /// Multi-condition rules (AND logic). Empty = legacy threshold-only mode.
     pub conditions: Vec<PlaybookCondition>,
 }
 

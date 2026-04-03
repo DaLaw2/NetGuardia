@@ -4,12 +4,12 @@ use std::sync::Arc;
 use crate::core::ebpf::access_control::AccessControl;
 use crate::core::ebpf::geo_block::GeoBlock;
 use crate::interface::port::repository::RepositoryPort;
-use crate::model::direction::FlowDirection;
+use crate::model::monitoring::direction::FlowDirection;
 use macros::log;
 
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
-use crate::model::list_type::ListType;
+use crate::model::access_control::list_type::ListType;
 
 /// Domain service that coordinates ACL changes between DB persistence and eBPF data plane.
 /// Atomic write: eBPF first, then DB. If DB fails, rollback eBPF.
