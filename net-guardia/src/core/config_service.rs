@@ -49,7 +49,9 @@ const SETTINGS_MAP: &[(&str, &[&str])] = &[
         "models",
         &["deep_autoencoder_name", "classifier_name", "models_config_name"],
     ),
-    ("misc", &["geoip_db_name", "report_dir", "log_dir"]),
+    // report_dir and log_dir intentionally NOT configurable via API to prevent
+    // arbitrary directory write/read. They use hardcoded safe defaults.
+    ("misc", &["geoip_db_name"]),
     ("soar", &["soar_max_auto_block_cap", "soar_max_ttl_secs"]),
     ("ml", &["ml_drift_window_secs"]),
     ("telegram", &["telegram_max_messages_per_minute"]),
@@ -116,8 +118,6 @@ impl ConfigService {
             },
             "misc": {
                 "geoip_db_name": get("geoip_db_name"),
-                "report_dir": get("report_dir"),
-                "log_dir": get("log_dir"),
             },
             "soar": {
                 "soar_max_auto_block_cap": get("soar_max_auto_block_cap"),

@@ -223,7 +223,7 @@ impl FlowTracker {
 
     pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
-        let reversed_key = packet_key.clone().reverse();
+        let reversed_key = packet_key.reverse();
 
         // Try to match an existing flow first (canonical key already established).
         // Use peek() to avoid promoting — we'll promote via get_mut() below.

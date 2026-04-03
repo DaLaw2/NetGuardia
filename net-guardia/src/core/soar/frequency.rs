@@ -6,6 +6,9 @@ use dashmap::DashMap;
 /// Key for frequency tracking: (playbook_id, source_ip).
 type FreqKey = (i64, String);
 
+/// Maximum tracked keys to bound memory under DDoS.
+const MAX_TRACKED_KEYS: usize = 50_000;
+
 /// Lock-free frequency tracker using DashMap for concurrent per-IP event counting.
 pub struct FrequencyTracker {
     events: DashMap<FreqKey, VecDeque<Instant>>,
@@ -68,6 +71,17 @@ impl FrequencyTracker {
             }
             true
         });
+
+        // Enforce max key cap to prevent unbounded growth under DDoS
+        if self.events.len() > MAX_TRACKED_KEYS {
+            let excess = self.events.len() - MAX_TRACKED_KEYS;
+            let keys_to_remove: Vec<FreqKey> = self.events.iter().take(excess).map(|e| e.key().clone()).collect();
+            for key in keys_to_remove {
+                self.events.remove(&key);
+                removed += 1;
+            }
+        }
+
         removed
     }
 }

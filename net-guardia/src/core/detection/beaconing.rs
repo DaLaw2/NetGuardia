@@ -102,46 +102,50 @@ impl BeaconingDetector {
         let now = Instant::now();
         let cooldown = Duration::from_secs(ALERT_COOLDOWN_SECS);
 
-        for mut entry in self.flow_cache.iter_mut() {
-            let src_ip = entry.key().0.clone();
-            let dst_ip = entry.key().1.clone();
-            let dst_port = entry.key().2;
-            let flow = entry.value_mut();
-
+        // Phase 1: read-lock scan to find beaconing candidates (avoids holding write locks
+        // across the entire 50K-entry iteration, reducing contention with record_flow).
+        let mut alerts: Vec<(FlowTuple, f64, usize)> = Vec::new();
+        for entry in self.flow_cache.iter() {
+            let flow = entry.value();
             if flow.timestamps.len() < MIN_OBSERVATIONS {
                 continue;
             }
-
-            // Skip if recently alerted
             if let Some(last) = flow.last_alerted
                 && now.duration_since(last) < cooldown
             {
                 continue;
             }
-
             let cv = compute_cv(&flow.timestamps);
             if cv < CV_THRESHOLD {
-                log!(DetectionLog::BeaconingDetected {
-                    src_ip: src_ip.clone(),
-                    dst_ip: dst_ip.clone(),
-                    dst_port,
-                    cv,
-                    count: flow.timestamps.len(),
-                });
+                alerts.push((entry.key().clone(), cv, flow.timestamps.len()));
+            }
+        }
 
-                let event = DetectionEvent {
-                    source: DetectionSource::Beaconing,
-                    attack_type: "c2_communication".to_string(),
-                    confidence: (1.0 - cv / CV_THRESHOLD) as f32 * 0.5 + 0.5, // 0.5–1.0 range
-                    source_ip: src_ip,
-                    dest_ip: dst_ip,
-                    protocol: 6, // Most C2 is TCP
-                    packet_count: flow.timestamps.len() as u64,
-                    flow_duration_us: 0,
-                };
+        // Phase 2: selective write-lock only for entries that need last_alerted update.
+        for (key, cv, count) in alerts {
+            let (src_ip, dst_ip, dst_port) = &key;
+            log!(DetectionLog::BeaconingDetected {
+                src_ip: src_ip.clone(),
+                dst_ip: dst_ip.clone(),
+                dst_port: *dst_port,
+                cv,
+                count,
+            });
 
-                let _ = self.detection_tx.try_send(event);
-                flow.last_alerted = Some(now);
+            let event = DetectionEvent {
+                source: DetectionSource::Beaconing,
+                attack_type: "c2_communication".to_string(),
+                confidence: (1.0 - cv / CV_THRESHOLD) as f32 * 0.5 + 0.5,
+                source_ip: src_ip.clone(),
+                dest_ip: dst_ip.clone(),
+                protocol: 6,
+                packet_count: count as u64,
+                flow_duration_us: 0,
+            };
+
+            let _ = self.detection_tx.try_send(event);
+            if let Some(mut entry) = self.flow_cache.get_mut(&key) {
+                entry.last_alerted = Some(now);
             }
         }
     }

@@ -5,9 +5,9 @@
 pub const MAX_PENDING_UNBLOCK_RETRIES: i64 = 5;
 
 // ── ML Engine ──────────────────────────────────────────────────────
-pub const ML_ALERT_CHANNEL_CAPACITY: usize = 100;
+pub const ML_ALERT_CHANNEL_CAPACITY: usize = 1024;
 pub const FLOW_MAX_PACKETS_PER_DIRECTION: usize = 1000;
-pub const FLOW_MAX_PERIODS: usize = 10000;
+pub const FLOW_MAX_PERIODS: usize = 1000;
 pub const FLOW_IDLE_THRESHOLD_US: u64 = 1_000_000;
 pub const FLOW_BULK_MIN_PACKETS: u64 = 4;
 pub const FLOW_BULK_MIN_BYTES: u64 = 1000;

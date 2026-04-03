@@ -127,7 +127,13 @@ impl SoarEngine {
                 pb.actions.push(PlaybookAction {
                     action_order: order,
                     action_type: atype,
-                    params: serde_json::from_str(&params_str).unwrap_or(serde_json::Value::Object(Default::default())),
+                    params: serde_json::from_str(&params_str).unwrap_or_else(|e| {
+                        log!(SoarLog::PlaybookError {
+                            name: pb.name.clone(),
+                            error: format!("Malformed action params JSON: {}", e),
+                        });
+                        serde_json::Value::Object(Default::default())
+                    }),
                 });
             }
         }
@@ -839,13 +845,17 @@ impl SoarEngine {
             "timestamp": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: format!("HTTP client error: {}", e),
-            })?;
+        // Pin resolved IPs to prevent DNS rebinding: the DNS check above verified
+        // all resolved addresses are public, so we force reqwest to use those same
+        // addresses instead of re-resolving (which could return a private IP on TTL expiry).
+        let mut client_builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+        for addr in &addrs {
+            client_builder = client_builder.resolve(host, *addr);
+        }
+        let client = client_builder.build().map_err(|e| SoarError::ActionFailed {
+            action_type: "webhook".to_string(),
+            reason: format!("HTTP client error: {}", e),
+        })?;
 
         let resp = client
             .post(url_str)

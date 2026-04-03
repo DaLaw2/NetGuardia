@@ -65,12 +65,15 @@ impl LateralMovementDetector {
             }
 
             set.dests.insert(alert.dst_ip.clone());
-            set.dests.len() >= self.threshold
+
+            if set.dests.len() >= self.threshold {
+                Some(set.dests.len())
+            } else {
+                None
+            }
         };
 
-        if should_alert {
-            let unique_dests = self.state.get(&key).map(|e| e.dests.len()).unwrap_or(0);
-
+        if let Some(unique_dests) = should_alert {
             log!(DetectionLog::LateralMovementDetected {
                 src_ip: key.clone(),
                 unique_dests,

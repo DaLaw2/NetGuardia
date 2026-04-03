@@ -66,12 +66,14 @@ impl BotnetDetector {
             set.sources.insert(alert.src_ip.clone());
             set.last_alert = alert.clone();
 
-            set.sources.len() >= self.threshold
+            if set.sources.len() >= self.threshold {
+                Some(set.sources.len())
+            } else {
+                None
+            }
         };
 
-        if should_alert {
-            let unique_sources = self.state.get(&key).map(|e| e.sources.len()).unwrap_or(0);
-
+        if let Some(unique_sources) = should_alert {
             log!(DetectionLog::BotnetDetected {
                 dst_ip: key.clone(),
                 unique_sources,

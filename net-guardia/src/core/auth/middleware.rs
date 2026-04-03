@@ -66,6 +66,8 @@ fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<S
         || path.starts_with("/api/notifications/")
         || path.starts_with("/api/report/")
         || path.starts_with("/api/api-keys/")
+        || path.starts_with("/api/logs/")
+        || path.starts_with("/api/audit/")
     {
         "system"
     } else {

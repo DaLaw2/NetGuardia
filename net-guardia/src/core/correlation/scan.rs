@@ -64,16 +64,14 @@ impl ScanDetector {
             set.ports.insert(alert.dst_port);
             set.last_dst_ip = alert.dst_ip.clone();
 
-            set.ports.len() >= self.threshold
+            if set.ports.len() >= self.threshold {
+                Some((set.ports.len(), set.last_dst_ip.clone()))
+            } else {
+                None
+            }
         };
 
-        if should_alert {
-            let (unique_ports, last_dst_ip) = self
-                .state
-                .get(&key)
-                .map(|e| (e.ports.len(), e.last_dst_ip.clone()))
-                .unwrap_or((0, String::new()));
-
+        if let Some((unique_ports, last_dst_ip)) = should_alert {
             log!(DetectionLog::ScanDetected {
                 src_ip: key.clone(),
                 unique_ports,
