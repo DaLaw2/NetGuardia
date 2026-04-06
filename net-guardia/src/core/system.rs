@@ -11,7 +11,6 @@ use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::model::system::config::MLInferenceConfig;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -26,13 +25,14 @@ use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::http_server::HttpServerParams;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
+use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 use crate::model::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
 use crate::model::log::detection::DetectionLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
-use crate::model::detection::ml_detection::AlertMessage;
+use crate::model::system::config::MLInferenceConfig;
 use crate::model::system::readiness::ReadinessState;
 
 /// API-triggered shutdown mode.
@@ -346,9 +346,9 @@ impl System {
         match raw {
             "Brute Force" => "brute_force".to_string(),
             "C2 Communication" => "c2_communication".to_string(),
-            "Cryptomining" => "cryptomining".to_string(),
             "DoS/DDoS" => "threat_detected".to_string(),
-            "Exploitation" => "threat_detected".to_string(),
+            "Exploitation" | "Malware" | "Web Attack" => "threat_detected".to_string(),
+            "Bot" | "DNS Tunneling" => "threat_detected".to_string(),
             "Reconnaissance" => "port_scan".to_string(),
             "Normal" => "normal".to_string(),
             other => {

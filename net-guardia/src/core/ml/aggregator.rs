@@ -28,11 +28,11 @@ impl AttackAggregator {
         detections.push((now, score));
 
         // Per-attack-type adaptive min_detections:
-        // DDoS/DoS: high frequency, need more confirmations to avoid alert storms
-        // C2/Cryptomining: low frequency, alert on first detection
+        // DoS/DDoS: high frequency, need more confirmations to avoid alert storms
+        // C2/Bot/DNS Tunneling: low frequency, alert on first detection
         let effective_min = match attack_type {
             Some("DoS/DDoS") => self.min_detections.saturating_mul(2).max(1),
-            Some("C2 Communication") | Some("Cryptomining") => 1,
+            Some("C2 Communication") | Some("Bot") | Some("DNS Tunneling") => 1,
             _ => self.min_detections,
         };
 
