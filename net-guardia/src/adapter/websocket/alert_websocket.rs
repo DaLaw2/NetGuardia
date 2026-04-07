@@ -5,10 +5,10 @@ use macros::log;
 use tokio::sync::broadcast;
 
 use crate::core::ml::alert::MLAlert;
+use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
-use crate::model::detection::ml_detection::AlertMessage;
 
 pub async fn websocket_alert(req: HttpRequest, body: web::Payload, ai: web::Data<MLAlert>) -> Result<HttpResponse> {
     let (response, session, msg_stream) = handle(&req, body)?;

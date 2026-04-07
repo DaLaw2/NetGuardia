@@ -17,7 +17,6 @@ use crate::core::auth::setup_guard::{SetupCompleteFlag, SetupGuard};
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
-use crate::model::system::config::MLInferenceConfig;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
@@ -32,6 +31,7 @@ use crate::model::config::constants::HTTP_FALLBACK_PORT;
 use crate::model::error::Error;
 use crate::model::error::http::HttpError;
 use crate::model::log::http::HttpLog;
+use crate::model::system::config::MLInferenceConfig;
 use macros::log;
 
 /// Shared flag: true when all services (eBPF, ML, SOAR) are fully initialized.

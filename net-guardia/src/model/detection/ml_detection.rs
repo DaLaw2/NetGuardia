@@ -106,7 +106,6 @@ pub struct DetectionResult {
     pub ae_score: f32,
     pub anomaly_score: f32,
     pub c2_score: f32,
-    pub threshold: f32,
     pub packet_count: u64,
     pub flow_duration_us: u64,
 }

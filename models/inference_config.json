@@ -266,7 +266,7 @@
     "1": "Brute Force",
     "2": "C2 Communication",
     "3": "DNS Tunneling",
-    "4": "DoS\/DDoS",
+    "4": "DoS/DDoS",
     "5": "Exploitation",
     "6": "Malware",
     "7": "Normal",
@@ -313,5 +313,6 @@
     "bwd_iat_std": 1.5,
     "fwd_bwd_bytes_ratio": 2.0,
     "iat_cv": 2.0
-  }
+  },
+  "class_min_confidence": 0.4
 }

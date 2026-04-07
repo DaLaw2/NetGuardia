@@ -120,7 +120,7 @@ struct PrecomputedStats {
     idle_mean: f64,
     idle_std: f64,
 
-    // Phase 2: new features for C2/Cryptomining detection
+    // Phase 2: new features for C2/Bot detection
     fwd_bwd_bytes_ratio: f64,
     fwd_iat_skewness: f64,
 }
@@ -207,7 +207,7 @@ impl PrecomputedStats {
         let (idle_max, idle_min, idle_mean, idle_std) =
             compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
-        // Phase 2: new features for C2/Cryptomining detection
+        // Phase 2: new features for C2/Bot detection
         let fwd_bwd_bytes_ratio = safe_div(fwd_total_bytes, fwd_total_bytes + bwd_total_bytes);
         let fwd_iat_skewness = compute_bowley_skewness(&fwd_iats);
 
@@ -374,7 +374,7 @@ impl PrecomputedStats {
             "bwd_iat_std" => self.bwd_iat_std,
             "flow_iat_std" => self.flow_iat_std,
 
-            // Phase 2: new features for C2/Cryptomining detection
+            // Phase 2: new features for C2/Bot detection
             "fwd_bwd_bytes_ratio" => self.fwd_bwd_bytes_ratio,
             "pkt_len_variance" => self.all_len_std * self.all_len_std,
             "fwd_iat_skewness" => self.fwd_iat_skewness,

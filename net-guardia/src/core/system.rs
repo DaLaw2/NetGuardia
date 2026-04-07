@@ -464,8 +464,18 @@ mod tests {
     }
 
     #[test]
-    fn normalize_cryptomining() {
-        assert_eq!(System::normalize_attack_type("Cryptomining"), "cryptomining");
+    fn normalize_malware() {
+        assert_eq!(System::normalize_attack_type("Malware"), "threat_detected");
+    }
+
+    #[test]
+    fn normalize_bot() {
+        assert_eq!(System::normalize_attack_type("Bot"), "threat_detected");
+    }
+
+    #[test]
+    fn normalize_dns_tunneling() {
+        assert_eq!(System::normalize_attack_type("DNS Tunneling"), "threat_detected");
     }
 
     #[test]

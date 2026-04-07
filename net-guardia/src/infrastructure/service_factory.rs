@@ -19,7 +19,6 @@ use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::model::system::config::MLInferenceConfig;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -39,14 +38,15 @@ use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort
 use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::soar::SoarPort;
+use crate::model::access_control::list_type::ListType;
 use crate::model::detection::drift::FeatureBaselines;
-use crate::model::monitoring::direction::FlowDirection;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::access_control::list_type::ListType;
 use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::system::SystemLog;
+use crate::model::monitoring::direction::FlowDirection;
+use crate::model::system::config::MLInferenceConfig;
 use macros::log;
 
 /// Holds all Arc-wrapped services that make up the running application.

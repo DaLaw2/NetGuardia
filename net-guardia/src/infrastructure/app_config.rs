@@ -1,7 +1,7 @@
 use crate::adapter::persistence::Database;
-use crate::model::system::config::{HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig};
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
+use crate::model::system::config::{HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig};
 
 pub struct AppConfig {
     pub http: HttpConfig,

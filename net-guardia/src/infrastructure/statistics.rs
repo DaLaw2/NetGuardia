@@ -4,7 +4,9 @@ use std::time;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowData;
 use crate::model::monitoring::direction::Direction;
-use crate::model::monitoring::flow_stats::{FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary};
+use crate::model::monitoring::flow_stats::{
+    FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary,
+};
 
 /// Conversion from core::ml::FlowData to model::FlowStatsEntry.
 /// Placed here (core layer) to maintain dependency rule: model/ must not import core/.

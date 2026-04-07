@@ -88,9 +88,15 @@ pub struct MLInferenceConfig {
     pub attack_labels: HashMap<String, String>,
     pub anomaly_threshold: f32,
     pub c2_threshold: f32,
+    #[serde(default = "default_class_min_confidence")]
+    pub class_min_confidence: f32,
     pub model_type: String,
     pub output_names: Vec<String>,
     pub ae_feature_weights: HashMap<String, f64>,
+}
+
+fn default_class_min_confidence() -> f32 {
+    0.4
 }
 
 impl MLInferenceConfig {

@@ -7,9 +7,9 @@ use crate::interface::port::repository::RepositoryPort;
 use crate::model::monitoring::direction::FlowDirection;
 use macros::log;
 
+use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
-use crate::model::access_control::list_type::ListType;
 
 /// Domain service that coordinates ACL changes between DB persistence and eBPF data plane.
 /// Atomic write: eBPF first, then DB. If DB fails, rollback eBPF.

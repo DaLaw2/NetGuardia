@@ -3,9 +3,9 @@ use std::sync::Arc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode, errors::ErrorKind};
 
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::identity::auth::Claims;
 use crate::model::error::Error;
 use crate::model::error::auth::AuthError;
+use crate::model::identity::auth::Claims;
 
 pub struct JwtService {
     encoding_key: EncodingKey,
@@ -135,5 +135,4 @@ mod tests {
         let result = jwt2.validate_token(&token);
         assert!(result.is_err());
     }
-
 }

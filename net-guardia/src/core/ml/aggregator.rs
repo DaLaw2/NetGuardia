@@ -29,10 +29,10 @@ impl AttackAggregator {
 
         // Per-attack-type adaptive min_detections:
         // DoS/DDoS: high frequency, need more confirmations to avoid alert storms
-        // C2/Bot/DNS Tunneling: low frequency, alert on first detection
+        // C2/Bot/DNS Tunneling/Exploitation: low frequency or single-shot, alert immediately
         let effective_min = match attack_type {
             Some("DoS/DDoS") => self.min_detections.saturating_mul(2).max(1),
-            Some("C2 Communication") | Some("Bot") | Some("DNS Tunneling") => 1,
+            Some("C2 Communication") | Some("Bot") | Some("DNS Tunneling") | Some("Exploitation") => 1,
             _ => self.min_detections,
         };
 
@@ -99,10 +99,24 @@ mod tests {
     }
 
     #[test]
-    fn cryptomining_alerts_on_first_detection() {
+    fn exploitation_alerts_on_first_detection() {
         let mut agg = AttackAggregator::new(60, 3);
         let key = test_key();
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("Cryptomining")));
+        assert!(agg.should_alert(&key, 5.0, 1.0, Some("Exploitation")));
+    }
+
+    #[test]
+    fn bot_alerts_on_first_detection() {
+        let mut agg = AttackAggregator::new(60, 3);
+        let key = test_key();
+        assert!(agg.should_alert(&key, 5.0, 1.0, Some("Bot")));
+    }
+
+    #[test]
+    fn dns_tunneling_alerts_on_first_detection() {
+        let mut agg = AttackAggregator::new(60, 3);
+        let key = test_key();
+        assert!(agg.should_alert(&key, 5.0, 1.0, Some("DNS Tunneling")));
     }
 
     #[test]

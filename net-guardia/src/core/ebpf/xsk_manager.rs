@@ -20,12 +20,12 @@ use crate::core::ebpf::dns_filter::DnsFilter;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowTracker;
 use crate::infrastructure::app_config::AppConfig;
-use crate::model::monitoring::direction::Direction;
-use crate::model::system::config::NetworkConfig;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::log::ebpf::EbpfLog;
+use crate::model::monitoring::direction::Direction;
+use crate::model::system::config::NetworkConfig;
 use crate::utils::packet_parser::parse_packet;
 
 /// Pre-allocated buffer pool to avoid per-packet malloc.

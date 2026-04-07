@@ -7,17 +7,17 @@ use tokio::sync::oneshot;
 use tokio::time::interval;
 
 use super::aggregator::AttackAggregator;
-use crate::model::system::config::MLInferenceConfig;
 use super::drift_detector::DriftDetector;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
 use super::model_loader::MLModels;
 use super::traffic_logger::TrafficLogger;
 use crate::model::detection::flow_features::FlowFeatures;
+use crate::model::system::config::MLInferenceConfig;
 
 use super::alert::MLAlert;
-use crate::model::log::ml::MLLog;
 use crate::model::detection::ml_detection::{EngineConfig, InferenceStats};
+use crate::model::log::ml::MLLog;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
@@ -168,9 +168,9 @@ impl Engine {
             let mut t = tracker.lock();
             total_count += t.flow_count();
             all_flows.extend(
-                t.get_uninferred_flows()
-                    .into_iter()
-                    .filter(|flow| flow.packet_count() >= Self::effective_min_packets(&flow.flow_key, self.min_packets)),
+                t.get_uninferred_flows().into_iter().filter(|flow| {
+                    flow.packet_count() >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
+                }),
             );
             // lock released here
         }
@@ -246,8 +246,8 @@ impl Engine {
                 if result.is_attack {
                     let should_alert = aggregator.should_alert(
                         &result.flow_key_raw,
-                        result.ae_score,
-                        result.threshold,
+                        result.confidence,
+                        self.inference_pipeline.config.class_min_confidence,
                         result.attack_type.as_deref(),
                     );
 

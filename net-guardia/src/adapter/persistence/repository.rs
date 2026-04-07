@@ -126,8 +126,7 @@ impl Database {
         use std::fmt::Write;
 
         type HmacSha256 = Hmac<Sha256>;
-        let mut mac = HmacSha256::new_from_slice(&self.api_key_hmac)
-            .unwrap_or_else(|_| unreachable!());
+        let mut mac = HmacSha256::new_from_slice(&self.api_key_hmac).unwrap_or_else(|_| unreachable!());
         mac.update(raw_key.as_bytes());
         let result = mac.finalize().into_bytes();
 

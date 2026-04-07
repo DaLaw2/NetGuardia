@@ -8,11 +8,11 @@ use tokio::time::interval;
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::Error;
+use crate::model::log::health::Health;
 use crate::model::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, LoadAverage, MemoryUsage, NetworkStats, SystemHealthMetrics,
     SystemHealthStatus, SystemInfo,
 };
-use crate::model::log::health::Health;
 
 pub struct SystemHealth {
     system: RwLock<System>,

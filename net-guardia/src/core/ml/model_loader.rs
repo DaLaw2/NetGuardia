@@ -40,11 +40,7 @@ impl MLModels {
     fn loader(model: &str, features: usize, batch_size: usize) -> Result<RunnableModel, MLError> {
         let model_path = PathBuf::from("models").join(model);
 
-        log!(MLLog::ModelLoading(
-            model.to_string(),
-            features,
-            batch_size
-        ));
+        log!(MLLog::ModelLoading(model.to_string(), features, batch_size));
 
         let start = Instant::now();
 
@@ -71,6 +67,9 @@ impl MLModels {
 
         let inputs = model.model().inputs.len();
         let outputs = model.model().outputs.len();
-        format!("{name}: inputs: {inputs}, outputs: {outputs}, batch_size: {}", self.batch_size)
+        format!(
+            "{name}: inputs: {inputs}, outputs: {outputs}, batch_size: {}",
+            self.batch_size
+        )
     }
 }

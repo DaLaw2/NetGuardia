@@ -81,19 +81,14 @@ impl ModelWatcher {
         Ok(())
     }
 
-    fn spawn_watcher(
-        models_dir: PathBuf,
-        tx: mpsc::Sender<()>,
-    ) -> Result<RecommendedWatcher, notify::Error> {
+    fn spawn_watcher(models_dir: PathBuf, tx: mpsc::Sender<()>) -> Result<RecommendedWatcher, notify::Error> {
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                let dominated = matches!(
-                    event.kind,
-                    EventKind::Create(_) | EventKind::Modify(_)
-                );
-                let has_onnx = event.paths.iter().any(|p| {
-                    p.extension().is_some_and(|ext| ext == "onnx")
-                });
+                let dominated = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
+                let has_onnx = event
+                    .paths
+                    .iter()
+                    .any(|p| p.extension().is_some_and(|ext| ext == "onnx"));
                 if dominated && has_onnx {
                     let _ = tx.blocking_send(());
                 }

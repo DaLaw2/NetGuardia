@@ -1,0 +1,6 @@
+# metric_direction: higher_is_better
+iteration	commit	metric	delta	guard	status	description
+0	4216906	91.3	0.0	-	baseline	v4 model — 91.3% accuracy, Normal FPR 29.3%
+1	4216906	77.9	-13.4	-	keep	v5: 10 classes, danger weights, FPR 3.0% (from 29.3%), macro F1 0.804
+2	4216906	83.4	+5.5	-	keep	v6: class_loss=1.0, focal_gamma=2.0, patience=40. Macro F1 0.848, FPR 3.0%
+3	4216906	86.4	+3.0	-	keep	v7: wider model 384→256→128 (638K), Recon+0.104, Crypto collapsed to 0

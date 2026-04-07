@@ -295,7 +295,6 @@ impl Inference {
                 ae_score,
                 anomaly_score,
                 c2_score,
-                threshold: self.config.anomaly_threshold,
                 packet_count: flow.packet_count() as u64,
                 flow_duration_us: flow.duration_us(),
             };
@@ -311,7 +310,6 @@ impl Inference {
             ae_score,
             anomaly_score,
             c2_score,
-            threshold: self.config.anomaly_threshold,
             packet_count: flow.packet_count() as u64,
             flow_duration_us: flow.duration_us(),
         }
