@@ -379,6 +379,9 @@ impl PrecomputedStats {
             "pkt_len_variance" => self.all_len_std * self.all_len_std,
             "fwd_iat_skewness" => self.fwd_iat_skewness,
 
+            // Model lists this in ae_feature_names but had no arm — was receiving post-scaler (0-μ)/σ.
+            "iat_cv" => safe_div(self.flow_iat_std, self.flow_iat_mean),
+
             _ => 0.0,
         }
     }
