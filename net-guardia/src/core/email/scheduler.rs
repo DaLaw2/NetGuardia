@@ -43,8 +43,7 @@ impl SmtpClient {
             _ => return Ok(None),
         };
 
-        // Try secret store first, fall back to settings
-        let password = Self::resolve_smtp_password(db, secrets)?;
+        let password = Self::resolve_smtp_password(secrets)?;
         let password = match password {
             Some(v) if !v.is_empty() => v,
             _ => return Ok(None),
@@ -92,13 +91,9 @@ impl SmtpClient {
             _ => return Ok(None),
         };
 
-        // Try secret store first, fall back to settings via SoarPort
         let password = match secrets.and_then(|ss| ss.get_secret("smtp_password").ok().flatten()) {
             Some(pw) if !pw.is_empty() => pw,
-            _ => match db.get_setting("smtp_password")? {
-                Some(v) if !v.is_empty() && v != "__encrypted__" => v,
-                _ => return Ok(None),
-            },
+            _ => return Ok(None),
         };
 
         let port: u16 = port_str.parse().unwrap_or(587);
@@ -122,21 +117,10 @@ impl SmtpClient {
     }
 
     /// Resolve SMTP password: try secret store first, fall back to settings.
-    fn resolve_smtp_password(
-        db: &dyn RepositoryPort,
-        secrets: Option<&dyn SecretStorePort>,
-    ) -> Result<Option<String>, Error> {
-        if let Some(ss) = secrets
-            && let Some(pw) = ss.get_secret("smtp_password")?
-            && !pw.is_empty()
-        {
-            return Ok(Some(pw));
-        }
-        // Fallback: read from settings (pre-migration or no secret store)
-        let val = db.get_setting("smtp_password")?;
-        match val {
-            Some(ref v) if v == "__encrypted__" => Ok(None),
-            other => Ok(other),
+    fn resolve_smtp_password(secrets: Option<&dyn SecretStorePort>) -> Result<Option<String>, Error> {
+        match secrets {
+            Some(ss) => Ok(ss.get_secret("smtp_password")?.filter(|pw| !pw.is_empty())),
+            None => Ok(None),
         }
     }
 

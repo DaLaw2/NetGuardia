@@ -61,8 +61,8 @@ impl BufferPool {
 
 pub struct XskManager {
     app_config: Arc<AppConfig>,
-    xsk_map: Mutex<XskMap<MapData>>,
-    egress_xsk_map: Mutex<XskMap<MapData>>,
+    xsk_map: Mutex<Option<XskMap<MapData>>>,
+    egress_xsk_map: Mutex<Option<XskMap<MapData>>>,
 }
 
 impl XskManager {
@@ -77,9 +77,17 @@ impl XskManager {
 
         Ok(Self {
             app_config,
-            xsk_map: Mutex::new(xsk_map),
-            egress_xsk_map: Mutex::new(egress_xsk_map),
+            xsk_map: Mutex::new(Some(xsk_map)),
+            egress_xsk_map: Mutex::new(Some(egress_xsk_map)),
         })
+    }
+
+    pub fn unavailable(app_config: Arc<AppConfig>) -> Self {
+        Self {
+            app_config,
+            xsk_map: Mutex::new(None),
+            egress_xsk_map: Mutex::new(None),
+        }
     }
 
     pub fn run(
@@ -88,6 +96,13 @@ impl XskManager {
         dns_filter: Option<Arc<DnsFilter>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
+        // If eBPF failed to load, there are no XSK maps to bind and no queues
+        // to start — skip silently. AF_XDP would have no maps to attach sockets
+        // to, and ML sees no packets, which is the designed behaviour.
+        if self.xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
+            return Ok(());
+        }
+
         let network = self.app_config.network.clone();
         let combined_queue_count = network.combined_queue_count;
 
@@ -117,8 +132,10 @@ impl XskManager {
                 None,
             )?;
 
-            let mut xsk_map = self.xsk_map.lock();
-            let mut egress_xsk_map = self.egress_xsk_map.lock();
+            let mut xsk_guard = self.xsk_map.lock();
+            let mut egress_guard = self.egress_xsk_map.lock();
+            let xsk_map = xsk_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
+            let egress_xsk_map = egress_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
 
             let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
             xsk_map
@@ -130,8 +147,8 @@ impl XskManager {
                 .set(queue_id, egress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
 
-            drop(xsk_map);
-            drop(egress_xsk_map);
+            drop(xsk_guard);
+            drop(egress_guard);
 
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
             shutdowns.push(ingress_shutdown);

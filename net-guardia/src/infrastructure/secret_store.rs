@@ -148,48 +148,6 @@ impl SecretStore {
         }
     }
 
-    /// Idempotent startup migration: moves plaintext secrets from settings/notification_config
-    /// into the encrypted `app_secrets` table.
-    pub fn migrate_plaintext_secrets(&self) -> Result<(), Error> {
-        // Check if migration already done
-        if let Some(v) = self.db.get_setting("secrets_migrated")?
-            && v == "true"
-        {
-            log!(CryptoLog::MigrationSkipped);
-            return Ok(());
-        }
-
-        let mut count = 0usize;
-
-        // 1. Migrate smtp_password
-        if let Some(password) = self.db.get_setting("smtp_password")?
-            && password != "__encrypted__"
-            && !password.is_empty()
-        {
-            self.set_secret("smtp_password", &password)?;
-            self.db.set_setting("smtp_password", "__encrypted__")?;
-            log!(CryptoLog::SecretMigrated("smtp_password".to_string()));
-            count += 1;
-        }
-
-        // 2. Migrate telegram_bot_token from notification_config JSON
-        if let Some(json_str) = self.db.get_notification_config("telegram")?
-            && let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&json_str)
-            && let Some(token) = config.get("bot_token").and_then(|v| v.as_str()).map(|s| s.to_string())
-            && token != "__encrypted__"
-            && !token.is_empty()
-        {
-            self.set_secret("telegram_bot_token", &token)?;
-            config["bot_token"] = serde_json::Value::String("__encrypted__".to_string());
-            self.db.set_notification_config("telegram", &config.to_string())?;
-            log!(CryptoLog::SecretMigrated("telegram_bot_token".to_string()));
-            count += 1;
-        }
-
-        self.db.set_setting("secrets_migrated", "true")?;
-        log!(CryptoLog::MigrationComplete(count));
-        Ok(())
-    }
 }
 
 #[cfg(test)]

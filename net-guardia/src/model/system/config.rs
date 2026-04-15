@@ -75,6 +75,16 @@ pub struct PipelineConfig {
     pub egress: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SuricataConfig {
+    pub enabled: bool,
+    pub binary_path: String,
+    pub config_path: String,
+    pub eve_log_path: String,
+    pub auto_restart_on_crash: bool,
+    pub restart_backoff_secs: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MLInferenceConfig {
     pub ae_feature_names: Vec<String>,

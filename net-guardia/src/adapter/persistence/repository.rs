@@ -56,14 +56,8 @@ impl Database {
     pub fn new(path: &str) -> Result<Self, Error> {
         let encryption_key = db_encryption_key();
 
-        // For on-disk databases with an encryption key, attempt transparent migration
-        // from a plaintext SQLite database to an encrypted SQLCipher database.
-        if path != ":memory:" {
-            if let Some(ref key) = encryption_key {
-                Self::migrate_plaintext_to_encrypted(path, key)?;
-            } else {
-                log!(MiscLog::DbEncryptionDisabled);
-            }
+        if path != ":memory:" && encryption_key.is_none() {
+            log!(MiscLog::DbEncryptionDisabled);
         }
 
         let manager = if path == ":memory:" {
@@ -135,90 +129,6 @@ impl Database {
             let _ = write!(&mut hex, "{:02x}", byte);
         }
         hex
-    }
-
-    /// One-time migration: if the DB file exists and is a *plaintext* SQLite database
-    /// (i.e. opening it with the encryption key fails, but opening without a key
-    /// succeeds), export it to a new encrypted file and atomically replace the original.
-    fn migrate_plaintext_to_encrypted(path: &str, key: &str) -> Result<(), Error> {
-        use std::path::Path;
-
-        let db_path = Path::new(path);
-        if !db_path.exists() {
-            return Ok(()); // brand-new DB — nothing to migrate
-        }
-
-        // Try opening with the key — if it works, the DB is already encrypted.
-        {
-            let conn =
-                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-            conn.pragma_update(None, "key", key)
-                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-            if conn
-                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-                .is_ok()
-            {
-                return Ok(()); // already encrypted — nothing to do
-            }
-        }
-
-        // Try opening *without* a key — if this also fails the file is corrupted.
-        {
-            let conn =
-                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-            if conn
-                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-                .is_err()
-            {
-                log!(MiscLog::DbMigrationSkipped);
-                return Err(DatabaseError::QueryFailed {
-                    reason: "Database encryption key is incorrect or database is corrupted".to_string(),
-                }
-                .into());
-            }
-        }
-
-        // The DB is plaintext and we have a key → migrate via temp file.
-        let tmp_path = format!("{path}.migrating");
-        log!(MiscLog::DbMigrationStarted);
-
-        let result = (|| -> Result<(), Error> {
-            let conn =
-                rusqlite::Connection::open(path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-
-            // Attach a new encrypted database.
-            conn.execute_batch(&format!(
-                "ATTACH DATABASE '{}' AS encrypted KEY '{}';",
-                tmp_path.replace('\'', "''"),
-                key.replace('\'', "''"),
-            ))
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-
-            // Export everything from the plaintext DB into the encrypted one.
-            conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))
-                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-
-            conn.execute_batch("DETACH DATABASE encrypted;")
-                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
-            Ok(())
-        })();
-
-        match result {
-            Ok(()) => {
-                // Atomic replace.
-                std::fs::rename(&tmp_path, path).map_err(|e| DatabaseError::QueryFailed {
-                    reason: format!("Failed to replace DB file after migration: {e}"),
-                })?;
-                log!(MiscLog::DbMigrationCompleted);
-                Ok(())
-            }
-            Err(e) => {
-                // Clean up temp file; leave original untouched.
-                let _ = std::fs::remove_file(&tmp_path);
-                log!(MiscLog::DbMigrationFailed { error: e.to_string() });
-                Err(e)
-            }
-        }
     }
 
     /// Export an encrypted database to a plaintext copy.
@@ -412,27 +322,32 @@ impl Database {
                 retry_count INTEGER NOT NULL DEFAULT 0
             );
 
-            -- Audit trail
+            -- Audit trail (WORM: hash-chained, triggers block UPDATE/DELETE)
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL DEFAULT (datetime('now')),
+                ts TEXT NOT NULL,
                 actor TEXT NOT NULL,
                 action TEXT NOT NULL,
-                detail TEXT NOT NULL DEFAULT '{}'
+                detail TEXT NOT NULL DEFAULT '{}',
+                prev_hash TEXT NOT NULL DEFAULT '',
+                row_hash TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+            BEFORE UPDATE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit_log is append-only (WORM)');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+            BEFORE DELETE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit_log is append-only (WORM)');
+            END;
         ",
         )?;
 
-        // Migration: add force_password_change column if missing (for existing DBs)
         let conn_ref = &*conn;
-        let has_column: bool = conn_ref
-            .prepare("SELECT force_password_change FROM users LIMIT 0")
-            .is_ok();
-        if !has_column {
-            conn_ref.execute_batch("ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0;")?;
-        }
 
-        // Migration: seed default user groups if table is empty
+        // Seed default user groups on first install (empty table)
         let group_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
         if group_count == 0 {
             let all_permissions = serde_json::json!([
@@ -487,41 +402,6 @@ impl Database {
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
                 params!["Viewer", "Read-only access to all modules", &viewer_permissions],
             )?;
-        }
-
-        // Migration: assign existing users to default groups if user_group_members is empty
-        let member_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_group_members", [], |row| row.get(0))?;
-        if member_count == 0 {
-            // Get admin group id and viewer group id
-            let admin_group_id: Option<i64> = conn_ref
-                .query_row("SELECT id FROM user_groups WHERE name = 'Administrator'", [], |row| {
-                    row.get(0)
-                })
-                .ok();
-            let viewer_group_id: Option<i64> = conn_ref
-                .query_row("SELECT id FROM user_groups WHERE name = 'Viewer'", [], |row| row.get(0))
-                .ok();
-
-            if let Some(ag_id) = admin_group_id {
-                let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'admin'")?;
-                let admin_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.filter_map(|r| r.ok()).collect();
-                for uid in admin_ids {
-                    conn_ref.execute(
-                        "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
-                        params![uid, ag_id],
-                    )?;
-                }
-            }
-            if let Some(vg_id) = viewer_group_id {
-                let mut stmt = conn_ref.prepare("SELECT id FROM users WHERE role = 'viewer'")?;
-                let viewer_ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.filter_map(|r| r.ok()).collect();
-                for uid in viewer_ids {
-                    conn_ref.execute(
-                        "INSERT OR IGNORE INTO user_group_members (user_id, group_id) VALUES (?1, ?2)",
-                        params![uid, vg_id],
-                    )?;
-                }
-            }
         }
 
         Ok(())
@@ -1707,15 +1587,47 @@ impl Database {
         Ok(())
     }
 
-    // --- Audit Log ---
+    // --- Audit Log (WORM, hash-chained) ---
 
-    /// Insert an audit trail entry.
+    /// Compute the row hash for an audit_log entry.
+    /// Formula: sha256_hex(ts || 0x00 || actor || 0x00 || action || 0x00 || detail || 0x00 || prev_hash)
+    fn audit_row_hash(ts: &str, actor: &str, action: &str, detail: &str, prev_hash: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for part in [ts, actor, action, detail, prev_hash] {
+            h.update(part.as_bytes());
+            h.update([0u8]);
+        }
+        let out = h.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in out {
+            use std::fmt::Write;
+            let _ = write!(&mut hex, "{:02x}", byte);
+        }
+        hex
+    }
+
+    /// Insert an audit trail entry. Runs in a transaction so the (prev_hash
+    /// lookup, row_hash compute, insert) sequence is atomic and serializable.
     pub fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO audit_log (actor, action, detail) VALUES (?1, ?2, ?3)",
-            params![actor, action, detail],
+        let mut conn = self.conn()?;
+        let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let tx = conn.transaction()?;
+        let prev_hash: String = tx
+            .query_row(
+                "SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        let row_hash = Self::audit_row_hash(&ts, actor, action, detail, &prev_hash);
+        tx.execute(
+            "INSERT INTO audit_log (ts, actor, action, detail, prev_hash, row_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![ts, actor, action, detail, prev_hash, row_hash],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1723,7 +1635,7 @@ impl Database {
     pub fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
         let conn = self.conn()?;
         let mut stmt =
-            conn.prepare("SELECT id, actor, action, detail, created_at FROM audit_log ORDER BY id DESC LIMIT 200")?;
+            conn.prepare("SELECT id, actor, action, detail, ts FROM audit_log ORDER BY id DESC LIMIT 200")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(AuditLogEntry {
@@ -1737,6 +1649,47 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// Walk the entire audit_log in id order and verify the hash chain.
+    /// Returns `Ok(count)` on success; returns `Err` at the first mismatch,
+    /// naming the offending row id and the kind of mismatch.
+    pub fn verify_audit_log_chain(&self) -> Result<usize, Error> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT id, ts, actor, action, detail, prev_hash, row_hash FROM audit_log ORDER BY id ASC")?;
+        let mut rows = stmt.query([])?;
+
+        let mut expected_prev = String::new();
+        let mut count = 0usize;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let ts: String = row.get(1)?;
+            let actor: String = row.get(2)?;
+            let action: String = row.get(3)?;
+            let detail: String = row.get(4)?;
+            let prev_hash: String = row.get(5)?;
+            let row_hash: String = row.get(6)?;
+
+            if prev_hash != expected_prev {
+                return Err(DatabaseError::AuditChainBroken {
+                    id,
+                    reason: format!("prev_hash mismatch (expected {}, found {})", expected_prev, prev_hash),
+                }
+                .into());
+            }
+            let computed = Self::audit_row_hash(&ts, &actor, &action, &detail, &prev_hash);
+            if computed != row_hash {
+                return Err(DatabaseError::AuditChainBroken {
+                    id,
+                    reason: format!("row_hash mismatch (computed {}, stored {})", computed, row_hash),
+                }
+                .into());
+            }
+            expected_prev = row_hash;
+            count += 1;
+        }
+        Ok(count)
     }
 }
 

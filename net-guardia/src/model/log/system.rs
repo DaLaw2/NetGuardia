@@ -101,5 +101,8 @@ loggable! {
 
         #[error("ML drift detected: {count} features drifted, max deviation {deviation:.2}σ")]
         DriftDetected { count: usize, deviation: f64 } => tracing::Level::WARN,
+
+        #[error("eBPF bring-up failed — continuing without data plane: {details}")]
+        EbpfBringupFailed { details: String } => tracing::Level::ERROR,
     }
 }

@@ -39,6 +39,22 @@ impl AccessControl {
         Ok(access_control)
     }
 
+    /// Construct an AccessControl backed by no eBPF maps. Used when eBPF
+    /// failed to load at startup; every mutating call returns `EbpfError::NotLoaded`,
+    /// and list queries return empty maps.
+    pub fn unavailable() -> Self {
+        Self {
+            ipv4_src_whitelist: RwLock::new(MapWrapper::unavailable()),
+            ipv4_src_blacklist: RwLock::new(MapWrapper::unavailable()),
+            ipv4_dst_whitelist: RwLock::new(MapWrapper::unavailable()),
+            ipv4_dst_blacklist: RwLock::new(MapWrapper::unavailable()),
+            ipv6_src_whitelist: RwLock::new(MapWrapper::unavailable()),
+            ipv6_src_blacklist: RwLock::new(MapWrapper::unavailable()),
+            ipv6_dst_whitelist: RwLock::new(MapWrapper::unavailable()),
+            ipv6_dst_blacklist: RwLock::new(MapWrapper::unavailable()),
+        }
+    }
+
     pub async fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
         let map_wrapper = match (direction, list_type) {
             (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.read().await,
@@ -129,33 +145,41 @@ impl AccessControl {
 }
 
 struct MapWrapper<T> {
-    map: AyaHashMap<MapData, T, PortRule>,
+    map: Option<AyaHashMap<MapData, T, PortRule>>,
 }
 
 impl<T: NativeConvert + Pod> MapWrapper<T> {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
         let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
-        Ok(Self { map })
+        Ok(Self { map: Some(map) })
+    }
+
+    fn unavailable() -> Self {
+        Self { map: None }
     }
 
     fn get_list(&self) -> HashMap<T::Native, Vec<Port>> {
-        self.map
-            .iter()
+        let Some(map) = self.map.as_ref() else {
+            return HashMap::new();
+        };
+        map.iter()
             .filter_map(Result::ok)
             .map(|(key, rule)| (key.into_native(), rule.to_port_vec()))
             .collect()
     }
 
     fn add(&mut self, ip: T, port: Port) -> Result<(), Error> {
+        let Some(map) = self.map.as_mut() else {
+            return Err(EbpfError::NotLoaded.into());
+        };
         if port == 0 {
-            self.map
-                .insert(ip, PortRule::new_match_all(), 0)
+            map.insert(ip, PortRule::new_match_all(), 0)
                 .map_err(EbpfError::MapOperationError)?;
             return Ok(());
         }
 
-        let mut rule = self.map.get(&ip, 0).unwrap_or_else(|_| PortRule::new_empty());
+        let mut rule = map.get(&ip, 0).unwrap_or_else(|_| PortRule::new_empty());
 
         if rule.is_match_all() {
             return Ok(());
@@ -165,29 +189,32 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
             Err(EbpfError::RuleReachLimit)?;
         }
 
-        self.map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
+        map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
     fn remove(&mut self, ip: T, port: Port) -> Result<(), Error> {
+        let Some(map) = self.map.as_mut() else {
+            return Err(EbpfError::NotLoaded.into());
+        };
         if port == 0 {
-            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            map.remove(&ip).map_err(EbpfError::MapOperationError)?;
             return Ok(());
         }
 
-        let mut rule = self.map.get(&ip, 0).map_err(|_| EbpfError::IpDoesNotExist)?;
+        let mut rule = map.get(&ip, 0).map_err(|_| EbpfError::IpDoesNotExist)?;
 
         if rule.is_match_all() {
-            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            map.remove(&ip).map_err(EbpfError::MapOperationError)?;
             return Ok(());
         }
 
         rule.remove_port(port);
 
         if rule.is_empty() {
-            self.map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            map.remove(&ip).map_err(EbpfError::MapOperationError)?;
         } else {
-            self.map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
+            map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
         }
         Ok(())
     }

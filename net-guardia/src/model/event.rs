@@ -11,6 +11,7 @@ pub enum DetectionSource {
     ML,
     Correlation,
     Beaconing,
+    Suricata,
 }
 
 impl fmt::Display for DetectionSource {
@@ -19,6 +20,7 @@ impl fmt::Display for DetectionSource {
             DetectionSource::ML => write!(f, "ML"),
             DetectionSource::Correlation => write!(f, "Correlation"),
             DetectionSource::Beaconing => write!(f, "Beaconing"),
+            DetectionSource::Suricata => write!(f, "Suricata"),
         }
     }
 }

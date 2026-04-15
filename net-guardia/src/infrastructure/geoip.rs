@@ -24,6 +24,7 @@ impl GeoIpService {
 
     pub fn with_cache_size<P: AsRef<Path>>(db_path: P, cache_size: usize) -> Result<Self, MaxMindDbError> {
         let reader = Reader::open_readfile(db_path)?;
+        // SAFETY: 10000 is a non-zero literal, NonZeroUsize::new is infallible.
         let cache_capacity = NonZeroUsize::new(cache_size).unwrap_or_else(|| NonZeroUsize::new(10000).unwrap());
 
         Ok(Self {

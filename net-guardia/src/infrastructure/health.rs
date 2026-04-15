@@ -10,8 +10,8 @@ use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::Error;
 use crate::model::log::health::Health;
 use crate::model::system::health::{
-    ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, LoadAverage, MemoryUsage, NetworkStats, SystemHealthMetrics,
-    SystemHealthStatus, SystemInfo,
+    ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, EbpfHealth, LoadAverage, MemoryUsage, NetworkStats,
+    SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };
 
 pub struct SystemHealth {
@@ -21,10 +21,11 @@ pub struct SystemHealth {
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     ingress_interface: String,
     egress_interface: String,
+    ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
 }
 
 impl SystemHealth {
-    pub fn new(config: Arc<AppConfig>) -> Result<Self, Error> {
+    pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>) -> Result<Self, Error> {
         let (broadcast_tx, _) = broadcast::channel(100);
 
         let health = SystemHealth {
@@ -34,6 +35,7 @@ impl SystemHealth {
             broadcast_tx,
             ingress_interface: config.network.ingress_ifname.clone(),
             egress_interface: config.network.egress_ifname.clone(),
+            ebpf_health,
         };
 
         Ok(health)
@@ -71,12 +73,14 @@ impl SystemHealth {
         let networks = self.networks.read().await;
         let components = self.components.read().await;
 
+        let ebpf = self.ebpf_health.read().clone();
         let metrics = Self::collect_metrics(
             &system,
             &networks,
             &components,
             &self.ingress_interface,
             &self.egress_interface,
+            ebpf,
         );
 
         drop(system);
@@ -96,6 +100,7 @@ impl SystemHealth {
         components: &Components,
         ingress_interface: &str,
         egress_interface: &str,
+        ebpf: EbpfHealth,
     ) -> SystemHealthMetrics {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -148,6 +153,7 @@ impl SystemHealth {
             network_stats,
             load_average,
             temperature,
+            ebpf,
         }
     }
 
@@ -236,13 +242,22 @@ impl SystemHealth {
         let networks = self.networks.read().await;
         let components = self.components.read().await;
 
+        let ebpf = self.ebpf_health.read().clone();
         Self::collect_metrics(
             &system,
             &networks,
             &components,
             &self.ingress_interface,
             &self.egress_interface,
+            ebpf,
         )
+    }
+
+    /// Returns a handle to the shared eBPF health state. Consumers (HTTP
+    /// handlers, setup wizard, frontend) can read the current eBPF state
+    /// without going through the full metrics broadcast.
+    pub fn ebpf_health(&self) -> &Arc<parking_lot::RwLock<EbpfHealth>> {
+        &self.ebpf_health
     }
 
     pub fn subscribe_to_metrics(&self) -> broadcast::Receiver<SystemHealthMetrics> {

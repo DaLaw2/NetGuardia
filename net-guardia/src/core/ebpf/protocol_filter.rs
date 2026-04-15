@@ -40,6 +40,21 @@ impl ProtocolFilter {
         Ok(service)
     }
 
+    /// Construct a ProtocolFilter backed by no eBPF maps.
+    pub fn unavailable() -> Self {
+        Self {
+            ipv4_http_service: RwLock::new(HttpServiceWrapper::unavailable()),
+            ipv6_http_service: RwLock::new(HttpServiceWrapper::unavailable()),
+            ssh_white_list_enable: RwLock::new(WhiteListControl::unavailable()),
+            ipv4_ssh_service: RwLock::new(EntryMap::unavailable()),
+            ipv6_ssh_service: RwLock::new(EntryMap::unavailable()),
+            ipv4_ssh_white_list: RwLock::new(EntryMap::unavailable()),
+            ipv6_ssh_white_list: RwLock::new(EntryMap::unavailable()),
+            ipv4_ssh_black_list: RwLock::new(EntryMap::unavailable()),
+            ipv6_ssh_black_list: RwLock::new(EntryMap::unavailable()),
+        }
+    }
+
     pub async fn get_ipv4_http_service(&self) -> HashMap<SocketAddrV4, Vec<HttpMethod>> {
         self.ipv4_http_service.read().await.get_http_method()
     }
@@ -178,48 +193,63 @@ impl ProtocolFilter {
 }
 
 struct WhiteListControl {
-    map: AyaArray<MapData, PlaceHolder>,
+    map: Option<AyaArray<MapData, PlaceHolder>>,
 }
 
 impl WhiteListControl {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
         let map = AyaArray::try_from(map).map_err(EbpfError::MapOperationError)?;
-        Ok(Self { map })
+        Ok(Self { map: Some(map) })
+    }
+
+    fn unavailable() -> Self {
+        Self { map: None }
     }
 
     fn is_white_list_enable(&self) -> bool {
-        match self.map.get(&0, 0) {
+        let Some(map) = self.map.as_ref() else {
+            return false;
+        };
+        match map.get(&0, 0) {
             Ok(status) => status != 0,
             Err(_) => false,
         }
     }
 
     fn enable_white_list(&mut self) -> Result<(), Error> {
-        self.map.set(0, 1_u8, 0).map_err(EbpfError::MapOperationError)?;
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
+        map.set(0, 1_u8, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
     fn disable_white_list(&mut self) -> Result<(), Error> {
-        self.map.set(0, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
+        map.set(0, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }
 
 struct HttpServiceWrapper<T> {
-    map: AyaHashMap<MapData, T, HttpMethodBitmap>,
+    map: Option<AyaHashMap<MapData, T, HttpMethodBitmap>>,
 }
 
 impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
         let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
-        Ok(Self { map })
+        Ok(Self { map: Some(map) })
+    }
+
+    fn unavailable() -> Self {
+        Self { map: None }
     }
 
     fn get_http_method(&self) -> HashMap<T::Native, Vec<HttpMethod>> {
-        self.map
-            .iter()
+        let Some(map) = self.map.as_ref() else {
+            return HashMap::new();
+        };
+        map.iter()
             .filter_map(Result::ok)
             .map(|(key, value)| {
                 let address = key.into_native();
@@ -229,25 +259,25 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
     }
 
     fn add_http_service(&mut self, address: T::Native, http_method: Vec<HttpMethod>) -> Result<(), Error> {
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
         let address = T::from_native(address);
         let ebpf_method = HttpMethod::convert_to_bitmap(http_method);
-        self.map
-            .insert(address, ebpf_method, 0)
+        map.insert(address, ebpf_method, 0)
             .map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
     fn remove_http_service(&mut self, address: T::Native, removed_http_method: Vec<HttpMethod>) -> Result<(), Error> {
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
         let address = T::from_native(address);
-        if let Ok(current_http_method) = self.map.get(&address, 0) {
+        if let Ok(current_http_method) = map.get(&address, 0) {
             let mut http_method = HttpMethod::convert_from_bitmap(current_http_method);
             http_method.retain(|method| !removed_http_method.contains(method));
             if http_method.is_empty() {
-                self.map.remove(&address).map_err(EbpfError::MapOperationError)?;
+                map.remove(&address).map_err(EbpfError::MapOperationError)?;
             } else {
                 let new_http_method = HttpMethod::convert_to_bitmap(http_method);
-                self.map
-                    .insert(address, new_http_method, 0)
+                map.insert(address, new_http_method, 0)
                     .map_err(EbpfError::MapOperationError)?;
             }
             Ok(())
@@ -258,33 +288,41 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
 }
 
 struct EntryMap<T> {
-    map: AyaHashMap<MapData, T, PlaceHolder>,
+    map: Option<AyaHashMap<MapData, T, PlaceHolder>>,
 }
 
 impl<T: NativeConvert + Pod> EntryMap<T> {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
         let map = AyaHashMap::try_from(map).map_err(EbpfError::MapOperationError)?;
-        Ok(Self { map })
+        Ok(Self { map: Some(map) })
+    }
+
+    fn unavailable() -> Self {
+        Self { map: None }
     }
 
     fn get_all(&self) -> Vec<T::Native> {
-        self.map
-            .keys()
+        let Some(map) = self.map.as_ref() else {
+            return Vec::new();
+        };
+        map.keys()
             .filter_map(Result::ok)
             .map(|key| key.into_native())
             .collect()
     }
 
     fn add(&mut self, key: T::Native) -> Result<(), Error> {
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
         let key = T::from_native(key);
-        self.map.insert(key, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
+        map.insert(key, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 
     fn remove(&mut self, key: T::Native) -> Result<(), Error> {
+        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
         let key = T::from_native(key);
-        self.map.remove(&key).map_err(EbpfError::MapOperationError)?;
+        map.remove(&key).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }

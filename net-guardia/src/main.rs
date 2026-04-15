@@ -76,6 +76,20 @@ async fn main() -> Result<(), Error> {
                 println!("Done. Encrypted database written to {}", dest);
                 return Ok(());
             }
+            "--verify-audit-log" => {
+                println!("Verifying audit_log hash chain in {}", db_path);
+                let db = Database::new(&db_path)?;
+                match db.verify_audit_log_chain() {
+                    Ok(count) => {
+                        println!("OK: {} audit_log rows verified, chain intact.", count);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("FAIL: {}", e);
+                        std::process::exit(2);
+                    }
+                }
+            }
             _ => {}
         }
     }

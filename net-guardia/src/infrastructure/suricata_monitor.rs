@@ -1,0 +1,180 @@
+//! Suricata eve.json tail + parse (M2) + translate to DetectionEvent (M3).
+//!
+//! Runs as a tokio background task. Waits for the eve.json file to appear
+//! (Suricata may take a few seconds after spawn to create it), then tails
+//! new lines and parses each as JSON. Only `event_type=alert` lines are
+//! forwarded; everything else (flow/stats/fileinfo) is ignored for v0.9.
+//!
+//! Forwarded events land on the shared `detection_tx` mpsc — the same
+//! channel the ML + correlation + beaconing detectors feed. The detection
+//! orchestrator handles dedup, GeoIP enrichment, and publishes the final
+//! `ThreatDetectedEvent` that SOAR consumes.
+//!
+//! File rotation is handled by detecting a shrunken file length on next
+//! poll — we reopen from offset 0. Suricata itself rotates eve.json on
+//! SIGHUP; we don't send SIGHUP in v0.9 so rotation will be rare.
+
+use std::io::SeekFrom;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use macros::log;
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+use tokio::sync::mpsc;
+
+use crate::infrastructure::app_config::AppConfig;
+use crate::model::event::{DetectionEvent, DetectionSource};
+use crate::model::log::suricata::SuricataLog;
+
+/// Fixed poll interval for new eve.json content. eve.json is line-appended
+/// so a short interval yields low latency; 200ms is well under any human
+/// reaction time and negligible CPU cost.
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// How long to wait between checks while the file does not yet exist.
+const FILE_WAIT_INTERVAL: Duration = Duration::from_secs(1);
+
+pub struct SuricataMonitor {
+    config: Arc<AppConfig>,
+    detection_tx: mpsc::Sender<DetectionEvent>,
+}
+
+impl SuricataMonitor {
+    pub fn new(config: Arc<AppConfig>, detection_tx: mpsc::Sender<DetectionEvent>) -> Arc<Self> {
+        Arc::new(Self { config, detection_tx })
+    }
+
+    /// Spawn the tail loop. No-op if the bridge is disabled.
+    pub fn start(self: Arc<Self>) {
+        if !self.config.suricata.enabled {
+            return;
+        }
+        tokio::spawn(async move {
+            self.tail_loop().await;
+        });
+    }
+
+    async fn tail_loop(self: Arc<Self>) {
+        let path = self.config.suricata.eve_log_path.clone();
+        loop {
+            // Wait until the file exists — Suricata spawns asynchronously and
+            // may take a few seconds to create eve.json.
+            if !Path::new(&path).exists() {
+                log!(SuricataLog::MonitorWaitingForFile { path: path.clone() });
+                while !Path::new(&path).exists() {
+                    tokio::time::sleep(FILE_WAIT_INTERVAL).await;
+                }
+            }
+
+            let mut file = match File::open(&path).await {
+                Ok(f) => f,
+                Err(_) => {
+                    tokio::time::sleep(FILE_WAIT_INTERVAL).await;
+                    continue;
+                }
+            };
+            // Seek to end so we only see new content from this point. Suricata
+            // writes a large volume at startup that we don't want to replay.
+            let mut pos: u64 = file.seek(SeekFrom::End(0)).await.unwrap_or_default();
+            log!(SuricataLog::MonitorAttached { path: path.clone() });
+
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        // EOF — check for rotation (file truncated or replaced).
+                        if let Ok(meta) = tokio::fs::metadata(&path).await
+                            && meta.len() < pos
+                        {
+                            log!(SuricataLog::MonitorFileRotated);
+                            break; // reopen
+                        }
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                    Ok(n) => {
+                        pos += n as u64;
+                        self.handle_line(line.trim_end()).await;
+                    }
+                    Err(_) => {
+                        // Read error — treat as rotation and reopen.
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_line(&self, raw: &str) {
+        if raw.is_empty() {
+            return;
+        }
+        let v: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        if v.get("event_type").and_then(|x| x.as_str()) != Some("alert") {
+            return;
+        }
+        let Some(event) = Self::translate_alert(&v) else {
+            return;
+        };
+        // mpsc is bounded; if the orchestrator is backed up, drop rather than
+        // block the tail (eve.json will fill the disk if we block).
+        let _ = self.detection_tx.try_send(event);
+    }
+
+    /// Map a Suricata alert JSON object to a DetectionEvent. Returns None if
+    /// the event lacks the fields we need.
+    fn translate_alert(v: &serde_json::Value) -> Option<DetectionEvent> {
+        let src_ip = v.get("src_ip")?.as_str()?.to_string();
+        let dest_ip = v.get("dest_ip")?.as_str()?.to_string();
+        let proto_str = v.get("proto").and_then(|x| x.as_str()).unwrap_or("");
+        let protocol: u8 = match proto_str {
+            "TCP" => 6,
+            "UDP" => 17,
+            "ICMP" => 1,
+            _ => 0,
+        };
+
+        let alert = v.get("alert")?;
+        let sid = alert.get("signature_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+        let signature = alert.get("signature").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        // Suricata severity: 1=high, 2=medium, 3=low, 4=informational.
+        // Map to confidence in [0.5, 1.0] so high-severity alerts tend to trip
+        // SOAR condition thresholds.
+        let severity = alert.get("severity").and_then(|x| x.as_u64()).unwrap_or(3);
+        let confidence = match severity {
+            1 => 0.95,
+            2 => 0.80,
+            3 => 0.65,
+            _ => 0.50,
+        };
+
+        log!(SuricataLog::AlertForwarded {
+            sid,
+            src: src_ip.clone(),
+            dst: dest_ip.clone(),
+            signature,
+        });
+
+        Some(DetectionEvent {
+            source: DetectionSource::Suricata,
+            attack_type: "suricata_alert".to_string(),
+            confidence,
+            source_ip: src_ip,
+            dest_ip,
+            protocol,
+            packet_count: 0,
+            flow_duration_us: 0,
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
+        })
+    }
+}

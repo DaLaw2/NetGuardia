@@ -45,16 +45,42 @@
 
 ## System Requirements
 
-- Ubuntu-based operating system (Ubuntu 24.04 LTS or newer recommended)
-- Dual-port network interface card (Intel i350 T2 or compatible XDP-capable NIC)
-- Root/sudo access for eBPF program loading
+NetGuardia requires the combination of a kernel with eBPF support and a NIC driver
+that implements **AF_XDP** on that kernel. There is no single "minimum kernel
+version" — it depends on which NIC driver you use.
+
+- **Linux** with eBPF + AF_XDP support for your NIC driver. Any modern distribution
+  (Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora recent) is fine as long as the driver
+  matrix below lines up.
+- **Dual-port NIC** with an AF_XDP-capable driver (see matrix).
+- **Root / sudo** access for eBPF program loading.
+
+### NIC driver / kernel matrix (AF_XDP)
+
+| Driver | NIC family (examples) | Min kernel for AF_XDP |
+|--------|-----------------------|------------------------|
+| mlx5   | Mellanox ConnectX-4/5/6/7 | 5.x (early) |
+| ixgbe  | Intel 82599, X520, X540, X550 | 5.x |
+| i40e   | Intel X710, XL710, XXV710 | 5.x |
+| ice    | Intel E810 | 5.5+ |
+| igb    | **Intel i350 T2** (reference hardware) | **6.17** |
+| igc    | Intel I225/I226 | 6.x |
+| virtio_net | QEMU/KVM virtual NICs | varies; AF_XDP is limited |
+
+If you are using the reference Intel i350 T2, you need Linux 6.17 or newer because
+igb AF_XDP support landed in that release. On a kernel older than 6.17 the system
+will still build, but `ingress`/`egress` setup will fail at runtime when AF_XDP
+binding is attempted — check driver support with `ethtool -i <iface>` and confirm
+against the matrix above before deploying.
 
 ## Hardware Compatibility
-NetGuardia is designed to work on any Ubuntu-based system meeting the following requirements:
 
-- Network Interface: Any dual-port NIC supporting XDP native or offload mode (Intel i350 T2 recommended)
-- CPU: Multi-core processor recommended for optimal performance
-- Memory: 8GB RAM minimum, 16GB or more for high-traffic environments
+- Network Interface: dual-port NIC with an AF_XDP-capable driver on your kernel
+  (see matrix above). Intel i350 T2 is the reference hardware.
+- CPU: multi-core recommended; XDP scales with RX queue count.
+- Memory: 8 GB minimum, 16 GB+ for high-traffic environments.
 
-The system is not limited to embedded platforms and can be deployed on standard server hardware, virtual machines, or dedicated appliances running Ubuntu.
+NetGuardia is not limited to embedded platforms — it runs on standard server
+hardware, virtual machines, or dedicated appliances as long as the driver/kernel
+requirement above is met.
 

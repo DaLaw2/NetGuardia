@@ -12,6 +12,10 @@ traceable! {
         #[no_source]
         #[error("User '{username}' already exists")]
         UserAlreadyExists { username: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Audit log chain broken at id {id}: {reason}")]
+        AuditChainBroken { id: i64, reason: String } => tracing::Level::ERROR,
     }
 }
 

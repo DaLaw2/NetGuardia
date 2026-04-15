@@ -22,7 +22,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs", "signal"] }
 
 # Web framework
 actix = "0.13.5"

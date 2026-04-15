@@ -41,7 +41,9 @@ interfaces.txt
 traffic_log.csv
 
 # Project docs (local only)
-CLAUDE.md
+# CLAUDE.md — tracked on dev branches; MUST be untracked before PR to master
+#             (see CLAUDE.md "Branch discipline" section)
+# CLAUDE.md
 DESIGN.md
 TODOS.md
 VERSION
@@ -51,7 +53,9 @@ CHANGELOG.md
 benchmark/
 
 # Generated docs
-docs/
+# docs/ — tracked on dev branches; MUST be untracked before PR to master
+#         (see CLAUDE.md "Branch discipline" section)
+# docs/
 
 # SQLite database files
 *.db

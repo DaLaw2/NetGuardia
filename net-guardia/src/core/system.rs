@@ -80,8 +80,8 @@ pub struct System {
     pub soar_engine: Arc<SoarEngine>,
     pub ttl_scheduler: Option<TtlScheduler>,
     pub report_scheduler: Option<ReportScheduler>,
-    pub ingress_ebpf: Ebpf,
-    pub egress_ebpf: Ebpf,
+    pub ingress_ebpf: Option<Ebpf>,
+    pub egress_ebpf: Option<Ebpf>,
     pub acl_service: Arc<AclService>,
     pub config_service: Arc<ConfigService>,
     pub dns_filter_service: Arc<DnsFilterService>,
@@ -91,7 +91,10 @@ pub struct System {
     pub geoip: Option<Arc<GeoIpService>>,
     pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
     pub shutdown_handle: Option<Arc<ShutdownHandle>>,
-    _ingress_program_array: ProgramArray<MapData>,
+    _ingress_program_array: Option<ProgramArray<MapData>>,
+    pub ebpf_health: Arc<parking_lot::RwLock<crate::model::system::health::EbpfHealth>>,
+    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
+    suricata_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl System {
@@ -122,6 +125,9 @@ impl System {
             drift_detector: state.drift_detector,
             shutdown_handle: None,
             _ingress_program_array: state._ingress_program_array,
+            ebpf_health: state.ebpf_health,
+            suricata_manager: state.suricata_manager,
+            suricata_shutdown: None,
         })
     }
 
@@ -141,16 +147,42 @@ impl System {
             attacks: self.inference_config.num_attack_types()
         });
 
-        ServiceFactory::aya_log_init(&mut self.ingress_ebpf, &mut self.egress_ebpf)?;
-        log!(SystemLog::InitializeComplete);
-        self.attach_ebpf()?;
+        // aya_log_init + attach_xdp only make sense if the eBPF objects
+        // loaded. When eBPF is unavailable we skip both; the rest of the
+        // system runs normally and the eBPF health broadcast tells the UI why.
+        // aya_log_init failure is logged but non-fatal — the kernel programs
+        // still run, we just lose the in-kernel log channel.
+        if let (Some(ingress), Some(egress)) = (self.ingress_ebpf.as_mut(), self.egress_ebpf.as_mut()) {
+            if let Err(e) = ServiceFactory::aya_log_init(ingress, egress) {
+                use crate::infrastructure::ebpf_preflight;
+                use crate::model::system::health::EbpfFailStage;
+                let health = ebpf_preflight::classify(EbpfFailStage::LoggerInit, &e, None);
+                log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+            }
+            log!(SystemLog::InitializeComplete);
+            self.attach_ebpf()?;
+        } else {
+            log!(SystemLog::InitializeComplete);
+        }
 
         // Subscribe to ML alerts BEFORE starting services to avoid race condition
         let ml_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
 
         let ebpf_services = self.ebpf_services.clone();
         let app_services = self.app_services.clone();
-        ebpf_services.run(app_services.ml_engine.clone()).await?;
+        // AF_XDP socket bind + drop-ring-buf consumer. If eBPF maps are
+        // unavailable the call already returns Ok(()) without doing anything.
+        // When maps exist but bind fails (e.g. igb on kernel < 6.17), record
+        // the classified reason and continue — the ML engine will see no
+        // packets, same as a network that is simply quiet.
+        if let Err(e) = ebpf_services.run(app_services.ml_engine.clone()).await {
+            use crate::infrastructure::ebpf_preflight;
+            use crate::model::system::health::EbpfFailStage;
+            let iface = self.app_config.network.ingress_ifname.as_str();
+            let health = ebpf_preflight::classify(EbpfFailStage::AfXdpBind, &e, Some(iface));
+            log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+            *self.ebpf_health.write() = health;
+        }
         app_services.run().await?;
 
         // Start SOAR engine
@@ -201,6 +233,7 @@ impl System {
         // Clone detection_tx for correlation engine and beaconing detector
         let correlation_detection_tx = detection_tx.clone();
         let beaconing_detection_tx = detection_tx.clone();
+        let suricata_detection_tx = detection_tx.clone();
 
         // Start cross-flow correlation engine (botnet, scan, lateral movement detection)
         let correlation_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
@@ -284,6 +317,7 @@ impl System {
             rate_limit_service: self.rate_limit_service.clone(),
             force_https,
             shutdown_handle: shutdown_handle.clone(),
+            suricata_manager: self.suricata_manager.clone(),
         };
         let ready_for_http = ready_flag_for_set.clone();
         actix::spawn(async move {
@@ -319,6 +353,18 @@ impl System {
             }
         }
 
+        // Start Suricata subprocess supervisor (no-op if disabled in config).
+        self.suricata_shutdown = Some(self.suricata_manager.clone().run());
+
+        // Start Suricata eve.json monitor — tails the log file, translates
+        // alert events into DetectionEvent on the shared mpsc. No-op if the
+        // bridge is disabled in config.
+        crate::infrastructure::suricata_monitor::SuricataMonitor::new(
+            self.app_config.clone(),
+            suricata_detection_tx,
+        )
+        .start();
+
         // Wait for shutdown signal (ctrl-c OR API-triggered)
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -330,11 +376,14 @@ impl System {
         }
     }
 
-    pub async fn terminate(&self) -> Result<(), Error> {
+    pub async fn terminate(&mut self) -> Result<(), Error> {
         let ebpf_services = self.ebpf_services.clone();
         let app_services = self.app_services.clone();
         log!(SystemLog::Terminating);
 
+        if let Some(tx) = self.suricata_shutdown.take() {
+            let _ = tx.send(());
+        }
         ebpf_services.terminate();
         app_services.terminate();
         log!(SystemLog::TerminateComplete);
@@ -430,19 +479,44 @@ impl System {
         }
     }
 
+    /// Attempt to attach the XDP programs to the configured interfaces.
+    /// If either attach fails, record the reason in `ebpf_health` and
+    /// continue — the rest of the system keeps running.
     fn attach_ebpf(&mut self) -> Result<(), Error> {
         let ingress_ifname = self.app_config.network.ingress_ifname.clone();
         let egress_ifname = self.app_config.network.egress_ifname.clone();
         ServiceFactory::set_memory_limit()?;
 
-        let ingress_mode = ServiceFactory::attach_xdp(&mut self.ingress_ebpf, &ingress_ifname, true)?;
-        let egress_mode = ServiceFactory::attach_xdp(&mut self.egress_ebpf, &egress_ifname, false)?;
+        let (ingress, egress) = match (self.ingress_ebpf.as_mut(), self.egress_ebpf.as_mut()) {
+            (Some(i), Some(e)) => (i, e),
+            _ => return Ok(()),
+        };
 
-        if let Err(e) = self.db.set_setting("xdp_ingress_mode", &ingress_mode) {
-            log!(SystemError::XdpModeStoreFailed(e));
-        }
-        if let Err(e) = self.db.set_setting("xdp_egress_mode", &egress_mode) {
-            log!(SystemError::XdpModeStoreFailed(e));
+        let ingress_result = ServiceFactory::attach_xdp(ingress, &ingress_ifname, true);
+        let egress_result = ServiceFactory::attach_xdp(egress, &egress_ifname, false);
+
+        match (ingress_result, egress_result) {
+            (Ok(ingress_mode), Ok(egress_mode)) => {
+                if let Err(e) = self.db.set_setting("xdp_ingress_mode", &ingress_mode) {
+                    log!(SystemError::XdpModeStoreFailed(e));
+                }
+                if let Err(e) = self.db.set_setting("xdp_egress_mode", &egress_mode) {
+                    log!(SystemError::XdpModeStoreFailed(e));
+                }
+            }
+            (ingress_res, egress_res) => {
+                use crate::infrastructure::ebpf_preflight;
+                use crate::model::system::health::EbpfFailStage;
+
+                let (err, iface) = match (&ingress_res, &egress_res) {
+                    (Err(e), _) => (e, ingress_ifname.as_str()),
+                    (_, Err(e)) => (e, egress_ifname.as_str()),
+                    _ => unreachable!("at least one branch is Err here"),
+                };
+                let health = ebpf_preflight::classify(EbpfFailStage::XdpAttach, err, Some(iface));
+                log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+                *self.ebpf_health.write() = health;
+            }
         }
 
         Ok(())

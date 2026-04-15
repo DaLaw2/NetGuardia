@@ -1,7 +1,9 @@
 use crate::adapter::persistence::Database;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
-use crate::model::system::config::{HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig};
+use crate::model::system::config::{
+    HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig, SuricataConfig,
+};
 
 pub struct AppConfig {
     pub http: HttpConfig,
@@ -9,6 +11,7 @@ pub struct AppConfig {
     pub inference: InferenceConfig,
     pub misc: MiscConfig,
     pub pipeline: PipelineConfig,
+    pub suricata: SuricataConfig,
 }
 
 impl AppConfig {
@@ -74,6 +77,13 @@ impl AppConfig {
             ("dns_max_domains_per_request", "1000".into()),
             // HTTPS redirect
             ("force_https", "false".into()),
+            // Suricata bridge
+            ("suricata_enabled", "false".into()),
+            ("suricata_binary_path", "/usr/bin/suricata".into()),
+            ("suricata_config_path", "/etc/netguardia/suricata.yaml".into()),
+            ("suricata_eve_log_path", "/var/log/netguardia/eve.json".into()),
+            ("suricata_auto_restart_on_crash", "true".into()),
+            ("suricata_restart_backoff_secs", "10".into()),
         ];
 
         for (key, value) in defaults {
@@ -128,6 +138,14 @@ impl AppConfig {
             pipeline: PipelineConfig {
                 ingress: vec!["access_control".into(), "rate_limit".into(), "service".into()],
                 egress: vec![],
+            },
+            suricata: SuricataConfig {
+                enabled: false,
+                binary_path: "/usr/bin/suricata".into(),
+                config_path: "/etc/netguardia/suricata.yaml".into(),
+                eve_log_path: "/var/log/netguardia/eve.json".into(),
+                auto_restart_on_crash: true,
+                restart_backoff_secs: 10,
             },
         }
     }
@@ -276,6 +294,34 @@ impl AppConfig {
             && !v.is_empty()
         {
             config.misc.geoip_db_name = v;
+        }
+
+        // Suricata bridge
+        if let Ok(Some(v)) = db.get_setting("suricata_enabled") {
+            config.suricata.enabled = v == "true" || v == "1";
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_binary_path")
+            && !v.is_empty()
+        {
+            config.suricata.binary_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_config_path")
+            && !v.is_empty()
+        {
+            config.suricata.config_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_eve_log_path")
+            && !v.is_empty()
+        {
+            config.suricata.eve_log_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_auto_restart_on_crash") {
+            config.suricata.auto_restart_on_crash = v == "true" || v == "1";
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_restart_backoff_secs")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.suricata.restart_backoff_secs = n;
         }
 
         // Pipeline (stored as comma-separated)

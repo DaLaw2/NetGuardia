@@ -66,6 +66,23 @@ impl EbpfServices {
         })
     }
 
+    /// Build an EbpfServices with every eBPF-backed subservice in the
+    /// "unavailable" state. Used when eBPF failed to load at startup.
+    /// Queries return empty results; mutating calls return `EbpfError::NotLoaded`.
+    pub fn unavailable(app_config: Arc<AppConfig>) -> Self {
+        Self {
+            xsk_manager: Arc::new(XskManager::unavailable(app_config.clone())),
+            access_control: Arc::new(AccessControl::unavailable()),
+            protocol_filter: Arc::new(ProtocolFilter::unavailable()),
+            dns_filter: Arc::new(DnsFilter::new()),
+            geo_block: Arc::new(GeoBlock::unavailable(&app_config)),
+            rate_limit: Arc::new(RateLimitConfig::unavailable()),
+            drop_monitor: Arc::new(DropMonitor::new()),
+            drop_ring_buf: Mutex::new(None),
+            shutdowns: SegQueue::new(),
+        }
+    }
+
     pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
         xsk_manager.run(Some(ml_engine), Some(self.dns_filter.clone()), &self.shutdowns)?;

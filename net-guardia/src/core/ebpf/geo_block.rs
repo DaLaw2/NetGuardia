@@ -20,8 +20,8 @@ struct GeoIndex {
 }
 
 pub struct GeoBlock {
-    geo_block_v4: RwLock<LpmTrie<MapData, u32, u8>>,
-    geo_block_v6: RwLock<LpmTrie<MapData, u128, u8>>,
+    geo_block_v4: RwLock<Option<LpmTrie<MapData, u32, u8>>>,
+    geo_block_v6: RwLock<Option<LpmTrie<MapData, u128, u8>>>,
     blocked_countries: RwLock<HashSet<String>>,
     index: Arc<GeoIndex>,
 }
@@ -43,11 +43,31 @@ impl GeoBlock {
         let index = Self::build_index(&reader)?;
 
         Ok(Self {
-            geo_block_v4: RwLock::new(v4_trie),
-            geo_block_v6: RwLock::new(v6_trie),
+            geo_block_v4: RwLock::new(Some(v4_trie)),
+            geo_block_v6: RwLock::new(Some(v6_trie)),
             blocked_countries: RwLock::new(HashSet::new()),
             index: Arc::new(index),
         })
+    }
+
+    /// Construct a GeoBlock with no eBPF trie backing. Attempts to still load
+    /// the GeoIP index so the frontend can list what *would* be enforced;
+    /// mutating calls (`block_countries`, `unblock_countries`) return
+    /// `EbpfError::NotLoaded`.
+    pub fn unavailable(app_config: &AppConfig) -> Self {
+        let index = Reader::open_readfile(&app_config.misc.geoip_db_name)
+            .ok()
+            .and_then(|reader| Self::build_index(&reader).ok())
+            .unwrap_or(GeoIndex {
+                v4: StdHashMap::new(),
+                v6: StdHashMap::new(),
+            });
+        Self {
+            geo_block_v4: RwLock::new(None),
+            geo_block_v6: RwLock::new(None),
+            blocked_countries: RwLock::new(HashSet::new()),
+            index: Arc::new(index),
+        }
     }
 
     /// Build index from MaxMind DB at startup. One-time cost.
@@ -55,6 +75,7 @@ impl GeoBlock {
         let mut v4: StdHashMap<String, Vec<(u32, u32)>> = StdHashMap::new();
         let mut v6: StdHashMap<String, Vec<(u128, u32)>> = StdHashMap::new();
 
+        // SAFETY: "0.0.0.0/0" is a valid IPv4 CIDR literal, parse is infallible.
         let ipv4_all: IpNetwork = "0.0.0.0/0".parse().unwrap();
         if let Ok(iter) = reader.within(ipv4_all, Default::default()) {
             for result in iter {
@@ -73,6 +94,7 @@ impl GeoBlock {
             }
         }
 
+        // SAFETY: "::/0" is a valid IPv6 CIDR literal, parse is infallible.
         let ipv6_all: IpNetwork = "::/0".parse().unwrap();
         if let Ok(iter) = reader.within(ipv6_all, Default::default()) {
             for result in iter {
@@ -145,10 +167,14 @@ impl GeoBlock {
         }
 
         // Lock, clear, insert
-        let mut v4_trie = self.geo_block_v4.write();
-        let mut v6_trie = self.geo_block_v6.write();
-        Self::clear_trie_v4(&mut v4_trie);
-        Self::clear_trie_v6(&mut v6_trie);
+        let mut v4_guard = self.geo_block_v4.write();
+        let mut v6_guard = self.geo_block_v6.write();
+        let (v4_trie, v6_trie) = match (v4_guard.as_mut(), v6_guard.as_mut()) {
+            (Some(v4), Some(v6)) => (v4, v6),
+            _ => return Err(EbpfError::NotLoaded.into()),
+        };
+        Self::clear_trie_v4(v4_trie);
+        Self::clear_trie_v6(v6_trie);
 
         let mut count = 0u64;
         for (key, val) in &v4_entries {

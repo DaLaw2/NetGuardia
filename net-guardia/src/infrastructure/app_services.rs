@@ -20,6 +20,7 @@ use crate::model::error::misc::MiscError;
 use crate::model::error::system::SystemError;
 use crate::model::log::system::SystemLog;
 use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfHealth;
 
 /// Application-level service orchestrator.
 /// Holds all runtime services (health monitoring, ML inference, flow statistics)
@@ -38,8 +39,9 @@ impl AppServices {
         app_config: Arc<AppConfig>,
         inference_config: Arc<MLInferenceConfig>,
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+        ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
     ) -> Result<Self, Error> {
-        let health = SystemHealth::new(app_config.clone())?;
+        let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
 
         let batch_size = app_config.inference.inference_batch_size;
         let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config, batch_size)?);

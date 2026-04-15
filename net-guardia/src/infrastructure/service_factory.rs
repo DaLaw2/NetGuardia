@@ -47,6 +47,7 @@ use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::system::SystemLog;
 use crate::model::monitoring::direction::FlowDirection;
 use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfHealth;
 use macros::log;
 
 /// Holds all Arc-wrapped services that make up the running application.
@@ -70,10 +71,17 @@ pub struct AppState {
     pub rate_limit_service: Arc<RateLimitService>,
     pub geoip: Option<Arc<GeoIpService>>,
     pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
-    pub ingress_ebpf: Ebpf,
-    pub egress_ebpf: Ebpf,
-    /// Held to keep the eBPF program array map FD alive.
-    pub _ingress_program_array: ProgramArray<MapData>,
+    pub ingress_ebpf: Option<Ebpf>,
+    pub egress_ebpf: Option<Ebpf>,
+    /// Held to keep the eBPF program array map FD alive. `None` when eBPF
+    /// failed to load.
+    pub _ingress_program_array: Option<ProgramArray<MapData>>,
+    /// Shared eBPF health state. Populated to `Healthy` on successful bring-up,
+    /// or to `Unavailable { stage, category, reason }` when any stage fails.
+    /// Read by `SystemHealth` for the metrics broadcast and by HTTP handlers
+    /// that render runtime status to the frontend.
+    pub ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
+    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
 }
 
 /// Maps stage name (from config.toml) to (function_name, stage_id).
@@ -96,35 +104,38 @@ impl ServiceFactory {
         AppConfig::seed_defaults(&db)?;
         let app_config = Arc::new(AppConfig::new(&db)?);
 
-        let mut ingress_ebpf = Self::load_ebpf("ingress")?;
-        let mut egress_ebpf = Self::load_ebpf("egress")?;
-
-        let ingress_program_array = Self::configure_ingress_pipeline(&mut ingress_ebpf, &app_config.pipeline.ingress)?;
-
         let inference_config = Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?);
 
-        // Write queue count to eBPF maps for symmetric hash redirect
-        let num_queues = app_config.network.combined_queue_count;
-        Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
-        Self::write_num_queues(&mut egress_ebpf, num_queues)?;
+        // Shared eBPF health handle. Initialized Healthy; downgraded to
+        // Unavailable with a classified reason if any stage below fails.
+        let ebpf_health = Arc::new(parking_lot::RwLock::new(EbpfHealth::Healthy));
+
+        // Attempt full eBPF bring-up. On any failure we classify the error,
+        // write it into `ebpf_health`, and fall back to an `EbpfServices`
+        // whose eBPF-backed operations return `EbpfError::NotLoaded`. The
+        // rest of the system (HTTP API, SOAR, ML engine, auth) is built
+        // regardless so the operator can still reach the frontend and see
+        // the reason.
+        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) =
+            match Self::try_build_ebpf(&app_config) {
+                Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
+                Err((stage, err)) => {
+                    let health = crate::infrastructure::ebpf_preflight::classify(stage, &err, None);
+                    log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+                    *ebpf_health.write() = health;
+                    (None, None, None, Arc::new(EbpfServices::unavailable(app_config.clone())))
+                }
+            };
 
         // Ensure enforce_mode setting exists (default: monitor)
         if db.get_setting("enforce_mode")?.is_none() {
             db.set_setting("enforce_mode", "monitor")?;
         }
 
-        // Create secret store and run plaintext migration before anything reads secrets
         let secret_store = Arc::new(SecretStore::new(db.clone()));
-        secret_store.migrate_plaintext_secrets()?;
         let secret_store_port: Arc<dyn SecretStorePort> = secret_store.clone();
 
         let jwt_service = Arc::new(JwtService::new(&secret_store_port, app_config.http.jwt_expiry_hours)?);
-
-        let ebpf_services = Arc::new(EbpfServices::new(
-            app_config.clone(),
-            &mut ingress_ebpf,
-            &mut egress_ebpf,
-        )?);
 
         // Initialize ML drift detector from inference config baselines
         let baselines = FeatureBaselines::from_inference_config(&inference_config);
@@ -143,6 +154,7 @@ impl ServiceFactory {
             app_config.clone(),
             inference_config.clone(),
             drift_detector.clone(),
+            ebpf_health.clone(),
         )?);
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
@@ -255,6 +267,9 @@ impl ServiceFactory {
             secret_store_port,
         ));
 
+        let suricata_manager =
+            crate::infrastructure::suricata_manager::SuricataManager::new(app_config.clone());
+
         Ok(AppState {
             app_config,
             inference_config,
@@ -278,10 +293,39 @@ impl ServiceFactory {
             ingress_ebpf,
             egress_ebpf,
             _ingress_program_array: ingress_program_array,
+            ebpf_health,
+            suricata_manager,
         })
     }
 
     // --- eBPF loading helpers ---
+
+    /// Attempt the full eBPF bring-up chain: load both .o files, configure the
+    /// ingress pipeline, write queue counts, and hand out map handles to the
+    /// services. Returns the original stage on the first failure so the
+    /// classifier can render targeted diagnostics.
+    #[allow(clippy::type_complexity)]
+    fn try_build_ebpf(
+        app_config: &Arc<AppConfig>,
+    ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (crate::model::system::health::EbpfFailStage, Error)>
+    {
+        use crate::model::system::health::EbpfFailStage;
+
+        let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
+        let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;
+
+        let pipeline = Self::configure_ingress_pipeline(&mut ingress, &app_config.pipeline.ingress)
+            .map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+
+        let num_queues = app_config.network.combined_queue_count;
+        Self::write_num_queues(&mut ingress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+        Self::write_num_queues(&mut egress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+
+        let services = EbpfServices::new(app_config.clone(), &mut ingress, &mut egress)
+            .map_err(|e| (EbpfFailStage::MapsBind, e))?;
+
+        Ok((ingress, egress, pipeline, services))
+    }
 
     fn load_ebpf(name: &str) -> Result<Ebpf, Error> {
         let bytes = match name {

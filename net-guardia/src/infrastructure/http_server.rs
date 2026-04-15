@@ -60,6 +60,7 @@ pub struct HttpServerParams {
     pub rate_limit_service: Arc<RateLimitService>,
     pub force_https: ForceHttpsFlag,
     pub shutdown_handle: Arc<ShutdownHandle>,
+    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
 }
 
 /// CORS configuration shared by both full and setup servers.
@@ -221,6 +222,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let rate_limit_service = params.rate_limit_service;
     let force_https = params.force_https;
     let shutdown_handle = params.shutdown_handle;
+    let suricata_manager = params.suricata_manager;
     let port = app_config.http.http_server_bind_port;
 
     HttpServer::new(move || {
@@ -255,7 +257,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(dns_filter_service.clone()))
             .app_data(web::Data::from(notification_service.clone()))
             .app_data(web::Data::from(playbook_service.clone()))
-            .app_data(web::Data::from(rate_limit_service.clone()));
+            .app_data(web::Data::from(rate_limit_service.clone()))
+            .app_data(web::Data::from(suricata_manager.clone()));
         app.wrap(SetupGuard)
             .service(
                 web::scope("/api")
