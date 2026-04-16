@@ -1,3 +1,4 @@
+use chrono::{Duration as ChronoDuration, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::interface::port::repository::RepositoryPort;
@@ -63,10 +64,10 @@ pub struct SystemHealthSummary {
 impl ReportData {
     /// Build report data from database settings (aggregated by the ML pipeline).
     pub fn from_database(db: &dyn RepositoryPort) -> Result<Self, Error> {
-        let now = chrono::Local::now();
+        let now = Local::now();
         let period = format!(
             "{} — {}",
-            (now - chrono::Duration::days(7)).format("%Y-%m-%d"),
+            (now - ChronoDuration::days(7)).format("%Y-%m-%d"),
             now.format("%Y-%m-%d")
         );
 

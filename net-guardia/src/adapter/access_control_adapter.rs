@@ -7,6 +7,7 @@ use crate::core::ebpf::access_control::AccessControl;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
+use crate::model::error::ebpf::EbpfError;
 use crate::model::monitoring::direction::FlowDirection;
 
 /// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
@@ -25,7 +26,7 @@ impl AccessControlPort for EbpfAccessControlAdapter {
     async fn block_ip(&self, ip: &str) -> Result<(), Error> {
         let addr: IpAddr = ip
             .parse()
-            .map_err(|_| Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
+            .map_err(|_| Error::from(EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);
@@ -45,7 +46,7 @@ impl AccessControlPort for EbpfAccessControlAdapter {
     async fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
         let addr: IpAddr = ip
             .parse()
-            .map_err(|_| Error::from(crate::model::error::ebpf::EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
+            .map_err(|_| Error::from(EbpfError::InvalidIpAddress { ip: ip.to_string() }))?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);

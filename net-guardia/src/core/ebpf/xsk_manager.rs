@@ -1,5 +1,5 @@
 use std::ffi::CString;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::num::NonZero;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
-use crossbeam::channel::{Receiver, Sender, bounded};
+use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
 use parking_lot::Mutex;
-use tokio::sync::oneshot;
+use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
@@ -227,7 +227,7 @@ impl XskPair {
 
         let submitted = unsafe { fill_queue.produce(&fill_frames) };
         if submitted != fill_frames.len() {
-            return Err(EbpfError::FillQueueInitFailed.into());
+            Err(EbpfError::FillQueueInitFailed)?;
         }
 
         let pool_frames: Vec<FrameDesc> = frame_descs.iter().skip(fill_frames_count).copied().collect();
@@ -270,10 +270,10 @@ impl XskPair {
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
                         match rx.try_recv() {
-                            Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
+                            Ok(_) | Err(TryRecvError::Closed) => {
                                 break;
                             }
-                            Err(oneshot::error::TryRecvError::Empty) => {}
+                            Err(TryRecvError::Empty) => {}
                         }
                     }
 
@@ -375,11 +375,11 @@ impl XskPair {
                 buf.extend_from_slice(raw);
                 if let Err(e) = forward_tx.try_send(buf) {
                     match e {
-                        crossbeam::channel::TrySendError::Full(returned) => {
+                        TrySendError::Full(returned) => {
                             buffer_pool.put(returned);
                             log!(EbpfLog::ForwardChannelFull);
                         }
-                        crossbeam::channel::TrySendError::Disconnected(returned) => {
+                        TrySendError::Disconnected(returned) => {
                             buffer_pool.put(returned);
                             log!(EbpfLog::ForwardChannelDisconnected);
                         }
@@ -462,7 +462,7 @@ impl XskPair {
         }
 
         if let Err(e) = self.tx.wakeup()
-            && e.kind() != std::io::ErrorKind::WouldBlock
+            && e.kind() != ErrorKind::WouldBlock
         {
             log!(EbpfLog::TXWakeupFailed(e.to_string()));
         }

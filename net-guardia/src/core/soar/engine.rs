@@ -1,13 +1,23 @@
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
+use chrono::{Duration as ChronoDuration, NaiveDateTime, Utc};
 use dashmap::DashMap;
 use macros::log;
-use tokio::sync::broadcast;
+use parking_lot::RwLock;
+use reqwest::Client;
+use serde_json::Value;
+use tokio::net::lookup_host;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{Mutex as TokioMutex, broadcast};
+use tokio::task::spawn_blocking;
+use url::Url;
 
 use crate::core::ebpf::rate_limit::RateLimitConfig;
+use crate::core::playbook_service::ip_version_from_str;
 use crate::core::soar::frequency::FrequencyTracker;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
@@ -31,11 +41,11 @@ pub struct SoarEngine {
     db: Arc<dyn SoarPort>,
     access_control: Arc<dyn AccessControlPort>,
     /// In-memory cache of playbooks (loaded at startup, refreshed on change).
-    playbooks: parking_lot::RwLock<Vec<Playbook>>,
+    playbooks: RwLock<Vec<Playbook>>,
     /// In-memory cache of admin whitelist IPs.
-    admin_whitelist: parking_lot::RwLock<HashSet<String>>,
+    admin_whitelist: RwLock<HashSet<String>>,
     /// Cooldown tracker: maps (playbook_id, source_ip) → last execution time.
-    cooldowns: DashMap<CooldownKey, std::time::Instant>,
+    cooldowns: DashMap<CooldownKey, Instant>,
     /// Frequency tracker for frequency-based conditions.
     frequency_tracker: FrequencyTracker,
     /// AtomicU32 counter for active auto-blocks (avoids DB query per event).
@@ -47,7 +57,7 @@ pub struct SoarEngine {
     /// Optional rate limit config for adjust_rate_limit action.
     rate_limit: Option<Arc<RateLimitConfig>>,
     /// Lock to serialize rate limit read-save-write sequences (Item 6: atomicity).
-    rate_limit_lock: tokio::sync::Mutex<()>,
+    rate_limit_lock: TokioMutex<()>,
     /// Cached enforce level: Monitor=0, MlOnly=1, Enforce=2.
     enforce_level_cache: Arc<AtomicU8>,
     /// Secret store for decrypting SMTP passwords etc.
@@ -67,15 +77,15 @@ impl SoarEngine {
         let engine = Self {
             db,
             access_control,
-            playbooks: parking_lot::RwLock::new(Vec::new()),
-            admin_whitelist: parking_lot::RwLock::new(HashSet::new()),
+            playbooks: RwLock::new(Vec::new()),
+            admin_whitelist: RwLock::new(HashSet::new()),
             cooldowns: DashMap::new(),
             frequency_tracker: FrequencyTracker::new(),
             active_block_count: AtomicU32::new(0),
             alert_notifier,
             geoip,
             rate_limit,
-            rate_limit_lock: tokio::sync::Mutex::new(()),
+            rate_limit_lock: TokioMutex::new(()),
             enforce_level_cache,
             secrets,
         };
@@ -132,7 +142,7 @@ impl SoarEngine {
                             name: pb.name.clone(),
                             error: format!("Malformed action params JSON: {}", e),
                         });
-                        serde_json::Value::Object(Default::default())
+                        Value::Object(Default::default())
                     }),
                 });
             }
@@ -197,10 +207,7 @@ impl SoarEngine {
                 "CRITICAL: SOAR engine failed to subscribe — automated threat response is DISABLED: {}",
                 e
             )));
-            SoarError::ActionFailed {
-                action_type: "subscribe".to_string(),
-                reason: e.to_string(),
-            }
+            SoarError::ActionFailed("subscribe", e)
         })?;
         tokio::spawn(async move {
             Self::event_loop(self, rx).await;
@@ -220,10 +227,10 @@ impl SoarEngine {
                         }
                     });
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
+                Err(RecvError::Lagged(n)) => {
                     log!(SoarLog::ReceiverLagged(n));
                 }
-                Err(broadcast::error::RecvError::Closed) => {
+                Err(RecvError::Closed) => {
                     log!(SoarLog::ChannelClosed);
                     break;
                 }
@@ -400,7 +407,7 @@ impl SoarEngine {
     /// Record cooldown for a playbook + source IP combination.
     fn record_cooldown(&self, playbook_id: i64, source_ip: &str) {
         let key = (playbook_id, source_ip.to_string());
-        self.cooldowns.insert(key, std::time::Instant::now());
+        self.cooldowns.insert(key, Instant::now());
     }
 
     /// Execute a single playbook against an event.
@@ -494,11 +501,7 @@ impl SoarEngine {
             "send_email" => self.action_send_email(event).await,
             "webhook" => self.action_webhook(action, event).await,
             "log" => self.action_log(action, event),
-            other => Err(SoarError::ActionFailed {
-                action_type: other.to_string(),
-                reason: "Unknown action type".to_string(),
-            }
-            .into()),
+            other => Err(SoarError::UnknownActionType(other))?,
         }
     }
 
@@ -520,11 +523,7 @@ impl SoarEngine {
             .and_then(|v| v.parse().ok())
             .unwrap_or(86400);
         if ttl_secs > max_ttl {
-            return Err(SoarError::InvalidTtl {
-                ttl_secs,
-                max_secs: max_ttl,
-            }
-            .into());
+            Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
 
         // Atomically check cap and reserve a slot using CAS loop (runtime-configurable via DB)
@@ -539,7 +538,7 @@ impl SoarEngine {
             let current_count = self.active_block_count.load(Ordering::SeqCst);
             if current_count >= max_cap {
                 log!(SoarLog::CapReached(current_count, max_cap, event.source_ip.clone()));
-                return Err(SoarError::CapReached { max_cap }.into());
+                Err(SoarError::CapReached(max_cap))?;
             }
             if self
                 .active_block_count
@@ -557,7 +556,7 @@ impl SoarEngine {
         }
 
         // Calculate expiry time
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let expires_at = Utc::now() + ChronoDuration::seconds(ttl_secs as i64);
         let expires_str = expires_at.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Record in soar_block_rules
@@ -584,7 +583,7 @@ impl SoarEngine {
         }
 
         // Also persist to acl_rules for consistency
-        let ip_version = crate::core::playbook_service::ip_version_from_str(&event.source_ip);
+        let ip_version = ip_version_from_str(&event.source_ip);
         self.db
             .insert_acl_rule(ip_version, "source", "blacklist", &event.source_ip, 0)?;
 
@@ -599,20 +598,13 @@ impl SoarEngine {
         action: &PlaybookAction,
         event: &ThreatDetectedEvent,
     ) -> Result<String, Error> {
-        let rate_limit = self.rate_limit.as_ref().ok_or_else(|| SoarError::ActionFailed {
-            action_type: "adjust_rate_limit".to_string(),
-            reason: "Rate limit config not available".to_string(),
-        })?;
+        let rate_limit = self.rate_limit.as_ref().ok_or(SoarError::RateLimitUnavailable)?;
 
         let factor = action.params.get("factor").and_then(|v| v.as_f64()).unwrap_or(0.5);
         let ttl_secs = action.params.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(600);
 
         if !(0.01..=1.0).contains(&factor) {
-            return Err(SoarError::ActionFailed {
-                action_type: "adjust_rate_limit".to_string(),
-                reason: format!("factor must be 0.01..1.0, got {}", factor),
-            }
-            .into());
+            Err(SoarError::InvalidRateLimitFactor(factor))?;
         }
 
         let max_ttl: u64 = self
@@ -623,11 +615,7 @@ impl SoarEngine {
             .and_then(|v| v.parse().ok())
             .unwrap_or(86400);
         if ttl_secs > max_ttl {
-            return Err(SoarError::InvalidTtl {
-                ttl_secs,
-                max_secs: max_ttl,
-            }
-            .into());
+            Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
 
         // Acquire lock to serialize rate limit read-save-write (Item 6: atomicity)
@@ -652,7 +640,7 @@ impl SoarEngine {
         }
 
         // Store TTL for restoration
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let expires_at = Utc::now() + ChronoDuration::seconds(ttl_secs as i64);
         self.db.set_setting(
             "soar_rate_limit_expires",
             &expires_at.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -697,7 +685,7 @@ impl SoarEngine {
     async fn action_send_telegram(&self, event: &ThreatDetectedEvent) -> Result<String, Error> {
         if let Some(notifier) = &self.alert_notifier {
             let country = if let Some(geoip) = &self.geoip {
-                if let Ok(ip_addr) = event.source_ip.parse::<std::net::IpAddr>() {
+                if let Ok(ip_addr) = event.source_ip.parse::<IpAddr>() {
                     match geoip.lookup(ip_addr).await {
                         Ok(Some(loc)) => loc.country,
                         _ => None,
@@ -719,7 +707,7 @@ impl SoarEngine {
                     "SOAR auto-response triggered (hits: {}{})",
                     event.flow_count, repeat_tag,
                 ),
-                timestamp: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                timestamp: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             };
             notifier.send_alert(&payload).await?;
             Ok("Telegram notification sent".to_string())
@@ -748,15 +736,12 @@ impl SoarEngine {
                     event.source_ip,
                     event.attack_type,
                     event.confidence * 100.0,
-                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+                    Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
                 );
                 if let Some(recipient) = self.db.get_setting("smtp_recipient")? {
-                    tokio::task::spawn_blocking(move || smtp.send(&recipient, &subject, &body))
+                    spawn_blocking(move || smtp.send(&recipient, &subject, &body))
                         .await
-                        .map_err(|e| SoarError::ActionFailed {
-                            action_type: "send_email".to_string(),
-                            reason: e.to_string(),
-                        })??;
+                        .map_err(|e| SoarError::ActionFailed("send_email", e))??;
                     Ok("Email alert sent".to_string())
                 } else {
                     Ok("No SMTP recipient configured, skipped".to_string())
@@ -773,41 +758,25 @@ impl SoarEngine {
             .params
             .get("url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: "Missing 'url' parameter".to_string(),
-            })?;
+            .ok_or_else(|| SoarError::WebhookMissingParam("url"))?;
 
         let timeout_secs = action.params.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(10);
 
         // Parse URL and extract host
-        let parsed_url = url::Url::parse(url_str).map_err(|e| SoarError::ActionFailed {
-            action_type: "webhook".to_string(),
-            reason: format!("Invalid URL: {}", e),
-        })?;
+        let parsed_url = Url::parse(url_str).map_err(|e| SoarError::ActionFailed("webhook", e))?;
 
-        let host = parsed_url.host_str().ok_or_else(|| SoarError::ActionFailed {
-            action_type: "webhook".to_string(),
-            reason: "URL has no host".to_string(),
-        })?;
+        let host = parsed_url.host_str().ok_or(SoarError::WebhookUrlNoHost)?;
 
         // DNS resolve all IPs and verify none are private/loopback/link-local
         let port = parsed_url.port_or_known_default().unwrap_or(443);
         let resolve_target = format!("{}:{}", host, port);
-        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&resolve_target)
+        let addrs: Vec<SocketAddr> = lookup_host(&resolve_target)
             .await
-            .map_err(|e| SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: format!("DNS resolution failed for '{}': {}", host, e),
-            })?
+            .map_err(|e| SoarError::ActionFailed(format!("webhook (DNS for {})", host), e))?
             .collect();
 
         if addrs.is_empty() {
-            return Err(SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: format!("DNS resolution returned no addresses for '{}'", host),
-            }
-            .into());
+            Err(SoarError::WebhookDnsEmpty(host))?;
         }
 
         for addr in &addrs {
@@ -817,11 +786,7 @@ impl SoarEngine {
                     url_str,
                     addr.ip()
                 )));
-                return Err(SoarError::ActionFailed {
-                    action_type: "webhook".to_string(),
-                    reason: format!("SSRF blocked: host '{}' resolves to private IP {}", host, addr.ip()),
-                }
-                .into());
+                Err(SoarError::WebhookSsrfBlocked(host, addr.ip().to_string()))?;
             }
         }
 
@@ -838,40 +803,32 @@ impl SoarEngine {
             "geoip_country": event.geoip_country,
             "is_repeat_offender": event.is_repeat_offender,
             "detection_sources": sources_str,
-            "timestamp": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            "timestamp": Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         });
 
         // Pin resolved IPs to prevent DNS rebinding: the DNS check above verified
         // all resolved addresses are public, so we force reqwest to use those same
         // addresses instead of re-resolving (which could return a private IP on TTL expiry).
-        let mut client_builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+        let mut client_builder = Client::builder().timeout(Duration::from_secs(timeout_secs));
         for addr in &addrs {
             client_builder = client_builder.resolve(host, *addr);
         }
-        let client = client_builder.build().map_err(|e| SoarError::ActionFailed {
-            action_type: "webhook".to_string(),
-            reason: format!("HTTP client error: {}", e),
-        })?;
+        let client = client_builder
+            .build()
+            .map_err(|e| SoarError::ActionFailed("webhook", e))?;
 
         let resp = client
             .post(url_str)
             .json(&payload)
             .send()
             .await
-            .map_err(|e| SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: format!("HTTP request failed: {}", e),
-            })?;
+            .map_err(|e| SoarError::ActionFailed("webhook", e))?;
 
         let status = resp.status();
         if status.is_success() {
             Ok(format!("Webhook sent to {} (status {})", url_str, status))
         } else {
-            Err(SoarError::ActionFailed {
-                action_type: "webhook".to_string(),
-                reason: format!("Webhook returned HTTP {}", status),
-            }
-            .into())
+            Err(SoarError::WebhookHttpStatus(status.as_u16()))?
         }
     }
 
@@ -1042,11 +999,11 @@ impl SoarEngine {
             None => return Ok(()), // No active adjustment
         };
 
-        let expires = chrono::NaiveDateTime::parse_from_str(&expires_str, "%Y-%m-%d %H:%M:%S")
+        let expires = NaiveDateTime::parse_from_str(&expires_str, "%Y-%m-%d %H:%M:%S")
             .map(|dt| dt.and_utc())
-            .unwrap_or_else(|_| chrono::Utc::now());
+            .unwrap_or_else(|_| Utc::now());
 
-        if chrono::Utc::now() < expires {
+        if Utc::now() < expires {
             return Ok(()); // Not yet expired
         }
 
@@ -1110,7 +1067,7 @@ impl SoarEngine {
             let playbooks = self.playbooks.read();
             playbooks.iter().map(|p| p.cooldown_secs as u64).max().unwrap_or(3600)
         };
-        let expiry = std::time::Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(3600));
+        let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(3600));
         let before = self.cooldowns.len();
         self.cooldowns.retain(|_, instant| instant.elapsed() < expiry);
         let removed = before.saturating_sub(self.cooldowns.len());
@@ -1148,6 +1105,7 @@ impl SoarEngine {
 mod tests {
     use super::*;
     use crate::model::error::ebpf::EbpfError;
+    use crate::model::event::DetectionSource;
     use parking_lot::Mutex;
     use std::sync::atomic::AtomicBool;
 
@@ -1169,10 +1127,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::interface::port::access_control::AccessControlPort for MockAccessControl {
+    impl AccessControlPort for MockAccessControl {
         async fn block_ip(&self, ip: &str) -> Result<(), Error> {
             if self.should_fail.load(Ordering::SeqCst) {
-                return Err(EbpfError::UnknownError.into());
+                Err(EbpfError::UnknownError)?;
             }
             self.blocked_ips.lock().push(ip.to_string());
             Ok(())
@@ -1180,7 +1138,7 @@ mod tests {
 
         async fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
             if self.should_fail.load(Ordering::SeqCst) {
-                return Err(EbpfError::UnknownError.into());
+                Err(EbpfError::UnknownError)?;
             }
             self.unblocked_ips.lock().push(ip.to_string());
             Ok(())
@@ -1192,7 +1150,7 @@ mod tests {
         Arc::new(Database::new(":memory:").expect("Failed to create test database")) as Arc<dyn SoarPort>
     }
 
-    fn test_engine(ac: Arc<dyn crate::interface::port::access_control::AccessControlPort>) -> SoarEngine {
+    fn test_engine(ac: Arc<dyn AccessControlPort>) -> SoarEngine {
         let db = test_db();
         db.seed_default_playbooks().ok();
         // Tests expect enforce mode to be active so block_ip actions execute
@@ -1217,7 +1175,7 @@ mod tests {
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -1252,7 +1210,7 @@ mod tests {
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -1279,7 +1237,7 @@ mod tests {
         db.seed_default_playbooks().ok();
 
         // Insert a fake active block
-        let expires = (chrono::Utc::now() + chrono::Duration::hours(1))
+        let expires = (Utc::now() + ChronoDuration::hours(1))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         db.insert_soar_block_rule("192.168.1.100", 1, &expires).ok();
@@ -1300,7 +1258,7 @@ mod tests {
         let db = test_db();
         db.seed_default_playbooks().ok();
 
-        let expires = (chrono::Utc::now() + chrono::Duration::hours(1))
+        let expires = (Utc::now() + ChronoDuration::hours(1))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         db.insert_soar_block_rule("10.0.0.1", 1, &expires).ok();
@@ -1334,7 +1292,7 @@ mod tests {
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -1369,7 +1327,7 @@ mod tests {
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -1414,7 +1372,7 @@ mod tests {
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -1490,7 +1448,7 @@ mod tests {
             protocol: 6,
             geoip_country: country.map(|s| s.to_string()),
             is_repeat_offender: repeat,
-            sources: vec![crate::model::event::DetectionSource::ML],
+            sources: vec![DetectionSource::ML],
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,

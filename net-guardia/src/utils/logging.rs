@@ -1,9 +1,11 @@
+use std::env;
 use std::fs;
 use std::sync::OnceLock;
 
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -41,14 +43,14 @@ impl Logging {
 
         let file_appender = RollingFileAppender::new(Rotation::DAILY, log_directory, "NetGuardia");
 
-        let stdout_layer = tracing_subscriber::fmt::layer()
+        let stdout_layer = fmt_layer()
             .with_file(true)
             .with_line_number(true)
             .with_thread_ids(true)
             .with_target(false)
             .with_ansi(true);
 
-        let file_layer = tracing_subscriber::fmt::layer()
+        let file_layer = fmt_layer()
             .with_file(false)
             .with_line_number(false)
             .with_thread_ids(false)
@@ -56,7 +58,7 @@ impl Logging {
             .with_ansi(false)
             .with_writer(file_appender);
 
-        let level = std::env::var("RUST_LOG")
+        let level = env::var("RUST_LOG")
             .ok()
             .and_then(|s| s.parse::<Level>().ok())
             .unwrap_or(if cfg!(debug_assertions) {

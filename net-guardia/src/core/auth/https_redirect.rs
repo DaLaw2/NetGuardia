@@ -1,7 +1,10 @@
 use std::future::{Future, Ready, ready};
+use std::net::IpAddr;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -40,13 +43,13 @@ fn is_safe_redirect_host(host: &str) -> bool {
     }
 
     // Try parsing as IP — allow private ranges only
-    if let Ok(ip) = hostname.parse::<std::net::IpAddr>() {
+    if let Ok(ip) = hostname.parse::<IpAddr>() {
         return match ip {
-            std::net::IpAddr::V4(v4) => {
+            IpAddr::V4(v4) => {
                 let o = v4.octets();
                 o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168) || o[0] == 127
             }
-            std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+            IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
         };
     }
 
@@ -68,13 +71,13 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(HttpsRedirectService {
-            service: std::rc::Rc::new(service),
+            service: Rc::new(service),
         }))
     }
 }
 
 pub struct HttpsRedirectService<S> {
-    service: std::rc::Rc<S>,
+    service: Rc<S>,
 }
 
 impl<S, B> Service<ServiceRequest> for HttpsRedirectService<S>
@@ -86,12 +89,12 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let service = std::rc::Rc::clone(&self.service);
+        let service = Rc::clone(&self.service);
 
         Box::pin(async move {
             // Check if force_https is enabled

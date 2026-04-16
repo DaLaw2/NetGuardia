@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
+use macros::log;
+use serde_json::Value;
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
-use tracing::{error, info};
 
 use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::stats::StatsPort;
 use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
 
 /// Background service that periodically aggregates statistics from SOAR/ML tables
 /// and writes them to the settings table for the Report engine to consume.
@@ -20,18 +23,18 @@ impl StatsAggregator {
     }
 
     /// Spawn a background task that runs aggregation every hour.
-    pub fn start(self) -> tokio::task::JoinHandle<()> {
+    pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
-            info!("Stats aggregator started (1h interval)");
+            log!(SystemLog::StatsAggregatorStarted);
             // Run immediately on startup
             if let Err(e) = self.aggregate() {
-                error!("Initial stats aggregation failed: {}", e);
+                log!(SystemLog::InitialStatsAggregationFailed(e.to_string()));
             }
             let mut interval = time::interval(Duration::from_secs(3600));
             loop {
                 interval.tick().await;
                 if let Err(e) = self.aggregate() {
-                    error!("Stats aggregation failed: {}", e);
+                    log!(SystemLog::StatsAggregationFailed(e.to_string()));
                 }
             }
         })
@@ -62,7 +65,7 @@ impl StatsAggregator {
         let breakdown = self.stats.weekly_threat_breakdown(days)?;
         let breakdown_json: serde_json::Map<String, serde_json::Value> = breakdown
             .into_iter()
-            .map(|(k, v)| (k, serde_json::Value::Number(v.into())))
+            .map(|(k, v)| (k, Value::Number(v.into())))
             .collect();
         self.repo.set_setting(
             "weekly_threat_breakdown",
@@ -133,10 +136,12 @@ impl StatsAggregator {
             self.repo.set_setting("weekly_geo_distribution", "[]")?;
         }
 
-        info!(
-            "Stats aggregated: {} threats, {} blocks, {} unblocks, {} active rules",
-            threats_count, blocks_count, unblocks_count, active_rules
-        );
+        log!(SystemLog::StatsAggregated(
+            threats_count,
+            blocks_count,
+            unblocks_count,
+            active_rules,
+        ));
 
         Ok(())
     }

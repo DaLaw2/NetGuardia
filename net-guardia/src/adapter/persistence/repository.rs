@@ -1,18 +1,31 @@
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use chrono::Utc;
+use macros::log;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::params;
-use std::collections::HashMap;
+use rusqlite::{self, Connection, Error as RusqliteError, params};
 
-use macros::log;
-
+use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyPort};
+use crate::interface::port::audit::AuditPort;
+use crate::interface::port::notification::NotificationConfigPort;
+use crate::interface::port::repository::{
+    AclRuleTuple, RepositoryPort, UserGroupTuple, UserListItem, UserTuple, UserWithGroups,
+};
+use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarPort};
+use crate::interface::port::stats::StatsPort;
 use crate::model::error::Error;
 use crate::model::error::database::DatabaseError;
+use crate::model::identity::auth::Claims;
 use crate::model::log::misc::MiscLog;
+use crate::model::soar::playbook_data::UpdatePlaybookRow;
 
 /// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
 /// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).
 fn db_encryption_key() -> Option<String> {
-    match std::env::var("NETGUARDIA_DB_KEY") {
+    match env::var("NETGUARDIA_DB_KEY") {
         Ok(k) if !k.is_empty() => Some(k),
         _ => None,
     }
@@ -74,18 +87,14 @@ impl Database {
             .max_size(if path == ":memory:" { 1 } else { 6 })
             .connection_customizer(Box::new(customizer))
             .build(manager)
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
 
         // Verify the pool is actually usable (catches wrong key / corrupt DB early).
         {
-            let test_conn = pool
-                .get()
-                .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            let test_conn = pool.get().map_err(DatabaseError::QueryFailed)?;
             test_conn
                 .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-                .map_err(|_| DatabaseError::QueryFailed {
-                    reason: "Database encryption key is incorrect or database is corrupted".to_string(),
-                })?;
+                .map_err(|_| DatabaseError::EncryptionKeyInvalid)?;
         }
 
         let api_key_hmac = Self::derive_api_key_hmac();
@@ -100,10 +109,10 @@ impl Database {
         use hkdf::Hkdf;
         use sha2::Sha256;
 
-        let root_key = std::env::var("NETGUARDIA_SECRETS_KEY")
+        let root_key = env::var("NETGUARDIA_SECRETS_KEY")
             .ok()
             .filter(|k| !k.is_empty())
-            .or_else(|| std::env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()))
+            .or_else(|| env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()))
             .unwrap_or_else(|| "netguardia-dev-api-key-secret".to_string());
 
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), root_key.as_bytes());
@@ -134,55 +143,47 @@ impl Database {
     /// Export an encrypted database to a plaintext copy.
     /// The original file is NOT modified.
     pub fn decrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
-        let conn =
-            rusqlite::Connection::open(src_path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        let conn = Connection::open(src_path).map_err(DatabaseError::QueryFailed)?;
         conn.pragma_update(None, "key", key)
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
         // Verify we can read the encrypted DB
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-            .map_err(|_| DatabaseError::QueryFailed {
-                reason: "Cannot read database with provided key — wrong key or not encrypted".to_string(),
-            })?;
+            .map_err(|_| DatabaseError::DatabaseNotReadable)?;
         // Attach a plaintext destination (empty key = no encryption)
         conn.execute_batch(&format!(
             "ATTACH DATABASE '{}' AS plaintext KEY '';",
             dest_path.replace('\'', "''"),
         ))
-        .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        .map_err(DatabaseError::QueryFailed)?;
         conn.query_row("SELECT sqlcipher_export('plaintext')", [], |_| Ok(()))
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
         conn.execute_batch("DETACH DATABASE plaintext;")
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
         Ok(())
     }
 
     /// Encrypt a plaintext database to a new encrypted copy.
     /// The original file is NOT modified.
     pub fn encrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
-        let conn =
-            rusqlite::Connection::open(src_path).map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        let conn = Connection::open(src_path).map_err(DatabaseError::QueryFailed)?;
         // Verify it's readable as plaintext
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-            .map_err(|_| DatabaseError::QueryFailed {
-                reason: "Cannot read source database — may already be encrypted".to_string(),
-            })?;
+            .map_err(|_| DatabaseError::SourceDatabaseNotReadable)?;
         conn.execute_batch(&format!(
             "ATTACH DATABASE '{}' AS encrypted KEY '{}';",
             dest_path.replace('\'', "''"),
             key.replace('\'', "''"),
         ))
-        .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+        .map_err(DatabaseError::QueryFailed)?;
         conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
         conn.execute_batch("DETACH DATABASE encrypted;")
-            .map_err(|e| DatabaseError::QueryFailed { reason: e.to_string() })?;
+            .map_err(DatabaseError::QueryFailed)?;
         Ok(())
     }
 
     fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, Error> {
-        self.pool
-            .get()
-            .map_err(|e| -> Error { DatabaseError::QueryFailed { reason: e.to_string() }.into() })
+        self.pool.get().map_err(|e| DatabaseError::QueryFailed(e).into())
     }
 
     fn create_tables(&self) -> Result<(), Error> {
@@ -440,7 +441,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> {
+    pub fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT ip_version, direction, list_type, ip_address, port FROM acl_rules")?;
         let rows = stmt.query_map([], |row| {
@@ -545,8 +546,8 @@ impl Database {
         });
         match result {
             Ok(val) => Ok(Some(val)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -568,8 +569,8 @@ impl Database {
         });
         match result {
             Ok(val) => Ok(Some(val)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -583,7 +584,7 @@ impl Database {
     }
 
     // --- Users ---
-    pub fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+    pub fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, username, password_hash, role, force_password_change FROM users WHERE username = ?1",
@@ -600,8 +601,8 @@ impl Database {
         );
         match result {
             Ok(user) => Ok(Some(user)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -644,7 +645,7 @@ impl Database {
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
     }
 
-    pub fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> {
+    pub fn list_users(&self) -> Result<Vec<UserListItem>, Error> {
         let conn = self.conn()?;
         let mut stmt =
             conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
@@ -664,7 +665,7 @@ impl Database {
         Ok(results)
     }
 
-    pub fn list_users_with_groups(&self) -> Result<Vec<crate::interface::port::repository::UserWithGroups>, Error> {
+    pub fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.role, u.force_password_change, u.created_at, \
@@ -686,7 +687,7 @@ impl Database {
             ))
         })?;
 
-        let mut user_map: HashMap<i64, crate::interface::port::repository::UserWithGroups> = HashMap::new();
+        let mut user_map: HashMap<i64, UserWithGroups> = HashMap::new();
         let mut order: Vec<i64> = Vec::new();
 
         for row in rows {
@@ -725,10 +726,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn find_user_by_id(
-        &self,
-        user_id: i64,
-    ) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+    pub fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, username, password_hash, role, force_password_change FROM users WHERE id = ?1",
@@ -745,13 +743,13 @@ impl Database {
         );
         match result {
             Ok(user) => Ok(Some(user)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
     // --- User Groups ---
-    pub fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> {
+    pub fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error> {
         let conn = self.conn()?;
         let mut stmt =
             conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
@@ -779,10 +777,7 @@ impl Database {
         )
         .map_err(|e| -> Error {
             if e.to_string().contains("UNIQUE constraint") {
-                DatabaseError::QueryFailed {
-                    reason: format!("Group '{}' already exists", name),
-                }
-                .into()
+                DatabaseError::GroupAlreadyExists(name).into()
             } else {
                 e.into()
             }
@@ -806,7 +801,7 @@ impl Database {
         Ok(affected > 0)
     }
 
-    pub fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> {
+    pub fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, name, description, permissions, created_at FROM user_groups WHERE id = ?1",
@@ -823,8 +818,8 @@ impl Database {
         );
         match result {
             Ok(group) => Ok(Some(group)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -865,7 +860,7 @@ impl Database {
 
     pub fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
         let groups = self.get_user_groups(user_id)?;
-        let mut all_perms = std::collections::HashSet::new();
+        let mut all_perms = HashSet::new();
         for (_id, _name, _desc, perms_json) in groups {
             if let Ok(perms) = serde_json::from_str::<Vec<String>>(&perms_json) {
                 for p in perms {
@@ -922,9 +917,9 @@ impl Database {
         self.set_setting(&key_count, &count.to_string())?;
 
         if count >= 5 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(std::time::Duration::ZERO)
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
                 .as_secs();
             let locked_until = now + 900; // 15 minutes
             self.set_setting(&key_locked, &locked_until.to_string())?;
@@ -939,9 +934,9 @@ impl Database {
         if let Some(locked_str) = self.get_setting(&key_locked)?
             && let Ok(locked_until) = locked_str.parse::<u64>()
         {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(std::time::Duration::ZERO)
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
                 .as_secs();
             if now < locked_until {
                 return Ok(Some(locked_until - now));
@@ -969,7 +964,7 @@ impl Database {
 
     /// Validate an API key and return Claims if valid.
     /// Computes HMAC-SHA256 of the key and looks it up in api_keys table.
-    pub fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
+    pub fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error> {
         let digest = self.hmac_api_key(api_key);
 
         let conn = self.conn()?;
@@ -1023,7 +1018,7 @@ impl Database {
                     ],
                 };
 
-                Ok(Some(crate::model::identity::auth::Claims {
+                Ok(Some(Claims {
                     sub: -id, // negative ID to distinguish from user IDs
                     username: format!("api:{}", name),
                     role: level,
@@ -1031,8 +1026,8 @@ impl Database {
                     exp: usize::MAX, // API keys don't expire (revocation via DB deletion)
                 }))
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -1259,11 +1254,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn update_playbook(
-        &self,
-        id: i64,
-        row: &crate::model::soar::playbook_data::UpdatePlaybookRow,
-    ) -> Result<bool, Error> {
+    pub fn update_playbook(&self, id: i64, row: &UpdatePlaybookRow) -> Result<bool, Error> {
         let conn = self.conn()?;
         let rows = conn.execute(
             "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
@@ -1429,8 +1420,8 @@ impl Database {
             |row| row.get::<_, String>(0),
         ) {
             Ok(json) => Ok(Some(json)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e)?,
         }
     }
 
@@ -1611,7 +1602,7 @@ impl Database {
     /// lookup, row_hash compute, insert) sequence is atomic and serializable.
     pub fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
         let mut conn = self.conn()?;
-        let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let ts = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         let tx = conn.transaction()?;
         let prev_hash: String = tx
@@ -1670,19 +1661,11 @@ impl Database {
             let row_hash: String = row.get(6)?;
 
             if prev_hash != expected_prev {
-                return Err(DatabaseError::AuditChainBroken {
-                    id,
-                    reason: format!("prev_hash mismatch (expected {}, found {})", expected_prev, prev_hash),
-                }
-                .into());
+                return Err(DatabaseError::AuditPrevHashMismatch(id, expected_prev, prev_hash).into());
             }
             let computed = Self::audit_row_hash(&ts, &actor, &action, &detail, &prev_hash);
             if computed != row_hash {
-                return Err(DatabaseError::AuditChainBroken {
-                    id,
-                    reason: format!("row_hash mismatch (computed {}, stored {})", computed, row_hash),
-                }
-                .into());
+                return Err(DatabaseError::AuditRowHashMismatch(id, computed, row_hash).into());
             }
             expected_prev = row_hash;
             count += 1;
@@ -1693,7 +1676,7 @@ impl Database {
 
 /// Implement the RepositoryPort trait, proving Database satisfies the port contract.
 /// This enables adapter-level testing with mock implementations.
-impl crate::interface::port::repository::RepositoryPort for Database {
+impl RepositoryPort for Database {
     fn insert_acl_rule(
         &self,
         ip_version: u8,
@@ -1714,7 +1697,7 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     ) -> Result<(), Error> {
         self.delete_acl_rule(ip_version, direction, list_type, ip_address, port)
     }
-    fn load_acl_rules(&self) -> Result<Vec<crate::interface::port::repository::AclRuleTuple>, Error> {
+    fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
         self.load_acl_rules()
     }
     fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> {
@@ -1747,7 +1730,7 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
         self.set_setting(key, value)
     }
-    fn find_user(&self, username: &str) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+    fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
         self.find_user(username)
     }
     fn insert_user(
@@ -1765,10 +1748,10 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn user_count(&self) -> Result<i64, Error> {
         self.user_count()
     }
-    fn list_users(&self) -> Result<Vec<crate::interface::port::repository::UserListItem>, Error> {
+    fn list_users(&self) -> Result<Vec<UserListItem>, Error> {
         self.list_users()
     }
-    fn list_users_with_groups(&self) -> Result<Vec<crate::interface::port::repository::UserWithGroups>, Error> {
+    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
         self.list_users_with_groups()
     }
     fn delete_user(&self, user_id: i64) -> Result<bool, Error> {
@@ -1780,10 +1763,10 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
         self.reset_user_password(user_id, password_hash)
     }
-    fn find_user_by_id(&self, user_id: i64) -> Result<Option<crate::interface::port::repository::UserTuple>, Error> {
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
         self.find_user_by_id(user_id)
     }
-    fn list_user_groups(&self) -> Result<Vec<crate::interface::port::repository::UserGroupTuple>, Error> {
+    fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error> {
         self.list_user_groups()
     }
     fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> {
@@ -1795,7 +1778,7 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     fn delete_user_group(&self, id: i64) -> Result<bool, Error> {
         self.delete_user_group(id)
     }
-    fn get_user_group(&self, id: i64) -> Result<Option<crate::interface::port::repository::UserGroupTuple>, Error> {
+    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error> {
         self.get_user_group(id)
     }
     fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
@@ -1827,7 +1810,7 @@ impl crate::interface::port::repository::RepositoryPort for Database {
     }
 }
 
-impl crate::interface::port::soar::SoarPort for Database {
+impl SoarPort for Database {
     fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
         self.get_setting(key)
     }
@@ -1874,14 +1857,10 @@ impl crate::interface::port::soar::SoarPort for Database {
     ) -> Result<i64, Error> {
         self.insert_playbook_action(playbook_id, action_order, action_type, params_json)
     }
-    fn load_playbooks_with_actions(&self) -> Result<Vec<crate::interface::port::soar::PlaybookRow>, Error> {
+    fn load_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error> {
         self.load_playbooks_with_actions()
     }
-    fn update_playbook(
-        &self,
-        id: i64,
-        row: &crate::model::soar::playbook_data::UpdatePlaybookRow,
-    ) -> Result<bool, Error> {
+    fn update_playbook(&self, id: i64, row: &UpdatePlaybookRow) -> Result<bool, Error> {
         self.update_playbook(id, row)
     }
     fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
@@ -1954,7 +1933,7 @@ impl crate::interface::port::soar::SoarPort for Database {
     ) -> Result<i64, Error> {
         self.insert_soar_execution(playbook_id, source_ip, trigger_event, actions_json)
     }
-    fn list_soar_executions(&self, limit: i64) -> Result<Vec<crate::interface::port::soar::SoarExecutionRow>, Error> {
+    fn list_soar_executions(&self, limit: i64) -> Result<Vec<SoarExecutionRow>, Error> {
         self.list_soar_executions(limit)
     }
     fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
@@ -1968,7 +1947,7 @@ impl crate::interface::port::soar::SoarPort for Database {
     }
 }
 
-impl crate::interface::port::stats::StatsPort for Database {
+impl StatsPort for Database {
     fn count_weekly_executions(&self, days: i64) -> Result<u64, Error> {
         self.count_weekly_executions(days)
     }
@@ -1989,7 +1968,7 @@ impl crate::interface::port::stats::StatsPort for Database {
     }
 }
 
-impl crate::interface::port::notification::NotificationConfigPort for Database {
+impl NotificationConfigPort for Database {
     fn get_notification_config(&self, channel: &str) -> Result<Option<String>, Error> {
         self.get_notification_config(channel)
     }
@@ -1998,14 +1977,14 @@ impl crate::interface::port::notification::NotificationConfigPort for Database {
     }
 }
 
-impl crate::interface::port::audit::AuditPort for Database {
+impl AuditPort for Database {
     fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
         self.insert_audit_log(actor, action, detail)
     }
 }
 
-impl crate::interface::port::api_key::ApiKeyPort for Database {
-    fn validate_api_key(&self, api_key: &str) -> Result<Option<crate::model::identity::auth::Claims>, Error> {
+impl ApiKeyPort for Database {
+    fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error> {
         self.validate_api_key(api_key)
     }
     fn hmac_api_key(&self, raw_key: &str) -> String {
@@ -2014,7 +1993,7 @@ impl crate::interface::port::api_key::ApiKeyPort for Database {
     fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
         self.insert_api_key(key_hash, name, permission_level)
     }
-    fn list_api_keys(&self) -> Result<Vec<crate::interface::port::api_key::ApiKeyListItem>, Error> {
+    fn list_api_keys(&self) -> Result<Vec<ApiKeyListItem>, Error> {
         self.list_api_keys()
     }
     fn delete_api_key(&self, id: i64) -> Result<bool, Error> {

@@ -1,3 +1,8 @@
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
 use actix_web::{HttpResponse, Scope, web};
 use serde::Serialize;
 
@@ -32,7 +37,7 @@ struct LogFileEntry {
 
 async fn list_logs() -> HttpResponse {
     let log_dir = LOG_DIR;
-    let entries = match std::fs::read_dir(log_dir) {
+    let entries = match fs::read_dir(log_dir) {
         Ok(dir) => dir
             .filter_map(|e| e.ok())
             .filter_map(|e| {
@@ -44,7 +49,7 @@ async fn list_logs() -> HttpResponse {
                 let modified = meta
                     .modified()
                     .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
                 Some(LogFileEntry {
                     name,
@@ -68,10 +73,10 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
         }));
     }
 
-    let file_path = std::path::Path::new(LOG_DIR).join(&filename);
+    let file_path = Path::new(LOG_DIR).join(&filename);
 
     // Canonicalize to prevent symlink traversal
-    let canonical = match std::fs::canonicalize(&file_path) {
+    let canonical = match fs::canonicalize(&file_path) {
         Ok(p) => p,
         Err(_) => {
             return HttpResponse::NotFound().json(serde_json::json!({
@@ -79,7 +84,7 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
             }));
         }
     };
-    if let Ok(log_dir_canonical) = std::fs::canonicalize(LOG_DIR)
+    if let Ok(log_dir_canonical) = fs::canonicalize(LOG_DIR)
         && !canonical.starts_with(&log_dir_canonical)
     {
         return HttpResponse::Forbidden().json(serde_json::json!({
@@ -88,13 +93,13 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
     }
 
     // Check file size before reading to prevent OOM on large logs
-    match std::fs::metadata(&canonical) {
+    match fs::metadata(&canonical) {
         Ok(meta) if meta.len() > MAX_DOWNLOAD_SIZE => {
             return HttpResponse::PayloadTooLarge().json(serde_json::json!({
                 "error": format!("Log file exceeds maximum download size ({}MB)", MAX_DOWNLOAD_SIZE / 1024 / 1024)
             }));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
             return HttpResponse::NotFound().json(serde_json::json!({
                 "error": format!("Log file '{}' not found", filename)
             }));
@@ -107,7 +112,7 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
         Ok(_) => {}
     }
 
-    let content = match std::fs::read(&canonical) {
+    let content = match fs::read(&canonical) {
         Ok(bytes) => bytes,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({

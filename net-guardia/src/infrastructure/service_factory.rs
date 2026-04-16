@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use std::time::Duration;
+
+use parking_lot::{Mutex, RwLock};
 
 use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
@@ -29,9 +33,11 @@ use crate::core::soar::scheduler::TtlScheduler;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::ebpf_preflight;
 use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::secret_store::SecretStore;
+use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::access_control::AccessControlPort;
@@ -44,11 +50,13 @@ use crate::model::detection::drift::FeatureBaselines;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
+use crate::model::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
 use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::model::monitoring::direction::FlowDirection;
 use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfFailStage;
 use crate::model::system::health::EbpfHealth;
 use macros::log;
 
@@ -72,7 +80,7 @@ pub struct AppState {
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
     pub geoip: Option<Arc<GeoIpService>>,
-    pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+    pub drift_detector: Arc<Mutex<DriftDetector>>,
     pub ingress_ebpf: Option<Ebpf>,
     pub egress_ebpf: Option<Ebpf>,
     /// Held to keep the eBPF program array map FD alive. `None` when eBPF
@@ -82,8 +90,8 @@ pub struct AppState {
     /// or to `Unavailable { stage, category, reason }` when any stage fails.
     /// Read by `SystemHealth` for the metrics broadcast and by HTTP handlers
     /// that render runtime status to the frontend.
-    pub ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
-    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
+    pub ebpf_health: Arc<RwLock<EbpfHealth>>,
+    pub suricata_manager: Arc<SuricataManager>,
 }
 
 /// Maps stage name (from config.toml) to (function_name, stage_id).
@@ -109,7 +117,7 @@ impl ServiceFactory {
         // Prefer `models/manifest.yaml` when present (v12 BYO-model path). The manifest
         // is the user-authored source of truth for features, labels, thresholds, and
         // model filenames; the legacy JSON-only path is the fallback.
-        let manifest_path = std::path::PathBuf::from("models/manifest.yaml");
+        let manifest_path = PathBuf::from("models/manifest.yaml");
         let (inference_config, ml_manifest): (Arc<MLInferenceConfig>, Option<ModelManifest>) = if manifest_path.exists()
         {
             let (cfg, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&manifest_path)?;
@@ -129,7 +137,7 @@ impl ServiceFactory {
 
         // Shared eBPF health handle. Initialized Healthy; downgraded to
         // Unavailable with a classified reason if any stage below fails.
-        let ebpf_health = Arc::new(parking_lot::RwLock::new(EbpfHealth::Healthy));
+        let ebpf_health = Arc::new(RwLock::new(EbpfHealth::Healthy));
 
         // Attempt full eBPF bring-up. On any failure we classify the error,
         // write it into `ebpf_health`, and fall back to an `EbpfServices`
@@ -141,7 +149,7 @@ impl ServiceFactory {
         {
             Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
             Err((stage, err)) => {
-                let health = crate::infrastructure::ebpf_preflight::classify(stage, &err, None);
+                let health = ebpf_preflight::classify(stage, &err, None);
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
                 *ebpf_health.write() = health;
                 (
@@ -171,9 +179,9 @@ impl ServiceFactory {
             .flatten()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
-        let drift_detector = Arc::new(parking_lot::Mutex::new(DriftDetector::new(
+        let drift_detector = Arc::new(Mutex::new(DriftDetector::new(
             baselines,
-            std::time::Duration::from_secs(drift_window_secs),
+            Duration::from_secs(drift_window_secs),
         )));
 
         let app_services = Arc::new(AppServices::new(
@@ -206,9 +214,9 @@ impl ServiceFactory {
             .build();
 
         // Register event type channels
-        comm.register_event_type::<crate::model::event::ThreatDetectedEvent>();
-        comm.register_event_type::<crate::model::event::DriftDetectedEvent>();
-        comm.register_event_type::<crate::model::event::AuditEvent>();
+        comm.register_event_type::<ThreatDetectedEvent>();
+        comm.register_event_type::<DriftDetectedEvent>();
+        comm.register_event_type::<AuditEvent>();
 
         // Seed default SOAR playbooks if empty
         (db.as_ref() as &dyn SoarPort).seed_default_playbooks()?;
@@ -294,7 +302,7 @@ impl ServiceFactory {
             secret_store_port,
         ));
 
-        let suricata_manager = crate::infrastructure::suricata_manager::SuricataManager::new(app_config.clone());
+        let suricata_manager = SuricataManager::new(app_config.clone());
 
         Ok(AppState {
             app_config,
@@ -333,8 +341,7 @@ impl ServiceFactory {
     #[allow(clippy::type_complexity)]
     fn try_build_ebpf(
         app_config: &Arc<AppConfig>,
-    ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (crate::model::system::health::EbpfFailStage, Error)>
-    {
+    ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (EbpfFailStage, Error)> {
         use crate::model::system::health::EbpfFailStage;
 
         let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
@@ -357,7 +364,7 @@ impl ServiceFactory {
         let bytes = match name {
             "ingress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-ingress")),
             "egress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-egress")),
-            _ => return Err(EbpfError::ProgramNotFound.into()),
+            _ => Err(EbpfError::ProgramNotFound)?,
         };
         Ok(Ebpf::load(bytes).map_err(EbpfError::EbpfNotFound)?)
     }
@@ -426,7 +433,7 @@ impl ServiceFactory {
             .try_into()
             .map_err(EbpfError::MapOperationError)?;
         program.load().map_err(EbpfError::AttachProgramFailed)?;
-        let fd = program.fd().map_err(|_| EbpfError::UnknownError)?;
+        let fd = program.fd().map_err(EbpfError::ProgramFdFailed)?;
         program_array.set(slot, fd, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
@@ -479,7 +486,7 @@ impl ServiceFactory {
             }
             Err(skb_err) => {
                 log!(EbpfLog::XdpAttachFailed(ifname.to_string(), skb_err.to_string()));
-                Err(EbpfError::AttachProgramFailed(skb_err).into())
+                Err(EbpfError::AttachProgramFailed(skb_err))?
             }
         }
     }

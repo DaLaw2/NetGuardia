@@ -2,8 +2,10 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use lru::LruCache;
 use macros::log;
 use tokio::sync::mpsc;
+use tokio::time::interval;
 
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
@@ -55,9 +57,9 @@ impl DetectionOrchestrator {
             comm,
             geoip,
             // SAFETY: NonZero::new on a non-zero literal is infallible.
-            src_ip_counts: lru::LruCache::new(NonZero::new(10_000).unwrap()),
-            repeat_tracker: lru::LruCache::new(NonZero::new(5_000).unwrap()),
-            dedup: lru::LruCache::new(NonZero::new(MAX_DEDUP_ENTRIES).unwrap()),
+            src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
+            repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
+            dedup: LruCache::new(NonZero::new(MAX_DEDUP_ENTRIES).unwrap()),
             dedup_window: Duration::from_secs(DEDUP_WINDOW_SECS),
         }
     }
@@ -70,7 +72,7 @@ impl DetectionOrchestrator {
     async fn run(mut self) {
         log!(DetectionLog::OrchestratorStarted);
 
-        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut cleanup_interval = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
         loop {
             tokio::select! {

@@ -40,10 +40,7 @@ impl FromStr for ConditionType {
             "ip_pattern" => Ok(Self::IpPattern),
             "repeat_offender" => Ok(Self::RepeatOffender),
             "frequency" => Ok(Self::Frequency),
-            other => Err(SoarError::InvalidCondition {
-                condition_type: other.to_string(),
-                reason: "unknown condition type".to_string(),
-            }),
+            other => Err(SoarError::UnknownConditionType(other)),
         }
     }
 }

@@ -19,17 +19,19 @@ traceable! {
         #[error("Network interface '{interface}' not found")]
         NetworkInterfaceNotFound { interface: String } => tracing::Level::ERROR,
 
-        #[no_source]
-        #[error("Failed to open GeoIP database '{path}': {reason}")]
-        GeoIPDatabaseError { path: String, reason: String } => tracing::Level::ERROR,
+        #[error("Failed to open GeoIP database '{path}': {err}")]
+        GeoIPDatabaseError { path: String } => tracing::Level::ERROR,
+
+        #[error("Failed to create traffic log file '{path}': {err}")]
+        TrafficLogCreateError { path: String } => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("Failed to create traffic log file '{path}': {reason}")]
-        TrafficLogCreateError { path: String, reason: String } => tracing::Level::ERROR,
+        #[error("DNS label length out of range: {len} (must be 1..64)")]
+        DnsLabelOutOfRange { len: usize } => tracing::Level::WARN,
 
         #[no_source]
-        #[error("Invalid DNS domain name: {reason}")]
-        InvalidDnsName { reason: String } => tracing::Level::WARN,
+        #[error("DNS domain name too long: '{domain}'")]
+        DnsDomainTooLong { domain: String } => tracing::Level::WARN,
 
         #[no_source]
         #[error("Type mismatch during message dispatch")]

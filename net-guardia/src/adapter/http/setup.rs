@@ -1,14 +1,18 @@
-use actix_web::{HttpResponse, Scope, web};
-use serde::Deserialize;
+use std::fs;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
+use actix_web::{HttpResponse, Scope, web};
 use macros::log;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::adapter::persistence::Database;
 use crate::core::auth::password;
 use crate::core::auth::setup_guard::SetupCompleteFlag;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 
 pub fn initialize() -> Scope {
@@ -27,7 +31,7 @@ async fn setup_status(setup_flag: web::Data<SetupCompleteFlag>) -> HttpResponse 
 
 async fn list_interfaces() -> HttpResponse {
     // List available network interfaces
-    let interfaces: Vec<serde_json::Value> = match std::fs::read_dir("/sys/class/net") {
+    let interfaces: Vec<Value> = match fs::read_dir("/sys/class/net") {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .map(|e| {
@@ -98,7 +102,7 @@ async fn complete_setup(
             }));
         }
         let iface_path = format!("/sys/class/net/{}", iface);
-        if !std::path::Path::new(&iface_path).exists() {
+        if !Path::new(&iface_path).exists() {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": format!("Network interface '{}' not found", iface)
             }));
@@ -172,11 +176,7 @@ async fn complete_setup(
     }))
 }
 
-fn save_config(
-    db: &Database,
-    secrets: &dyn SecretStorePort,
-    req: &SetupRequest,
-) -> Result<(), crate::model::error::Error> {
+fn save_config(db: &Database, secrets: &dyn SecretStorePort, req: &SetupRequest) -> Result<(), Error> {
     // Save network config
     db.set_setting("ingress_interface", &req.ingress_interface)?;
     db.set_setting("egress_interface", &req.egress_interface)?;

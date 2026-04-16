@@ -1,4 +1,5 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
@@ -160,8 +161,8 @@ pub struct AlertMessage {
 
 impl AlertMessage {
     pub fn from_detection_result(result: &DetectionResult) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 

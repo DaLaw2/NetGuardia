@@ -5,10 +5,12 @@ use std::time::Duration;
 use macros::log;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use super::inference::Inference;
 use super::model_loader::MLModels;
 use crate::infrastructure::app_config::AppConfig;
+use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
 use crate::model::system::config::MLInferenceConfig;
 
@@ -47,7 +49,7 @@ impl ModelWatcher {
         });
     }
 
-    async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn run(self) -> Result<(), MLError> {
         let models_dir = PathBuf::from("models");
         if !models_dir.exists() {
             log!(MLLog::InferenceFailed(
@@ -71,7 +73,7 @@ impl ModelWatcher {
             }
 
             // Debounce: drain any additional events within the window
-            tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
+            sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
             while rx.try_recv().is_ok() {}
 
             // Attempt reload
@@ -81,7 +83,7 @@ impl ModelWatcher {
         Ok(())
     }
 
-    fn spawn_watcher(models_dir: PathBuf, tx: mpsc::Sender<()>) -> Result<RecommendedWatcher, notify::Error> {
+    fn spawn_watcher(models_dir: PathBuf, tx: mpsc::Sender<()>) -> Result<RecommendedWatcher, MLError> {
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
                 let dominated = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
@@ -93,9 +95,12 @@ impl ModelWatcher {
                     let _ = tx.blocking_send(());
                 }
             }
-        })?;
+        })
+        .map_err(MLError::ModelWatcherFailed)?;
 
-        watcher.watch(&models_dir, RecursiveMode::NonRecursive)?;
+        watcher
+            .watch(&models_dir, RecursiveMode::NonRecursive)
+            .map_err(MLError::ModelWatcherFailed)?;
         Ok(watcher)
     }
 

@@ -20,9 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use macros::log;
-use tokio::fs::File;
+use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::event::{DetectionEvent, DetectionSource};
@@ -64,14 +65,14 @@ impl SuricataMonitor {
             if !Path::new(&path).exists() {
                 log!(SuricataLog::MonitorWaitingForFile { path: path.clone() });
                 while !Path::new(&path).exists() {
-                    tokio::time::sleep(FILE_WAIT_INTERVAL).await;
+                    sleep(FILE_WAIT_INTERVAL).await;
                 }
             }
 
             let mut file = match File::open(&path).await {
                 Ok(f) => f,
                 Err(_) => {
-                    tokio::time::sleep(FILE_WAIT_INTERVAL).await;
+                    sleep(FILE_WAIT_INTERVAL).await;
                     continue;
                 }
             };
@@ -88,13 +89,13 @@ impl SuricataMonitor {
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
                         // EOF — check for rotation (file truncated or replaced).
-                        if let Ok(meta) = tokio::fs::metadata(&path).await
+                        if let Ok(meta) = fs::metadata(&path).await
                             && meta.len() < pos
                         {
                             log!(SuricataLog::MonitorFileRotated);
                             break; // reopen
                         }
-                        tokio::time::sleep(POLL_INTERVAL).await;
+                        sleep(POLL_INTERVAL).await;
                     }
                     Ok(n) => {
                         pos += n as u64;
@@ -102,7 +103,7 @@ impl SuricataMonitor {
                     }
                     Err(_) => {
                         // Read error — treat as rotation and reopen.
-                        tokio::time::sleep(POLL_INTERVAL).await;
+                        sleep(POLL_INTERVAL).await;
                         break;
                     }
                 }

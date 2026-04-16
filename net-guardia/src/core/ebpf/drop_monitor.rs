@@ -1,9 +1,11 @@
 use std::mem;
+use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
 use tokio::sync::{broadcast, oneshot};
+use tokio::time::interval;
 
 use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent as RawDropEvent;
@@ -101,7 +103,7 @@ fn format_ips(raw: &RawDropEvent) -> (String, String) {
 }
 
 fn format_ipv6(bytes: &[u8; 16]) -> String {
-    std::net::Ipv6Addr::from(*bytes).to_string()
+    Ipv6Addr::from(*bytes).to_string()
 }
 
 fn reason_to_str(reason: u8) -> &'static str {
@@ -124,7 +126,7 @@ pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor
 
     tokio::spawn(async move {
         let mut ring_buf = ring_buf;
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        let mut interval = interval(Duration::from_millis(100));
 
         loop {
             tokio::select! {

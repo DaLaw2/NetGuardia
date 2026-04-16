@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use macros::log;
@@ -61,34 +61,34 @@ impl MLModels {
     }
 
     fn loader_inner(
-        model_path: &PathBuf,
+        model_path: &Path,
         model: &str,
         features: usize,
         batch_size: usize,
     ) -> Result<RunnableModel, MLError> {
         let mut onnx_model = onnx()
             .model_for_path(model_path)
-            .map_err(|_| MLError::ModelLoadFailed(model_path.clone()))?;
+            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("parse ONNX: {e}")))?;
 
         // Introspect the ONNX input fact and cross-check its last dim against the
         // expected feature count. A dynamic/symbolic dim is skipped — we only fail
         // when the ONNX graph declares a concrete integer that disagrees.
         if let Some(onnx_dim) = introspect_input_features(&onnx_model) {
             let matched = onnx_dim == features;
-            log!(MLLog::OnnxShapeChecked(model.to_string(), features, onnx_dim, matched,));
+            log!(MLLog::OnnxShapeChecked(model.to_string(), features, onnx_dim, matched));
             if !matched {
-                return Err(MLError::FeatureMismatch(model_path.clone(), features, onnx_dim));
+                return Err(MLError::FeatureMismatch(model_path.to_path_buf(), features, onnx_dim));
             }
         }
 
         onnx_model
             .set_input_fact(0, f32::fact([batch_size, features]).into())
-            .map_err(|_| MLError::ModelLoadFailed(model_path.clone()))?;
+            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("set_input_fact: {e}")))?;
 
         onnx_model
             .into_optimized()
             .and_then(|m| m.into_runnable())
-            .map_err(|_| MLError::ModelLoadFailed(model_path.clone()))
+            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("optimize/runnable: {e}")))
     }
 
     pub fn get_model_info(&self, name: &str) -> String {
@@ -153,7 +153,7 @@ mod tests {
     /// names + sidecar-derived inference config must succeed without shape mismatch.
     #[test]
     fn v10_load_named_with_manifest_paths_succeeds() {
-        let manifest_path = std::path::Path::new("models/manifest.yaml");
+        let manifest_path = Path::new("models/manifest.yaml");
         if !manifest_path.exists() {
             eprintln!("skipping: models/manifest.yaml absent");
             return;

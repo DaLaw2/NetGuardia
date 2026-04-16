@@ -1,3 +1,4 @@
+use core::str;
 use std::collections::HashSet;
 
 use common::model::dns_name::DnsName;
@@ -187,16 +188,10 @@ fn domain_to_wire_format(domain: &str) -> Result<DnsName, Error> {
         let label_bytes = label.as_bytes();
         let label_len = label_bytes.len();
         if label_len == 0 || label_len >= 64 {
-            return Err(MiscError::InvalidDnsName {
-                reason: format!("invalid label length: {}", label_len),
-            }
-            .into());
+            return Err(MiscError::DnsLabelOutOfRange(label_len).into());
         }
         if pos + 1 + label_len >= 128 {
-            return Err(MiscError::InvalidDnsName {
-                reason: format!("domain name too long: {}", domain),
-            }
-            .into());
+            return Err(MiscError::DnsDomainTooLong(domain).into());
         }
         name.data[pos] = label_len as u8;
         pos += 1;
@@ -229,7 +224,7 @@ fn wire_format_to_domain(name: &DnsName) -> Option<String> {
             return None;
         }
         pos += 1;
-        let label = core::str::from_utf8(&name.data[pos..pos + label_len]).ok()?;
+        let label = str::from_utf8(&name.data[pos..pos + label_len]).ok()?;
         labels.push(label.to_string());
         pos += label_len;
     }

@@ -1,3 +1,5 @@
+use std::cmp::Ordering as CmpOrdering;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,7 +73,7 @@ impl Inference {
             return Vec::new();
         }
 
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.infer_batch_inner(flows))) {
+        match panic::catch_unwind(AssertUnwindSafe(|| self.infer_batch_inner(flows))) {
             Ok(results) => {
                 // Success: reset failure counter
                 self.failure_count.store(0, Ordering::Relaxed);
@@ -258,7 +260,7 @@ impl Inference {
         let (predicted_class, class_confidence) = class_probs
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(CmpOrdering::Equal))
             .map(|(i, &p)| (i, p))
             .unwrap_or((0, 0.0));
 

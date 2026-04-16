@@ -1,13 +1,20 @@
-use crate::interface::port::repository::RepositoryPort;
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::error::Error;
-use crate::model::error::notification::NotificationError;
+use std::sync::Arc;
+
+use chrono::{Local, Weekday};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
-use std::sync::Arc;
+use macros::log;
+use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::{self, Duration};
-use tracing::{error, info, warn};
+
+use super::report;
+use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::soar::SoarPort;
+use crate::model::error::Error;
+use crate::model::error::notification::NotificationError;
+use crate::model::log::system::SystemLog;
 
 /// SMTP client wrapper that builds a `lettre::SmtpTransport` from Database
 /// settings and sends an email.
@@ -74,10 +81,7 @@ impl SmtpClient {
 
     /// Try to construct an `SmtpClient` from a SOAR port (which also provides `get_setting`).
     /// Same logic as `from_database`, but accepts `&dyn SoarPort` instead of `&dyn RepositoryPort`.
-    pub fn from_soar_port(
-        db: &dyn crate::interface::port::soar::SoarPort,
-        secrets: Option<&dyn SecretStorePort>,
-    ) -> Result<Option<Self>, Error> {
+    pub fn from_soar_port(db: &dyn SoarPort, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
         let host = match db.get_setting("smtp_host")? {
             Some(v) if !v.is_empty() => v,
             _ => return Ok(None),
@@ -126,12 +130,11 @@ impl SmtpClient {
 
     /// Send an HTML email using the configured SMTP transport.
     pub fn send(&self, to: &str, subject: &str, html_body: &str) -> Result<(), Error> {
-        let from_addr = self.sender.parse().map_err(|e| NotificationError::InvalidAddress {
-            reason: format!("invalid from address: {e}"),
-        })?;
-        let to_addr = to.parse().map_err(|e| NotificationError::InvalidAddress {
-            reason: format!("invalid to address: {e}"),
-        })?;
+        let from_addr = self
+            .sender
+            .parse()
+            .map_err(|e| NotificationError::InvalidAddress("from", e))?;
+        let to_addr = to.parse().map_err(|e| NotificationError::InvalidAddress("to", e))?;
 
         let email = Message::builder()
             .from(from_addr)
@@ -139,7 +142,7 @@ impl SmtpClient {
             .subject(subject)
             .header(ContentType::TEXT_HTML)
             .body(html_body.to_string())
-            .map_err(|e| NotificationError::MessageBuildFailed { reason: e.to_string() })?;
+            .map_err(NotificationError::MessageBuildFailed)?;
 
         let creds = Credentials::new(self.username.clone(), self.password.clone());
 
@@ -147,7 +150,7 @@ impl SmtpClient {
             465 => {
                 // Implicit TLS (SMTPS)
                 SmtpTransport::relay(&self.host)
-                    .map_err(|e| NotificationError::SmtpConnectionFailed { reason: e.to_string() })?
+                    .map_err(NotificationError::SmtpConnectionFailed)?
                     .port(self.port)
                     .credentials(creds)
                     .build()
@@ -155,7 +158,7 @@ impl SmtpClient {
             25 | 587 => {
                 // STARTTLS (standard submission ports)
                 SmtpTransport::starttls_relay(&self.host)
-                    .map_err(|e| NotificationError::SmtpConnectionFailed { reason: e.to_string() })?
+                    .map_err(NotificationError::SmtpConnectionFailed)?
                     .port(self.port)
                     .credentials(creds)
                     .build()
@@ -169,9 +172,7 @@ impl SmtpClient {
             }
         };
 
-        mailer
-            .send(&email)
-            .map_err(|e| NotificationError::SmtpSendFailed { reason: e.to_string() })?;
+        mailer.send(&email).map_err(NotificationError::SmtpSendFailed)?;
 
         Ok(())
     }
@@ -190,11 +191,11 @@ impl ReportScheduler {
     }
 
     /// Spawn a background tokio task that runs the weekly check loop.
-    pub fn run(&self) -> tokio::task::JoinHandle<()> {
+    pub fn run(&self) -> JoinHandle<()> {
         let db = Arc::clone(&self.db);
         let secrets = self.secrets.clone();
         tokio::spawn(async move {
-            info!("Weekly report scheduler started");
+            log!(SystemLog::WeeklyReportSchedulerStarted);
             let mut interval = time::interval(Duration::from_secs(3600));
             loop {
                 interval.tick().await;
@@ -203,19 +204,16 @@ impl ReportScheduler {
                     continue;
                 }
 
-                info!("Weekly report window reached — preparing report");
+                log!(SystemLog::WeeklyReportWindowReached);
 
                 let smtp = match SmtpClient::from_database(&*db, secrets.as_deref()) {
                     Ok(Some(client)) => client,
                     Ok(None) => {
-                        warn!(
-                            "SMTP is not configured (missing smtp_host/port/username/password). \
-                             Skipping weekly report."
-                        );
+                        log!(SystemLog::SmtpNotConfigured);
                         continue;
                     }
                     Err(e) => {
-                        error!("Failed to read SMTP settings: {e}");
+                        log!(SystemLog::SmtpSettingsReadFailed(e.to_string()));
                         continue;
                     }
                 };
@@ -223,26 +221,26 @@ impl ReportScheduler {
                 let recipient = match db.get_setting("smtp_recipient") {
                     Ok(Some(r)) if !r.is_empty() => r,
                     _ => {
-                        warn!("No smtp_recipient configured. Skipping weekly report.");
+                        log!(SystemLog::SmtpRecipientMissing);
                         continue;
                     }
                 };
 
-                let html = match super::report::generate_weekly_report(&*db) {
+                let html = match report::generate_weekly_report(&*db) {
                     Ok(h) => h,
                     Err(e) => {
-                        error!("Failed to generate weekly report: {e}");
+                        log!(SystemLog::WeeklyReportGenerationFailed(e.to_string()));
                         continue;
                     }
                 };
 
-                let subject = format!("NetGuardia Weekly Report — {}", chrono::Local::now().format("%Y-%m-%d"));
-                let send_result = tokio::task::spawn_blocking(move || smtp.send(&recipient, &subject, &html)).await;
+                let subject = format!("NetGuardia Weekly Report — {}", Local::now().format("%Y-%m-%d"));
+                let send_result = spawn_blocking(move || smtp.send(&recipient, &subject, &html)).await;
 
                 match send_result {
-                    Ok(Ok(())) => info!("Weekly report sent successfully"),
-                    Ok(Err(e)) => error!("Failed to send weekly report: {e}"),
-                    Err(e) => error!("Send task panicked: {e}"),
+                    Ok(Ok(())) => log!(SystemLog::WeeklyReportSent),
+                    Ok(Err(e)) => log!(SystemLog::WeeklyReportSendFailed(e.to_string())),
+                    Err(e) => log!(SystemLog::WeeklyReportSendPanicked(e.to_string())),
                 }
             }
         })
@@ -253,6 +251,6 @@ impl ReportScheduler {
 /// hour (i.e. Monday, hour == 8).
 fn is_send_window() -> bool {
     use chrono::{Datelike, Timelike};
-    let now = chrono::Local::now();
-    now.weekday() == chrono::Weekday::Mon && now.hour() == 8
+    let now = Local::now();
+    now.weekday() == Weekday::Mon && now.hour() == 8
 }

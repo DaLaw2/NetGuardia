@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowData;
@@ -49,8 +49,8 @@ impl FlowStatistics {
     }
 
     pub fn get_filtered_flows(&self, sub: &FlowSubscription) -> Vec<FlowStatsEntry> {
-        let now_us = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 
@@ -102,8 +102,8 @@ impl FlowStatistics {
             }
         }
 
-        let now_ms = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 

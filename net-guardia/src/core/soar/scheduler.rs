@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use macros::log;
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
+use crate::core::playbook_service::ip_version_from_str;
 use crate::core::soar::engine::SoarEngine;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::soar::SoarPort;
@@ -32,7 +34,7 @@ impl TtlScheduler {
     }
 
     /// Spawn a background tokio task that runs the TTL sweep every 60 seconds.
-    pub fn start(self) -> tokio::task::JoinHandle<()> {
+    pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             log!(SoarLog::EngineStarted); // TTL scheduler uses same log channel
             let mut interval = time::interval(Duration::from_secs(60));
@@ -93,7 +95,7 @@ impl TtlScheduler {
             }
 
             // Also remove from acl_rules DB table (the auto-added entry)
-            let ip_version = crate::core::playbook_service::ip_version_from_str(source_ip);
+            let ip_version = ip_version_from_str(source_ip);
             if let Err(e) = self.db.delete_acl_rule(ip_version, "source", "blacklist", source_ip, 0) {
                 log!(SoarError::AclCleanupFailed(e));
             }

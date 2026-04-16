@@ -1,7 +1,12 @@
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
+use actix_cors::Cors;
+use actix_web::dev::ServerHandle;
 use actix_web::web::route;
-use actix_web::{App, HttpServer, web};
+use actix_web::{App, HttpResponse, HttpServer, web};
+use macros::log;
 
 use crate::adapter::http::{
     acl, api_keys, audit as audit_api, auth, default, filter, health as health_api, logs as logs_api, ml,
@@ -13,6 +18,7 @@ use crate::adapter::websocket::routes as ws;
 use crate::core::acl_service::AclService;
 use crate::core::auth::https_redirect::{ForceHttpsFlag, HttpsRedirect};
 use crate::core::auth::jwt::JwtService;
+use crate::core::auth::middleware::AuthMiddleware;
 use crate::core::auth::setup_guard::{SetupCompleteFlag, SetupGuard};
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
@@ -25,6 +31,7 @@ use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::secret_store::SecretStore;
+use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::port::api_key::ApiKeyPort;
 use crate::interface::port::repository::RepositoryPort;
 use crate::model::config::constants::HTTP_FALLBACK_PORT;
@@ -32,12 +39,10 @@ use crate::model::error::Error;
 use crate::model::error::http::HttpError;
 use crate::model::log::http::HttpLog;
 use crate::model::system::config::MLInferenceConfig;
-use macros::log;
+use crate::model::system::readiness::ReadinessState;
 
 /// Shared flag: true when all services (eBPF, ML, SOAR) are fully initialized.
-pub type ReadyFlag = Arc<std::sync::atomic::AtomicBool>;
-
-use crate::model::system::readiness::ReadinessState;
+pub type ReadyFlag = Arc<AtomicBool>;
 
 /// Parameters for starting the HTTP server, avoiding `#[cfg]` on function params.
 pub struct HttpServerParams {
@@ -60,7 +65,7 @@ pub struct HttpServerParams {
     pub rate_limit_service: Arc<RateLimitService>,
     pub force_https: ForceHttpsFlag,
     pub shutdown_handle: Arc<ShutdownHandle>,
-    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
+    pub suricata_manager: Arc<SuricataManager>,
 }
 
 /// CORS configuration shared by both full and setup servers.
@@ -72,7 +77,7 @@ pub struct HttpServerParams {
 /// The host is parsed as an IP address — domain names like "10.malware.net"
 /// are rejected because they fail IP parsing.
 fn cors(allowed_origins: Vec<String>) -> actix_cors::Cors {
-    actix_cors::Cors::default()
+    Cors::default()
         .allowed_origin_fn(move |origin, _req_head| {
             let origin_str = origin.to_str().unwrap_or("");
             if !allowed_origins.is_empty() {
@@ -117,7 +122,7 @@ fn is_private_origin(origin: &str) -> bool {
     }
 
     // Try parsing as IPv4
-    if let Ok(ipv4) = host.parse::<std::net::Ipv4Addr>() {
+    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
         let octets = ipv4.octets();
         return octets[0] == 127                                         // 127.0.0.0/8
             || octets[0] == 10                                          // 10.0.0.0/8
@@ -126,7 +131,7 @@ fn is_private_origin(origin: &str) -> bool {
     }
 
     // Try parsing as IPv6
-    if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
+    if let Ok(ipv6) = host.parse::<Ipv6Addr>() {
         return ipv6.is_loopback();
     }
 
@@ -143,7 +148,7 @@ pub fn start_setup_server(
     jwt_service: Arc<JwtService>,
     setup_complete: SetupCompleteFlag,
     port: u16,
-) -> Result<actix_web::dev::ServerHandle, Error> {
+) -> Result<ServerHandle, Error> {
     let make_app = move || {
         App::new()
             .wrap(cors(vec![]))
@@ -155,7 +160,7 @@ pub fn start_setup_server(
             .app_data(web::Data::new(setup_complete.clone()))
             .service(
                 web::scope("/api")
-                    .wrap(crate::core::auth::middleware::AuthMiddleware)
+                    .wrap(AuthMiddleware)
                     .service(auth::initialize())
                     .service(setup_api::initialize())
                     .service(health_api::initialize()),
@@ -177,7 +182,7 @@ pub fn start_setup_server(
                 .bind(format!("0.0.0.0:{}", HTTP_FALLBACK_PORT))
                 .map_err(HttpError::BindPortError)?
         }
-        Err(e) => return Err(HttpError::BindPortError(e).into()),
+        Err(e) => Err(HttpError::BindPortError(e))?,
     }
     .run();
 
@@ -262,7 +267,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
         app.wrap(SetupGuard)
             .service(
                 web::scope("/api")
-                    .wrap(crate::core::auth::middleware::AuthMiddleware)
+                    .wrap(AuthMiddleware)
                     .service(auth::initialize())
                     .service(acl::initialize())
                     .service(filter::initialize())
@@ -293,13 +298,13 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     Ok(())
 }
 
-async fn health_ready(ready: web::Data<ReadyFlag>, state: web::Data<ReadinessState>) -> actix_web::HttpResponse {
+async fn health_ready(ready: web::Data<ReadyFlag>, state: web::Data<ReadinessState>) -> HttpResponse {
     use std::sync::atomic::Ordering::SeqCst;
 
     let is_ready = ready.load(SeqCst);
     let uptime_secs = state.started_at.elapsed().as_secs();
 
-    actix_web::HttpResponse::Ok().json(serde_json::json!({
+    HttpResponse::Ok().json(serde_json::json!({
         "ready": is_ready,
         "subsystems": {
             "db_connected": state.db_connected.load(SeqCst),

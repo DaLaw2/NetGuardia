@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use serde_json::Value;
+
 use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::error::Error;
@@ -187,14 +189,11 @@ impl ConfigService {
                         let stages: Vec<&str> = val.split(',').map(|s| s.trim()).collect();
                         for stage in &stages {
                             if !stage.is_empty() && !VALID_PIPELINE_STAGES.contains(stage) {
-                                return Err(MiscError::ValidationError {
-                                    message: format!(
-                                        "Invalid pipeline stage '{}'. Valid stages: {}",
-                                        stage,
-                                        VALID_PIPELINE_STAGES.join(", ")
-                                    ),
-                                }
-                                .into());
+                                Err(MiscError::ValidationError(format!(
+                                    "Invalid pipeline stage '{}'. Valid stages: {}",
+                                    stage,
+                                    VALID_PIPELINE_STAGES.join(", ")
+                                )))?;
                             }
                         }
                     }
@@ -211,9 +210,9 @@ impl ConfigService {
 /// Extract a JSON value as a non-empty string, handling string, boolean, and number types.
 fn json_value_as_string(v: &serde_json::Value) -> Option<String> {
     match v {
-        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }

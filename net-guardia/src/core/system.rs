@@ -1,30 +1,49 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use aya::Ebpf;
 use aya::maps::{MapData, ProgramArray};
 use macros::log;
+use parking_lot::{Mutex, RwLock};
+use sd_notify::NotifyState;
+use tokio::signal::ctrl_c;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::oneshot;
+use tokio::time::{interval, sleep};
 
 use crate::adapter::persistence::Database;
 use crate::core::acl_service::AclService;
 use crate::core::auth::jwt::JwtService;
 use crate::core::config_service::ConfigService;
+use crate::core::correlation::engine::CorrelationEngine;
+use crate::core::detection::beaconing::BeaconingDetector;
+use crate::core::detection::orchestrator::DetectionOrchestrator;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
 use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::model_watcher::ModelWatcher;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
 use crate::core::soar::engine::SoarEngine;
 use crate::core::soar::scheduler::TtlScheduler;
+use crate::core::stats_aggregator::StatsAggregator;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::audit_logger::AuditLogger;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
-use crate::infrastructure::http_server::HttpServerParams;
+use crate::infrastructure::http_server::{self, HttpServerParams};
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
+use crate::infrastructure::suricata_manager::SuricataManager;
+use crate::infrastructure::suricata_monitor::SuricataMonitor;
+use crate::interface::port::audit::AuditPort;
+use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::stats::StatsPort;
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
@@ -33,6 +52,7 @@ use crate::model::log::detection::DetectionLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfHealth;
 use crate::model::system::readiness::ReadinessState;
 
 /// API-triggered shutdown mode.
@@ -45,13 +65,13 @@ pub enum ShutdownMode {
 /// Handle for triggering shutdown from HTTP endpoints.
 /// Uses a parking_lot::Mutex<Option<oneshot::Sender>> so it can be shared as app_data.
 pub struct ShutdownHandle {
-    tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<ShutdownMode>>>,
+    tx: Mutex<Option<oneshot::Sender<ShutdownMode>>>,
 }
 
 impl ShutdownHandle {
-    fn new(tx: tokio::sync::oneshot::Sender<ShutdownMode>) -> Self {
+    fn new(tx: oneshot::Sender<ShutdownMode>) -> Self {
         Self {
-            tx: parking_lot::Mutex::new(Some(tx)),
+            tx: Mutex::new(Some(tx)),
         }
     }
 
@@ -92,9 +112,9 @@ pub struct System {
     pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
     pub shutdown_handle: Option<Arc<ShutdownHandle>>,
     _ingress_program_array: Option<ProgramArray<MapData>>,
-    pub ebpf_health: Arc<parking_lot::RwLock<crate::model::system::health::EbpfHealth>>,
-    pub suricata_manager: Arc<crate::infrastructure::suricata_manager::SuricataManager>,
-    suricata_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    pub ebpf_health: Arc<RwLock<EbpfHealth>>,
+    pub suricata_manager: Arc<SuricataManager>,
+    suricata_shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl System {
@@ -200,15 +220,13 @@ impl System {
         }
 
         // Start audit logger (subscribe to AuditEvent + DriftDetectedEvent, persist to DB)
-        let audit_logger = Arc::new(AuditLogger::new(
-            self.db.clone() as Arc<dyn crate::interface::port::audit::AuditPort>
-        ));
+        let audit_logger = Arc::new(AuditLogger::new(self.db.clone() as Arc<dyn AuditPort>));
         audit_logger.start(&self.comm);
 
         // Start stats aggregator (writes weekly_* settings for Report engine)
-        let stats_aggregator = crate::core::stats_aggregator::StatsAggregator::new(
-            self.db.clone() as Arc<dyn crate::interface::port::stats::StatsPort>,
-            self.db.clone() as Arc<dyn crate::interface::port::repository::RepositoryPort>,
+        let stats_aggregator = StatsAggregator::new(
+            self.db.clone() as Arc<dyn StatsPort>,
+            self.db.clone() as Arc<dyn RepositoryPort>,
         );
         stats_aggregator.start();
 
@@ -222,12 +240,8 @@ impl System {
         }
 
         // Start detection orchestrator (dedup + enrichment + source attribution)
-        let (detection_tx, detection_rx) = tokio::sync::mpsc::channel::<DetectionEvent>(1024);
-        let orchestrator = crate::core::detection::orchestrator::DetectionOrchestrator::new(
-            detection_rx,
-            self.comm.clone(),
-            self.geoip.clone(),
-        );
+        let (detection_tx, detection_rx) = mpsc::channel::<DetectionEvent>(1024);
+        let orchestrator = DetectionOrchestrator::new(detection_rx, self.comm.clone(), self.geoip.clone());
         orchestrator.start();
 
         // Clone detection_tx for correlation engine and beaconing detector
@@ -237,14 +251,12 @@ impl System {
 
         // Start cross-flow correlation engine (botnet, scan, lateral movement detection)
         let correlation_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
-        let correlation_engine =
-            crate::core::correlation::engine::CorrelationEngine::new(correlation_alert_rx, correlation_detection_tx);
+        let correlation_engine = CorrelationEngine::new(correlation_alert_rx, correlation_detection_tx);
         correlation_engine.start();
 
         // Start temporal beaconing detector (CV-based C2 periodicity detection)
         let beaconing_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
-        let beaconing_detector =
-            crate::core::detection::beaconing::BeaconingDetector::new(beaconing_alert_rx, beaconing_detection_tx);
+        let beaconing_detector = BeaconingDetector::new(beaconing_alert_rx, beaconing_detection_tx);
         beaconing_detector.start();
 
         // Bridge ML alerts → DetectionEvent (thin adapter, no enrichment)
@@ -253,7 +265,7 @@ impl System {
         });
 
         // Start model hot-reload watcher (monitors models/ for .onnx changes)
-        let model_watcher = crate::core::ml::model_watcher::ModelWatcher::new(
+        let model_watcher = ModelWatcher::new(
             self.app_services.ml_engine.inference_pipeline().clone(),
             self.app_config.clone(),
             self.inference_config.clone(),
@@ -261,7 +273,7 @@ impl System {
         model_watcher.start();
 
         // Initialize force_https flag from DB setting
-        let force_https = Arc::new(std::sync::atomic::AtomicBool::new(
+        let force_https = Arc::new(AtomicBool::new(
             self.db
                 .get_setting("force_https")
                 .ok()
@@ -273,29 +285,21 @@ impl System {
         // Build per-subsystem readiness flags for /health/ready
         let readiness_state = Arc::new(ReadinessState::new());
         // DB is connected (System::new succeeded), ML models loaded (AppServices::new succeeded)
-        readiness_state
-            .db_connected
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        readiness_state
-            .ml_model_loaded
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        readiness_state.db_connected.store(true, Ordering::SeqCst);
+        readiness_state.ml_model_loaded.store(true, Ordering::SeqCst);
         // eBPF was attached above (self.attach_ebpf succeeded)
-        readiness_state
-            .ebpf_attached
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        readiness_state.ebpf_attached.store(true, Ordering::SeqCst);
         // SOAR engine started above (self.soar_engine.start succeeded)
-        readiness_state
-            .soar_engine_running
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        readiness_state.soar_engine_running.store(true, Ordering::SeqCst);
 
         // Create shutdown channel for API-triggered shutdown/restart
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<ShutdownMode>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<ShutdownMode>();
         let shutdown_handle = Arc::new(ShutdownHandle::new(shutdown_tx));
         self.shutdown_handle = Some(shutdown_handle.clone());
 
         // Start HTTP server in background (!Send, use actix::spawn)
-        let setup_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let ready_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let setup_flag = Arc::new(AtomicBool::new(true));
+        let ready_flag = Arc::new(AtomicBool::new(false));
         let ready_flag_for_set = ready_flag.clone();
         let params = HttpServerParams {
             app_config: self.app_config.clone(),
@@ -321,33 +325,33 @@ impl System {
         };
         let ready_for_http = ready_flag_for_set.clone();
         actix::spawn(async move {
-            if let Err(e) = crate::infrastructure::http_server::run(params).await {
+            if let Err(e) = http_server::run(params).await {
                 // HTTP server failed — mark system as NOT ready so health checks fail
-                ready_for_http.store(false, std::sync::atomic::Ordering::SeqCst);
+                ready_for_http.store(false, Ordering::SeqCst);
                 log!(SystemError::HttpServerError(e));
             }
         });
 
         // Brief delay to catch immediate bind failures before reporting ready
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // Mark system as ready — /api/health/ready will now return {"ready": true}
-        ready_flag_for_set.store(true, std::sync::atomic::Ordering::SeqCst);
+        ready_flag_for_set.store(true, Ordering::SeqCst);
 
         // Notify systemd that we are ready (Type=notify)
-        let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+        let _ = sd_notify::notify(true, &[NotifyState::Ready]);
         log!(SystemLog::FullInitComplete);
 
         // Start systemd watchdog keepalive task
         {
             let mut usec: u64 = 0;
             if sd_notify::watchdog_enabled(false, &mut usec) && usec > 0 {
-                let notify_interval = std::time::Duration::from_micros(usec / 2);
+                let notify_interval = Duration::from_micros(usec / 2);
                 tokio::spawn(async move {
-                    let mut tick = tokio::time::interval(notify_interval);
+                    let mut tick = interval(notify_interval);
                     loop {
                         tick.tick().await;
-                        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                        let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
                     }
                 });
             }
@@ -359,12 +363,11 @@ impl System {
         // Start Suricata eve.json monitor — tails the log file, translates
         // alert events into DetectionEvent on the shared mpsc. No-op if the
         // bridge is disabled in config.
-        crate::infrastructure::suricata_monitor::SuricataMonitor::new(self.app_config.clone(), suricata_detection_tx)
-            .start();
+        SuricataMonitor::new(self.app_config.clone(), suricata_detection_tx).start();
 
         // Wait for shutdown signal (ctrl-c OR API-triggered)
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = ctrl_c() => {
                 Ok(ShutdownMode::Shutdown)
             }
             mode = shutdown_rx => {
@@ -409,7 +412,7 @@ impl System {
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
         comm: Arc<CommunicationManager>,
     ) {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
             let report = drift_detector.lock().check_drift();
@@ -431,10 +434,7 @@ impl System {
 
     /// Thin ML bridge: converts AlertMessage → DetectionEvent and sends to orchestrator.
     /// Enrichment (GeoIP, hit count, repeat offender) is handled by the DetectionOrchestrator.
-    async fn bridge_ml_to_detection(
-        mut rx: tokio::sync::broadcast::Receiver<AlertMessage>,
-        tx: tokio::sync::mpsc::Sender<DetectionEvent>,
-    ) {
+    async fn bridge_ml_to_detection(mut rx: Receiver<AlertMessage>, tx: Sender<DetectionEvent>) {
         log!(DetectionLog::MlBridgeStarted);
 
         loop {
@@ -465,10 +465,10 @@ impl System {
                         break; // Orchestrator dropped
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                Err(RecvError::Lagged(n)) => {
                     log!(DetectionLog::MlBridgeLagged(n));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                Err(RecvError::Closed) => {
                     log!(DetectionLog::MlAlertChannelClosed);
                     break;
                 }

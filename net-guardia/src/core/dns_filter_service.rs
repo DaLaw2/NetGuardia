@@ -30,10 +30,10 @@ impl DnsFilterService {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
         if domains.len() > max_domains {
-            return Err(MiscError::ValidationError {
-                message: format!("too many domains (max {})", max_domains),
-            }
-            .into());
+            Err(MiscError::ValidationError(format!(
+                "too many domains (max {})",
+                max_domains
+            )))?;
         }
         // eBPF first
         for domain in domains {

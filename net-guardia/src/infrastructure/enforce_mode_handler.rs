@@ -85,7 +85,7 @@ mod tests {
         let db = Arc::new(Database::new(":memory:").unwrap()) as Arc<dyn RepositoryPort>;
         let cache = Arc::new(AtomicU8::new(0));
         let comm = Arc::new(CommunicationManager::new());
-        comm.register_event_type::<crate::model::event::AuditEvent>();
+        comm.register_event_type::<AuditEvent>();
         let handler = Arc::new(EnforceModeHandler::new(db, comm.clone(), cache));
         let _ = comm
             .clone()

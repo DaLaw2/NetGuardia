@@ -22,6 +22,9 @@ traceable! {
         #[error("Failed to attach XDP program")]
         AttachProgramFailed => tracing::Level::ERROR,
 
+        #[error("Failed to obtain eBPF program FD")]
+        ProgramFdFailed => tracing::Level::ERROR,
+
         #[error("Failed to set umem")]
         UmemSetFailed => tracing::Level::ERROR,
 

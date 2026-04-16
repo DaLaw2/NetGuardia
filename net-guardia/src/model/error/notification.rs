@@ -2,29 +2,27 @@ use macros::traceable;
 
 traceable! {
     NotificationError {
-        #[no_source]
-        #[error("SMTP connection failed: {reason}")]
-        SmtpConnectionFailed { reason: String } => tracing::Level::ERROR,
+        #[error("SMTP connection failed: {err}")]
+        SmtpConnectionFailed => tracing::Level::ERROR,
+
+        #[error("SMTP authentication failed: {err}")]
+        SmtpAuthFailed => tracing::Level::ERROR,
+
+        #[error("Failed to send email: {err}")]
+        SmtpSendFailed => tracing::Level::ERROR,
+
+        #[error("Invalid {field} email address: {err}")]
+        InvalidAddress { field: String } => tracing::Level::WARN,
+
+        #[error("Failed to build email message: {err}")]
+        MessageBuildFailed => tracing::Level::ERROR,
+
+        #[error("Telegram notification error: {err}")]
+        TelegramRequestFailed => tracing::Level::ERROR,
 
         #[no_source]
-        #[error("SMTP authentication failed: {reason}")]
-        SmtpAuthFailed { reason: String } => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Failed to send email: {reason}")]
-        SmtpSendFailed { reason: String } => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Invalid email address: {reason}")]
-        InvalidAddress { reason: String } => tracing::Level::WARN,
-
-        #[no_source]
-        #[error("Failed to build email message: {reason}")]
-        MessageBuildFailed { reason: String } => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Telegram API error: {reason}")]
-        TelegramApiError { reason: String } => tracing::Level::ERROR,
+        #[error("Telegram HTTP {status}: {body}")]
+        TelegramHttpError { status: u16, body: String } => tracing::Level::ERROR,
 
         #[no_source]
         #[error("Telegram authentication failed (invalid bot token)")]

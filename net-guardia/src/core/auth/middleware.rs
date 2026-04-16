@@ -1,9 +1,11 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+use actix_web::http::Method;
 use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 
 use macros::log;
@@ -37,7 +39,7 @@ pub struct AuthMiddlewareService<S> {
     service: Rc<S>,
 }
 
-fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<String> {
+fn required_permission(path: &str, method: &Method) -> Option<String> {
     let resource = if path == "/api/auth/login" || path == "/api/auth/me" || path == "/api/auth/change-password" {
         return None; // Public auth endpoints: login (no auth), me/change-password (auth-only, no RBAC)
     } else if path.starts_with("/api/auth/") {
@@ -75,7 +77,7 @@ fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<S
     };
 
     let action = match *method {
-        actix_web::http::Method::GET => "read",
+        Method::GET => "read",
         _ => "write",
     };
 
@@ -91,7 +93,7 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 

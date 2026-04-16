@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use serde_json::Value;
+
+use crate::adapter::telegram::TelegramAdapter;
+use crate::core::email::scheduler::SmtpClient;
 use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
 use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
@@ -39,10 +43,10 @@ impl NotificationService {
                         && t.len() > 8
                     {
                         let redacted = format!("{}...{}", &t[..4], &t[t.len() - 4..]);
-                        config["bot_token_redacted"] = serde_json::Value::String(redacted);
+                        config["bot_token_redacted"] = Value::String(redacted);
                     }
                     config.as_object_mut().map(|obj| obj.remove("bot_token"));
-                    config["configured"] = serde_json::Value::Bool(true);
+                    config["configured"] = Value::Bool(true);
                     Ok(config)
                 }
                 Err(_) => Ok(serde_json::json!({"configured": false})),
@@ -66,18 +70,13 @@ impl NotificationService {
 
     /// Send a test Telegram message using current config.
     pub async fn test_telegram(&self) -> Result<(), Error> {
-        let adapter = crate::adapter::telegram::TelegramAdapter::new(
-            self.notif.clone(),
-            self.repo.clone(),
-            Some(self.secrets.clone()),
-        )?;
+        let adapter = TelegramAdapter::new(self.notif.clone(), self.repo.clone(), Some(self.secrets.clone()))?;
         adapter.send_test_message().await
     }
 
     /// Send a test email using current SMTP config.
     pub fn test_smtp(&self) -> Result<String, Error> {
-        let smtp_client =
-            crate::core::email::scheduler::SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
+        let smtp_client = SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
         let smtp = smtp_client.ok_or_else(|| MiscError::ValidationError {
             message: "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
                  If smtp_username is not an email address, also set smtp_sender."

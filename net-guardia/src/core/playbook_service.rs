@@ -1,17 +1,18 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
+
+use macros::log;
+use serde_json::Value;
 
 use crate::core::soar::engine::SoarEngine;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::soar::SoarPort;
-use macros::log;
-
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::soar::playbook_data::{
     ActionData, ActiveBlockData, ConditionData, CreatePlaybookInput, ExecutionData, PlaybookData, UpdatePlaybookRow,
 };
-
-use std::collections::HashMap;
 
 /// Domain service for SOAR playbook CRUD operations.
 /// Coordinates DB reads/writes, SOAR engine cache refresh, and eBPF unblock.
@@ -98,7 +99,7 @@ impl PlaybookService {
                     id: aid,
                     action_order: order,
                     action_type: atype,
-                    params: serde_json::from_str(&params_str).unwrap_or(serde_json::Value::Null),
+                    params: serde_json::from_str(&params_str).unwrap_or(Value::Null),
                 });
             }
         }
@@ -220,10 +221,7 @@ impl PlaybookService {
         let block = self
             .db
             .get_soar_block_by_id(id)?
-            .ok_or_else(|| SoarError::ActionFailed {
-                action_type: "manual_unblock".to_string(),
-                reason: format!("Block rule {} not found", id),
-            })?;
+            .ok_or_else(|| SoarError::UnblockRuleNotFound(id))?;
         let source_ip = &block.1;
 
         // Remove from eBPF ACL
@@ -254,7 +252,7 @@ impl PlaybookService {
                     playbook_id: pb_id,
                     source_ip,
                     trigger_event,
-                    actions_executed: serde_json::from_str(&actions).unwrap_or(serde_json::Value::Null),
+                    actions_executed: serde_json::from_str(&actions).unwrap_or(Value::Null),
                     created_at,
                 },
             )
@@ -280,9 +278,9 @@ impl PlaybookService {
 
 /// Determine IP version from a string address using proper parsing.
 pub fn ip_version_from_str(ip: &str) -> u8 {
-    match ip.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(_)) => 4,
-        Ok(std::net::IpAddr::V6(_)) => 6,
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => 4,
+        Ok(IpAddr::V6(_)) => 6,
         Err(_) => {
             if ip.contains(':') {
                 6

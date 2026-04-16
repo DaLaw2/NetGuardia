@@ -130,6 +130,8 @@ impl BotnetDetector {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
 
     fn make_alert(src_ip: &str, dst_ip: &str) -> AlertMessage {
@@ -187,7 +189,7 @@ mod tests {
         detector.process(&alert, &tx);
         assert_eq!(detector.state.len(), 1);
 
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
         let removed = detector.cleanup();
         assert_eq!(removed, 1);
         assert_eq!(detector.state.len(), 0);

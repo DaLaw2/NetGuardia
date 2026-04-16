@@ -35,10 +35,7 @@ impl GeoBlock {
         let v6_trie = LpmTrie::try_from(v6_map).map_err(EbpfError::MapOperationError)?;
 
         let db_path = &app_config.misc.geoip_db_name;
-        let reader = Reader::open_readfile(db_path).map_err(|e| MiscError::GeoIPDatabaseError {
-            path: db_path.clone(),
-            reason: e.to_string(),
-        })?;
+        let reader = Reader::open_readfile(db_path).map_err(|e| MiscError::GeoIPDatabaseError(db_path.clone(), e))?;
 
         let index = Self::build_index(&reader)?;
 
@@ -171,7 +168,7 @@ impl GeoBlock {
         let mut v6_guard = self.geo_block_v6.write();
         let (v4_trie, v6_trie) = match (v4_guard.as_mut(), v6_guard.as_mut()) {
             (Some(v4), Some(v6)) => (v4, v6),
-            _ => return Err(EbpfError::NotLoaded.into()),
+            _ => Err(EbpfError::NotLoaded)?,
         };
         Self::clear_trie_v4(v4_trie);
         Self::clear_trie_v6(v6_trie);

@@ -16,8 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use macros::log;
+use parking_lot::RwLock;
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
+use tokio::time::{sleep, timeout};
 
 use crate::infrastructure::app_config::AppConfig;
 use crate::model::error::Error;
@@ -27,7 +29,7 @@ use crate::model::system::suricata::SuricataHealth;
 
 pub struct SuricataManager {
     config: Arc<AppConfig>,
-    health: Arc<parking_lot::RwLock<SuricataHealth>>,
+    health: Arc<RwLock<SuricataHealth>>,
 }
 
 impl SuricataManager {
@@ -41,12 +43,12 @@ impl SuricataManager {
         };
         Arc::new(Self {
             config,
-            health: Arc::new(parking_lot::RwLock::new(initial)),
+            health: Arc::new(RwLock::new(initial)),
         })
     }
 
     /// Shared handle for HTTP handlers and the health broadcast.
-    pub fn health(&self) -> Arc<parking_lot::RwLock<SuricataHealth>> {
+    pub fn health(&self) -> Arc<RwLock<SuricataHealth>> {
         self.health.clone()
     }
 
@@ -100,7 +102,7 @@ impl SuricataManager {
                             backoff,
                         });
                         *self.health.write() = SuricataHealth::Stopped { reason };
-                        tokio::time::sleep(Duration::from_secs(backoff)).await;
+                        sleep(Duration::from_secs(backoff)).await;
                         continue;
                     } else {
                         log!(SuricataLog::Stopped { reason: reason.clone() });
@@ -123,11 +125,11 @@ impl SuricataManager {
     fn preflight(config: &AppConfig) -> Result<(), Error> {
         let bin = &config.suricata.binary_path;
         if !Path::new(bin).exists() {
-            return Err(SuricataError::BinaryNotFound { path: bin.clone() }.into());
+            Err(SuricataError::BinaryNotFound(bin.clone()))?;
         }
         let cfg = &config.suricata.config_path;
         if !Path::new(cfg).exists() {
-            return Err(SuricataError::ConfigNotFound { path: cfg.clone() }.into());
+            Err(SuricataError::ConfigNotFound(cfg.clone()))?;
         }
         Ok(())
     }
@@ -169,7 +171,7 @@ impl SuricataManager {
                 libc::kill(pid as libc::pid_t, libc::SIGTERM);
             }
         }
-        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        match timeout(Duration::from_secs(5), child.wait()).await {
             Ok(_) => {}
             Err(_) => {
                 let _ = child.kill().await;

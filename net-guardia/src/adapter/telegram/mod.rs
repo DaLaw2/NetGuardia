@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use macros::log;
 use parking_lot::Mutex;
 use reqwest::Client;
-use tracing::{debug, warn};
+use tokio::time::sleep;
 
 use crate::interface::port::notification::{AlertNotifier, AlertPayload, NotificationConfigPort};
 use crate::interface::port::repository::RepositoryPort;
@@ -12,6 +13,7 @@ use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::config::constants::TELEGRAM_MAX_RETRIES;
 use crate::model::error::Error;
 use crate::model::error::notification::NotificationError;
+use crate::model::log::system::SystemLog;
 
 /// Telegram Bot API adapter implementing AlertNotifier.
 pub struct TelegramAdapter {
@@ -32,9 +34,7 @@ impl TelegramAdapter {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
-            .map_err(|e| NotificationError::TelegramApiError {
-                reason: format!("Failed to create HTTP client: {}", e),
-            })?;
+            .map_err(NotificationError::TelegramRequestFailed)?;
 
         Ok(Self {
             client,
@@ -51,9 +51,7 @@ impl TelegramAdapter {
         match self.notif.get_notification_config("telegram")? {
             Some(json_str) => {
                 let config: serde_json::Value =
-                    serde_json::from_str(&json_str).map_err(|e| NotificationError::TelegramApiError {
-                        reason: format!("Invalid telegram config JSON: {}", e),
-                    })?;
+                    serde_json::from_str(&json_str).map_err(NotificationError::TelegramRequestFailed)?;
                 let mut token = config.get("bot_token").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let chat_id = config.get("chat_id").and_then(|v| v.as_str()).map(|s| s.to_string());
 
@@ -119,7 +117,7 @@ impl TelegramAdapter {
                     if e.is_timeout() {
                         NotificationError::Timeout
                     } else {
-                        NotificationError::TelegramApiError { reason: e.to_string() }
+                        NotificationError::TelegramRequestFailed(e)
                     }
                 })?;
 
@@ -150,13 +148,12 @@ impl TelegramAdapter {
                     .unwrap_or(5);
 
                 if attempt < TELEGRAM_MAX_RETRIES {
-                    warn!(
-                        "Telegram rate limited, retrying after {}s (attempt {}/{})",
+                    log!(SystemLog::TelegramRateLimitedRetry(
                         retry_after,
                         attempt + 1,
-                        TELEGRAM_MAX_RETRIES
-                    );
-                    tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                        TELEGRAM_MAX_RETRIES,
+                    ));
+                    sleep(Duration::from_secs(retry_after)).await;
                     continue;
                 } else {
                     return Err(NotificationError::TelegramRateLimited {
@@ -168,10 +165,7 @@ impl TelegramAdapter {
 
             // Other error
             let body = resp.text().await.unwrap_or_default();
-            return Err(NotificationError::TelegramApiError {
-                reason: format!("HTTP {}: {}", status, body),
-            }
-            .into());
+            Err(NotificationError::TelegramHttpError(status.as_u16(), body))?;
         }
 
         unreachable!()
@@ -205,7 +199,7 @@ impl AlertNotifier for TelegramAdapter {
         let (bot_token, chat_id) = match self.get_config()? {
             Some(config) => config,
             None => {
-                debug!("Telegram not configured, skipping alert");
+                log!(SystemLog::TelegramNotConfiguredSkipped);
                 return Ok(());
             }
         };
@@ -218,10 +212,10 @@ impl AlertNotifier for TelegramAdapter {
                 .flatten()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20);
-            warn!(
-                "Telegram rate limit reached ({}/min), dropping alert for IP {}",
-                max_per_min, payload.source_ip
-            );
+            log!(SystemLog::TelegramLocalRateLimitDropped(
+                max_per_min,
+                payload.source_ip.clone(),
+            ));
             return Ok(());
         }
 
@@ -232,12 +226,7 @@ impl AlertNotifier for TelegramAdapter {
     async fn send_test_message(&self) -> Result<(), Error> {
         let (bot_token, chat_id) = match self.get_config()? {
             Some(config) => config,
-            None => {
-                return Err(NotificationError::NotConfigured {
-                    channel: "telegram".to_string(),
-                }
-                .into());
-            }
+            None => Err(NotificationError::NotConfigured("telegram"))?,
         };
 
         self.send_message(

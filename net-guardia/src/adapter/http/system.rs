@@ -8,6 +8,8 @@ use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::repository::RepositoryPort;
+use crate::utils::boot_time;
+use crate::utils::logging::Logging;
 
 type Repo = dyn RepositoryPort;
 
@@ -31,7 +33,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn get_boot_time() -> impl Responder {
-    HttpResponse::Ok().json(crate::utils::boot_time::boot_time())
+    HttpResponse::Ok().json(boot_time::boot_time())
 }
 
 async fn get_enforce_mode(comm: web::Data<CommunicationManager>) -> impl Responder {
@@ -81,7 +83,7 @@ async fn get_config(svc: web::Data<ConfigService>) -> impl Responder {
 
 async fn get_log_level() -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
-        "level": crate::utils::logging::Logging::current_level(),
+        "level": Logging::current_level(),
     }))
 }
 
@@ -91,7 +93,7 @@ struct LogLevelRequest {
 }
 
 async fn set_log_level(body: web::Json<LogLevelRequest>) -> impl Responder {
-    match crate::utils::logging::Logging::set_level(&body.level) {
+    match Logging::set_level(&body.level) {
         Ok(new_level) => HttpResponse::Ok().json(serde_json::json!({
             "level": new_level,
             "message": "Log level updated",

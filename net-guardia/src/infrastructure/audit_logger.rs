@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use macros::log;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::audit::AuditPort;
@@ -30,10 +31,10 @@ impl AuditLogger {
                         Ok(event) => {
                             this.handle_audit_event(&event);
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        Err(RecvError::Lagged(n)) => {
                             log!(AuditLog::AuditLagged { count: n });
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        Err(RecvError::Closed) => {
                             log!(AuditLog::AuditChannelClosed);
                             break;
                         }
@@ -53,10 +54,10 @@ impl AuditLogger {
                         Ok(event) => {
                             this.handle_drift_event(&event);
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        Err(RecvError::Lagged(n)) => {
                             log!(AuditLog::AuditLagged { count: n });
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        Err(RecvError::Closed) => {
                             log!(AuditLog::AuditChannelClosed);
                             break;
                         }

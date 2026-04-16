@@ -1,3 +1,5 @@
+use chrono::Local;
+
 use crate::interface::port::repository::RepositoryPort;
 use crate::model::error::Error;
 
@@ -77,7 +79,7 @@ pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> 
     let mem = health["memory_percent"].as_f64().unwrap_or(0.0);
     let disk = health["disk_percent"].as_f64().unwrap_or(0.0);
 
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
+    let now = Local::now().format("%Y-%m-%d %H:%M");
 
     let html = format!(
         r#"<!DOCTYPE html>

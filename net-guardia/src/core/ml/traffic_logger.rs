@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::thread;
 
 use crossbeam::channel::{Sender, TrySendError, bounded};
@@ -13,7 +13,7 @@ pub struct TrafficLogger {
 }
 
 impl TrafficLogger {
-    pub fn new(csv_path: &str, header: Vec<String>) -> Result<Self, std::io::Error> {
+    pub fn new(csv_path: &str, header: Vec<String>) -> Result<Self, io::Error> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)

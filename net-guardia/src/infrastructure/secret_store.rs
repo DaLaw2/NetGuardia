@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
@@ -24,10 +25,10 @@ pub struct SecretStore {
 
 impl SecretStore {
     pub fn new(db: Arc<Database>) -> Self {
-        let raw_key = std::env::var("NETGUARDIA_SECRETS_KEY")
+        let raw_key = env::var("NETGUARDIA_SECRETS_KEY")
             .ok()
             .filter(|k| !k.is_empty())
-            .or_else(|| std::env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()));
+            .or_else(|| env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()));
 
         let cipher = raw_key.map(|key| {
             let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), key.as_bytes());
@@ -53,7 +54,7 @@ impl SecretStore {
                 let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
                 let ciphertext = cipher
                     .encrypt(&nonce, plaintext.as_bytes())
-                    .map_err(|e| CryptoError::EncryptionFailed { reason: e.to_string() })?;
+                    .map_err(CryptoError::EncryptionFailed)?;
                 let envelope = serde_json::json!({
                     "v": 1,
                     "alg": "aes-256-gcm",
@@ -76,24 +77,18 @@ impl SecretStore {
     }
 
     fn decrypt(&self, envelope_json: &str) -> Result<String, Error> {
-        let env: serde_json::Value =
-            serde_json::from_str(envelope_json).map_err(|e| CryptoError::InvalidEnvelope { reason: e.to_string() })?;
+        let env: serde_json::Value = serde_json::from_str(envelope_json).map_err(CryptoError::EnvelopeParseFailed)?;
 
         let version = env.get("v").and_then(|v| v.as_u64()).unwrap_or(0);
         if version != 1 {
-            return Err(CryptoError::InvalidEnvelope {
-                reason: format!("unsupported envelope version: {version}"),
-            }
-            .into());
+            Err(CryptoError::UnsupportedEnvelopeVersion(version))?;
         }
 
         let alg = env.get("alg").and_then(|v| v.as_str()).unwrap_or("");
         let ct_b64 = env
             .get("ct")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| CryptoError::InvalidEnvelope {
-                reason: "missing ct field".to_string(),
-            })?;
+            .ok_or_else(|| CryptoError::MissingEnvelopeField("ct"))?;
 
         match alg {
             "none" => {
@@ -101,50 +96,31 @@ impl SecretStore {
                 // Prevents downgrade attack where attacker replaces encrypted envelope
                 // with alg:none + attacker-controlled plaintext.
                 if self.cipher.is_some() {
-                    return Err(CryptoError::InvalidEnvelope {
-                        reason: "alg:none rejected in production mode (encryption key is set)".to_string(),
-                    }
-                    .into());
+                    Err(CryptoError::AlgNoneRejected)?;
                 }
-                let plaintext_bytes = B64
-                    .decode(ct_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
-                String::from_utf8(plaintext_bytes)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() }.into())
+                let plaintext_bytes = B64.decode(ct_b64).map_err(CryptoError::DecryptionFailed)?;
+                Ok(String::from_utf8(plaintext_bytes).map_err(CryptoError::DecryptionFailed)?)
             }
             "aes-256-gcm" => {
                 let cipher = self.cipher.as_ref().ok_or(CryptoError::MasterKeyUnavailable)?;
 
-                let nonce_b64 =
-                    env.get("nonce")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| CryptoError::InvalidEnvelope {
-                            reason: "missing nonce field".to_string(),
-                        })?;
+                let nonce_b64 = env
+                    .get("nonce")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| CryptoError::MissingEnvelopeField("nonce"))?;
 
-                let nonce_bytes = B64
-                    .decode(nonce_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
-                let nonce =
-                    Nonce::from_exact_iter(nonce_bytes.into_iter()).ok_or_else(|| CryptoError::DecryptionFailed {
-                        reason: "invalid nonce length".to_string(),
-                    })?;
+                let nonce_bytes = B64.decode(nonce_b64).map_err(CryptoError::DecryptionFailed)?;
+                let nonce = Nonce::from_exact_iter(nonce_bytes.into_iter()).ok_or(CryptoError::InvalidNonceLength)?;
 
-                let ciphertext = B64
-                    .decode(ct_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
+                let ciphertext = B64.decode(ct_b64).map_err(CryptoError::DecryptionFailed)?;
 
                 let plaintext_bytes = cipher
                     .decrypt(&nonce, ciphertext.as_ref())
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
+                    .map_err(CryptoError::DecryptionFailed)?;
 
-                String::from_utf8(plaintext_bytes)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() }.into())
+                Ok(String::from_utf8(plaintext_bytes).map_err(CryptoError::DecryptionFailed)?)
             }
-            other => Err(CryptoError::InvalidEnvelope {
-                reason: format!("unsupported algorithm: {other}"),
-            }
-            .into()),
+            other => Err(CryptoError::UnsupportedAlgorithm(other))?,
         }
     }
 }

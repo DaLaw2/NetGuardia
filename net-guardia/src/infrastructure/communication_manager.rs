@@ -164,6 +164,8 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::interface::communication::command::Command;
     use crate::interface::communication::event::Event;
@@ -183,7 +185,7 @@ mod tests {
     impl Command for TestCommand {}
 
     struct TestCommandHandler {
-        received: Arc<std::sync::Mutex<Vec<String>>>,
+        received: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -226,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_dispatch() {
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::new(Mutex::new(Vec::new()));
         let handler = Arc::new(TestCommandHandler {
             received: received.clone(),
         });
@@ -305,7 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_registrar() {
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::new(Mutex::new(Vec::new()));
         let handler = Arc::new(TestCommandHandler {
             received: received.clone(),
         });

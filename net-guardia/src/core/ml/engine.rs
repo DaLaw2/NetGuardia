@@ -1,23 +1,23 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use macros::log;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
+use tokio::task::spawn_blocking;
 use tokio::time::interval;
 
 use super::aggregator::AttackAggregator;
+use super::alert::MLAlert;
 use super::drift_detector::DriftDetector;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
 use super::model_loader::MLModels;
 use super::traffic_logger::TrafficLogger;
 use crate::model::detection::flow_features::FlowFeatures;
-use crate::model::system::config::MLInferenceConfig;
-
-use super::alert::MLAlert;
-use crate::model::detection::ml_detection::{EngineConfig, InferenceStats};
+use crate::model::detection::ml_detection::{EngineConfig, FlowKey, InferenceStats};
 use crate::model::log::ml::MLLog;
+use crate::model::system::config::MLInferenceConfig;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
@@ -95,7 +95,7 @@ impl Engine {
 
     /// Protocol/port-aware min_packets: some traffic patterns are meaningful
     /// at very low packet counts and would be invisible to ML at the global threshold.
-    fn effective_min_packets(flow_key: &crate::model::detection::ml_detection::FlowKey, global: usize) -> usize {
+    fn effective_min_packets(flow_key: &FlowKey, global: usize) -> usize {
         match flow_key.protocol {
             // ICMP: single-packet SYN scans, ping sweeps
             1 => 1,
@@ -142,7 +142,7 @@ impl Engine {
 
             // Move CPU-bound ML inference off the tokio executor
             let engine = Arc::clone(&self);
-            let _ = tokio::task::spawn_blocking(move || {
+            let _ = spawn_blocking(move || {
                 engine.run_inference_tick();
             })
             .await;
@@ -152,8 +152,8 @@ impl Engine {
     fn run_inference_tick(&self) {
         let mut all_flows = Vec::new();
         let mut total_count = 0;
-        let now_us = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 

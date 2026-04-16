@@ -1,5 +1,6 @@
+use std::env::consts;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use macros::log;
 use sysinfo::{Components, Networks, System};
@@ -102,8 +103,8 @@ impl SystemHealth {
         egress_interface: &str,
         ebpf: EbpfHealth,
     ) -> SystemHealthMetrics {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
@@ -162,7 +163,7 @@ impl SystemHealth {
             kernel_version: System::kernel_version(),
             os_name: System::name(),
             os_version: System::os_version(),
-            architecture: std::env::consts::ARCH.to_string(),
+            architecture: consts::ARCH.to_string(),
             total_processes: system.processes().len(),
         }
     }

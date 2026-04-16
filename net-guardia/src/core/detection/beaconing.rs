@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use macros::log;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::interval;
 
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::event::{DetectionEvent, DetectionSource};
@@ -61,15 +63,15 @@ impl BeaconingDetector {
     async fn run(mut self) {
         log!(DetectionLog::BeaconingDetectorStarted);
 
-        let mut analysis_interval = tokio::time::interval(Duration::from_secs(ANALYSIS_INTERVAL_SECS));
+        let mut analysis_interval = interval(Duration::from_secs(ANALYSIS_INTERVAL_SECS));
 
         loop {
             tokio::select! {
                 result = self.alert_rx.recv() => {
                     match result {
                         Ok(alert) => self.record_flow(&alert),
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
                     }
                 }
                 _ = analysis_interval.tick() => {

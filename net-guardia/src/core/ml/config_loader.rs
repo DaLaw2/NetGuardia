@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,8 @@ impl MLInferenceConfig {
     }
 
     fn load_file_at(path: &Path) -> Result<Self, MLError> {
-        let content = fs::read_to_string(path).map_err(|_| MLError::ConfigLoadFailed(path.to_path_buf()))?;
+        let content = fs::read_to_string(path)
+            .map_err(|e| MLError::ConfigLoadFailed(path.to_path_buf(), format!("read failed: {e}")))?;
         let config: MLInferenceConfig =
             serde_json::from_str(&content).map_err(|e| MLError::ConfigParseFailed(e.to_string()))?;
         validate(&config)?;
@@ -114,13 +115,17 @@ fn apply_manifest_overrides(manifest: &ModelManifest, config: &mut MLInferenceCo
     }
 }
 
-fn manifest_labels_to_map(labels: &std::collections::BTreeMap<String, LabelSpec>) -> HashMap<String, String> {
+fn manifest_labels_to_map(labels: &BTreeMap<String, LabelSpec>) -> HashMap<String, String> {
     labels.iter().map(|(k, v)| (k.clone(), v.name.clone())).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::io::Write;
+
     use super::*;
+    use crate::model::detection::ml_detection::ClipParams;
 
     /// Integration test: the shipped `models/manifest.yaml` must successfully pair
     /// with its scaler sidecar to yield a valid `MLInferenceConfig`. Skipped silently
@@ -144,9 +149,6 @@ mod tests {
 
     #[test]
     fn feature_mismatch_between_manifest_and_sidecar_is_rejected() {
-        use crate::model::detection::ml_detection::ClipParams;
-        use std::io::Write;
-
         // Build a minimal sidecar JSON with 2 features.
         let sidecar = MLInferenceConfig {
             ae_feature_names: vec!["flow_duration".into(), "fwd_packets".into()],
@@ -169,11 +171,11 @@ mod tests {
             ae_feature_weights: HashMap::new(),
         };
 
-        let tmp = std::env::temp_dir().join("netguardia-m1-mismatch-test");
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = env::temp_dir().join("netguardia-m1-mismatch-test");
+        fs::create_dir_all(&tmp).unwrap();
         let sidecar_path = tmp.join("sidecar.json");
         let manifest_path = tmp.join("manifest.yaml");
-        let mut f = std::fs::File::create(&sidecar_path).unwrap();
+        let mut f = fs::File::create(&sidecar_path).unwrap();
         f.write_all(serde_json::to_string(&sidecar).unwrap().as_bytes())
             .unwrap();
 
@@ -191,7 +193,7 @@ features:
 preprocessing:
   scaler_sidecar: sidecar.json
 "#;
-        std::fs::write(&manifest_path, manifest_yaml).unwrap();
+        fs::write(&manifest_path, manifest_yaml).unwrap();
         let err =
             MLInferenceConfig::from_manifest_with_sidecar(&manifest_path).expect_err("should reject count mismatch");
         assert!(matches!(err, MLError::ManifestInvalid { .. }), "got {err:?}");
