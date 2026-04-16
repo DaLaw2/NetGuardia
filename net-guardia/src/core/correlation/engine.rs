@@ -72,7 +72,7 @@ impl CorrelationEngine {
     fn cleanup(&self) {
         let removed = self.botnet.cleanup() + self.scan.cleanup() + self.lateral.cleanup();
         if removed > 0 {
-            log!(DetectionLog::CorrelationCleanup { removed });
+            log!(DetectionLog::CorrelationCleanup(removed));
         }
     }
 }

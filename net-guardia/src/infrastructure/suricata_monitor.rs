@@ -63,7 +63,7 @@ impl SuricataMonitor {
             // Wait until the file exists — Suricata spawns asynchronously and
             // may take a few seconds to create eve.json.
             if !Path::new(&path).exists() {
-                log!(SuricataLog::MonitorWaitingForFile { path: path.clone() });
+                log!(SuricataLog::MonitorWaitingForFile(path.clone()));
                 while !Path::new(&path).exists() {
                     sleep(FILE_WAIT_INTERVAL).await;
                 }
@@ -79,7 +79,7 @@ impl SuricataMonitor {
             // Seek to end so we only see new content from this point. Suricata
             // writes a large volume at startup that we don't want to replay.
             let mut pos: u64 = file.seek(SeekFrom::End(0)).await.unwrap_or_default();
-            log!(SuricataLog::MonitorAttached { path: path.clone() });
+            log!(SuricataLog::MonitorAttached(path.clone()));
 
             let mut reader = BufReader::new(file);
             let mut line = String::new();
@@ -161,12 +161,12 @@ impl SuricataMonitor {
             _ => 0.50,
         };
 
-        log!(SuricataLog::AlertForwarded {
+        log!(SuricataLog::AlertForwarded(
             sid,
-            src: src_ip.clone(),
-            dst: dest_ip.clone(),
+            src_ip.clone(),
+            dest_ip.clone(),
             signature,
-        });
+        ));
 
         Some(DetectionEvent {
             source: DetectionSource::Suricata,

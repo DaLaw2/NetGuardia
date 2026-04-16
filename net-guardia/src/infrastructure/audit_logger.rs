@@ -32,7 +32,7 @@ impl AuditLogger {
                             this.handle_audit_event(&event);
                         }
                         Err(RecvError::Lagged(n)) => {
-                            log!(AuditLog::AuditLagged { count: n });
+                            log!(AuditLog::AuditLagged(n));
                         }
                         Err(RecvError::Closed) => {
                             log!(AuditLog::AuditChannelClosed);
@@ -55,7 +55,7 @@ impl AuditLogger {
                             this.handle_drift_event(&event);
                         }
                         Err(RecvError::Lagged(n)) => {
-                            log!(AuditLog::AuditLagged { count: n });
+                            log!(AuditLog::AuditLagged(n));
                         }
                         Err(RecvError::Closed) => {
                             log!(AuditLog::AuditChannelClosed);
@@ -71,18 +71,15 @@ impl AuditLogger {
 
     fn handle_audit_event(&self, event: &AuditEvent) {
         // Always emit a structured log line
-        log!(AuditLog::AuditEvent {
-            actor: event.actor.clone(),
-            action: event.action.clone()
-        });
+        log!(AuditLog::AuditEvent(event.actor.clone(), event.action.clone(),));
 
         // Attempt DB insert; on failure, log a warning but do not panic
         if let Err(e) = self.db.insert_audit_log(&event.actor, &event.action, &event.detail) {
-            log!(AuditLog::AuditDbWriteFailed {
-                error: e.to_string(),
-                actor: event.actor.clone(),
-                action: event.action.clone()
-            });
+            log!(AuditLog::AuditDbWriteFailed(
+                e.to_string(),
+                event.actor.clone(),
+                event.action.clone(),
+            ));
         }
     }
 
@@ -93,12 +90,10 @@ impl AuditLogger {
         })
         .to_string();
 
-        log!(AuditLog::AuditDriftEvent {
-            count: event.drifted_features.len()
-        });
+        log!(AuditLog::AuditDriftEvent(event.drifted_features.len()));
 
         if let Err(e) = self.db.insert_audit_log("system", "ml_drift_detected", &detail) {
-            log!(AuditLog::AuditDriftDbWriteFailed { error: e.to_string() });
+            log!(AuditLog::AuditDriftDbWriteFailed(e.to_string()));
         }
     }
 }

@@ -87,25 +87,22 @@ impl SuricataManager {
 
             let pid = child.id().unwrap_or(0);
             *self.health.write() = SuricataHealth::Running { pid };
-            log!(SuricataLog::Started { pid });
+            log!(SuricataLog::Started(pid));
 
             tokio::select! {
                 exit = child.wait() => {
                     let reason = match exit {
-                        Ok(status) => format!("exited with {}", status),
-                        Err(e) => format!("wait error: {}", e),
+                        Ok(status) => format!("exited with {status}"),
+                        Err(e) => format!("wait error: {e}"),
                     };
                     if self.config.suricata.auto_restart_on_crash {
                         let backoff = self.config.suricata.restart_backoff_secs;
-                        log!(SuricataLog::CrashedRestartPending {
-                            reason: reason.clone(),
-                            backoff,
-                        });
+                        log!(SuricataLog::CrashedRestartPending(reason.clone(), backoff));
                         *self.health.write() = SuricataHealth::Stopped { reason };
                         sleep(Duration::from_secs(backoff)).await;
                         continue;
                     } else {
-                        log!(SuricataLog::Stopped { reason: reason.clone() });
+                        log!(SuricataLog::Stopped(reason.clone()));
                         *self.health.write() = SuricataHealth::Stopped { reason };
                         return;
                     }
@@ -138,11 +135,11 @@ impl SuricataManager {
         let sc = &self.config.suricata;
         let iface = &self.config.network.ingress_ifname;
 
-        log!(SuricataLog::Spawning {
-            binary: sc.binary_path.clone(),
-            config: sc.config_path.clone(),
-            iface: iface.clone(),
-        });
+        log!(SuricataLog::Spawning(
+            sc.binary_path.clone(),
+            sc.config_path.clone(),
+            iface.clone(),
+        ));
 
         let mut cmd = Command::new(&sc.binary_path);
         cmd.arg("-c")

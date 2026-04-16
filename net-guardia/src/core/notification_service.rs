@@ -77,19 +77,18 @@ impl NotificationService {
     /// Send a test email using current SMTP config.
     pub fn test_smtp(&self) -> Result<String, Error> {
         let smtp_client = SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
-        let smtp = smtp_client.ok_or_else(|| MiscError::ValidationError {
-            message: "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
-                 If smtp_username is not an email address, also set smtp_sender."
-                .into(),
+        let smtp = smtp_client.ok_or_else(|| {
+            MiscError::ValidationError(
+                "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
+                 If smtp_username is not an email address, also set smtp_sender.",
+            )
         })?;
 
         let recipient = self
             .repo
             .get_setting("smtp_recipient")?
             .filter(|r| !r.is_empty())
-            .ok_or_else(|| MiscError::ValidationError {
-                message: "No smtp_recipient configured.".into(),
-            })?;
+            .ok_or_else(|| MiscError::ValidationError("No smtp_recipient configured."))?;
 
         smtp.send(
             &recipient,

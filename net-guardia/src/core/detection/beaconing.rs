@@ -126,13 +126,13 @@ impl BeaconingDetector {
         // Phase 2: selective write-lock only for entries that need last_alerted update.
         for (key, cv, count) in alerts {
             let (src_ip, dst_ip, dst_port) = &key;
-            log!(DetectionLog::BeaconingDetected {
-                src_ip: src_ip.clone(),
-                dst_ip: dst_ip.clone(),
-                dst_port: *dst_port,
+            log!(DetectionLog::BeaconingDetected(
+                src_ip.clone(),
+                dst_ip.clone(),
+                *dst_port,
                 cv,
                 count,
-            });
+            ));
 
             let event = DetectionEvent {
                 source: DetectionSource::Beaconing,

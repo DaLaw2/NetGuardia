@@ -162,10 +162,10 @@ impl System {
         log!(MLLog::ModelsLoaded(
             self.app_services.ml_models.get_model_info("classifier")
         ));
-        log!(MLLog::ConfigLoaded {
-            features: self.inference_config.num_ae_features(),
-            attacks: self.inference_config.num_attack_types()
-        });
+        log!(MLLog::ConfigLoaded(
+            self.inference_config.num_ae_features(),
+            self.inference_config.num_attack_types(),
+        ));
 
         // aya_log_init + attach_xdp only make sense if the eBPF objects
         // loaded. When eBPF is unavailable we skip both; the rest of the

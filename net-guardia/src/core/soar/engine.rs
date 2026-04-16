@@ -138,10 +138,10 @@ impl SoarEngine {
                     action_order: order,
                     action_type: atype,
                     params: serde_json::from_str(&params_str).unwrap_or_else(|e| {
-                        log!(SoarLog::PlaybookError {
-                            name: pb.name.clone(),
-                            error: format!("Malformed action params JSON: {}", e),
-                        });
+                        log!(SoarLog::PlaybookError(
+                            pb.name.clone(),
+                            format!("Malformed action params JSON: {e}"),
+                        ));
                         Value::Object(Default::default())
                     }),
                 });

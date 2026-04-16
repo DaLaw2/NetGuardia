@@ -74,11 +74,11 @@ impl BotnetDetector {
         };
 
         if let Some(unique_sources) = should_alert {
-            log!(DetectionLog::BotnetDetected {
-                dst_ip: key.clone(),
+            log!(DetectionLog::BotnetDetected(
+                key.clone(),
                 unique_sources,
-                window_secs: BOTNET_WINDOW_SECS,
-            });
+                BOTNET_WINDOW_SECS,
+            ));
 
             // source_ip = the latest attacker; dest_ip = the victim being targeted.
             // SOAR blocks source_ip, so we must NOT put the victim here.

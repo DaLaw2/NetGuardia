@@ -74,11 +74,11 @@ impl LateralMovementDetector {
         };
 
         if let Some(unique_dests) = should_alert {
-            log!(DetectionLog::LateralMovementDetected {
-                src_ip: key.clone(),
+            log!(DetectionLog::LateralMovementDetected(
+                key.clone(),
                 unique_dests,
-                window_secs: LATERAL_WINDOW_SECS,
-            });
+                LATERAL_WINDOW_SECS,
+            ));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,

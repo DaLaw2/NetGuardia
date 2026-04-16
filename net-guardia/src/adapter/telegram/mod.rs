@@ -130,10 +130,7 @@ impl TelegramAdapter {
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 let body = resp.text().await.unwrap_or_default();
                 if body.contains("chat not found") || body.contains("CHAT_NOT_FOUND") {
-                    return Err(NotificationError::TelegramChatNotFound {
-                        chat_id: chat_id.to_string(),
-                    }
-                    .into());
+                    return Err(NotificationError::TelegramChatNotFound(chat_id.to_string()).into());
                 }
                 return Err(NotificationError::TelegramAuthError.into());
             }
@@ -156,10 +153,7 @@ impl TelegramAdapter {
                     sleep(Duration::from_secs(retry_after)).await;
                     continue;
                 } else {
-                    return Err(NotificationError::TelegramRateLimited {
-                        retry_after_secs: retry_after,
-                    }
-                    .into());
+                    return Err(NotificationError::TelegramRateLimited(retry_after).into());
                 }
             }
 

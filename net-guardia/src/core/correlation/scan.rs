@@ -72,11 +72,7 @@ impl ScanDetector {
         };
 
         if let Some((unique_ports, last_dst_ip)) = should_alert {
-            log!(DetectionLog::ScanDetected {
-                src_ip: key.clone(),
-                unique_ports,
-                window_secs: SCAN_WINDOW_SECS,
-            });
+            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, SCAN_WINDOW_SECS,));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,

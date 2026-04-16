@@ -104,10 +104,7 @@ impl DetectionOrchestrator {
                     entry.sources.push(event.source.clone());
                 }
             }
-            log!(DetectionLog::DetectionDeduplicated {
-                source_ip: event.source_ip,
-                attack_type: event.attack_type,
-            });
+            log!(DetectionLog::DetectionDeduplicated(event.source_ip, event.attack_type,));
             return;
         }
 
@@ -115,15 +112,15 @@ impl DetectionOrchestrator {
         let threat_event = self.enrich(&event).await;
         let sources = vec![event.source.clone()];
 
-        log!(DetectionLog::DetectionEmitted {
-            source_ip: event.source_ip.clone(),
-            attack_type: event.attack_type.clone(),
-            confidence: event.confidence,
-            ae_score: event.ae_score,
-            anomaly_score: event.anomaly_score,
-            c2_score: event.c2_score,
-            sources_count: sources.len(),
-        });
+        log!(DetectionLog::DetectionEmitted(
+            event.source_ip.clone(),
+            event.attack_type.clone(),
+            event.confidence,
+            event.ae_score,
+            event.anomaly_score,
+            event.c2_score,
+            sources.len(),
+        ));
 
         // Record dedup entry (LRU-bounded)
         self.dedup.put(

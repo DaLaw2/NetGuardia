@@ -620,10 +620,7 @@ impl Database {
         )
         .map_err(|e| -> Error {
             if e.to_string().contains("UNIQUE constraint") {
-                DatabaseError::UserAlreadyExists {
-                    username: username.to_string(),
-                }
-                .into()
+                DatabaseError::UserAlreadyExists(username.to_string()).into()
             } else {
                 e.into()
             }
