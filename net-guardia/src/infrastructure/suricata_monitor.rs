@@ -144,7 +144,11 @@ impl SuricataMonitor {
 
         let alert = v.get("alert")?;
         let sid = alert.get("signature_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-        let signature = alert.get("signature").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let signature = alert
+            .get("signature")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         // Suricata severity: 1=high, 2=medium, 3=low, 4=informational.
         // Map to confidence in [0.5, 1.0] so high-severity alerts tend to trip
         // SOAR condition thresholds.

@@ -20,6 +20,7 @@ use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
 use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::manifest::ModelManifest;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
@@ -44,6 +45,7 @@ use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::ebpf::EbpfLog;
+use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::model::monitoring::direction::FlowDirection;
 use crate::model::system::config::MLInferenceConfig;
@@ -104,7 +106,26 @@ impl ServiceFactory {
         AppConfig::seed_defaults(&db)?;
         let app_config = Arc::new(AppConfig::new(&db)?);
 
-        let inference_config = Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?);
+        // Prefer `models/manifest.yaml` when present (v12 BYO-model path). The manifest
+        // is the user-authored source of truth for features, labels, thresholds, and
+        // model filenames; the legacy JSON-only path is the fallback.
+        let manifest_path = std::path::PathBuf::from("models/manifest.yaml");
+        let (inference_config, ml_manifest): (Arc<MLInferenceConfig>, Option<ModelManifest>) = if manifest_path.exists()
+        {
+            let (cfg, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&manifest_path)?;
+            log!(MLLog::ManifestLoaded(
+                manifest.name.clone(),
+                manifest.adapter.as_str().to_string(),
+                manifest.features.len(),
+                manifest.labels.len(),
+            ));
+            (Arc::new(cfg), Some(manifest))
+        } else {
+            (
+                Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?),
+                None,
+            )
+        };
 
         // Shared eBPF health handle. Initialized Healthy; downgraded to
         // Unavailable with a classified reason if any stage below fails.
@@ -116,16 +137,21 @@ impl ServiceFactory {
         // rest of the system (HTTP API, SOAR, ML engine, auth) is built
         // regardless so the operator can still reach the frontend and see
         // the reason.
-        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) =
-            match Self::try_build_ebpf(&app_config) {
-                Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
-                Err((stage, err)) => {
-                    let health = crate::infrastructure::ebpf_preflight::classify(stage, &err, None);
-                    log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
-                    *ebpf_health.write() = health;
-                    (None, None, None, Arc::new(EbpfServices::unavailable(app_config.clone())))
-                }
-            };
+        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) = match Self::try_build_ebpf(&app_config)
+        {
+            Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
+            Err((stage, err)) => {
+                let health = crate::infrastructure::ebpf_preflight::classify(stage, &err, None);
+                log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+                *ebpf_health.write() = health;
+                (
+                    None,
+                    None,
+                    None,
+                    Arc::new(EbpfServices::unavailable(app_config.clone())),
+                )
+            }
+        };
 
         // Ensure enforce_mode setting exists (default: monitor)
         if db.get_setting("enforce_mode")?.is_none() {
@@ -153,6 +179,7 @@ impl ServiceFactory {
         let app_services = Arc::new(AppServices::new(
             app_config.clone(),
             inference_config.clone(),
+            ml_manifest.clone(),
             drift_detector.clone(),
             ebpf_health.clone(),
         )?);
@@ -267,8 +294,7 @@ impl ServiceFactory {
             secret_store_port,
         ));
 
-        let suricata_manager =
-            crate::infrastructure::suricata_manager::SuricataManager::new(app_config.clone());
+        let suricata_manager = crate::infrastructure::suricata_manager::SuricataManager::new(app_config.clone());
 
         Ok(AppState {
             app_config,

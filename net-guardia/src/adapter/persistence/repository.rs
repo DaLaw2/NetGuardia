@@ -1615,11 +1615,9 @@ impl Database {
 
         let tx = conn.transaction()?;
         let prev_hash: String = tx
-            .query_row(
-                "SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .unwrap_or_default();
 
         let row_hash = Self::audit_row_hash(&ts, actor, action, detail, &prev_hash);

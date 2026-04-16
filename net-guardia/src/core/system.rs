@@ -359,11 +359,8 @@ impl System {
         // Start Suricata eve.json monitor — tails the log file, translates
         // alert events into DetectionEvent on the shared mpsc. No-op if the
         // bridge is disabled in config.
-        crate::infrastructure::suricata_monitor::SuricataMonitor::new(
-            self.app_config.clone(),
-            suricata_detection_tx,
-        )
-        .start();
+        crate::infrastructure::suricata_monitor::SuricataMonitor::new(self.app_config.clone(), suricata_detection_tx)
+            .start();
 
         // Wait for shutdown signal (ctrl-c OR API-triggered)
         tokio::select! {

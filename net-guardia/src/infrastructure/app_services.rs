@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 use crate::core::ml::alert::MLAlert;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::ml::engine::Engine;
+use crate::core::ml::manifest::{AdapterKind, ModelManifest};
 use crate::core::ml::model_loader::MLModels;
 use crate::core::ml::traffic_logger::TrafficLogger;
 use crate::infrastructure::app_config::AppConfig;
@@ -38,13 +39,32 @@ impl AppServices {
     pub fn new(
         app_config: Arc<AppConfig>,
         inference_config: Arc<MLInferenceConfig>,
+        ml_manifest: Option<ModelManifest>,
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
         ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
 
         let batch_size = app_config.inference.inference_batch_size;
-        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config, batch_size)?);
+        // When a `multi_task` manifest is present, its model filenames are authoritative.
+        // Otherwise (no manifest, or single-model adapter in v2) fall through to the
+        // legacy app_config-driven path. M1 only needs `multi_task` wired end-to-end.
+        let ml_models = Arc::new(match ml_manifest.as_ref() {
+            Some(m) if m.adapter == AdapterKind::MultiTask => {
+                let ae = m
+                    .models
+                    .autoencoder
+                    .as_deref()
+                    .unwrap_or(&app_config.inference.deep_autoencoder_name);
+                let cls = m
+                    .models
+                    .classifier
+                    .as_deref()
+                    .unwrap_or(&app_config.inference.classifier_name);
+                MLModels::load_named(ae, cls, &inference_config, batch_size)?
+            }
+            _ => MLModels::load_models(&app_config, &inference_config, batch_size)?,
+        });
         let ml_alert = Arc::new(MLAlert::new());
 
         let traffic_logger = if app_config.inference.traffic_logging_mode {

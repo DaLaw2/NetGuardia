@@ -147,7 +147,20 @@ impl SecretStore {
             .into()),
         }
     }
+}
 
+impl SecretStorePort for SecretStore {
+    fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
+        match self.db.get_app_secret(key)? {
+            Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
+        let envelope = self.encrypt(plaintext)?;
+        self.db.set_app_secret(key, &envelope)
+    }
 }
 
 #[cfg(test)]
@@ -253,19 +266,5 @@ mod tests {
         let store = store_with_cipher();
         let envelope = serde_json::json!({"v": 1, "alg": "chacha20", "ct": "abc"}).to_string();
         assert!(store.decrypt(&envelope).is_err());
-    }
-}
-
-impl SecretStorePort for SecretStore {
-    fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
-        match self.db.get_app_secret(key)? {
-            Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
-        let envelope = self.encrypt(plaintext)?;
-        self.db.set_app_secret(key, &envelope)
     }
 }

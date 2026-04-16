@@ -1,0 +1,69 @@
+# NetGuardia v10 model manifest — authored 2026-04-16 as part of v12 M1.
+# Schema: structural/semantic info lives here; preprocessing arrays
+# (scaler mean/std, clip params, feature weights) stay in inference_config.json
+# referenced by `preprocessing.scaler_sidecar` below.
+
+name: netguardia-v10
+adapter: multi_task
+
+models:
+  autoencoder: deep_autoencoder.onnx
+  classifier: classifier.onnx
+
+# 31 AE-input features. Order matters — must match ONNX input column order
+# and inference_config.json `ae_feature_names`. The classifier takes these
+# plus `ae_anomaly_score` appended as the 32nd input (handled in code).
+features:
+  - flow_duration
+  - fwd_packets
+  - bwd_packets
+  - fwd_bytes
+  - bwd_bytes
+  - flow_bytes_per_sec
+  - flow_pkts_per_sec
+  - fwd_win_bytes
+  - bwd_win_bytes
+  - fwd_pkt_len_mean
+  - bwd_pkt_len_mean
+  - fwd_iat_mean
+  - bwd_iat_mean
+  - flow_iat_mean
+  - pkt_len_mean
+  - dst_port
+  - protocol
+  - psh_flag_cnt
+  - ack_flag_cnt
+  - syn_flag_cnt
+  - fin_flag_cnt
+  - rst_flag_cnt
+  - pkt_len_std
+  - fwd_pkt_len_std
+  - bwd_pkt_len_std
+  - fwd_seg_size_min
+  - fwd_act_data_pkts
+  - fwd_iat_std
+  - bwd_iat_std
+  - fwd_bwd_bytes_ratio
+  - iat_cv
+
+# `confirmations` / `playbook` are parsed today; M2 wires them into the aggregator.
+labels:
+  "0": { name: Bot }
+  "1": { name: Brute Force }
+  "2": { name: C2 Communication, confirmations: 1 }
+  "3": { name: DNS Tunneling, confirmations: 1 }
+  "4": { name: DoS/DDoS, confirmations: 2 }
+  "5": { name: Exploitation, confirmations: 1 }
+  "6": { name: Malware }
+  "7": { name: Normal }
+  "8": { name: Reconnaissance }
+  "9": { name: Web Attack }
+
+thresholds:
+  anomaly: 0.9179317355155945
+  c2: 0.9085615873336792
+  class_min_confidence: 0.4
+  ae: 0.23011694848537445
+
+preprocessing:
+  scaler_sidecar: inference_config.json

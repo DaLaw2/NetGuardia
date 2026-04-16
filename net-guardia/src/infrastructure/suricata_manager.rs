@@ -71,18 +71,14 @@ impl SuricataManager {
         loop {
             // Pre-flight: validate binary + config exist before spawning.
             if let Err(e) = Self::preflight(&self.config) {
-                *self.health.write() = SuricataHealth::Stopped {
-                    reason: e.to_string(),
-                };
+                *self.health.write() = SuricataHealth::Stopped { reason: e.to_string() };
                 return;
             }
 
             let mut child = match self.spawn_child() {
                 Ok(c) => c,
                 Err(e) => {
-                    *self.health.write() = SuricataHealth::Stopped {
-                        reason: e.to_string(),
-                    };
+                    *self.health.write() = SuricataHealth::Stopped { reason: e.to_string() };
                     return;
                 }
             };

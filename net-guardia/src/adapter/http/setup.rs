@@ -172,47 +172,6 @@ async fn complete_setup(
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_valid_interface_names() {
-        assert!(is_valid_interface_name("eth0"));
-        assert!(is_valid_interface_name("ens33"));
-        assert!(is_valid_interface_name("br-lan"));
-        assert!(is_valid_interface_name("wlan0.1"));
-    }
-
-    #[test]
-    fn test_invalid_interface_empty() {
-        assert!(!is_valid_interface_name(""));
-    }
-
-    #[test]
-    fn test_invalid_interface_too_long() {
-        let long = "a".repeat(17);
-        assert!(!is_valid_interface_name(&long));
-        // Exactly 16 should be valid
-        let exact = "a".repeat(16);
-        assert!(is_valid_interface_name(&exact));
-    }
-
-    #[test]
-    fn test_invalid_interface_path_traversal() {
-        assert!(!is_valid_interface_name("../etc"));
-        assert!(!is_valid_interface_name("../../shadow"));
-        assert!(!is_valid_interface_name("/sys/class"));
-    }
-
-    #[test]
-    fn test_invalid_interface_special_chars() {
-        assert!(!is_valid_interface_name("eth0;rm"));
-        assert!(!is_valid_interface_name("lo&&cat"));
-        assert!(!is_valid_interface_name("eth0 space"));
-    }
-}
-
 fn save_config(
     db: &Database,
     secrets: &dyn SecretStorePort,
@@ -257,4 +216,45 @@ fn save_config(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_interface_names() {
+        assert!(is_valid_interface_name("eth0"));
+        assert!(is_valid_interface_name("ens33"));
+        assert!(is_valid_interface_name("br-lan"));
+        assert!(is_valid_interface_name("wlan0.1"));
+    }
+
+    #[test]
+    fn test_invalid_interface_empty() {
+        assert!(!is_valid_interface_name(""));
+    }
+
+    #[test]
+    fn test_invalid_interface_too_long() {
+        let long = "a".repeat(17);
+        assert!(!is_valid_interface_name(&long));
+        // Exactly 16 should be valid
+        let exact = "a".repeat(16);
+        assert!(is_valid_interface_name(&exact));
+    }
+
+    #[test]
+    fn test_invalid_interface_path_traversal() {
+        assert!(!is_valid_interface_name("../etc"));
+        assert!(!is_valid_interface_name("../../shadow"));
+        assert!(!is_valid_interface_name("/sys/class"));
+    }
+
+    #[test]
+    fn test_invalid_interface_special_chars() {
+        assert!(!is_valid_interface_name("eth0;rm"));
+        assert!(!is_valid_interface_name("lo&&cat"));
+        assert!(!is_valid_interface_name("eth0 space"));
+    }
 }

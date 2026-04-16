@@ -155,8 +155,14 @@ mod tests {
 
     #[test]
     fn categorizes_permission_errors() {
-        assert!(matches!(categorize("Permission denied (os error 13)"), EbpfFailCategory::Permission));
-        assert!(matches!(categorize("Operation not permitted"), EbpfFailCategory::Permission));
+        assert!(matches!(
+            categorize("Permission denied (os error 13)"),
+            EbpfFailCategory::Permission
+        ));
+        assert!(matches!(
+            categorize("Operation not permitted"),
+            EbpfFailCategory::Permission
+        ));
     }
 
     #[test]

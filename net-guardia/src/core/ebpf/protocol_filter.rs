@@ -306,10 +306,7 @@ impl<T: NativeConvert + Pod> EntryMap<T> {
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
         };
-        map.keys()
-            .filter_map(Result::ok)
-            .map(|key| key.into_native())
-            .collect()
+        map.keys().filter_map(Result::ok).map(|key| key.into_native()).collect()
     }
 
     fn add(&mut self, key: T::Native) -> Result<(), Error> {

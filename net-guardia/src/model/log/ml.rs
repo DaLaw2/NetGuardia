@@ -62,5 +62,11 @@ loggable! {
 
         #[error("Model reload failed, keeping current models: {error}")]
         ModelReloadFailed { error: String } => tracing::Level::ERROR,
+
+        #[error("Model manifest loaded: name='{name}', adapter={adapter}, features={features}, labels={labels}")]
+        ManifestLoaded { name: String, adapter: String, features: usize, labels: usize } => tracing::Level::INFO,
+
+        #[error("ONNX input shape introspected for {model}: declared={declared}, onnx_dim={onnx_dim}, matched={matched}")]
+        OnnxShapeChecked { model: String, declared: usize, onnx_dim: usize, matched: bool } => tracing::Level::DEBUG,
     }
 }

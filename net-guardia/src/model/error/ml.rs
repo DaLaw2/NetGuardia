@@ -22,5 +22,17 @@ traceable! {
 
         #[error("Failed to flush traffic log: {err}")]
         TrafficLogFlushFailed => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Model manifest at {path:?} is invalid: {reason}")]
+        ManifestInvalid { path: PathBuf, reason: String } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Feature count mismatch for {model:?}: manifest declares {declared}, ONNX input expects {onnx_dim}")]
+        FeatureMismatch { model: PathBuf, declared: usize, onnx_dim: usize } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Unknown feature '{name}' — not registered in FEATURE_REGISTRY")]
+        UnknownFeature { name: String } => tracing::Level::ERROR,
     }
 }
