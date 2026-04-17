@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
+use async_trait::async_trait;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
 use common::model::ip_address::{IPv4, IPv6, Port};
 use common::model::port_rule::PortRule;
 use tokio::sync::RwLock;
 
+use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::model::access_control::ip_address::NativeConvert;
 use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
@@ -141,6 +143,48 @@ impl AccessControl {
             (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.write().await,
         };
         map_wrapper.remove(ip, port)
+    }
+}
+
+#[async_trait]
+impl AccessControlAdminPort for AccessControl {
+    async fn add_ipv4_list(
+        &self,
+        direction: FlowDirection,
+        list_type: ListType,
+        address: SocketAddrV4,
+    ) -> Result<(), Error> {
+        self.add_ipv4_list(direction, list_type, address).await
+    }
+    async fn add_ipv6_list(
+        &self,
+        direction: FlowDirection,
+        list_type: ListType,
+        address: SocketAddrV6,
+    ) -> Result<(), Error> {
+        self.add_ipv6_list(direction, list_type, address).await
+    }
+    async fn remove_ipv4_list(
+        &self,
+        direction: FlowDirection,
+        list_type: ListType,
+        address: SocketAddrV4,
+    ) -> Result<(), Error> {
+        self.remove_ipv4_list(direction, list_type, address).await
+    }
+    async fn remove_ipv6_list(
+        &self,
+        direction: FlowDirection,
+        list_type: ListType,
+        address: SocketAddrV6,
+    ) -> Result<(), Error> {
+        self.remove_ipv6_list(direction, list_type, address).await
+    }
+    async fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
+        self.get_ipv4_list(direction, list_type).await
+    }
+    async fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
+        self.get_ipv6_list(direction, list_type).await
     }
 }
 

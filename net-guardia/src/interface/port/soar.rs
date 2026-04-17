@@ -24,31 +24,15 @@ pub type PlaybookRow = (
 #[allow(clippy::type_complexity)]
 pub type SoarExecutionRow = (i64, i64, Option<String>, String, String, String);
 
-/// Port for SOAR-related persistence: playbooks, block rules, execution log, admin whitelist,
-/// plus the settings and ACL methods that SOAR actions depend on.
-pub trait SoarPort: Send + Sync {
-    // --- Settings (used by rate-limit adjust/restore and email actions) ---
-    fn get_setting(&self, key: &str) -> Result<Option<String>, Error>;
-    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error>;
-
-    // --- ACL Rules (used by block_ip action and TTL scheduler cleanup) ---
-    fn insert_acl_rule(
-        &self,
-        ip_version: u8,
-        direction: &str,
-        list_type: &str,
-        ip_address: &str,
-        port: u16,
-    ) -> Result<(), Error>;
-    fn delete_acl_rule(
-        &self,
-        ip_version: u8,
-        direction: &str,
-        list_type: &str,
-        ip_address: &str,
-        port: u16,
-    ) -> Result<(), Error>;
-
+/// Threat Response BC — SOAR aggregate repository.
+///
+/// Covers playbook CRUD, condition CRUD, block-rule lifecycle, pending-unblock
+/// recovery queue, and the execution log. The settings (`soar_*`) and ACL
+/// writes that block actions depend on live in `SettingRepo` and `AclRepo`
+/// respectively; cross-aggregate atomicity is handled via
+/// `DbAdminRepo::with_transaction` + `TxRepos`.
+#[allow(dead_code)]
+pub trait SoarRepo: Send + Sync {
     // --- Playbooks ---
     fn insert_playbook(
         &self,
@@ -94,7 +78,6 @@ pub trait SoarPort: Send + Sync {
     fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error>;
     fn get_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error>;
     fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error>;
-    fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error>;
 
     // --- Pending Unblock Recovery ---
     fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error>;
@@ -112,8 +95,35 @@ pub trait SoarPort: Send + Sync {
     ) -> Result<i64, Error>;
     fn list_soar_executions(&self, limit: i64) -> Result<Vec<SoarExecutionRow>, Error>;
 
-    // --- Admin Whitelist ---
-    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error>;
-    fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
-    fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
+    // --- Intra-aggregate atomic operations (tx-4 / tx-5 per M2_CARVE_PLAN §4b) ---
+
+    /// tx-4 — Atomically create a playbook with its conditions and actions.
+    /// All rows (playbook + conditions + actions) commit together; any error
+    /// rolls back the whole insert. Returns the new playbook id.
+    ///
+    /// `actions` tuples: `(action_order, action_type, params_json)`.
+    /// `conditions` tuples: `(condition_type, operator, value, value2)`.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_playbook_atomic(
+        &self,
+        name: &str,
+        trigger_event: &str,
+        threshold: Option<f64>,
+        count: Option<i64>,
+        window: Option<i64>,
+        cooldown: i64,
+        actions: &[(i64, String, String)],
+        conditions: &[(String, String, String, Option<String>)],
+    ) -> Result<i64, Error>;
+
+    /// tx-5 — Atomically update a playbook's metadata and replace its
+    /// conditions and actions. Returns `Ok(false)` if no playbook with that
+    /// id exists; otherwise `Ok(true)` after the whole update commits.
+    fn update_playbook_atomic(
+        &self,
+        id: i64,
+        row: &UpdatePlaybookRow,
+        actions: &[(i64, String, String)],
+        conditions: &[(String, String, String, Option<String>)],
+    ) -> Result<bool, Error>;
 }

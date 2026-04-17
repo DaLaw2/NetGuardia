@@ -5,8 +5,9 @@ use crate::model::identity::auth::Claims;
 #[allow(clippy::type_complexity)]
 pub type ApiKeyListItem = (i64, String, String, String, Option<String>);
 
-/// Port for API key management and validation.
-pub trait ApiKeyPort: Send + Sync {
+/// Identity BC — API key CRUD + validation (distinct from user login,
+/// used by MCP / programmatic clients).
+pub trait ApiKeyRepo: Send + Sync {
     fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error>;
     fn hmac_api_key(&self, raw_key: &str) -> String;
     fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error>;

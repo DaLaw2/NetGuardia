@@ -3,15 +3,15 @@ use serde::Deserialize;
 
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::config_service::ConfigService;
-use crate::core::system::{ShutdownHandle, ShutdownMode};
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::utils::boot_time;
 use crate::utils::logging::Logging;
 
-type Repo = dyn RepositoryPort;
+type Repo = dyn AppRepo;
 
 #[derive(Deserialize)]
 struct EnforceModeRequest {

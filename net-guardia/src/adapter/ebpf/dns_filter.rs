@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use common::model::dns_name::DnsName;
 use parking_lot::RwLock;
 
+use crate::interface::port::dns_filter_api::DnsFilterPort;
+use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
@@ -32,6 +34,15 @@ impl DnsFilter {
 
     pub fn list_domains(&self) -> Vec<String> {
         self.blacklist.read().iter().filter_map(wire_format_to_domain).collect()
+    }
+
+    /// Fast-path helper combining `parse_query_name` + `is_blacklisted` — used
+    /// by the AF_XDP RX loop.
+    pub fn is_query_blacklisted(&self, raw: &[u8]) -> bool {
+        match Self::parse_query_name(raw) {
+            Some((name, name_len)) => self.is_blacklisted(&name, name_len),
+            None => false,
+        }
     }
 
     /// Check if a DNS query name (in wire format) or any of its parent domains is blacklisted.
@@ -174,6 +185,24 @@ impl DnsFilter {
             pos += 1 + ll;
         }
         None
+    }
+}
+
+impl DnsFilterPort for DnsFilter {
+    fn add_domain(&self, domain: &str) -> Result<(), Error> {
+        self.add_domain(domain)
+    }
+    fn remove_domain(&self, domain: &str) -> Result<(), Error> {
+        self.remove_domain(domain)
+    }
+    fn list_domains(&self) -> Vec<String> {
+        self.list_domains()
+    }
+}
+
+impl DnsQueryFilter for DnsFilter {
+    fn is_query_blacklisted(&self, raw: &[u8]) -> bool {
+        self.is_query_blacklisted(raw)
     }
 }
 

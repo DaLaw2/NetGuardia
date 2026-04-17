@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::core::ebpf::access_control::AccessControl;
+use crate::adapter::ebpf::access_control::AccessControl;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;

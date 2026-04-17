@@ -4,18 +4,18 @@ use macros::log;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::interface::port::audit::AuditPort;
+use crate::interface::port::audit::AuditRepo;
 use crate::model::event::{AuditEvent, DriftDetectedEvent};
 use crate::model::log::audit::AuditLog;
 
 /// Subscribes to `AuditEvent` and persists each entry to the `audit_log` table.
 /// Falls back to log-only when DB writes fail (never panics).
 pub struct AuditLogger {
-    db: Arc<dyn AuditPort>,
+    db: Arc<dyn AuditRepo>,
 }
 
 impl AuditLogger {
-    pub fn new(db: Arc<dyn AuditPort>) -> Self {
+    pub fn new(db: Arc<dyn AuditRepo>) -> Self {
         Self { db }
     }
 

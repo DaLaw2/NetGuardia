@@ -9,6 +9,7 @@ use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
 
 use crate::infrastructure::app_config::AppConfig;
+use crate::interface::port::geo_block_api::GeoBlockPort;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
@@ -200,5 +201,17 @@ impl GeoBlock {
         for key in keys {
             let _ = trie.remove(&key);
         }
+    }
+}
+
+impl GeoBlockPort for GeoBlock {
+    fn block_countries(&self, codes: &[String]) -> Result<u64, Error> {
+        self.block_countries(codes)
+    }
+    fn unblock_countries(&self, codes: &[String]) -> Result<u64, Error> {
+        self.unblock_countries(codes)
+    }
+    fn list_blocked(&self) -> Vec<String> {
+        self.get_blocked_countries()
     }
 }

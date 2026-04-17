@@ -5,10 +5,10 @@ use serde::Deserialize;
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::auth::jwt::JwtService;
 use crate::core::auth::password;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::auth::AuthError;
 
-type Repo = dyn RepositoryPort;
+type Repo = dyn AppRepo;
 
 #[derive(Deserialize)]
 struct LoginRequest {

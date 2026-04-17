@@ -1,3 +1,11 @@
+//! Cross-BC in-process event bus (technical service, not a BC).
+//!
+//! Per `docs/strategy/DOMAIN_MAP.md` §2, Communication Bus is a Technical
+//! Service — it has no ubiquitous language, no domain expert, no aggregate.
+//! It stays in `infrastructure/` and never takes a BC folder name. The trait
+//! surface (`Event`, `Command`, `Query`, `EventBroadcaster`, `CommandHandler`)
+//! lives at `interface/communication/` and remains untouched.
+
 use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;

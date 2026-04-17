@@ -4,26 +4,23 @@ use serde_json::Value;
 
 use crate::adapter::telegram::TelegramAdapter;
 use crate::core::email::scheduler::SmtpClient;
-use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::notification::AlertNotifier;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
 /// Domain service for notification config (Telegram, SMTP).
 /// Coordinates DB persistence and external service testing.
 pub struct NotificationService {
-    notif: Arc<dyn NotificationConfigPort>,
-    repo: Arc<dyn RepositoryPort>,
+    notif: Arc<dyn SettingRepo>,
+    repo: Arc<dyn AppRepo>,
     secrets: Arc<dyn SecretStorePort>,
 }
 
 impl NotificationService {
-    pub fn new(
-        notif: Arc<dyn NotificationConfigPort>,
-        repo: Arc<dyn RepositoryPort>,
-        secrets: Arc<dyn SecretStorePort>,
-    ) -> Self {
+    pub fn new(notif: Arc<dyn SettingRepo>, repo: Arc<dyn AppRepo>, secrets: Arc<dyn SecretStorePort>) -> Self {
         Self { notif, repo, secrets }
     }
 

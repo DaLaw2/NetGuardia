@@ -1,7 +1,8 @@
 use crate::model::error::Error;
 
-/// Port for statistics aggregation queries.
-pub trait StatsPort: Send + Sync {
+/// Reporting BC (generic) — weekly aggregation queries used by the report
+/// scheduler and dashboard APIs.
+pub trait StatsRepo: Send + Sync {
     fn count_weekly_executions(&self, days: i64) -> Result<u64, Error>;
     fn count_weekly_blocks(&self, days: i64) -> Result<u64, Error>;
     fn count_weekly_unblocks(&self, days: i64) -> Result<u64, Error>;

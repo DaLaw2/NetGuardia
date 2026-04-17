@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use chrono::Local;
 use macros::log;
 
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 use crate::model::error::io::IOError;
 use crate::model::error::misc::MiscError;
@@ -13,7 +13,7 @@ use crate::model::report::data::ReportData;
 
 /// Generate a self-contained HTML security report and write to disk.
 /// Returns the path to the generated HTML file.
-pub fn generate_html_report(db: &dyn RepositoryPort, output_dir: &str) -> Result<PathBuf, Error> {
+pub fn generate_html_report(db: &dyn SettingRepo, output_dir: &str) -> Result<PathBuf, Error> {
     let data = ReportData::from_database(db)?;
     let html = render_html_report(&data);
 
@@ -202,7 +202,7 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Generate report data and format as JSON (for API responses).
-pub fn generate_report_json(db: &dyn RepositoryPort) -> Result<serde_json::Value, Error> {
+pub fn generate_report_json(db: &dyn SettingRepo) -> Result<serde_json::Value, Error> {
     let data = ReportData::from_database(db)?;
     serde_json::to_value(&data).map_err(|e| MiscError::SerializeError(e).into())
 }

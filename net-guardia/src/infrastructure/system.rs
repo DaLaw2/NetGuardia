@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::oneshot;
 use tokio::time::{interval, sleep};
 
+use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
 use crate::core::acl_service::AclService;
 use crate::core::auth::jwt::JwtService;
@@ -21,7 +22,6 @@ use crate::core::correlation::engine::CorrelationEngine;
 use crate::core::detection::beaconing::BeaconingDetector;
 use crate::core::detection::orchestrator::DetectionOrchestrator;
 use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::ml::model_watcher::ModelWatcher;
@@ -41,9 +41,9 @@ use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::suricata_monitor::SuricataMonitor;
-use crate::interface::port::audit::AuditPort;
-use crate::interface::port::repository::RepositoryPort;
-use crate::interface::port::stats::StatsPort;
+use crate::interface::port::audit::AuditRepo;
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::stats::StatsRepo;
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
@@ -195,7 +195,9 @@ impl System {
         // When maps exist but bind fails (e.g. igb on kernel < 6.17), record
         // the classified reason and continue — the ML engine will see no
         // packets, same as a network that is simply quiet.
-        if let Err(e) = ebpf_services.run(app_services.ml_engine.clone()).await {
+        let sink_factory: Arc<dyn crate::interface::port::packet_sink::PacketSinkFactory> =
+            app_services.ml_engine.clone();
+        if let Err(e) = ebpf_services.run(sink_factory).await {
             use crate::infrastructure::ebpf_preflight;
             use crate::model::system::health::EbpfFailStage;
             let iface = self.app_config.network.ingress_ifname.as_str();
@@ -220,13 +222,13 @@ impl System {
         }
 
         // Start audit logger (subscribe to AuditEvent + DriftDetectedEvent, persist to DB)
-        let audit_logger = Arc::new(AuditLogger::new(self.db.clone() as Arc<dyn AuditPort>));
+        let audit_logger = Arc::new(AuditLogger::new(self.db.clone() as Arc<dyn AuditRepo>));
         audit_logger.start(&self.comm);
 
         // Start stats aggregator (writes weekly_* settings for Report engine)
         let stats_aggregator = StatsAggregator::new(
-            self.db.clone() as Arc<dyn StatsPort>,
-            self.db.clone() as Arc<dyn RepositoryPort>,
+            self.db.clone() as Arc<dyn StatsRepo>,
+            self.db.clone() as Arc<dyn SettingRepo>,
         );
         stats_aggregator.start();
 

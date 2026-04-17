@@ -11,8 +11,8 @@ use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 use macros::log;
 
 use crate::core::auth::jwt::JwtService;
-use crate::interface::port::api_key::ApiKeyPort;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::api_key::ApiKeyRepo;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::auth::AuthError;
 
 pub struct AuthMiddleware;
@@ -142,19 +142,19 @@ where
             } else if let Some(api_key_header) = req.headers().get("X-API-Key") {
                 // API key auth with rate limiting
                 let api_key = api_key_header.to_str().unwrap_or("");
-                let api_key_port = match req.app_data::<web::Data<dyn ApiKeyPort>>() {
+                let api_key_port = match req.app_data::<web::Data<dyn ApiKeyRepo>>() {
                     Some(d) => d.clone(),
                     None => {
                         let resp = HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "ApiKeyPort not configured"}));
+                            .json(serde_json::json!({"error": "ApiKeyRepo not configured"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 };
-                let repo = match req.app_data::<web::Data<dyn RepositoryPort>>() {
+                let repo = match req.app_data::<web::Data<dyn AppRepo>>() {
                     Some(d) => d.clone(),
                     None => {
                         let resp = HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "RepositoryPort not configured"}));
+                            .json(serde_json::json!({"error": "AppRepo not configured"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 };

@@ -7,9 +7,10 @@ use parking_lot::Mutex;
 use reqwest::Client;
 use tokio::time::sleep;
 
-use crate::interface::port::notification::{AlertNotifier, AlertPayload, NotificationConfigPort};
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::notification::{AlertNotifier, AlertPayload};
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::config::constants::TELEGRAM_MAX_RETRIES;
 use crate::model::error::Error;
 use crate::model::error::notification::NotificationError;
@@ -18,8 +19,8 @@ use crate::model::log::system::SystemLog;
 /// Telegram Bot API adapter implementing AlertNotifier.
 pub struct TelegramAdapter {
     client: Client,
-    notif: Arc<dyn NotificationConfigPort>,
-    repo: Arc<dyn RepositoryPort>,
+    notif: Arc<dyn SettingRepo>,
+    repo: Arc<dyn AppRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
     /// Rate limiter: (count, window_start)
     rate_state: Mutex<(u32, Instant)>,
@@ -27,8 +28,8 @@ pub struct TelegramAdapter {
 
 impl TelegramAdapter {
     pub fn new(
-        notif: Arc<dyn NotificationConfigPort>,
-        repo: Arc<dyn RepositoryPort>,
+        notif: Arc<dyn SettingRepo>,
+        repo: Arc<dyn AppRepo>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Result<Self, Error> {
         let client = Client::builder()

@@ -5,8 +5,8 @@ use actix_web::{HttpResponse, Responder, Scope, web};
 use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
+use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::ebpf::protocol_filter::ProtocolFilter;
 
 /// Convert a fallible result into an Ok (200) or InternalServerError (500) response.
 fn ok_or_error<T, E: fmt::Display>(result: Result<T, E>) -> HttpResponse {

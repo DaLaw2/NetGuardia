@@ -16,12 +16,12 @@ use common::define::pipeline::*;
 use crate::core::auth::jwt::JwtService;
 
 use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
+use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
 use crate::adapter::telegram::TelegramAdapter;
 use crate::core::acl_service::AclService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
 use crate::core::ml::drift_detector::DriftDetector;
 use crate::core::ml::manifest::ModelManifest;
@@ -41,10 +41,11 @@ use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::notification::AlertNotifier;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::soar::SoarPort;
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::soar::SoarRepo;
 use crate::model::access_control::list_type::ListType;
 use crate::model::detection::drift::FeatureBaselines;
 use crate::model::error::Error;
@@ -202,7 +203,7 @@ impl ServiceFactory {
         // Create CommunicationManager and register enforce-mode handler
         let comm = Arc::new(CommunicationManager::new());
         let enforce_handler = Arc::new(EnforceModeHandler::new(
-            db.clone() as Arc<dyn RepositoryPort>,
+            db.clone() as Arc<dyn AppRepo>,
             comm.clone(),
             enforce_level_cache.clone(),
         ));
@@ -219,7 +220,7 @@ impl ServiceFactory {
         comm.register_event_type::<AuditEvent>();
 
         // Seed default SOAR playbooks if empty
-        (db.as_ref() as &dyn SoarPort).seed_default_playbooks()?;
+        (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;
 
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
@@ -229,8 +230,8 @@ impl ServiceFactory {
 
         // Create TelegramAdapter as alert notifier (may fail if not configured yet)
         let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(
-            db.clone() as Arc<dyn NotificationConfigPort>,
-            db.clone() as Arc<dyn RepositoryPort>,
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
             Some(secret_store_port.clone()),
         ) {
             Ok(adapter) => Some(Arc::new(adapter)),
@@ -257,12 +258,14 @@ impl ServiceFactory {
             Arc::new(EbpfAccessControlAdapter::new(ebpf_services.access_control.clone()));
 
         // Create SOAR engine
+        let rate_limit_port: Arc<dyn crate::interface::port::rate_limit_api::RateLimitPort> =
+            ebpf_services.rate_limit.clone();
         let soar_engine = Arc::new(SoarEngine::new(
             db.clone(),
             access_control_port.clone(),
             alert_notifier.clone(),
             geoip.clone(),
-            Some(ebpf_services.rate_limit.clone()),
+            Some(rate_limit_port.clone()),
             enforce_level_cache,
             Some(secret_store_port.clone()),
         )?);
@@ -272,33 +275,33 @@ impl ServiceFactory {
 
         // Create Report scheduler
         let report_scheduler =
-            ReportScheduler::new(db.clone() as Arc<dyn RepositoryPort>, Some(secret_store_port.clone()));
+            ReportScheduler::new(db.clone() as Arc<dyn SettingRepo>, Some(secret_store_port.clone()));
 
-        // Create domain services (Phase 2B)
+        // Create domain services (Phase 2B) — upcast concrete eBPF services to
+        // their port-layer traits so the core services see only abstract ports.
+        let access_control_admin: Arc<dyn crate::interface::port::access_control_admin::AccessControlAdminPort> =
+            ebpf_services.access_control.clone();
+        let geo_block_port: Arc<dyn crate::interface::port::geo_block_api::GeoBlockPort> =
+            ebpf_services.geo_block.clone();
+        let dns_filter_port: Arc<dyn crate::interface::port::dns_filter_api::DnsFilterPort> =
+            ebpf_services.dns_filter.clone();
         let acl_service = Arc::new(AclService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.access_control.clone(),
-            ebpf_services.geo_block.clone(),
+            db.clone() as Arc<dyn AppRepo>,
+            access_control_admin,
+            geo_block_port,
         ));
-        let dns_filter_service = Arc::new(DnsFilterService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.dns_filter.clone(),
-        ));
-        let rate_limit_service = Arc::new(RateLimitService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.rate_limit.clone(),
-        ));
+        let dns_filter_service = Arc::new(DnsFilterService::new(db.clone() as Arc<dyn AppRepo>, dns_filter_port));
+        let rate_limit_service = Arc::new(RateLimitService::new(db.clone() as Arc<dyn AppRepo>, rate_limit_port));
         let playbook_service = Arc::new(PlaybookService::new(
             db.clone(),
             soar_engine.clone(),
             access_control_port,
         ));
-        let config_service = Arc::new(
-            ConfigService::new(db.clone() as Arc<dyn RepositoryPort>).with_secret_store(secret_store_port.clone()),
-        );
+        let config_service =
+            Arc::new(ConfigService::new(db.clone() as Arc<dyn AppRepo>).with_secret_store(secret_store_port.clone()));
         let notification_service = Arc::new(NotificationService::new(
-            db.clone() as Arc<dyn NotificationConfigPort>,
-            db.clone() as Arc<dyn RepositoryPort>,
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
             secret_store_port,
         ));
 

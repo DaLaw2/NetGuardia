@@ -12,3 +12,4 @@ pub mod service_factory;
 pub mod statistics;
 pub mod suricata_manager;
 pub mod suricata_monitor;
+pub mod system;

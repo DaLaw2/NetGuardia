@@ -5,20 +5,20 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
-use crate::interface::port::repository::RepositoryPort;
-use crate::interface::port::stats::StatsPort;
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::stats::StatsRepo;
 use crate::model::error::Error;
 use crate::model::log::system::SystemLog;
 
 /// Background service that periodically aggregates statistics from SOAR/ML tables
 /// and writes them to the settings table for the Report engine to consume.
 pub struct StatsAggregator {
-    stats: Arc<dyn StatsPort>,
-    repo: Arc<dyn RepositoryPort>,
+    stats: Arc<dyn StatsRepo>,
+    repo: Arc<dyn SettingRepo>,
 }
 
 impl StatsAggregator {
-    pub fn new(stats: Arc<dyn StatsPort>, repo: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo>) -> Self {
         Self { stats, repo }
     }
 
@@ -163,7 +163,7 @@ mod tests {
         db.insert_soar_execution(1, Some("5.6.7.8"), "brute_force", "[]").ok();
         db.insert_soar_block_rule("1.2.3.4", 1, "2099-01-01 00:00:00").ok();
 
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
         aggregator.aggregate().expect("aggregation should succeed");
 
         // Verify settings were written
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn aggregator_handles_empty_db() {
         let db = Arc::new(Database::new(":memory:").expect("test db"));
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
         aggregator
             .aggregate()
             .expect("aggregation should succeed with empty data");

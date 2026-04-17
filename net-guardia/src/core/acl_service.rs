@@ -1,9 +1,9 @@
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
-use crate::core::ebpf::access_control::AccessControl;
-use crate::core::ebpf::geo_block::GeoBlock;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::access_control_admin::AccessControlAdminPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::geo_block_api::GeoBlockPort;
 use crate::model::monitoring::direction::FlowDirection;
 use macros::log;
 
@@ -14,13 +14,17 @@ use crate::model::error::ebpf::EbpfError;
 /// Domain service that coordinates ACL changes between DB persistence and eBPF data plane.
 /// Atomic write: eBPF first, then DB. If DB fails, rollback eBPF.
 pub struct AclService {
-    db: Arc<dyn RepositoryPort>,
-    access_control: Arc<AccessControl>,
-    geo_block: Arc<GeoBlock>,
+    db: Arc<dyn AppRepo>,
+    access_control: Arc<dyn AccessControlAdminPort>,
+    geo_block: Arc<dyn GeoBlockPort>,
 }
 
 impl AclService {
-    pub fn new(db: Arc<dyn RepositoryPort>, access_control: Arc<AccessControl>, geo_block: Arc<GeoBlock>) -> Self {
+    pub fn new(
+        db: Arc<dyn AppRepo>,
+        access_control: Arc<dyn AccessControlAdminPort>,
+        geo_block: Arc<dyn GeoBlockPort>,
+    ) -> Self {
         Self {
             db,
             access_control,
@@ -147,11 +151,11 @@ impl AclService {
     }
 
     pub fn get_blocked_countries(&self) -> Vec<String> {
-        self.geo_block.get_blocked_countries()
+        self.geo_block.list_blocked()
     }
 
-    pub fn access_control(&self) -> &AccessControl {
-        &self.access_control
+    pub fn access_control(&self) -> &dyn AccessControlAdminPort {
+        self.access_control.as_ref()
     }
 }
 

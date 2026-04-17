@@ -16,10 +16,9 @@ use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
-use crate::core::ebpf::dns_filter::DnsFilter;
-use crate::core::ml::engine::Engine;
-use crate::core::ml::flow_tracker::FlowTracker;
 use crate::infrastructure::app_config::AppConfig;
+use crate::interface::port::dns_query_filter::DnsQueryFilter;
+use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
@@ -92,8 +91,8 @@ impl XskManager {
 
     pub fn run(
         &self,
-        ml_engine: Option<Arc<Engine>>,
-        dns_filter: Option<Arc<DnsFilter>>,
+        sinks: Option<Arc<dyn PacketSinkFactory>>,
+        dns_filter: Option<Arc<dyn DnsQueryFilter>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
         // If eBPF failed to load, there are no XSK maps to bind and no queues
@@ -110,7 +109,7 @@ impl XskManager {
             let (ingress_to_egress_tx, ingress_to_egress_rx) = bounded(network.channel_size);
             let (egress_to_ingress_tx, egress_to_ingress_rx) = bounded(network.channel_size);
 
-            let tracker = ml_engine.as_ref().map(|engine| engine.tracker(queue_id).clone());
+            let sink = sinks.as_ref().and_then(|f| f.sink_for_queue(queue_id));
 
             let ingress_xsk = XskPair::new(
                 network.clone(),
@@ -118,7 +117,7 @@ impl XskManager {
                 &network.ingress_ifname,
                 &network.egress_ifname,
                 Direction::Ingress,
-                tracker.clone(),
+                sink.clone(),
                 dns_filter.clone(),
             )?;
 
@@ -128,7 +127,7 @@ impl XskManager {
                 &network.egress_ifname,
                 &network.ingress_ifname,
                 Direction::Egress,
-                tracker,
+                sink,
                 None,
             )?;
 
@@ -171,8 +170,8 @@ pub struct XskPair {
     tx: TxQueue,
     rx: RxQueue,
     frame_pool: Vec<FrameDesc>,
-    tracker: Option<Arc<Mutex<FlowTracker>>>,
-    dns_filter: Option<Arc<DnsFilter>>,
+    sink: Option<Arc<dyn PacketSink>>,
+    dns_filter: Option<Arc<dyn DnsQueryFilter>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
 }
@@ -184,8 +183,8 @@ impl XskPair {
         rx_ifname: &str,
         _tx_ifname: &str,
         direction: Direction,
-        tracker: Option<Arc<Mutex<FlowTracker>>>,
-        dns_filter: Option<Arc<DnsFilter>>,
+        sink: Option<Arc<dyn PacketSink>>,
+        dns_filter: Option<Arc<dyn DnsQueryFilter>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfig)?;
 
@@ -240,7 +239,7 @@ impl XskPair {
             tx,
             rx,
             frame_pool: pool_frames,
-            tracker,
+            sink,
             dns_filter,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
@@ -356,18 +355,17 @@ impl XskPair {
 
                 // DNS blacklist check — drop blacklisted DNS queries before forwarding
                 if let Some(ref dns) = self.dns_filter
-                    && let Some((dns_name, name_len)) = DnsFilter::parse_query_name(raw)
-                    && dns.is_blacklisted(&dns_name, name_len)
+                    && dns.is_query_blacklisted(raw)
                 {
                     continue;
                 }
 
                 // Parse directly from UMEM (zero-copy for ML path).
                 // Only clone for the forwarding path afterwards.
-                if let Some(ref tracker) = self.tracker
+                if let Some(ref sink) = self.sink
                     && let Some((packet_info, _)) = parse_packet(raw)
                 {
-                    tracker.lock().process_packet(packet_info, is_ingress);
+                    sink.process_packet(packet_info, is_ingress);
                 }
 
                 // Clone into pooled buffer for forwarding

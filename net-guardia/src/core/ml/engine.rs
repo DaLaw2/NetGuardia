@@ -14,9 +14,11 @@ use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
 use super::model_loader::MLModels;
 use super::traffic_logger::TrafficLogger;
+use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::model::detection::flow_features::FlowFeatures;
 use crate::model::detection::ml_detection::{EngineConfig, FlowKey, InferenceStats};
 use crate::model::log::ml::MLLog;
+use crate::model::monitoring::user_packet::UserPacket;
 use crate::model::system::config::MLInferenceConfig;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
@@ -267,5 +269,25 @@ impl Engine {
 
             aggregator.cleanup();
         }
+    }
+}
+
+/// Adapter that exposes one `ThreadTracker` (per AF_XDP queue) as a
+/// `PacketSink`. `XskManager` holds `Arc<dyn PacketSink>` per queue and never
+/// touches `FlowTracker` concrete types.
+struct QueueTrackerSink {
+    tracker: ThreadTracker,
+}
+
+impl PacketSink for QueueTrackerSink {
+    fn process_packet(&self, packet: UserPacket, is_ingress: bool) {
+        self.tracker.lock().process_packet(packet, is_ingress);
+    }
+}
+
+impl PacketSinkFactory for Engine {
+    fn sink_for_queue(&self, queue_id: u32) -> Option<Arc<dyn PacketSink>> {
+        let tracker = self.tracker(queue_id).clone();
+        Some(Arc::new(QueueTrackerSink { tracker }))
     }
 }

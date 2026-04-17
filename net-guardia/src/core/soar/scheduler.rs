@@ -7,25 +7,20 @@ use tokio::time::{self, Duration};
 use crate::core::playbook_service::ip_version_from_str;
 use crate::core::soar::engine::SoarEngine;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::soar::SoarPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::Error;
-use crate::model::error::soar::SoarError;
 use crate::model::log::soar::SoarLog;
 
 /// TTL expiry scheduler: runs every 60 seconds, removes expired auto-block rules.
 /// Before removing from eBPF, checks if a manual ACL rule exists for the same IP.
 pub struct TtlScheduler {
-    db: Arc<dyn SoarPort>,
+    db: Arc<dyn AppRepo>,
     access_control: Arc<dyn AccessControlPort>,
     soar_engine: Arc<SoarEngine>,
 }
 
 impl TtlScheduler {
-    pub fn new(
-        db: Arc<dyn SoarPort>,
-        access_control: Arc<dyn AccessControlPort>,
-        soar_engine: Arc<SoarEngine>,
-    ) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, access_control: Arc<dyn AccessControlPort>, soar_engine: Arc<SoarEngine>) -> Self {
         Self {
             db,
             access_control,
@@ -94,14 +89,10 @@ impl TtlScheduler {
                 ));
             }
 
-            // Also remove from acl_rules DB table (the auto-added entry)
+            // Atomically drop acl_rules entry AND mark soar_block_rules unblocked
+            // in one transaction (R2 mitigation, tx-2 per M2_CARVE_PLAN §4b).
             let ip_version = ip_version_from_str(source_ip);
-            if let Err(e) = self.db.delete_acl_rule(ip_version, "source", "blacklist", source_ip, 0) {
-                log!(SoarError::AclCleanupFailed(e));
-            }
-
-            // Mark as unblocked
-            self.db.mark_soar_block_unblocked(*id)?;
+            self.db.commit_soar_unblock_to_db(*id, ip_version, source_ip)?;
             self.soar_engine.decrement_block_count();
             removed += 1;
         }

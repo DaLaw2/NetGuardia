@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
@@ -63,12 +63,12 @@ const SETTINGS_MAP: &[(&str, &[&str])] = &[
 
 /// Domain service for system configuration read/write.
 pub struct ConfigService {
-    db: Arc<dyn RepositoryPort>,
+    db: Arc<dyn AppRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
 impl ConfigService {
-    pub fn new(db: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>) -> Self {
         Self { db, secrets: None }
     }
 

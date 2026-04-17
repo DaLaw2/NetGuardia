@@ -9,9 +9,8 @@ use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::{self, Duration};
 
 use super::report;
-use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::soar::SoarPort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 use crate::model::error::notification::NotificationError;
 use crate::model::log::system::SystemLog;
@@ -33,10 +32,7 @@ impl SmtpClient {
     /// Returns `None` if any required setting (`smtp_host`, `smtp_port`,
     /// `smtp_username`, `smtp_password`) is missing.
     /// If a `SecretStorePort` is provided, reads the password from the secret store.
-    pub fn from_database(
-        db: &dyn RepositoryPort,
-        secrets: Option<&dyn SecretStorePort>,
-    ) -> Result<Option<Self>, Error> {
+    pub fn from_database(db: &dyn SettingRepo, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
         let host = match db.get_setting("smtp_host")? {
             Some(v) if !v.is_empty() => v,
             _ => return Ok(None),
@@ -79,9 +75,9 @@ impl SmtpClient {
         }))
     }
 
-    /// Try to construct an `SmtpClient` from a SOAR port (which also provides `get_setting`).
-    /// Same logic as `from_database`, but accepts `&dyn SoarPort` instead of `&dyn RepositoryPort`.
-    pub fn from_soar_port(db: &dyn SoarPort, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
+    /// Try to construct an `SmtpClient` from any SettingRepo implementation.
+    /// Kept as a separate method name for call-site clarity (SOAR actions).
+    pub fn from_soar_port(db: &dyn SettingRepo, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
         let host = match db.get_setting("smtp_host")? {
             Some(v) if !v.is_empty() => v,
             _ => return Ok(None),
@@ -181,12 +177,12 @@ impl SmtpClient {
 /// Scheduler that checks once per hour whether it is time to send the weekly
 /// report (Monday 08:00 local time) and dispatches it via SMTP.
 pub struct ReportScheduler {
-    db: Arc<dyn RepositoryPort>,
+    db: Arc<dyn SettingRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
 impl ReportScheduler {
-    pub fn new(db: Arc<dyn RepositoryPort>, secrets: Option<Arc<dyn SecretStorePort>>) -> Self {
+    pub fn new(db: Arc<dyn SettingRepo>, secrets: Option<Arc<dyn SecretStorePort>>) -> Self {
         Self { db, secrets }
     }
 

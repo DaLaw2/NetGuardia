@@ -2,8 +2,8 @@ use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
 use super::{alert_websocket, drop_websocket, flow_websocket, health_websocket};
+use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::core::auth::jwt::JwtService;
-use crate::core::ebpf::drop_monitor::DropMonitor;
 use crate::core::ml::alert::MLAlert;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;

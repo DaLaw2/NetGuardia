@@ -8,14 +8,15 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{self, Connection, Error as RusqliteError, params};
 
-use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyPort};
-use crate::interface::port::audit::AuditPort;
-use crate::interface::port::notification::NotificationConfigPort;
-use crate::interface::port::repository::{
-    AclRuleTuple, RepositoryPort, UserGroupTuple, UserListItem, UserTuple, UserWithGroups,
-};
-use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarPort};
-use crate::interface::port::stats::StatsPort;
+use crate::interface::port::acl::{AclRepo, AclRuleTuple};
+use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyRepo};
+use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
+use crate::interface::port::db_admin::DbAdminRepo;
+use crate::interface::port::enforcement::EnforcementRepo;
+use crate::interface::port::identity::{IdentityRepo, UserGroupTuple, UserListItem, UserTuple, UserWithGroups};
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarRepo};
+use crate::interface::port::stats::StatsRepo;
 use crate::model::error::Error;
 use crate::model::error::database::DatabaseError;
 use crate::model::identity::auth::Claims;
@@ -49,14 +50,6 @@ impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for Sqlite
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Ok(())
     }
-}
-
-pub struct AuditLogEntry {
-    pub id: i64,
-    pub actor: String,
-    pub action: String,
-    pub detail: String,
-    pub created_at: String,
 }
 
 pub struct Database {
@@ -1671,9 +1664,14 @@ impl Database {
     }
 }
 
-/// Implement the RepositoryPort trait, proving Database satisfies the port contract.
-/// This enables adapter-level testing with mock implementations.
-impl RepositoryPort for Database {
+// --- Aggregate repository trait implementations ---
+//
+// All trait methods are forward-only wrappers to the inherent impl above.
+// The traits exist to enforce aggregate boundaries: callers take
+// `Arc<dyn XxxRepo>` instead of `Arc<Database>` so they see only the
+// methods of their own aggregate. See `docs/strategy/DOMAIN_MAP.md` §2.
+
+impl AclRepo for Database {
     fn insert_acl_rule(
         &self,
         ip_version: u8,
@@ -1697,6 +1695,21 @@ impl RepositoryPort for Database {
     fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
         self.load_acl_rules()
     }
+    fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error> {
+        self.has_manual_acl_rule(ip_address)
+    }
+    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
+        self.load_admin_whitelist()
+    }
+    fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.insert_admin_whitelist(ip)
+    }
+    fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.delete_admin_whitelist(ip)
+    }
+}
+
+impl EnforcementRepo for Database {
     fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> {
         self.set_rate_limit(key, value)
     }
@@ -1721,14 +1734,35 @@ impl RepositoryPort for Database {
     fn load_geo_countries(&self) -> Result<Vec<String>, Error> {
         self.load_geo_countries()
     }
+}
+
+impl SettingRepo for Database {
     fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
         self.get_setting(key)
     }
     fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
         self.set_setting(key, value)
     }
+    fn get_app_secret(&self, key: &str) -> Result<Option<String>, Error> {
+        self.get_app_secret(key)
+    }
+    fn set_app_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
+        self.set_app_secret(key, plaintext)
+    }
+    fn get_notification_config(&self, channel: &str) -> Result<Option<String>, Error> {
+        self.get_notification_config(channel)
+    }
+    fn set_notification_config(&self, channel: &str, config_json: &str) -> Result<(), Error> {
+        self.set_notification_config(channel, config_json)
+    }
+}
+
+impl IdentityRepo for Database {
     fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
         self.find_user(username)
+    }
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
+        self.find_user_by_id(user_id)
     }
     fn insert_user(
         &self,
@@ -1759,9 +1793,6 @@ impl RepositoryPort for Database {
     }
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
         self.reset_user_password(user_id, password_hash)
-    }
-    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
-        self.find_user_by_id(user_id)
     }
     fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error> {
         self.list_user_groups()
@@ -1807,33 +1838,7 @@ impl RepositoryPort for Database {
     }
 }
 
-impl SoarPort for Database {
-    fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
-        self.get_setting(key)
-    }
-    fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
-        self.set_setting(key, value)
-    }
-    fn insert_acl_rule(
-        &self,
-        ip_version: u8,
-        direction: &str,
-        list_type: &str,
-        ip_address: &str,
-        port: u16,
-    ) -> Result<(), Error> {
-        self.insert_acl_rule(ip_version, direction, list_type, ip_address, port)
-    }
-    fn delete_acl_rule(
-        &self,
-        ip_version: u8,
-        direction: &str,
-        list_type: &str,
-        ip_address: &str,
-        port: u16,
-    ) -> Result<(), Error> {
-        self.delete_acl_rule(ip_version, direction, list_type, ip_address, port)
-    }
+impl SoarRepo for Database {
     fn insert_playbook(
         &self,
         name: &str,
@@ -1906,9 +1911,6 @@ impl SoarPort for Database {
     fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error> {
         self.mark_soar_block_unblocked(id)
     }
-    fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error> {
-        self.has_manual_acl_rule(ip_address)
-    }
     fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error> {
         self.insert_pending_unblock(source_ip)
     }
@@ -1933,18 +1935,89 @@ impl SoarPort for Database {
     fn list_soar_executions(&self, limit: i64) -> Result<Vec<SoarExecutionRow>, Error> {
         self.list_soar_executions(limit)
     }
-    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
-        self.load_admin_whitelist()
+
+    // --- tx-4 / tx-5: intra-aggregate atomic operations ---
+
+    fn insert_playbook_atomic(
+        &self,
+        name: &str,
+        trigger_event: &str,
+        threshold: Option<f64>,
+        count: Option<i64>,
+        window: Option<i64>,
+        cooldown: i64,
+        actions: &[(i64, String, String)],
+        conditions: &[(String, String, String, Option<String>)],
+    ) -> Result<i64, Error> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![name, trigger_event, threshold, count, window, cooldown],
+        )?;
+        let playbook_id = tx.last_insert_rowid();
+        for (action_order, action_type, params_json) in actions {
+            tx.execute(
+                "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
+                params![playbook_id, action_order, action_type, params_json],
+            )?;
+        }
+        for (condition_type, operator, value, value2) in conditions {
+            tx.execute(
+                "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![playbook_id, condition_type, operator, value, value2.as_deref()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(playbook_id)
     }
-    fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
-        self.insert_admin_whitelist(ip)
-    }
-    fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
-        self.delete_admin_whitelist(ip)
+
+    fn update_playbook_atomic(
+        &self,
+        id: i64,
+        row: &UpdatePlaybookRow,
+        actions: &[(i64, String, String)],
+        conditions: &[(String, String, String, Option<String>)],
+    ) -> Result<bool, Error> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let rows_updated = tx.execute(
+            "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
+             condition_count = ?5, condition_window_secs = ?6, cooldown_secs = ?7, \
+             updated_at = datetime('now') WHERE id = ?1",
+            params![
+                id,
+                row.name,
+                row.trigger_event,
+                row.condition_threshold,
+                row.condition_count,
+                row.condition_window_secs,
+                row.cooldown_secs
+            ],
+        )?;
+        if rows_updated == 0 {
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM playbook_actions WHERE playbook_id = ?1", params![id])?;
+        tx.execute("DELETE FROM playbook_conditions WHERE playbook_id = ?1", params![id])?;
+        for (action_order, action_type, params_json) in actions {
+            tx.execute(
+                "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
+                params![id, action_order, action_type, params_json],
+            )?;
+        }
+        for (condition_type, operator, value, value2) in conditions {
+            tx.execute(
+                "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, condition_type, operator, value, value2.as_deref()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 }
 
-impl StatsPort for Database {
+impl StatsRepo for Database {
     fn count_weekly_executions(&self, days: i64) -> Result<u64, Error> {
         self.count_weekly_executions(days)
     }
@@ -1965,22 +2038,19 @@ impl StatsPort for Database {
     }
 }
 
-impl NotificationConfigPort for Database {
-    fn get_notification_config(&self, channel: &str) -> Result<Option<String>, Error> {
-        self.get_notification_config(channel)
-    }
-    fn set_notification_config(&self, channel: &str, config_json: &str) -> Result<(), Error> {
-        self.set_notification_config(channel, config_json)
-    }
-}
-
-impl AuditPort for Database {
+impl AuditRepo for Database {
     fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
         self.insert_audit_log(actor, action, detail)
     }
+    fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
+        self.list_audit_logs()
+    }
+    fn verify_audit_log_chain(&self) -> Result<usize, Error> {
+        self.verify_audit_log_chain()
+    }
 }
 
-impl ApiKeyPort for Database {
+impl ApiKeyRepo for Database {
     fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error> {
         self.validate_api_key(api_key)
     }
@@ -1995,6 +2065,52 @@ impl ApiKeyPort for Database {
     }
     fn delete_api_key(&self, id: i64) -> Result<bool, Error> {
         self.delete_api_key(id)
+    }
+}
+
+impl DbAdminRepo for Database {
+    /// tx-1 — Commit a SOAR-driven block to both `soar_block_rules` and
+    /// `acl_rules` in one transaction. Callers must have already installed
+    /// the eBPF block before calling this, and are responsible for removing
+    /// the eBPF block if this returns Err.
+    fn commit_soar_block_to_db(
+        &self,
+        source_ip: &str,
+        ip_version: u8,
+        playbook_id: i64,
+        expires_at: &str,
+    ) -> Result<i64, Error> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO soar_block_rules (source_ip, playbook_id, expires_at) VALUES (?1, ?2, ?3)",
+            params![source_ip, playbook_id, expires_at],
+        )?;
+        let soar_block_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT OR IGNORE INTO acl_rules (ip_version, direction, list_type, ip_address, port) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![ip_version, "source", "blacklist", source_ip, 0i64],
+        )?;
+        tx.commit()?;
+        Ok(soar_block_id)
+    }
+
+    /// tx-2 / tx-3 — Clear a SOAR-driven block: remove the `acl_rules` entry
+    /// and mark the `soar_block_rules` row as unblocked in one transaction.
+    /// Callers handle eBPF unblock separately.
+    fn commit_soar_unblock_to_db(&self, soar_block_id: i64, ip_version: u8, source_ip: &str) -> Result<(), Error> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM acl_rules WHERE ip_version = ?1 AND direction = ?2 AND list_type = ?3 AND ip_address = ?4 AND port = ?5",
+            params![ip_version, "source", "blacklist", source_ip, 0i64],
+        )?;
+        tx.execute(
+            "UPDATE soar_block_rules SET unblocked_at = datetime('now') WHERE id = ?1",
+            params![soar_block_id],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -2148,25 +2264,89 @@ mod tests {
         assert!(db.find_user("nobody").unwrap().is_none());
     }
 
-    /// Verify that Database satisfies the RepositoryPort trait contract.
-    /// This test ensures the trait impl compiles and can be used via trait object.
+    /// Verify that Database satisfies each aggregate Repo trait contract
+    /// (AclRepo / SettingRepo / IdentityRepo). Exercises the trait-object
+    /// path so callers that take `Arc<dyn XxxRepo>` compile end-to-end.
     #[test]
-    fn test_repository_port_trait_object() {
-        use crate::interface::port::repository::RepositoryPort;
-
+    fn test_aggregate_repo_trait_objects() {
         let db = test_db();
-        let repo: &dyn RepositoryPort = &db;
 
-        // Use via trait object — proves the abstraction works
-        repo.set_setting("test_key", "test_value").unwrap();
-        assert_eq!(repo.get_setting("test_key").unwrap(), Some("test_value".to_string()));
+        let setting: &dyn SettingRepo = &db;
+        setting.set_setting("test_key", "test_value").unwrap();
+        assert_eq!(setting.get_setting("test_key").unwrap(), Some("test_value".to_string()));
 
-        repo.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
-        let rules = repo.load_acl_rules().unwrap();
+        let acl: &dyn AclRepo = &db;
+        acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
+        let rules = acl.load_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
 
-        assert_eq!(repo.user_count().unwrap(), 0);
-        repo.insert_user("test", "hash", "viewer", false).unwrap();
-        assert_eq!(repo.user_count().unwrap(), 1);
+        let identity: &dyn IdentityRepo = &db;
+        assert_eq!(identity.user_count().unwrap(), 0);
+        identity.insert_user("test", "hash", "viewer", false).unwrap();
+        assert_eq!(identity.user_count().unwrap(), 1);
+    }
+
+    /// tx-1 — happy path. Verifies `commit_soar_block_to_db` writes both
+    /// `soar_block_rules` and `acl_rules` atomically.
+    #[test]
+    fn test_commit_soar_block_happy_path() {
+        let db = test_db();
+
+        // Seed a playbook so the foreign-key-ish playbook_id refers to something real.
+        let pb_id = db
+            .insert_playbook("test_pb", "threat_detected", Some(0.9), None, None, 300)
+            .unwrap();
+
+        let soar_block_id = db
+            .commit_soar_block_to_db("10.0.0.99", 4, pb_id, "2099-01-01 00:00:00")
+            .unwrap();
+        assert!(soar_block_id > 0);
+
+        // soar_block_rules has the row
+        let active = db.get_active_soar_blocks().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].1, "10.0.0.99");
+
+        // acl_rules has the matching row
+        let rules = db.load_acl_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].3, "10.0.0.99");
+    }
+
+    /// tx-2 / tx-3 — verifies `commit_soar_unblock_to_db` removes the ACL row
+    /// and marks the SOAR row as unblocked in one transaction.
+    #[test]
+    fn test_commit_soar_unblock_clears_both_tables() {
+        let db = test_db();
+        let pb_id = db
+            .insert_playbook("test_pb", "threat_detected", Some(0.9), None, None, 300)
+            .unwrap();
+        let soar_block_id = db
+            .commit_soar_block_to_db("10.0.0.99", 4, pb_id, "2099-01-01 00:00:00")
+            .unwrap();
+
+        db.commit_soar_unblock_to_db(soar_block_id, 4, "10.0.0.99").unwrap();
+
+        // acl_rules row gone
+        assert!(db.load_acl_rules().unwrap().is_empty());
+        // soar_block_rules row no longer in "active" view (unblocked_at is set)
+        assert!(db.get_active_soar_blocks().unwrap().is_empty());
+    }
+
+    /// tx-4 — `insert_playbook_atomic` writes playbook + actions + conditions
+    /// atomically.
+    #[test]
+    fn test_insert_playbook_atomic_writes_all_three_tables() {
+        let db = test_db();
+        let actions = vec![(1i64, "block_ip".to_string(), "{}".to_string())];
+        let conditions = vec![("threshold".to_string(), ">=".to_string(), "0.8".to_string(), None)];
+        let id = db
+            .insert_playbook_atomic("atom_pb", "threat", Some(0.8), None, None, 300, &actions, &conditions)
+            .unwrap();
+        assert!(id > 0);
+        let loaded = db.load_playbooks_with_actions().unwrap();
+        assert!(!loaded.is_empty());
+        let cond_rows = db.load_all_playbook_conditions().unwrap();
+        assert_eq!(cond_rows.len(), 1);
     }
 }

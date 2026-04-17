@@ -1,6 +1,6 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
-use crate::core::ebpf::drop_monitor::DropMonitor;
+use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::infrastructure::statistics::FlowStatistics;
 
 pub fn initialize() -> Scope {

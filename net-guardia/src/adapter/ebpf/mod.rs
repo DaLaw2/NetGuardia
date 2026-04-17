@@ -15,15 +15,16 @@ use macros::log;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
-use crate::core::ebpf::access_control::AccessControl;
-use crate::core::ebpf::dns_filter::DnsFilter;
-use crate::core::ebpf::drop_monitor::DropMonitor;
-use crate::core::ebpf::geo_block::GeoBlock;
-use crate::core::ebpf::protocol_filter::ProtocolFilter;
-use crate::core::ebpf::rate_limit::RateLimitConfig;
-use crate::core::ebpf::xsk_manager::XskManager;
-use crate::core::ml::engine::Engine;
+use crate::adapter::ebpf::access_control::AccessControl;
+use crate::adapter::ebpf::dns_filter::DnsFilter;
+use crate::adapter::ebpf::drop_monitor::DropMonitor;
+use crate::adapter::ebpf::geo_block::GeoBlock;
+use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
+use crate::adapter::ebpf::rate_limit::RateLimitConfig;
+use crate::adapter::ebpf::xsk_manager::XskManager;
 use crate::infrastructure::app_config::AppConfig;
+use crate::interface::port::dns_query_filter::DnsQueryFilter;
+use crate::interface::port::packet_sink::PacketSinkFactory;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
@@ -83,9 +84,10 @@ impl EbpfServices {
         }
     }
 
-    pub async fn run(self: Arc<Self>, ml_engine: Arc<Engine>) -> Result<(), Error> {
+    pub async fn run(self: Arc<Self>, sink_factory: Arc<dyn PacketSinkFactory>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
-        xsk_manager.run(Some(ml_engine), Some(self.dns_filter.clone()), &self.shutdowns)?;
+        let dns: Arc<dyn DnsQueryFilter> = self.dns_filter.clone();
+        xsk_manager.run(Some(sink_factory), Some(dns), &self.shutdowns)?;
 
         let ring_buf = self.drop_ring_buf.lock().take();
         if let Some(ring_buf) = ring_buf {

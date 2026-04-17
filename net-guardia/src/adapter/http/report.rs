@@ -10,8 +10,8 @@ use crate::core::email::report::generate_weekly_report;
 use crate::core::email::scheduler::SmtpClient;
 use crate::core::report::engine;
 use crate::infrastructure::secret_store::SecretStore;
-use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 pub fn initialize() -> Scope {
     web::scope("/report")
         .route("/generate", web::post().to(generate_report))
@@ -31,7 +31,7 @@ async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
         }));
     }
     let db_ref = db.get_ref();
-    match engine::generate_html_report(db_ref as &dyn RepositoryPort, &report_dir) {
+    match engine::generate_html_report(db_ref as &dyn SettingRepo, &report_dir) {
         Ok(path) => match fs::read(&path) {
             Ok(content) => HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
@@ -57,7 +57,7 @@ async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
 
 async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
     let db_ref = db.get_ref();
-    match engine::generate_report_json(db_ref as &dyn RepositoryPort) {
+    match engine::generate_report_json(db_ref as &dyn SettingRepo) {
         Ok(data) => HttpResponse::Ok().json(data),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -65,7 +65,7 @@ async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse
 
 /// Manually trigger: generate the weekly report and send it via SMTP now.
 async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::Data<SecretStore>) -> HttpResponse {
-    let db_ref = db.get_ref() as &dyn RepositoryPort;
+    let db_ref = db.get_ref() as &dyn SettingRepo;
     let secrets_ref = secrets.get_ref() as &dyn SecretStorePort;
 
     let smtp = match SmtpClient::from_database(db_ref, Some(secrets_ref)) {

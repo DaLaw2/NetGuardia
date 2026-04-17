@@ -8,6 +8,7 @@ use actix_web::web::route;
 use actix_web::{App, HttpResponse, HttpServer, web};
 use macros::log;
 
+use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::{
     acl, api_keys, audit as audit_api, auth, default, filter, health as health_api, logs as logs_api, ml,
     notification as notification_api, rate_limit as rate_limit_api, report as report_api, setup as setup_api, soar,
@@ -22,18 +23,17 @@ use crate::core::auth::middleware::AuthMiddleware;
 use crate::core::auth::setup_guard::{SetupCompleteFlag, SetupGuard};
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::ebpf::EbpfServices;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
-use crate::core::system::ShutdownHandle;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
-use crate::interface::port::api_key::ApiKeyPort;
-use crate::interface::port::repository::RepositoryPort;
+use crate::infrastructure::system::ShutdownHandle;
+use crate::interface::port::api_key::ApiKeyRepo;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::config::constants::HTTP_FALLBACK_PORT;
 use crate::model::error::Error;
 use crate::model::error::http::HttpError;
@@ -152,8 +152,8 @@ pub fn start_setup_server(
     let make_app = move || {
         App::new()
             .wrap(cors(vec![]))
-            .app_data(web::Data::from(db.clone() as Arc<dyn RepositoryPort>))
-            .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyPort>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyRepo>))
             .app_data(web::Data::from(db.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
@@ -248,8 +248,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(ml_engine.clone()))
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
-            .app_data(web::Data::from(db.clone() as Arc<dyn RepositoryPort>))
-            .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyPort>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyRepo>))
             .app_data(web::Data::from(db.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
