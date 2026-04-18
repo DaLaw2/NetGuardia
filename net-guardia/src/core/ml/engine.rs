@@ -30,6 +30,15 @@ use crate::model::monitoring::user_packet::UserPacket;
 /// across at least half the window's ticks before alerting.
 const DEFAULT_CONFIRMATION_WINDOW_FRACTION: u64 = 2;
 
+/// Hard floor on the per-flow packet count that gates ML inference for any
+/// protocol / port combination that lacks an explicit low-packet override.
+/// Prevents a misconfigured `min_packets` (0..=4) from feeding two-packet
+/// flows into the model where the features carry almost no signal and the
+/// false-alarm rate dominates. Protocols and ports that are meaningful at
+/// very low packet counts (ICMP scans, DNS tunneling, C2 beacons) bypass
+/// this floor through explicit overrides in `effective_min_packets`.
+const ML_MIN_PACKETS_FLOOR: usize = 5;
+
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
 pub type ThreadTracker = Arc<Mutex<FlowTracker>>;
@@ -102,26 +111,30 @@ impl Engine {
     }
 
     /// Protocol/port-aware min_packets: some traffic patterns are meaningful
-    /// at very low packet counts and would be invisible to ML at the global threshold.
+    /// at very low packet counts and would be invisible to ML at the global
+    /// threshold. Paths that fall through to `global` are additionally
+    /// floored at `ML_MIN_PACKETS_FLOOR` so a misconfigured global setting
+    /// can't feed near-empty flows into inference.
     fn effective_min_packets(flow_key: &FlowKey, global: usize) -> usize {
+        let floored = global.max(ML_MIN_PACKETS_FLOOR);
         match flow_key.protocol {
-            // ICMP: single-packet SYN scans, ping sweeps
+            // ICMP: single-packet SYN scans, ping sweeps.
             1 => 1,
             // UDP
             17 => match flow_key.dst_port {
                 53 => 1,
                 123 => 2,
                 3333 | 45700 => 2,
-                _ => global,
+                _ => floored,
             },
             // TCP
             6 => match flow_key.dst_port {
                 53 => 2,
                 4444 | 8443 | 8080 | 1337 | 31337 => 2,
                 3333 | 45700 => 2,
-                _ => global,
+                _ => floored,
             },
-            _ => global,
+            _ => floored,
         }
     }
 
@@ -301,5 +314,76 @@ impl PacketSinkFactory for Engine {
     fn sink_for_queue(&self, queue_id: u32) -> Option<Arc<dyn PacketSink>> {
         let tracker = self.tracker(queue_id).clone();
         Some(Arc::new(QueueTrackerSink { tracker }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `effective_min_packets` coverage. Broader Engine behavior needs a
+    //! flow-tracker harness and lives in integration-style tests elsewhere.
+
+    use super::*;
+
+    fn flow_key(protocol: u8, dst_port: u16) -> FlowKey {
+        FlowKey {
+            src_ip: [0; 16],
+            dst_ip: [0; 16],
+            src_port: 12345,
+            dst_port,
+            protocol,
+            ip_version: 4,
+        }
+    }
+
+    #[test]
+    fn floor_applies_when_global_below_five() {
+        // Bulk TCP / UDP with no low-packet override must not drop below 5
+        // even if the operator sets a permissive global.
+        assert_eq!(
+            Engine::effective_min_packets(&flow_key(6, 443), 2),
+            ML_MIN_PACKETS_FLOOR
+        );
+        assert_eq!(
+            Engine::effective_min_packets(&flow_key(17, 500), 0),
+            ML_MIN_PACKETS_FLOOR
+        );
+        // Uncommon protocol (SCTP) also honors the floor.
+        assert_eq!(
+            Engine::effective_min_packets(&flow_key(132, 9), 1),
+            ML_MIN_PACKETS_FLOOR
+        );
+    }
+
+    #[test]
+    fn floor_respects_higher_global() {
+        // A stricter global wins — the floor is a lower bound, not a clamp.
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 12), 12);
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 500), 8), 8);
+    }
+
+    #[test]
+    fn icmp_override_bypasses_floor() {
+        // Single-packet ICMP scans must remain visible regardless of the floor.
+        assert_eq!(Engine::effective_min_packets(&flow_key(1, 0), 100), 1);
+    }
+
+    #[test]
+    fn low_packet_overrides_preserved() {
+        // Every explicit low-packet override keeps its tuned value.
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 53), 100), 1); // UDP DNS
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 123), 100), 2); // UDP NTP
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 3333), 100), 2); // UDP C2
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 45700), 100), 2); // UDP C2
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 53), 100), 2); // TCP DNS
+        for port in [4444u16, 8443, 8080, 1337, 31337] {
+            assert_eq!(Engine::effective_min_packets(&flow_key(6, port), 100), 2);
+        }
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 3333), 100), 2); // TCP C2
+    }
+
+    #[test]
+    fn exact_floor_value_passes_through() {
+        // At the floor boundary, no bump applied.
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 5), 5);
     }
 }
