@@ -14,7 +14,7 @@ use crate::core::ml::engine::Engine;
 use crate::core::ml::inference::Inference;
 use crate::core::ml::manifest::ModelManifest;
 use crate::core::ml::model_loader::build_adapter;
-use crate::core::ml::traffic_logger::TrafficLogger;
+use crate::core::ml::traffic_logger::{RotationPolicy, TrafficLogger};
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
@@ -99,7 +99,8 @@ impl AppServices {
             let csv_path = app_config.inference.traffic_log_csv_path.clone();
             let mut header = FlowFeatures::all_feature_names_owned();
             header.push("Label".to_string());
-            let logger = TrafficLogger::new(&csv_path, header)
+            let base_path = PathBuf::from(&csv_path);
+            let logger = TrafficLogger::new(&base_path, header, RotationPolicy::default())
                 .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
             log!(SystemLog::TrafficLoggingEnabled(csv_path));
             Some(Arc::new(logger))

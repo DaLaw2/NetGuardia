@@ -110,6 +110,13 @@ impl Engine {
         self.traffic_logger.is_some()
     }
 
+    /// Directory the Flow Trace writer is rotating CSV files into.
+    /// `None` when Flow Trace recording is disabled — the HTTP file-list
+    /// and download handlers return a dormant response in that case.
+    pub fn traffic_logger_directory(&self) -> Option<&std::path::Path> {
+        self.traffic_logger.as_ref().map(|l| l.directory())
+    }
+
     /// Protocol / port combinations whose traffic is overwhelmingly benign
     /// under tight structural constraints. Flows that match bypass ML
     /// inference entirely — they account for 40–60% of live traffic on a

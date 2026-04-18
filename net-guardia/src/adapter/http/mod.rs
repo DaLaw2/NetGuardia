@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth;
 pub mod default;
 pub mod filter;
+pub mod flow_trace;
 pub mod fusion;
 pub mod health;
 pub mod logs;

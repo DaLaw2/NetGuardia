@@ -39,6 +39,12 @@ loggable! {
         #[error("Traffic logger channel disconnected")]
         TrafficLogChannelDisconnected => tracing::Level::WARN,
 
+        #[error("Traffic logger dropped a row (channel full — writer thread falling behind)")]
+        TrafficLogChannelBackpressure => tracing::Level::WARN,
+
+        #[error("Flow Trace recording stopped: {reason}")]
+        FlowTraceStopped { reason: String } => tracing::Level::WARN,
+
         #[error("ML circuit breaker OPEN: {failures} failures in {window_secs}s, inference disabled until reset")]
         CircuitBreakerOpen { failures: u32, window_secs: u64 } => tracing::Level::ERROR,
 
