@@ -110,6 +110,39 @@ impl Engine {
         self.traffic_logger.is_some()
     }
 
+    /// Protocol / port combinations whose traffic is overwhelmingly benign
+    /// under tight structural constraints. Flows that match bypass ML
+    /// inference entirely — they account for 40–60% of live traffic on a
+    /// typical enterprise link and their feature vectors look almost
+    /// identical, so running the model on them is pure cost.
+    ///
+    /// Structural constraints matter: "UDP/53 at any packet count" would
+    /// miss DNS-tunneling attacks that pump hundreds of packets through
+    /// the same 5-tuple. The rules here each pair a well-known benign
+    /// protocol with the boundary beyond which the rule should no longer
+    /// apply.
+    fn is_strong_benign(flow_key: &FlowKey, fwd_count: usize, bwd_count: usize, total_bytes: u64) -> bool {
+        match flow_key.protocol {
+            // TCP/443 bidirectional — a TLS handshake has completed in both
+            // directions, so this is almost always encrypted browsing rather
+            // than a C2 / exfil beacon.
+            6 if flow_key.dst_port == 443 => fwd_count > 0 && bwd_count > 0,
+            // UDP/53 small DNS — a standard lookup fits in ≤4 packets (one
+            // query, up to three response frames). Larger bursts get ML
+            // scrutiny in case of DNS tunneling.
+            17 if flow_key.dst_port == 53 => fwd_count + bwd_count <= 4,
+            // UDP/123 NTP — a well-formed time sync is 48 bytes of payload
+            // plus ≈ 28 bytes of IP/UDP headers (~76 B on the wire). Allow
+            // up to 90 B average as a buffer; amplification attacks spike
+            // the average size well past that boundary.
+            17 if flow_key.dst_port == 123 => {
+                let total_pkts = (fwd_count + bwd_count) as u64;
+                total_pkts > 0 && total_bytes / total_pkts <= 90
+            }
+            _ => false,
+        }
+    }
+
     /// Protocol/port-aware min_packets: some traffic patterns are meaningful
     /// at very low packet counts and would be invisible to ML at the global
     /// threshold. Paths that fall through to `global` are additionally
@@ -183,11 +216,16 @@ impl Engine {
         for tracker in &self.trackers {
             let mut t = tracker.lock();
             total_count += t.flow_count();
-            all_flows.extend(
-                t.get_uninferred_flows().into_iter().filter(|flow| {
-                    flow.packet_count() >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
-                }),
-            );
+            all_flows.extend(t.get_uninferred_flows().into_iter().filter(|flow| {
+                let total_packets = flow.packet_count();
+                total_packets >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
+                    && !Self::is_strong_benign(
+                        &flow.flow_key,
+                        flow.fwd_packets.len(),
+                        flow.bwd_packets.len(),
+                        flow.fwd_total_bytes + flow.bwd_total_bytes,
+                    )
+            }));
         }
 
         log!(MLLog::FlowStats(
@@ -385,5 +423,70 @@ mod tests {
     fn exact_floor_value_passes_through() {
         // At the floor boundary, no bump applied.
         assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 5), 5);
+    }
+
+    #[test]
+    fn tls_bidirectional_flow_is_strong_benign() {
+        // TCP/443 with traffic in both directions = completed TLS handshake.
+        assert!(Engine::is_strong_benign(&flow_key(6, 443), 3, 2, 4096));
+    }
+
+    #[test]
+    fn tls_unidirectional_flow_is_not_benign() {
+        // Only outbound packets seen — handshake not completed. Could be
+        // a SYN scan; keep it in the inference path.
+        assert!(!Engine::is_strong_benign(&flow_key(6, 443), 5, 0, 200));
+        assert!(!Engine::is_strong_benign(&flow_key(6, 443), 0, 5, 200));
+    }
+
+    #[test]
+    fn tls_on_non_443_port_is_not_benign() {
+        // TCP to 8443 is common for stealth C2 / alternate HTTPS; don't
+        // whitelist without a port match.
+        assert!(!Engine::is_strong_benign(&flow_key(6, 8443), 3, 2, 4096));
+    }
+
+    #[test]
+    fn dns_small_query_is_strong_benign() {
+        // Standard DNS: 1 query + up to 3 response packets.
+        assert!(Engine::is_strong_benign(&flow_key(17, 53), 1, 1, 160));
+        assert!(Engine::is_strong_benign(&flow_key(17, 53), 2, 2, 320));
+    }
+
+    #[test]
+    fn dns_large_burst_is_not_benign() {
+        // 5 packets and above — possible DNS tunneling.
+        assert!(!Engine::is_strong_benign(&flow_key(17, 53), 3, 2, 400));
+        assert!(!Engine::is_strong_benign(&flow_key(17, 53), 50, 50, 10_000));
+    }
+
+    #[test]
+    fn ntp_standard_average_is_strong_benign() {
+        // Well-formed NTP request + response, each ~76 B on wire.
+        // 2 packets × ~80 B = 160 B total, avg 80 B.
+        assert!(Engine::is_strong_benign(&flow_key(17, 123), 1, 1, 160));
+    }
+
+    #[test]
+    fn ntp_amplification_is_not_benign() {
+        // NTP monlist amplification: 1 query packet + many large responses.
+        // 1 + 100 packets, 50 000 bytes → avg ~495 B, well above 90 B floor.
+        assert!(!Engine::is_strong_benign(&flow_key(17, 123), 1, 100, 50_000));
+    }
+
+    #[test]
+    fn empty_flow_does_not_divide_by_zero() {
+        // Defensive: a zero-packet NTP flow should simply not match the
+        // benign rule rather than panic.
+        assert!(!Engine::is_strong_benign(&flow_key(17, 123), 0, 0, 0));
+    }
+
+    #[test]
+    fn other_protocols_are_not_strong_benign() {
+        // ICMP, SCTP, and unlisted UDP / TCP ports all fall through to ML.
+        assert!(!Engine::is_strong_benign(&flow_key(1, 0), 10, 10, 1024));
+        assert!(!Engine::is_strong_benign(&flow_key(132, 9), 10, 10, 1024));
+        assert!(!Engine::is_strong_benign(&flow_key(17, 500), 10, 10, 1024));
+        assert!(!Engine::is_strong_benign(&flow_key(6, 22), 10, 10, 1024));
     }
 }
