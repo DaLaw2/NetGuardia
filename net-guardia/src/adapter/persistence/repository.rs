@@ -1565,6 +1565,28 @@ impl Database {
         self.insert_playbook_action(pb3, 2, "log", r#"{"level": "warn"}"#)?;
         self.insert_playbook_condition(pb3, "threshold", ">=", "0.7", None)?;
 
+        // 4. fusion_c2_multi_source_block — C2 beacon observed by ≥2 sources
+        //    (e.g. Suricata trojan-activity + Beaconing CV + ML c2 class) is
+        //    the highest-precision fusion signal we ship. Block for 1h and
+        //    notify, no solo-source threshold so single-source C2 hits still
+        //    require the solo playbook below to act.
+        let pb4 = self.insert_playbook("fusion_c2_multi_source_block", "c2_beacon", None, None, None, 600)?;
+        self.insert_playbook_action(pb4, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
+        self.insert_playbook_action(pb4, 2, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb4, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb4, "multi_source_min", ">=", "2", None)?;
+
+        // 5. fusion_c2_suricata_solo_high_block — the escape hatch for
+        //    Suricata signature hits with very high confidence (>=0.95).
+        //    Lets known-good rules fire without waiting for agreement from a
+        //    second source, matching how analysts intuitively treat a
+        //    signature "dead-on" match.
+        let pb5 = self.insert_playbook("fusion_c2_suricata_solo_high_block", "c2_beacon", None, None, None, 600)?;
+        self.insert_playbook_action(pb5, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
+        self.insert_playbook_action(pb5, 2, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb5, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb5, "single_source_high", "==", "Suricata", Some("0.95"))?;
+
         Ok(())
     }
 
