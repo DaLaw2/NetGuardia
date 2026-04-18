@@ -11,6 +11,7 @@
 //! recording stopped, not just a tracing line that may be lost.
 //! Callers see the channel disconnect and stop sending rows.
 
+use std::fs as std_fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -49,6 +50,16 @@ const CHANNEL_CAPACITY: usize = 65_536;
 pub const FLOW_TRACE_FILE_MARKER: &str = "flow-trace-";
 /// Suffix literal appended to every rotated file.
 pub const FLOW_TRACE_FILE_EXT: &str = ".csv";
+
+/// Actor recorded on the WORM `flow_trace_stopped` audit entry. Stable
+/// wire string — auditors filter on it to separate system-internal
+/// recording stoppages from administrator-initiated actions. Matches
+/// the "system" value the drift-detector audit path already uses.
+const AUDIT_ACTOR_SYSTEM: &str = "system";
+/// Action string on the WORM audit entry emitted when Flow Trace
+/// recording goes dormant for any of the three writer-thread stop
+/// reasons. Stable across releases.
+const AUDIT_ACTION_FLOW_TRACE_STOPPED: &str = "flow_trace_stopped";
 
 /// Rotation thresholds. Immutable after logger construction — change
 /// requires a full logger restart through `AppServices`.
@@ -90,7 +101,7 @@ impl TrafficLogger {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&directory)?;
+        std_fs::create_dir_all(&directory)?;
 
         let (sender, receiver) = bounded::<Vec<String>>(CHANNEL_CAPACITY);
 
@@ -150,7 +161,7 @@ pub fn list_flow_trace_files(directory: &Path) -> io::Result<Vec<FlowTraceFile>>
         return Ok(Vec::new());
     }
     let mut entries = Vec::new();
-    for dirent in std::fs::read_dir(directory)? {
+    for dirent in std_fs::read_dir(directory)? {
         let dirent = dirent?;
         let path = dirent.path();
         if !path.is_file() {
@@ -265,8 +276,8 @@ fn emit_flow_trace_stop_audit(comm: Option<&Arc<CommunicationManager>>, reason: 
     })
     .to_string();
     let _ = c.publish_event_sync(AuditEvent {
-        actor: "system".to_string(),
-        action: "flow_trace_stopped".to_string(),
+        actor: AUDIT_ACTOR_SYSTEM.to_string(),
+        action: AUDIT_ACTION_FLOW_TRACE_STOPPED.to_string(),
         detail,
     });
 }
@@ -310,7 +321,7 @@ pub fn enforce_fifo_budget(directory: &Path, budget: u64) -> io::Result<()> {
         if remaining <= budget {
             break;
         }
-        std::fs::remove_file(&file.path)?;
+        std_fs::remove_file(&file.path)?;
         remaining = remaining.saturating_sub(file.size_bytes);
     }
     Ok(())
@@ -318,6 +329,7 @@ pub fn enforce_fifo_budget(directory: &Path, budget: u64) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::io::Write as _;
 
     use uuid::Uuid;
@@ -325,14 +337,14 @@ mod tests {
     use super::*;
 
     fn scratch_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nguardia-flow-trace-{tag}-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = env::temp_dir().join(format!("nguardia-flow-trace-{tag}-{}", Uuid::new_v4()));
+        std_fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn write_fake_trace(dir: &Path, ts_ns: u64, bytes: usize) -> PathBuf {
         let path = dir.join(format!("{FLOW_TRACE_FILE_MARKER}{ts_ns:020}{FLOW_TRACE_FILE_EXT}"));
-        let mut f = std::fs::File::create(&path).unwrap();
+        let mut f = File::create(&path).unwrap();
         f.write_all(&vec![b'a'; bytes]).unwrap();
         path
     }

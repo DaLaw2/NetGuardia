@@ -67,11 +67,7 @@ pub async fn flow_stats_ws(
                                 }
                             }
                         }
-                        Some(Ok(Message::Ping(bytes))) => {
-                            if session.pong(&bytes).await.is_err() {
-                                break;
-                            }
-                        }
+                        Some(Ok(Message::Ping(bytes))) if session.pong(&bytes).await.is_err() => break,
                         Some(Ok(Message::Close(_))) | None => break,
                         _ => {}
                     }

@@ -7,22 +7,30 @@
 //! entry records the SHA-256 of both committed files plus a snapshot
 //! of the pre-swap state.
 //!
-//! Body-size caps: 100MB ONNX, 64KB manifest, 64KB scaler. Streaming
-//! writes never buffer the full file in RAM, and staged directories
-//! are torn down on any error path so failed uploads don't pile up in
+//! Body-size caps come from `InferenceConfig::model_upload_max_*_bytes`
+//! so admins can tune them from the settings DB without a rebuild.
+//! Defaults: 100MB ONNX, 64KB manifest, 64KB scaler. Streaming writes
+//! never buffer the full file in RAM, and staged directories are torn
+//! down on any error path so failed uploads don't pile up in
 //! `models/.staging/`.
 
+use std::fs as std_fs;
+use std::fs::File as StdFile;
+use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, Scope, web};
 use futures_util::TryStreamExt;
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task;
 use uuid::Uuid;
 
 use crate::core::auth::extractor::AuthClaims;
@@ -34,20 +42,6 @@ use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
 use crate::model::event::AuditEvent;
 use crate::model::system::config::MLInferenceConfig;
-
-/// Hard ceiling on the `.onnx` stream. Anything larger is either a
-/// mistake or an attempt to DoS the disk.
-pub const MAX_ONNX_BYTES: usize = 100 * 1024 * 1024;
-
-/// Hard ceiling on the `manifest` YAML stream. Real manifests are a few
-/// kilobytes at most; this leaves headroom without allowing blob
-/// smuggling through the field.
-pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
-
-/// Hard ceiling on the optional `scaler` JSON sidecar. Sidecars are
-/// numeric arrays keyed to feature count; 64KB fits any realistic
-/// feature set many times over.
-pub const MAX_SCALER_BYTES: usize = 64 * 1024;
 
 /// Multipart field names the client must use. Stable wire contract —
 /// the frontend form generator depends on these exact strings.
@@ -66,6 +60,20 @@ const ONNX_SNIFF_BYTES: usize = 16;
 /// gate it tighter at the handler layer so only administrators can
 /// swap the ML source.
 const PROMOTE_REQUIRED_PERMISSION: &str = "users:admin";
+
+/// Actor prefix on the WORM `model_swap` audit entry. Administrators
+/// that trigger the upload endpoint land on the chain as
+/// `SecurityAdmin@<username>` so downstream filters can separate
+/// system-driven entries (actor="system") from human-driven ones
+/// without parsing free-form text. Stable across releases — renaming
+/// breaks downstream audit tooling that filters on this prefix.
+const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
+
+/// Action recorded on the WORM chain when a promote succeeds. Stable
+/// wire string — fusion-explain tooling and future "who swapped the
+/// model" views filter on it, so the rename must go through the audit
+/// chain too.
+const AUDIT_ACTION_MODEL_SWAP: &str = "model_swap";
 
 /// Process-wide lock serializing the rename step of every promote.
 /// The critical section is tiny (three `tokio::fs::rename` syscalls)
@@ -102,7 +110,12 @@ async fn upload(
     let staging_id = Uuid::new_v4().to_string();
     let staging_dir = staging_root.join(&staging_id);
 
-    let summary = match ingest_multipart(payload, &staging_dir).await {
+    let caps = UploadCaps {
+        manifest: app_config.inference.model_upload_max_manifest_bytes,
+        onnx: app_config.inference.model_upload_max_onnx_bytes,
+        scaler: app_config.inference.model_upload_max_scaler_bytes,
+    };
+    let summary = match ingest_multipart(payload, &staging_dir, caps).await {
         Ok(s) => s,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging_dir).await;
@@ -154,16 +167,29 @@ struct UploadSummary {
     scaler_bytes: Option<usize>,
 }
 
+/// Per-field byte caps. Plumbed from `InferenceConfig` through the
+/// handler so admins can tune caps from the DB without a code change.
+#[derive(Debug, Clone, Copy)]
+struct UploadCaps {
+    manifest: usize,
+    onnx: usize,
+    scaler: usize,
+}
+
 /// Errors that can surface a specific HTTP response. Kept in-module
 /// because none of these have callers outside this handler.
+///
+/// The `*TooLarge(usize)` variants carry the admin-configured cap so
+/// the response can tell the client which ceiling they hit without
+/// having to query `/api/config` separately.
 #[derive(Debug)]
 enum UploadError {
     MissingField(&'static str),
     DuplicateField(&'static str),
     UnknownField(String),
-    ManifestTooLarge,
-    OnnxTooLarge,
-    ScalerTooLarge,
+    ManifestTooLarge(usize),
+    OnnxTooLarge(usize),
+    ScalerTooLarge(usize),
     OnnxNotBinary,
     StreamFailure(String),
     StagingSetupFailure(String),
@@ -175,9 +201,9 @@ impl UploadError {
             Self::MissingField(name) => (400, format!("missing required multipart field: {name}")),
             Self::DuplicateField(name) => (400, format!("multipart field sent twice: {name}")),
             Self::UnknownField(name) => (400, format!("unexpected multipart field: {name}")),
-            Self::ManifestTooLarge => (413, format!("manifest exceeds {MAX_MANIFEST_BYTES} bytes")),
-            Self::OnnxTooLarge => (413, format!("onnx exceeds {MAX_ONNX_BYTES} bytes")),
-            Self::ScalerTooLarge => (413, format!("scaler exceeds {MAX_SCALER_BYTES} bytes")),
+            Self::ManifestTooLarge(max_bytes) => (413, format!("manifest exceeds {max_bytes} bytes")),
+            Self::OnnxTooLarge(max_bytes) => (413, format!("onnx exceeds {max_bytes} bytes")),
+            Self::ScalerTooLarge(max_bytes) => (413, format!("scaler exceeds {max_bytes} bytes")),
             Self::OnnxNotBinary => (
                 400,
                 "onnx field does not look like a protobuf-encoded ONNX model".to_string(),
@@ -194,7 +220,11 @@ impl UploadError {
     }
 }
 
-async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<UploadSummary, UploadError> {
+async fn ingest_multipart(
+    mut payload: Multipart,
+    staging_dir: &Path,
+    caps: UploadCaps,
+) -> Result<UploadSummary, UploadError> {
     fs::create_dir_all(staging_dir)
         .await
         .map_err(|e| UploadError::StagingSetupFailure(e.to_string()))?;
@@ -219,7 +249,7 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
                     return Err(UploadError::DuplicateField(FIELD_MANIFEST));
                 }
                 let dest = staging_dir.join(MANIFEST_FILENAME);
-                let written = stream_field_to_file(&mut field, &dest, MAX_MANIFEST_BYTES, FieldKind::Manifest).await?;
+                let written = stream_field_to_file(&mut field, &dest, caps.manifest, FieldKind::Manifest).await?;
                 manifest_written = Some(written);
             }
             FIELD_ONNX => {
@@ -232,7 +262,7 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
                     .map(sanitize_filename)
                     .unwrap_or_else(|| "model.onnx".to_string());
                 let dest = staging_dir.join(&onnx_filename);
-                let written = stream_field_to_file(&mut field, &dest, MAX_ONNX_BYTES, FieldKind::Onnx).await?;
+                let written = stream_field_to_file(&mut field, &dest, caps.onnx, FieldKind::Onnx).await?;
                 onnx_summary = Some((onnx_filename, written));
             }
             FIELD_SCALER => {
@@ -245,7 +275,7 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
                     .map(sanitize_filename)
                     .unwrap_or_else(|| "inference_config.json".to_string());
                 let dest = staging_dir.join(&scaler_filename);
-                let written = stream_field_to_file(&mut field, &dest, MAX_SCALER_BYTES, FieldKind::Scaler).await?;
+                let written = stream_field_to_file(&mut field, &dest, caps.scaler, FieldKind::Scaler).await?;
                 scaler_summary = Some((scaler_filename, written));
             }
             other => {
@@ -306,9 +336,9 @@ async fn stream_field_to_file(
         total = total.saturating_add(chunk.len());
         if total > max_bytes {
             return Err(match kind {
-                FieldKind::Manifest => UploadError::ManifestTooLarge,
-                FieldKind::Onnx => UploadError::OnnxTooLarge,
-                FieldKind::Scaler => UploadError::ScalerTooLarge,
+                FieldKind::Manifest => UploadError::ManifestTooLarge(max_bytes),
+                FieldKind::Onnx => UploadError::OnnxTooLarge(max_bytes),
+                FieldKind::Scaler => UploadError::ScalerTooLarge(max_bytes),
             });
         }
         file.write_all(&chunk)
@@ -483,13 +513,13 @@ async fn validate_and_promote(
         "adapter_kind": manifest.adapter.as_str(),
         "manifest_sha256": manifest_sha256,
         "onnx_sha256": onnx_sha256,
-        "before": serde_json::to_value(&before_status).unwrap_or(serde_json::Value::Null),
+        "before": serde_json::to_value(&before_status).unwrap_or(JsonValue::Null),
     })
     .to_string();
     let _ = comm
         .publish_event(AuditEvent {
-            actor: format!("SecurityAdmin@{actor_username}"),
-            action: "model_swap".to_string(),
+            actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{actor_username}"),
+            action: AUDIT_ACTION_MODEL_SWAP.to_string(),
             detail: audit_detail,
         })
         .await;
@@ -549,10 +579,10 @@ impl PromoteError {
 /// Read `path` in 64KB chunks and return its SHA-256 hex digest.
 /// Offloaded to `spawn_blocking` so a large ONNX can't stall the
 /// actix worker while the hash computes.
-async fn sha256_file(path: &Path) -> std::io::Result<String> {
+async fn sha256_file(path: &Path) -> io::Result<String> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || -> std::io::Result<String> {
-        let mut file = std::fs::File::open(&path)?;
+    task::spawn_blocking(move || -> io::Result<String> {
+        let mut file = StdFile::open(&path)?;
         let mut hasher = Sha256::new();
         let mut buf = [0u8; 64 * 1024];
         loop {
@@ -572,18 +602,18 @@ async fn sha256_file(path: &Path) -> std::io::Result<String> {
         Ok(hex)
     })
     .await
-    .unwrap_or_else(|e| Err(std::io::Error::other(format!("sha256 join: {e}"))))
+    .unwrap_or_else(|e| Err(io::Error::other(format!("sha256 join: {e}"))))
 }
 
 /// Remove staging subdirectories older than `max_age`. Runs on startup
 /// and on a periodic timer so failed uploads don't accumulate.
-pub fn clean_staging_orphans(staging_root: &Path, max_age: std::time::Duration) -> std::io::Result<usize> {
+pub fn clean_staging_orphans(staging_root: &Path, max_age: Duration) -> io::Result<usize> {
     if !staging_root.exists() {
         return Ok(0);
     }
-    let now = std::time::SystemTime::now();
+    let now = SystemTime::now();
     let mut cleaned = 0usize;
-    for entry in std::fs::read_dir(staging_root)? {
+    for entry in std_fs::read_dir(staging_root)? {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
@@ -593,7 +623,7 @@ pub fn clean_staging_orphans(staging_root: &Path, max_age: std::time::Duration) 
         let mtime = metadata.modified()?;
         let age = now.duration_since(mtime).unwrap_or_default();
         if age >= max_age {
-            std::fs::remove_dir_all(&path)?;
+            std_fs::remove_dir_all(&path)?;
             cleaned += 1;
         }
     }
@@ -754,8 +784,20 @@ mod tests {
     }
 
     #[test]
-    fn upload_error_scaler_too_large_maps_to_413() {
-        let resp = UploadError::ScalerTooLarge.into_response();
+    fn upload_error_scaler_too_large_maps_to_413_and_echoes_cap() {
+        let resp = UploadError::ScalerTooLarge(1234).into_response();
         assert_eq!(resp.status().as_u16(), 413);
+    }
+
+    #[test]
+    fn upload_error_onnx_too_large_echoes_configured_cap_in_message() {
+        // Dynamic cap from config must reach the client verbatim — this
+        // guards against a future refactor that silently drops the cap
+        // from the format string.
+        let rendered = format!("{:?}", UploadError::OnnxTooLarge(7_000_000));
+        assert!(
+            rendered.contains("7000000"),
+            "rendered error must include the cap: {rendered}"
+        );
     }
 }

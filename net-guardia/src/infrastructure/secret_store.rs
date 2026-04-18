@@ -110,7 +110,7 @@ impl SecretStore {
                     .ok_or_else(|| CryptoError::MissingEnvelopeField("nonce"))?;
 
                 let nonce_bytes = B64.decode(nonce_b64).map_err(CryptoError::DecryptionFailed)?;
-                let nonce = Nonce::from_exact_iter(nonce_bytes.into_iter()).ok_or(CryptoError::InvalidNonceLength)?;
+                let nonce = Nonce::from_exact_iter(nonce_bytes).ok_or(CryptoError::InvalidNonceLength)?;
 
                 let ciphertext = B64.decode(ct_b64).map_err(CryptoError::DecryptionFailed)?;
 

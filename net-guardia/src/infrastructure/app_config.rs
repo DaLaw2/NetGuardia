@@ -58,6 +58,18 @@ impl AppConfig {
             ("inference_batch_size", "200".into()),
             ("traffic_logging_mode", "false".into()),
             ("traffic_log_csv_path", "traffic_log.csv".into()),
+            // Flow Trace rotation (defaults match the DEFAULT_* constants
+            // in traffic_logger.rs; DB overrides let admins tune per env).
+            ("flow_trace_max_file_bytes", (500 * 1024 * 1024_u64).to_string()),
+            ("flow_trace_max_file_age_secs", "3600".into()),
+            (
+                "flow_trace_total_budget_bytes",
+                (10 * 1024 * 1024 * 1024_u64).to_string(),
+            ),
+            // Model upload size caps (per-field multipart ceilings).
+            ("model_upload_max_onnx_bytes", (100 * 1024 * 1024_usize).to_string()),
+            ("model_upload_max_manifest_bytes", (64 * 1024_usize).to_string()),
+            ("model_upload_max_scaler_bytes", (64 * 1024_usize).to_string()),
             // Misc
             ("geoip_db_name", "net-guardia/static/geo/dbip-city-lite.mmdb".into()),
             // Pipeline
@@ -131,6 +143,12 @@ impl AppConfig {
                 inference_batch_size: 200,
                 traffic_logging_mode: false,
                 traffic_log_csv_path: "traffic_log.csv".into(),
+                flow_trace_max_file_bytes: 500 * 1024 * 1024,
+                flow_trace_max_file_age_secs: 3600,
+                flow_trace_total_budget_bytes: 10 * 1024 * 1024 * 1024,
+                model_upload_max_onnx_bytes: 100 * 1024 * 1024,
+                model_upload_max_manifest_bytes: 64 * 1024,
+                model_upload_max_scaler_bytes: 64 * 1024,
             },
             misc: MiscConfig {
                 geoip_db_name: "net-guardia/static/geo/dbip-city-lite.mmdb".into(),
@@ -243,6 +261,36 @@ impl AppConfig {
             && let Ok(n) = v.parse::<usize>()
         {
             config.inference.inference_batch_size = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_max_file_bytes")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_max_file_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_max_file_age_secs")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_max_file_age_secs = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_total_budget_bytes")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_total_budget_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_onnx_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_onnx_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_manifest_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_manifest_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_scaler_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_scaler_bytes = n;
         }
         if let Ok(Some(v)) = db.get_setting("refresh_interval")
             && let Ok(n) = v.parse::<u64>()

@@ -103,7 +103,12 @@ impl AppServices {
             let mut header = FlowFeatures::all_feature_names_owned();
             header.push("Label".to_string());
             let base_path = PathBuf::from(&csv_path);
-            let logger = TrafficLogger::new(&base_path, header, RotationPolicy::default(), Some(comm.clone()))
+            let policy = RotationPolicy {
+                max_file_bytes: app_config.inference.flow_trace_max_file_bytes,
+                max_file_age: Duration::from_secs(app_config.inference.flow_trace_max_file_age_secs),
+                total_budget_bytes: app_config.inference.flow_trace_total_budget_bytes,
+            };
+            let logger = TrafficLogger::new(&base_path, header, policy, Some(comm.clone()))
                 .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
             log!(SystemLog::TrafficLoggingEnabled(csv_path));
             Some(Arc::new(logger))

@@ -14,7 +14,6 @@ pub struct Playbook {
 
 #[derive(Debug, Clone)]
 pub struct PlaybookAction {
-    #[allow(dead_code)] // Kept for domain completeness; ordering handled by SQL ORDER BY
     pub action_order: i64,
     pub action_type: String,
     pub params: serde_json::Value,
