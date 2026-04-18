@@ -17,6 +17,7 @@ use crate::adapter::http::{
 use crate::adapter::persistence::Database;
 use crate::adapter::websocket::routes as ws;
 use crate::core::acl_service::AclService;
+use crate::core::auth::csrf::CsrfMiddleware;
 use crate::core::auth::https_redirect::{ForceHttpsFlag, HttpsRedirect};
 use crate::core::auth::jwt::JwtService;
 use crate::core::auth::middleware::AuthMiddleware;
@@ -271,6 +272,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
         app.wrap(SetupGuard)
             .service(
                 web::scope("/api")
+                    .wrap(CsrfMiddleware)
                     .wrap(AuthMiddleware)
                     .service(auth::initialize())
                     .service(acl::initialize())
