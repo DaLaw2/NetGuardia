@@ -208,6 +208,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let health = params.app_services.health.clone();
     let ml_alert = params.app_services.ml_alert.clone();
     let ml_engine = params.app_services.ml_engine.clone();
+    let ml_inference = params.app_services.ml_inference.clone();
     let flow_statistics = params.app_services.flow_statistics.clone();
     let drop_monitor = params.ebpf_services.drop_monitor.clone();
     let app_config = params.app_config;
@@ -246,6 +247,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(health.clone()))
             .app_data(web::Data::from(ml_alert.clone()))
             .app_data(web::Data::from(ml_engine.clone()))
+            .app_data(web::Data::from(ml_inference.clone()))
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
             .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
