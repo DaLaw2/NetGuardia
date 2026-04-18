@@ -12,7 +12,7 @@ use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::model::detection::attack_type::translate;
 use crate::model::error::system::SystemError;
-use crate::model::event::{DetectionEvent, DetectionSource, ThreatDetectedEvent};
+use crate::model::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
 use crate::model::log::detection::DetectionLog;
 
 /// Dedup window: detections for the same `(source_ip, canonical_attack_type)`
@@ -28,13 +28,23 @@ const REPEAT_OFFENDER_WINDOW_SECS: u64 = 2 * 60 * 60;
 /// Maximum dedup entries to prevent unbounded memory growth under sustained attack.
 const MAX_DEDUP_ENTRIES: usize = 50_000;
 
+/// Actor recorded on every fusion-chain WORM entry. Stable across releases —
+/// downstream audit tooling filters on this string.
+const FUSION_AUDIT_ACTOR: &str = "FusionEngine";
+/// Action recorded on every fusion-chain WORM entry. Stable across releases.
+const FUSION_AUDIT_ACTION: &str = "fused_threat_emitted";
+
 /// Per-source record within an in-flight dedup entry. Keeps the strongest
 /// confidence per source so multi-hit from one source doesn't inflate the
-/// fused policy.
+/// fused policy. `local_attack_type` is the raw source-specific label seen
+/// before canonicalization — preserved for WORM audit evidence so the
+/// explain-this-block UI can show Suricata's classtype next to ML's class
+/// name that both folded into the same canonical dedup key.
 #[derive(Debug, Clone)]
 struct SourceSample {
     source: DetectionSource,
     confidence: f32,
+    local_attack_type: String,
 }
 
 struct DedupEntry {
@@ -114,7 +124,9 @@ impl DetectionOrchestrator {
     async fn handle_detection(&mut self, mut event: DetectionEvent) {
         // Canonicalize the raw attack_type so Suricata's "brute-force"
         // classtype and ML's "Brute Force" class name land on the same dedup
-        // key — the precondition for cross-source fusion.
+        // key — the precondition for cross-source fusion. Keep the original
+        // label for audit evidence.
+        let raw_label = event.attack_type.clone();
         let canonical = translate(event.source, &event.attack_type);
         event.attack_type = canonical.as_str().to_string();
 
@@ -137,15 +149,17 @@ impl DetectionOrchestrator {
                     entry.sources.push(SourceSample {
                         source: event.source,
                         confidence: event.confidence,
+                        local_attack_type: raw_label.clone(),
                     });
                     entry.emitted_at = now;
                 } else {
                     // Same source firing again inside the window — keep the
-                    // strongest confidence for fusion math.
+                    // strongest confidence (and its raw label) for fusion math.
                     if let Some(existing) = entry.sources.iter_mut().find(|s| s.source == event.source)
                         && existing.confidence < event.confidence
                     {
                         existing.confidence = event.confidence;
+                        existing.local_attack_type = raw_label.clone();
                     }
                 }
 
@@ -179,6 +193,7 @@ impl DetectionOrchestrator {
                 sources: vec![SourceSample {
                     source: event.source,
                     confidence: event.confidence,
+                    local_attack_type: raw_label,
                 }],
                 first_emitted_at: now,
                 emitted_at: now,
@@ -191,19 +206,16 @@ impl DetectionOrchestrator {
     /// Build the fused ThreatDetectedEvent from the current dedup entry's
     /// per-source samples, apply enrichment (hit count / repeat / geoip),
     /// and publish. Called both on first emit (single source) and on
-    /// within-window re-emit (2..=4 sources).
+    /// within-window re-emit (2..=4 sources). Also emits a WORM AuditEvent
+    /// carrying the full per-source evidence chain.
     async fn emit_fused(&mut self, trigger_event: &DetectionEvent, key: &(String, String)) {
-        let (sources_vec, fused, per_source_confs): (Vec<DetectionSource>, f32, Vec<f32>) = {
-            let entry = match self.dedup.get(key) {
-                Some(e) => e,
-                None => return,
-            };
-            let confs: Vec<f32> = entry.sources.iter().map(|s| s.confidence).collect();
-            let sources: Vec<DetectionSource> = entry.sources.iter().map(|s| s.source).collect();
-            let fused = fused_confidence(&confs);
-            (sources, fused, confs)
+        let per_source_samples: Vec<SourceSample> = match self.dedup.get(key) {
+            Some(entry) => entry.sources.clone(),
+            None => return,
         };
-        let _ = per_source_confs; // currently only used for the log line below
+        let confs: Vec<f32> = per_source_samples.iter().map(|s| s.confidence).collect();
+        let sources_vec: Vec<DetectionSource> = per_source_samples.iter().map(|s| s.source).collect();
+        let fused = fused_confidence(&confs);
 
         let mut threat_event = self.enrich(trigger_event).await;
         threat_event.sources = sources_vec;
@@ -221,8 +233,27 @@ impl DetectionOrchestrator {
             threat_event.active_source_count,
         ));
 
+        self.publish_fusion_audit(trigger_event, fused, &per_source_samples)
+            .await;
+
         if let Err(e) = self.comm.publish_event(threat_event).await {
             log!(SystemError::MlSoarBridgeFailed(e));
+        }
+    }
+
+    /// Emit a WORM AuditEvent so the eventual "why was this IP blocked?"
+    /// explain view can reconstruct the fusion evidence chain — which
+    /// sources fired, at what confidence, and what raw label each used
+    /// before the canonical dictionary folded them onto a shared key.
+    async fn publish_fusion_audit(&self, trigger_event: &DetectionEvent, fused: f32, per_source: &[SourceSample]) {
+        let audit = AuditEvent {
+            actor: FUSION_AUDIT_ACTOR.to_string(),
+            action: FUSION_AUDIT_ACTION.to_string(),
+            detail: build_fusion_audit_detail(&trigger_event.source_ip, &trigger_event.attack_type, fused, per_source),
+        };
+
+        if let Err(e) = self.comm.publish_event(audit).await {
+            log!(DetectionLog::FusionAuditPublishFailed { err: e.to_string() });
         }
     }
 
@@ -303,10 +334,92 @@ impl DetectionOrchestrator {
     }
 }
 
+/// Serialize the WORM audit evidence payload for a fused threat emission.
+/// Extracted as a free function so tests can cover schema shape without a
+/// live CommunicationManager harness.
+fn build_fusion_audit_detail(src_ip: &str, attack_type: &str, fused: f32, per_source: &[SourceSample]) -> String {
+    let per_source_json: Vec<serde_json::Value> = per_source
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "source": s.source.to_string(),
+                "confidence": s.confidence,
+                "local_attack_type": s.local_attack_type,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "src_ip": src_ip,
+        "attack_type": attack_type,
+        "fused_confidence": fused,
+        "per_source": per_source_json,
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    //! Orchestrator integration tests go here once we have an in-memory
-    //! CommunicationManager harness. The fusion math is covered by
-    //! `fusion_math::tests` and canonical translation by
-    //! `model::detection::attack_type::tests`.
+    //! Orchestrator integration tests require an in-memory CommunicationManager
+    //! harness. Until then, the fusion math lives in `fusion_math::tests`,
+    //! canonical translation in `model::detection::attack_type::tests`, and
+    //! the audit evidence schema is covered below.
+
+    use super::*;
+
+    fn sample(source: DetectionSource, confidence: f32, local: &str) -> SourceSample {
+        SourceSample {
+            source,
+            confidence,
+            local_attack_type: local.to_string(),
+        }
+    }
+
+    #[test]
+    fn audit_detail_is_valid_json_with_required_top_level_keys() {
+        let detail = build_fusion_audit_detail(
+            "1.2.3.4",
+            "brute_force",
+            0.97,
+            &[sample(DetectionSource::Suricata, 0.8, "brute-force")],
+        );
+        let v: serde_json::Value = serde_json::from_str(&detail).expect("audit detail must be valid JSON");
+        assert_eq!(v["src_ip"], "1.2.3.4");
+        assert_eq!(v["attack_type"], "brute_force");
+        assert!((v["fused_confidence"].as_f64().unwrap() - 0.97).abs() < 1e-5);
+        assert!(v["per_source"].is_array());
+    }
+
+    #[test]
+    fn audit_detail_empty_per_source_array_is_well_formed() {
+        // Defensive: should never happen in production (emit_fused requires a
+        // dedup entry), but the helper must not panic on an empty slice.
+        let detail = build_fusion_audit_detail("10.0.0.1", "unknown", 0.0, &[]);
+        let v: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(v["per_source"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn audit_detail_preserves_per_source_evidence_fields() {
+        let per_source = [
+            sample(DetectionSource::Suricata, 0.8, "brute-force"),
+            sample(DetectionSource::ML, 0.85, "Brute Force"),
+        ];
+        let detail = build_fusion_audit_detail("1.2.3.4", "brute_force", 0.97, &per_source);
+        let v: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        let arr = v["per_source"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["source"], "Suricata");
+        assert_eq!(arr[0]["local_attack_type"], "brute-force");
+        assert!((arr[0]["confidence"].as_f64().unwrap() - 0.8).abs() < 1e-5);
+        assert_eq!(arr[1]["source"], "ML");
+        assert_eq!(arr[1]["local_attack_type"], "Brute Force");
+    }
+
+    #[test]
+    fn audit_constants_are_stable_wire_strings() {
+        // Downstream audit tooling filters on these exact strings — renaming
+        // is a breaking change to the WORM chain.
+        assert_eq!(FUSION_AUDIT_ACTOR, "FusionEngine");
+        assert_eq!(FUSION_AUDIT_ACTION, "fused_threat_emitted");
+    }
 }
