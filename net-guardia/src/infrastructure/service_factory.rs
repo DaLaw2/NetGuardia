@@ -185,14 +185,6 @@ impl ServiceFactory {
             Duration::from_secs(drift_window_secs),
         )));
 
-        let app_services = Arc::new(AppServices::new(
-            app_config.clone(),
-            inference_config.clone(),
-            ml_manifest.clone(),
-            drift_detector.clone(),
-            ebpf_health.clone(),
-        )?);
-
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
             use crate::infrastructure::enforce_mode_handler::enforce_mode_to_u8;
@@ -200,8 +192,25 @@ impl ServiceFactory {
             enforce_mode_to_u8(&mode_str)
         }));
 
-        // Create CommunicationManager and register enforce-mode handler
+        // CommunicationManager and its event channels must exist before
+        // AppServices spins up the TrafficLogger: the writer thread can
+        // publish `flow_trace_stopped` audit events the moment it tries
+        // to open its first rotated file, and an unregistered channel
+        // would silently drop that evidence.
         let comm = Arc::new(CommunicationManager::new());
+        comm.register_event_type::<ThreatDetectedEvent>();
+        comm.register_event_type::<DriftDetectedEvent>();
+        comm.register_event_type::<AuditEvent>();
+
+        let app_services = Arc::new(AppServices::new(
+            app_config.clone(),
+            inference_config.clone(),
+            ml_manifest.clone(),
+            drift_detector.clone(),
+            ebpf_health.clone(),
+            comm.clone(),
+        )?);
+
         let enforce_handler = Arc::new(EnforceModeHandler::new(
             db.clone() as Arc<dyn AppRepo>,
             comm.clone(),
@@ -213,11 +222,6 @@ impl ServiceFactory {
             .command::<ChangeEnforceModeCommand>()
             .query::<GetEnforceModeQuery>()
             .build();
-
-        // Register event type channels
-        comm.register_event_type::<ThreatDetectedEvent>();
-        comm.register_event_type::<DriftDetectedEvent>();
-        comm.register_event_type::<AuditEvent>();
 
         // Seed default SOAR playbooks if empty
         (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;

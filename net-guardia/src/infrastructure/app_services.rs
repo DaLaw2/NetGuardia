@@ -16,6 +16,7 @@ use crate::core::ml::manifest::ModelManifest;
 use crate::core::ml::model_loader::build_adapter;
 use crate::core::ml::traffic_logger::{RotationPolicy, TrafficLogger};
 use crate::infrastructure::app_config::AppConfig;
+use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
 use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR};
@@ -50,6 +51,7 @@ impl AppServices {
         ml_manifest: Option<ModelManifest>,
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
         ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
+        comm: Arc<CommunicationManager>,
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
 
@@ -100,7 +102,7 @@ impl AppServices {
             let mut header = FlowFeatures::all_feature_names_owned();
             header.push("Label".to_string());
             let base_path = PathBuf::from(&csv_path);
-            let logger = TrafficLogger::new(&base_path, header, RotationPolicy::default())
+            let logger = TrafficLogger::new(&base_path, header, RotationPolicy::default(), Some(comm.clone()))
                 .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
             log!(SystemLog::TrafficLoggingEnabled(csv_path));
             Some(Arc::new(logger))

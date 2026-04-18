@@ -5,7 +5,10 @@
 //! recording session can't eat the disk.
 //!
 //! On FIFO failure (permissions, I/O error) the writer shuts down
-//! cleanly, leaves inference untouched, and logs through `MLLog`.
+//! cleanly, leaves inference untouched, logs through `MLLog`, and
+//! (when a `CommunicationManager` is wired in) also publishes a WORM
+//! `AuditEvent` so the chain records an auditor-visible reason the
+//! recording stopped, not just a tracing line that may be lost.
 //! Callers see the channel disconnect and stop sending rows.
 
 use std::fs::{File, OpenOptions};
@@ -18,7 +21,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use macros::log;
 
+use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::model::error::ml::MLError;
+use crate::model::event::AuditEvent;
 use crate::model::log::ml::MLLog;
 
 /// Default per-file size cap. A single CSV file won't grow past this
@@ -72,8 +77,15 @@ pub struct TrafficLogger {
 impl TrafficLogger {
     /// Build a rotating writer rooted at `base_path`'s parent. Any
     /// existing `flow-trace-*.csv` in that directory participates in
-    /// the FIFO budget.
-    pub fn new(base_path: &Path, header: Vec<String>, policy: RotationPolicy) -> Result<Self, io::Error> {
+    /// the FIFO budget. `comm` is optional so tests (and paths where
+    /// the bus isn't wired yet) can exercise the rotation logic without
+    /// the event-bus dependency; production code always passes `Some`.
+    pub fn new(
+        base_path: &Path,
+        header: Vec<String>,
+        policy: RotationPolicy,
+        comm: Option<Arc<CommunicationManager>>,
+    ) -> Result<Self, io::Error> {
         let directory = base_path
             .parent()
             .map(Path::to_path_buf)
@@ -88,7 +100,7 @@ impl TrafficLogger {
         thread::Builder::new()
             .name("traffic-logger".to_string())
             .spawn(move || {
-                writer_loop(receiver, writer_dir, writer_header, writer_policy);
+                writer_loop(receiver, writer_dir, writer_header, writer_policy, comm);
             })?;
 
         Ok(Self {
@@ -178,11 +190,19 @@ fn parse_timestamp_suffix(name: &str) -> Option<u64> {
     without_ext.parse::<u64>().ok()
 }
 
-fn writer_loop(receiver: Receiver<Vec<String>>, directory: PathBuf, header: Vec<String>, policy: RotationPolicy) {
+fn writer_loop(
+    receiver: Receiver<Vec<String>>,
+    directory: PathBuf,
+    header: Vec<String>,
+    policy: RotationPolicy,
+    comm: Option<Arc<CommunicationManager>>,
+) {
     let mut active = match open_new_file(&directory, &header) {
         Ok(a) => a,
         Err(e) => {
-            log!(MLLog::FlowTraceStopped(e.to_string()));
+            let reason = e.to_string();
+            log!(MLLog::FlowTraceStopped(reason.clone()));
+            emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
             return;
         }
     };
@@ -198,13 +218,17 @@ fn writer_loop(receiver: Receiver<Vec<String>>, directory: PathBuf, header: Vec<
                 // FIFO failure is the documented "stop Flow Trace, keep
                 // inference running" path. Drop the channel so callers
                 // see the disconnect and stop trying.
-                log!(MLLog::FlowTraceStopped(format!("FIFO sweep failed: {e}")));
+                let reason = format!("FIFO sweep failed: {e}");
+                log!(MLLog::FlowTraceStopped(reason.clone()));
+                emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
                 return;
             }
             active = match open_new_file(&directory, &header) {
                 Ok(a) => a,
                 Err(e) => {
-                    log!(MLLog::FlowTraceStopped(format!("rotate failed: {e}")));
+                    let reason = format!("rotate failed: {e}");
+                    log!(MLLog::FlowTraceStopped(reason.clone()));
+                    emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
                     return;
                 }
             };
@@ -221,6 +245,30 @@ fn writer_loop(receiver: Receiver<Vec<String>>, directory: PathBuf, header: Vec<
     if let Err(e) = active.writer.flush() {
         log!(MLError::TrafficLogFlushFailed(e));
     }
+}
+
+/// Publish a WORM `flow_trace_stopped` audit entry so an auditor can
+/// later see why Flow Trace recording went dormant without grepping
+/// process logs. A `None` bus (tests, or pre-wiring paths) is a
+/// deliberate no-op — the sibling `MLLog::FlowTraceStopped` tracing
+/// line still fires in both cases.
+///
+/// Extracted as a free function so tests can cover the emit path
+/// without driving a full writer-loop + failing-disk fixture.
+fn emit_flow_trace_stop_audit(comm: Option<&Arc<CommunicationManager>>, reason: &str, directory: &Path) {
+    let Some(c) = comm else {
+        return;
+    };
+    let detail = serde_json::json!({
+        "reason": reason,
+        "directory": directory.display().to_string(),
+    })
+    .to_string();
+    let _ = c.publish_event_sync(AuditEvent {
+        actor: "system".to_string(),
+        action: "flow_trace_stopped".to_string(),
+        detail,
+    });
 }
 
 struct ActiveFile {
@@ -356,5 +404,29 @@ mod tests {
     fn list_on_missing_dir_returns_empty() {
         let missing = PathBuf::from("/nonexistent/flow-trace/dir");
         assert!(list_flow_trace_files(&missing).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_audit_reaches_subscriber_when_comm_provided() {
+        let comm = Arc::new(CommunicationManager::new());
+        comm.register_event_type::<AuditEvent>();
+        let mut rx = comm.subscribe_event::<AuditEvent>().unwrap();
+
+        let dir = scratch_dir("audit-emit");
+        emit_flow_trace_stop_audit(Some(&comm), "FIFO sweep failed: perm denied", &dir);
+
+        let event = rx.recv().await.expect("audit event must be delivered");
+        assert_eq!(event.actor, "system");
+        assert_eq!(event.action, "flow_trace_stopped");
+        let parsed: serde_json::Value = serde_json::from_str(&event.detail).unwrap();
+        assert_eq!(parsed["reason"], "FIFO sweep failed: perm denied");
+        assert_eq!(parsed["directory"], dir.display().to_string());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stop_audit_noop_when_comm_absent() {
+        // Passing None is the explicit test-mode path — must not panic.
+        emit_flow_trace_stop_audit(None, "any reason", Path::new("/tmp/anywhere"));
     }
 }

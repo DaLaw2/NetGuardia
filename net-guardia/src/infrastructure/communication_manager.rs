@@ -134,6 +134,21 @@ impl CommunicationManager {
             .ok_or(MiscError::TypeNotRegistered)?;
         broadcaster.broadcast_event(Box::new(event))
     }
+
+    /// Synchronous counterpart for callers that live outside the tokio
+    /// runtime — in particular, the Flow Trace writer thread, which
+    /// runs on a dedicated `std::thread` and can't `.await`. The
+    /// internal broadcast channel is already non-blocking, so the
+    /// `async fn` sibling never actually yields; this variant exposes
+    /// the same work without the ceremony.
+    pub fn publish_event_sync<E: Event + 'static>(&self, event: E) -> Result<(), Error> {
+        let type_id = TypeId::of::<E>();
+        let broadcaster = self
+            .event_broadcasters
+            .get(&type_id)
+            .ok_or(MiscError::TypeNotRegistered)?;
+        broadcaster.broadcast_event(Box::new(event))
+    }
 }
 
 /// Fluent builder for registering a service's command/query/event handlers.
@@ -292,6 +307,27 @@ mod tests {
     async fn test_event_not_registered() {
         let comm = CommunicationManager::new();
         let result = comm.subscribe_event::<TestEvent>();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn publish_event_sync_delivers_to_subscriber() {
+        let comm = CommunicationManager::new();
+        comm.register_event_type::<TestEvent>();
+        let mut rx = comm.subscribe_event::<TestEvent>().unwrap();
+
+        comm.publish_event_sync(TestEvent { message: "sync".into() }).unwrap();
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.message, "sync");
+    }
+
+    #[test]
+    fn publish_event_sync_errors_when_type_unregistered() {
+        let comm = CommunicationManager::new();
+        let result = comm.publish_event_sync(TestEvent {
+            message: "dropped".into(),
+        });
         assert!(result.is_err());
     }
 
