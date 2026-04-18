@@ -10,7 +10,7 @@ use macros::log;
 
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::{
-    acl, api_keys, audit as audit_api, auth, default, filter, health as health_api, logs as logs_api, ml,
+    acl, api_keys, audit as audit_api, auth, default, filter, fusion, health as health_api, logs as logs_api, ml,
     notification as notification_api, rate_limit as rate_limit_api, report as report_api, setup as setup_api, soar,
     stats, system as system_api,
 };
@@ -209,6 +209,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let ml_alert = params.app_services.ml_alert.clone();
     let ml_engine = params.app_services.ml_engine.clone();
     let ml_inference = params.app_services.ml_inference.clone();
+    let fusion_metrics = params.app_services.fusion_metrics.clone();
     let flow_statistics = params.app_services.flow_statistics.clone();
     let drop_monitor = params.ebpf_services.drop_monitor.clone();
     let app_config = params.app_config;
@@ -248,6 +249,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(ml_alert.clone()))
             .app_data(web::Data::from(ml_engine.clone()))
             .app_data(web::Data::from(ml_inference.clone()))
+            .app_data(web::Data::from(fusion_metrics.clone()))
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
             .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
@@ -277,6 +279,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
                     .service(stats::initialize())
                     .service(health_api::initialize())
                     .service(ml::initialize())
+                    .service(fusion::initialize())
                     .service(system_api::initialize())
                     .service(soar::initialize())
                     .service(notification_api::initialize())

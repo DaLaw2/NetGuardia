@@ -246,7 +246,12 @@ impl System {
 
         // Start detection orchestrator (dedup + enrichment + source attribution)
         let (detection_tx, detection_rx) = mpsc::channel::<DetectionEvent>(1024);
-        let orchestrator = DetectionOrchestrator::new(detection_rx, self.comm.clone(), self.geoip.clone());
+        let orchestrator = DetectionOrchestrator::new(
+            detection_rx,
+            self.comm.clone(),
+            self.geoip.clone(),
+            self.app_services.fusion_metrics.clone(),
+        );
         orchestrator.start();
 
         // Clone detection_tx for correlation engine and beaconing detector

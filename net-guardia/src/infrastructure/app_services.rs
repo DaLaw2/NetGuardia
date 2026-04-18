@@ -6,6 +6,7 @@ use crossbeam::queue::SegQueue;
 use macros::log;
 use tokio::sync::oneshot;
 
+use crate::core::detection::metrics::FusionMetrics;
 use crate::core::ml::adapter::ModelSourceState;
 use crate::core::ml::alert::MLAlert;
 use crate::core::ml::drift_detector::DriftDetector;
@@ -38,6 +39,7 @@ pub struct AppServices {
     pub ml_inference: Arc<Inference>,
     pub ml_engine: Arc<Engine>,
     pub flow_statistics: Arc<FlowStatistics>,
+    pub fusion_metrics: Arc<FusionMetrics>,
     shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
@@ -123,6 +125,7 @@ impl AppServices {
         ));
 
         let flow_statistics = Arc::new(FlowStatistics::new(ml_engine.clone()));
+        let fusion_metrics = Arc::new(FusionMetrics::new());
 
         Ok(Self {
             health: Arc::new(health),
@@ -130,6 +133,7 @@ impl AppServices {
             ml_inference,
             ml_engine,
             flow_statistics,
+            fusion_metrics,
             shutdowns: SegQueue::new(),
         })
     }

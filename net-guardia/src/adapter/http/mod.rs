@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth;
 pub mod default;
 pub mod filter;
+pub mod fusion;
 pub mod health;
 pub mod logs;
 pub mod ml;

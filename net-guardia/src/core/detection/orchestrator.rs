@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use super::fusion_math::{FusionWindowLengths, fused_confidence};
+use super::metrics::FusionMetrics;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::model::detection::attack_type::translate;
@@ -67,6 +68,7 @@ pub struct DetectionOrchestrator {
     rx: mpsc::Receiver<DetectionEvent>,
     comm: Arc<CommunicationManager>,
     geoip: Option<Arc<GeoIpService>>,
+    metrics: Arc<FusionMetrics>,
     // Enrichment state
     src_ip_counts: lru::LruCache<String, u32>,
     repeat_tracker: lru::LruCache<String, Instant>,
@@ -83,11 +85,13 @@ impl DetectionOrchestrator {
         rx: mpsc::Receiver<DetectionEvent>,
         comm: Arc<CommunicationManager>,
         geoip: Option<Arc<GeoIpService>>,
+        metrics: Arc<FusionMetrics>,
     ) -> Self {
         Self {
             rx,
             comm,
             geoip,
+            metrics,
             // SAFETY: NonZero::new on a non-zero literal is infallible.
             src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
             repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
@@ -122,6 +126,10 @@ impl DetectionOrchestrator {
     }
 
     async fn handle_detection(&mut self, mut event: DetectionEvent) {
+        // Count every ingress event per-source before dedup — this is the
+        // raw firing rate, independent of whether the event survives to emit.
+        self.metrics.record_fire(event.source);
+
         // Canonicalize the raw attack_type so Suricata's "brute-force"
         // classtype and ML's "Brute Force" class name land on the same dedup
         // key — the precondition for cross-source fusion. Keep the original
@@ -187,6 +195,22 @@ impl DetectionOrchestrator {
         // Path B: brand-new key (or expired dedup). Emit single-source,
         // open a fusion window sized by this source.
         let fusion_window = Duration::from_secs(self.fusion_windows.for_source(event.source));
+
+        // Detect LRU-pressure eviction: if the dedup map is already at capacity
+        // and this key wasn't present, inserting will evict the least-recently-
+        // used entry silently. That's a real lost-signal event; count it and
+        // warn so the operator sees sustained-attack saturation.
+        let cap = self.dedup.cap().get();
+        let was_full = self.dedup.len() >= cap;
+        let key_was_absent = self.dedup.peek(&key).is_none();
+        if was_full && key_was_absent {
+            self.metrics.record_eviction();
+            log!(DetectionLog::FusionWindowEvicted {
+                key_src: key.0.clone(),
+                key_type: key.1.clone(),
+            });
+        }
+
         self.dedup.put(
             key.clone(),
             DedupEntry {
@@ -232,6 +256,8 @@ impl DetectionOrchestrator {
             trigger_event.c2_score,
             threat_event.active_source_count,
         ));
+
+        self.metrics.record_emit(threat_event.active_source_count);
 
         self.publish_fusion_audit(trigger_event, fused, &per_source_samples)
             .await;
