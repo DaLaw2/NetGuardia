@@ -39,8 +39,7 @@ pub struct ModelPaths {
     pub classifier: Option<String>,
 }
 
-/// Per-label metadata. `confirmations` and `playbook` are parsed but not yet consumed
-/// by the aggregator — they belong to M2's aggregator rewrite.
+/// Per-label metadata driving classifier output decoding and alert gating.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LabelSpec {
     pub name: String,
@@ -60,10 +59,11 @@ pub struct Thresholds {
     pub class_min_confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ae: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_multiplier: Option<f32>,
 }
 
-/// Pointer to a preprocessing sidecar (scaler/clip arrays). For v10 this is
-/// the legacy `inference_config.json`.
+/// Pointer to the JSON sidecar carrying scaler / clip / weight arrays.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Preprocessing {
     pub scaler_sidecar: String,
@@ -133,6 +133,43 @@ impl ModelManifest {
                     ));
                 }
             }
+        }
+        self.validate_labels(path)?;
+        self.validate_thresholds(path)?;
+        Ok(())
+    }
+
+    fn validate_labels(&self, path: &Path) -> Result<(), MLError> {
+        let mut seen: Vec<String> = Vec::with_capacity(self.labels.len());
+        for spec in self.labels.values() {
+            if let Some(n) = spec.confirmations
+                && n == 0
+            {
+                return Err(MLError::ManifestInvalid(
+                    path.to_path_buf(),
+                    format!("label '{}' has confirmations: 0 (must be ≥ 1)", spec.name),
+                ));
+            }
+            let lower = spec.name.to_ascii_lowercase();
+            if seen.iter().any(|s| s == &lower) {
+                return Err(MLError::ManifestInvalid(
+                    path.to_path_buf(),
+                    format!("duplicate label name '{}' (case-insensitive)", spec.name),
+                ));
+            }
+            seen.push(lower);
+        }
+        Ok(())
+    }
+
+    fn validate_thresholds(&self, path: &Path) -> Result<(), MLError> {
+        if let Some(m) = self.thresholds.alert_multiplier
+            && !(m.is_finite() && m > 0.0)
+        {
+            return Err(MLError::ManifestInvalid(
+                path.to_path_buf(),
+                format!("thresholds.alert_multiplier must be finite and > 0 (got {m})"),
+            ));
         }
         Ok(())
     }
@@ -224,6 +261,61 @@ features: []
         let path = Path::new("/tmp/test-manifest.yaml");
         let parsed: ModelManifest = serde_yaml_ng::from_str(yaml).unwrap();
         let err = parsed.validate(path).expect_err("should reject empty features");
+        assert!(matches!(err, MLError::ManifestInvalid { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_zero_confirmations() {
+        let yaml = r#"
+name: bad
+adapter: classifier_only
+models:
+  model: m.onnx
+features:
+  - flow_duration
+labels:
+  "0": { name: Bot, confirmations: 0 }
+"#;
+        let path = Path::new("/tmp/test-manifest.yaml");
+        let parsed: ModelManifest = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = parsed.validate(path).expect_err("should reject confirmations: 0");
+        assert!(matches!(err, MLError::ManifestInvalid { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_duplicate_label_name_ignoring_case() {
+        let yaml = r#"
+name: bad
+adapter: classifier_only
+models:
+  model: m.onnx
+features:
+  - flow_duration
+labels:
+  "0": { name: Bot }
+  "1": { name: BOT }
+"#;
+        let path = Path::new("/tmp/test-manifest.yaml");
+        let parsed: ModelManifest = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = parsed.validate(path).expect_err("should reject duplicate label names");
+        assert!(matches!(err, MLError::ManifestInvalid { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_non_positive_alert_multiplier() {
+        let yaml = r#"
+name: bad
+adapter: classifier_only
+models:
+  model: m.onnx
+features:
+  - flow_duration
+thresholds:
+  alert_multiplier: 0
+"#;
+        let path = Path::new("/tmp/test-manifest.yaml");
+        let parsed: ModelManifest = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = parsed.validate(path).expect_err("should reject alert_multiplier <= 0");
         assert!(matches!(err, MLError::ManifestInvalid { .. }), "got {err:?}");
     }
 }

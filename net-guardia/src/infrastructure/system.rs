@@ -156,12 +156,15 @@ impl System {
     pub async fn run(&mut self) -> Result<ShutdownMode, Error> {
         log!(SystemLog::Initializing);
 
-        log!(MLLog::ModelsLoaded(
-            self.app_services.ml_models.get_model_info("deep_autoencoder")
-        ));
-        log!(MLLog::ModelsLoaded(
-            self.app_services.ml_models.get_model_info("classifier")
-        ));
+        // ML source state snapshot. Day 1 with no manifest renders as Dormant
+        // — the rest of the stack still runs (3-source fusion).
+        {
+            let status = self.app_services.ml_inference.current_status();
+            match serde_json::to_string(&status) {
+                Ok(s) => log!(MLLog::ModelsLoaded(s)),
+                Err(e) => log!(MLLog::ModelsLoaded(format!("<unserializable status: {e}>"))),
+            }
+        }
         log!(MLLog::ConfigLoaded(
             self.inference_config.num_ae_features(),
             self.inference_config.num_attack_types(),
@@ -267,11 +270,7 @@ impl System {
         });
 
         // Start model hot-reload watcher (monitors models/ for .onnx changes)
-        let model_watcher = ModelWatcher::new(
-            self.app_services.ml_engine.inference_pipeline().clone(),
-            self.app_config.clone(),
-            self.inference_config.clone(),
-        );
+        let model_watcher = ModelWatcher::new(self.app_services.ml_inference.clone(), self.app_config.clone());
         model_watcher.start();
 
         // Initialize force_https flag from DB setting

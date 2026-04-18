@@ -14,6 +14,11 @@ pub const FLOW_BULK_MIN_BYTES: u64 = 1000;
 pub const FLOW_IDLE_TIMEOUT_US: u64 = 120_000_000;
 pub const FLOW_TERMINATED_TIMEOUT_US: u64 = 5_000_000;
 
+// ── ML Model Directory ─────────────────────────────────────────────
+pub const MODELS_DIR: &str = "models";
+pub const MANIFEST_FILENAME: &str = "manifest.yaml";
+pub const STAGING_SUBDIR: &str = ".staging";
+
 // ── Notification ───────────────────────────────────────────────────
 pub const TELEGRAM_MAX_RETRIES: u32 = 2;
 

@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod aggregator;
 pub mod alert;
 pub mod config_loader;

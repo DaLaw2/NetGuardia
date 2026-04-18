@@ -100,6 +100,11 @@ pub struct MLInferenceConfig {
     pub c2_threshold: f32,
     #[serde(default = "default_class_min_confidence")]
     pub class_min_confidence: f32,
+    /// Multiplier applied to the confidence threshold before the aggregator
+    /// fires an alert. The manifest can override this via
+    /// `thresholds.alert_multiplier`.
+    #[serde(default = "default_alert_threshold_multiplier")]
+    pub alert_threshold_multiplier: f32,
     pub model_type: String,
     pub output_names: Vec<String>,
     pub ae_feature_weights: HashMap<String, f64>,
@@ -107,6 +112,10 @@ pub struct MLInferenceConfig {
 
 fn default_class_min_confidence() -> f32 {
     0.4
+}
+
+fn default_alert_threshold_multiplier() -> f32 {
+    1.2
 }
 
 impl MLInferenceConfig {

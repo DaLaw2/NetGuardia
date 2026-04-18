@@ -92,5 +92,8 @@ loggable! {
 
         #[error("Invalid operator '{operator}' for condition type '{condition_type}' on playbook '{name}', condition skipped")]
         InvalidConditionOperator { name: String, condition_type: String, operator: String } => tracing::Level::WARN,
+
+        #[error("Playbook '{name}' uses non-canonical trigger_event '{trigger_event}' — cross-source fusion dedup may silently miss this rule")]
+        NonCanonicalTriggerEvent { name: String, trigger_event: String } => tracing::Level::WARN,
     }
 }

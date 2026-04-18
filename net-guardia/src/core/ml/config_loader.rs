@@ -95,12 +95,9 @@ fn reconcile_features(
 }
 
 fn apply_manifest_overrides(manifest: &ModelManifest, config: &mut MLInferenceConfig) {
-    // Labels: the manifest is authoritative for the label-name map. `confirmations`
-    // and `playbook` are parsed but not consumed here — M2's aggregator rewrite owns that.
     if !manifest.labels.is_empty() {
         config.attack_labels = manifest_labels_to_map(&manifest.labels);
     }
-    // Thresholds: manifest overrides the sidecar when present.
     if let Some(v) = manifest.thresholds.anomaly {
         config.anomaly_threshold = v;
     }
@@ -112,6 +109,9 @@ fn apply_manifest_overrides(manifest: &ModelManifest, config: &mut MLInferenceCo
     }
     if let Some(v) = manifest.thresholds.ae {
         config.ae_threshold = v;
+    }
+    if let Some(v) = manifest.thresholds.alert_multiplier {
+        config.alert_threshold_multiplier = v;
     }
 }
 
@@ -166,6 +166,7 @@ mod tests {
             anomaly_threshold: 0.5,
             c2_threshold: 0.5,
             class_min_confidence: 0.4,
+            alert_threshold_multiplier: 1.2,
             model_type: "MultiTaskModel".into(),
             output_names: vec!["anomaly".into(), "class_probs".into(), "c2_score".into()],
             ae_feature_weights: HashMap::new(),

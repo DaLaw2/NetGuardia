@@ -1,12 +1,13 @@
 use std::fmt;
+use std::str::FromStr;
 
 use crate::interface::communication::event::Event;
 
 // -- Detection Source ---------------------------------------------------------
 
 /// Identifies which detection subsystem produced a detection.
-/// Used for attribution tracking and future cross-source deduplication.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Used for attribution tracking and cross-source deduplication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DetectionSource {
     ML,
     Correlation,
@@ -21,6 +22,22 @@ impl fmt::Display for DetectionSource {
             DetectionSource::Correlation => write!(f, "Correlation"),
             DetectionSource::Beaconing => write!(f, "Beaconing"),
             DetectionSource::Suricata => write!(f, "Suricata"),
+        }
+    }
+}
+
+impl FromStr for DetectionSource {
+    type Err = ();
+
+    /// Accepts the canonical `Display` form plus common aliases so playbook
+    /// authors can write `"CV"` for Beaconing or `"Graph"` for Correlation.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ML" | "ml" => Ok(Self::ML),
+            "Suricata" | "suricata" => Ok(Self::Suricata),
+            "Beaconing" | "beaconing" | "CV" | "cv" => Ok(Self::Beaconing),
+            "Correlation" | "correlation" | "Graph" | "graph" => Ok(Self::Correlation),
+            _ => Err(()),
         }
     }
 }
@@ -68,9 +85,19 @@ pub struct ThreatDetectedEvent {
     pub geoip_country: Option<String>,
     /// Whether this src_ip had a block action in the past 24h
     pub is_repeat_offender: bool,
-    /// Which detection sources contributed to this threat (for attribution)
+    /// Which detection sources contributed to this threat (for attribution).
+    /// Single-source events have length 1; fused events have 2..=4.
     pub sources: Vec<DetectionSource>,
-    /// Per-model scores for debugging false positives
+    /// Number of distinct sources that contributed to this event.
+    /// Used by SOAR `MultiSourceMin` / `SingleSourceHigh` conditions —
+    /// counts unique sources, not per-source fires within the window.
+    pub active_source_count: usize,
+    /// Cross-source fused confidence (1 − ∏(1 − c_i)). Equal to
+    /// `confidence` after the fusion engine runs; retained as a separate
+    /// field so SOAR policies can discriminate "single source" from
+    /// "fused multi-source" numerically identical confidences.
+    pub fused_confidence: f32,
+    /// Per-model scores for debugging false positives.
     pub ae_score: f32,
     pub anomaly_score: f32,
     pub c2_score: f32,

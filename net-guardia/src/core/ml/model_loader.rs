@@ -1,4 +1,13 @@
+//! Factory that builds an `MLModelAdapter` from a `ModelManifest`: inspects
+//! the manifest's `adapter` field, loads the named ONNX file(s) with shape
+//! validation against the inference config's feature counts, and wraps the
+//! `RunnableModel`s in `Arc` so hot-reload can swap without per-tick clones.
+//! A shape mismatch yields `MLError::FeatureMismatch` carrying both
+//! expected and observed dims for the upload UI to render.
+
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use macros::log;
@@ -6,105 +15,153 @@ use tract_onnx::prelude::*;
 use tract_onnx::tract_hir::infer::Factoid;
 use tract_onnx::tract_hir::internal::DimLike;
 
-use crate::infrastructure::app_config::AppConfig;
+use super::adapter::MLModelAdapter;
+use super::manifest::{AdapterKind, LabelSpec, ModelManifest};
+use crate::model::config::constants::MODELS_DIR;
 use crate::model::detection::ml_detection::RunnableModel;
 use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
 use crate::model::system::config::MLInferenceConfig;
 
-pub struct MLModels {
-    pub deep_autoencoder: RunnableModel,
-    pub classifier: RunnableModel,
-    pub batch_size: usize,
+/// Build an `MLModelAdapter` by loading the ONNX file(s) the manifest names,
+/// validating shape against the inference config's feature counts, and
+/// wrapping the underlying `RunnableModel`s in `Arc` for zero-copy swap.
+pub fn build_adapter(
+    manifest: &ModelManifest,
+    manifest_path: Option<&Path>,
+    inference_config: &MLInferenceConfig,
+    batch_size: usize,
+) -> Result<MLModelAdapter, MLError> {
+    let resolve = |rel: &str| -> PathBuf {
+        match manifest_path {
+            Some(mp) => ModelManifest::resolve_relative(mp, rel),
+            None => PathBuf::from(MODELS_DIR).join(rel),
+        }
+    };
+
+    match manifest.adapter {
+        AdapterKind::AutoencoderOnly => {
+            let Some(model_name) = manifest.models.model.as_deref() else {
+                return Err(MLError::ManifestInvalid(
+                    manifest_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
+                    "autoencoder_only adapter requires models.model".to_string(),
+                ));
+            };
+            let path = resolve(model_name);
+            let n_features = inference_config.num_ae_features();
+            let model = Arc::new(loader(&path, model_name, n_features, batch_size)?);
+            Ok(MLModelAdapter::AutoencoderOnly {
+                model,
+                batch_size,
+                n_features,
+            })
+        }
+        AdapterKind::ClassifierOnly => {
+            let Some(model_name) = manifest.models.model.as_deref() else {
+                return Err(MLError::ManifestInvalid(
+                    manifest_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
+                    "classifier_only adapter requires models.model".to_string(),
+                ));
+            };
+            let path = resolve(model_name);
+            let n_features = inference_config.num_classifier_features();
+            let model = Arc::new(loader(&path, model_name, n_features, batch_size)?);
+            let labels = manifest.labels.clone();
+            let normal_idx = find_label_index(&labels, "Normal");
+            Ok(MLModelAdapter::ClassifierOnly {
+                model,
+                batch_size,
+                n_features,
+                labels,
+                normal_idx,
+            })
+        }
+        AdapterKind::MultiTask => {
+            let Some(ae_name) = manifest.models.autoencoder.as_deref() else {
+                return Err(MLError::ManifestInvalid(
+                    manifest_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
+                    "multi_task adapter requires models.autoencoder".to_string(),
+                ));
+            };
+            let Some(cls_name) = manifest.models.classifier.as_deref() else {
+                return Err(MLError::ManifestInvalid(
+                    manifest_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
+                    "multi_task adapter requires models.classifier".to_string(),
+                ));
+            };
+            let n_ae = inference_config.num_ae_features();
+            let n_cls = inference_config.num_classifier_features();
+            let ae = Arc::new(loader(&resolve(ae_name), ae_name, n_ae, batch_size)?);
+            let classifier = Arc::new(loader(&resolve(cls_name), cls_name, n_cls, batch_size)?);
+            let labels = manifest.labels.clone();
+            let normal_idx = find_label_index(&labels, "Normal");
+            let c2_idx = find_label_index(&labels, "C2 Communication");
+            Ok(MLModelAdapter::MultiTask {
+                ae,
+                classifier,
+                batch_size,
+                n_ae,
+                n_cls,
+                labels,
+                normal_idx,
+                c2_idx,
+            })
+        }
+    }
 }
 
-impl MLModels {
-    pub fn load_models(
-        app_config: &Arc<AppConfig>,
-        inference_config: &Arc<MLInferenceConfig>,
-        batch_size: usize,
-    ) -> Result<Self, MLError> {
-        Self::load_named(
-            &app_config.inference.deep_autoencoder_name,
-            &app_config.inference.classifier_name,
-            inference_config,
-            batch_size,
-        )
-    }
+/// Locate a label index by its `name` field. Used to cache hot-path indices
+/// (Normal, C2 Communication) at adapter build time rather than re-scanning
+/// the label map on every inference batch.
+fn find_label_index(labels: &BTreeMap<String, LabelSpec>, target: &str) -> Option<usize> {
+    labels
+        .iter()
+        .find(|(_, v)| v.name.eq_ignore_ascii_case(target))
+        .and_then(|(k, _)| k.parse::<usize>().ok())
+}
 
-    /// Manifest-friendly constructor: caller supplies the AE and classifier ONNX filenames
-    /// directly. Used when a `ModelManifest` overrides the defaults in `AppConfig`.
-    pub fn load_named(
-        autoencoder_name: &str,
-        classifier_name: &str,
-        inference_config: &Arc<MLInferenceConfig>,
-        batch_size: usize,
-    ) -> Result<Self, MLError> {
-        Ok(Self {
-            deep_autoencoder: Self::loader(autoencoder_name, inference_config.num_ae_features(), batch_size)?,
-            classifier: Self::loader(classifier_name, inference_config.num_classifier_features(), batch_size)?,
-            batch_size,
-        })
-    }
+fn loader(model_path: &Path, model_name: &str, features: usize, batch_size: usize) -> Result<RunnableModel, MLError> {
+    log!(MLLog::ModelLoading(model_name.to_string(), features, batch_size));
 
-    fn loader(model: &str, features: usize, batch_size: usize) -> Result<RunnableModel, MLError> {
-        let model_path = PathBuf::from("models").join(model);
+    let start = Instant::now();
+    let result = loader_inner(model_path, model_name, features, batch_size);
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    log!(MLLog::ModelLoadComplete(model_name.to_string(), elapsed_ms));
 
-        log!(MLLog::ModelLoading(model.to_string(), features, batch_size));
+    result
+}
 
-        let start = Instant::now();
-        let result = Self::loader_inner(&model_path, model, features, batch_size);
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        log!(MLLog::ModelLoadComplete(model.to_string(), elapsed_ms));
+fn loader_inner(
+    model_path: &Path,
+    model_name: &str,
+    features: usize,
+    batch_size: usize,
+) -> Result<RunnableModel, MLError> {
+    let mut onnx_model = onnx()
+        .model_for_path(model_path)
+        .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("parse ONNX: {e}")))?;
 
-        result
-    }
-
-    fn loader_inner(
-        model_path: &Path,
-        model: &str,
-        features: usize,
-        batch_size: usize,
-    ) -> Result<RunnableModel, MLError> {
-        let mut onnx_model = onnx()
-            .model_for_path(model_path)
-            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("parse ONNX: {e}")))?;
-
-        // Introspect the ONNX input fact and cross-check its last dim against the
-        // expected feature count. A dynamic/symbolic dim is skipped — we only fail
-        // when the ONNX graph declares a concrete integer that disagrees.
-        if let Some(onnx_dim) = introspect_input_features(&onnx_model) {
-            let matched = onnx_dim == features;
-            log!(MLLog::OnnxShapeChecked(model.to_string(), features, onnx_dim, matched));
-            if !matched {
-                return Err(MLError::FeatureMismatch(model_path.to_path_buf(), features, onnx_dim));
-            }
+    if let Some(onnx_dim) = introspect_input_features(&onnx_model) {
+        let matched = onnx_dim == features;
+        log!(MLLog::OnnxShapeChecked(
+            model_name.to_string(),
+            features,
+            onnx_dim,
+            matched,
+        ));
+        if !matched {
+            return Err(MLError::FeatureMismatch(model_path.to_path_buf(), features, onnx_dim));
         }
-
-        onnx_model
-            .set_input_fact(0, f32::fact([batch_size, features]).into())
-            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("set_input_fact: {e}")))?;
-
-        onnx_model
-            .into_optimized()
-            .and_then(|m| m.into_runnable())
-            .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("optimize/runnable: {e}")))
     }
 
-    pub fn get_model_info(&self, name: &str) -> String {
-        let model = match name {
-            "deep_autoencoder" => &self.deep_autoencoder,
-            "classifier" => &self.classifier,
-            _ => return "unknown model".to_string(),
-        };
+    onnx_model
+        .set_input_fact(0, f32::fact([batch_size, features]).into())
+        .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("set_input_fact: {e}")))?;
 
-        let inputs = model.model().inputs.len();
-        let outputs = model.model().outputs.len();
-        format!(
-            "{name}: inputs: {inputs}, outputs: {outputs}, batch_size: {}",
-            self.batch_size
-        )
-    }
+    onnx_model
+        .into_optimized()
+        .and_then(|m| m.into_runnable())
+        .map_err(|e| MLError::ModelLoadFailed(model_path.to_path_buf(), format!("optimize/runnable: {e}")))
 }
 
 /// Read the concrete last-dim (feature count) from an ONNX model's declared input fact.
@@ -123,8 +180,8 @@ fn introspect_input_features(model: &InferenceModel) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// Integration test: tract must introspect the shipped v10 AE ONNX's input dim as 31.
-    /// Silently skipped outside the repo root (no `models/` directory).
+    /// Repo-root integration: the shipped v10 AE ONNX's input last-dim must
+    /// still be 31. A change here means the shipped manifest + sidecar drifted.
     #[test]
     fn introspect_v10_autoencoder_input_is_31() {
         let ae_path = PathBuf::from("models/deep_autoencoder.onnx");
@@ -149,24 +206,23 @@ mod tests {
         assert_eq!(dim, 32, "v10 classifier ONNX input dim changed unexpectedly");
     }
 
-    /// End-to-end M1 smoke: loading v10 via `load_named` with the manifest-driven
-    /// names + sidecar-derived inference config must succeed without shape mismatch.
+    /// Smoke: the shipped manifest + sidecar must load and produce a
+    /// `MultiTask` adapter with both underlying models.
     #[test]
-    fn v10_load_named_with_manifest_paths_succeeds() {
+    fn v10_build_adapter_multitask() {
         let manifest_path = Path::new("models/manifest.yaml");
         if !manifest_path.exists() {
             eprintln!("skipping: models/manifest.yaml absent");
             return;
         }
-        let (cfg, manifest) =
-            MLInferenceConfig::from_manifest_with_sidecar(manifest_path).expect("manifest + sidecar load");
-        let cfg = Arc::new(cfg);
-        let ae = manifest.models.autoencoder.as_deref().expect("multi_task has AE");
-        let cls = manifest
-            .models
-            .classifier
-            .as_deref()
-            .expect("multi_task has classifier");
-        let _models = MLModels::load_named(ae, cls, &cfg, 8).expect("v10 load via manifest names");
+        let (cfg, manifest) = MLInferenceConfig::from_manifest_with_sidecar(manifest_path).expect("config load");
+        let adapter = build_adapter(&manifest, Some(manifest_path), &cfg, 8).expect("build adapter");
+        match adapter {
+            MLModelAdapter::MultiTask { n_ae, n_cls, .. } => {
+                assert_eq!(n_ae, 31);
+                assert_eq!(n_cls, 32);
+            }
+            _ => panic!("v10 manifest should build MultiTask adapter"),
+        }
     }
 }

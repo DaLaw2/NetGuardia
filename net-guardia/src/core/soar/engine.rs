@@ -20,6 +20,7 @@ use crate::interface::port::notification::AlertNotifier;
 use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::config::constants::MAX_PENDING_UNBLOCK_RETRIES;
+use crate::model::detection::attack_type::canonical_from_str;
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::event::ThreatDetectedEvent;
@@ -59,7 +60,9 @@ pub struct SoarEngine {
     pub(super) geoip: Option<Arc<GeoIpService>>,
     /// Optional rate limit config for adjust_rate_limit action.
     pub(super) rate_limit: Option<Arc<dyn RateLimitPort>>,
-    /// Lock to serialize rate limit read-save-write sequences (Item 6: atomicity).
+    /// Serializes rate-limit read-save-write sequences so concurrent SOAR
+    /// actions can't race the `soar_rate_limit_*` DB settings into an
+    /// inconsistent pair.
     pub(super) rate_limit_lock: TokioMutex<()>,
     /// Cached enforce level: Monitor=0, MlOnly=1, Enforce=2.
     pub(super) enforce_level_cache: Arc<AtomicU8>,
@@ -120,7 +123,7 @@ impl SoarEngine {
             // Check if this row belongs to the same playbook as the last one
             let needs_new = playbooks.last().is_none_or(|last| last.id != pb_id);
             if needs_new {
-                let _ = threshold; // stored in DB but no longer used at runtime
+                let _ = threshold; // persisted for schema stability; runtime gating comes from the Condition rows
                 playbooks.push(Playbook {
                     id: pb_id,
                     name,
@@ -165,6 +168,9 @@ impl SoarEngine {
                     }
                     ConditionType::RepeatOffender => operator == "==",
                     ConditionType::Frequency => operator == ">=",
+                    ConditionType::MultiSourceMin => operator == ">=",
+                    ConditionType::SingleSourceHigh => operator == ">=",
+                    ConditionType::FusedConfidenceAbove => matches!(operator.as_str(), ">=" | "<="),
                 };
                 if !valid {
                     log!(SoarLog::InvalidConditionOperator(
@@ -180,6 +186,18 @@ impl SoarEngine {
                     value,
                     value2,
                 });
+            }
+        }
+
+        // Warn on playbooks whose trigger_event isn't in the canonical
+        // dictionary — those won't ever match a fused event and usually
+        // signal a typo or stale pre-canonicalization playbook.
+        for pb in &playbooks {
+            if canonical_from_str(&pb.trigger_event).is_none() {
+                log!(SoarLog::NonCanonicalTriggerEvent(
+                    pb.name.clone(),
+                    pb.trigger_event.clone(),
+                ));
             }
         }
 
@@ -334,7 +352,6 @@ impl SoarEngine {
     /// Restore original rate limits if the TTL has expired.
     /// Called by TTL scheduler on each sweep.
     pub async fn check_rate_limit_restoration(&self) -> Result<(), Error> {
-        // Acquire lock to serialize rate limit read-save-write (Item 6: atomicity)
         let _guard = self.rate_limit_lock.lock().await;
 
         let expires_str = match self
@@ -484,6 +501,8 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -519,6 +538,8 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -601,6 +622,8 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -636,6 +659,8 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -681,6 +706,8 @@ mod tests {
             geoip_country: None,
             is_repeat_offender: false,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
@@ -757,6 +784,8 @@ mod tests {
             geoip_country: country.map(|s| s.to_string()),
             is_repeat_offender: repeat,
             sources: vec![DetectionSource::ML],
+            active_source_count: 1,
+            fused_confidence: 0.95,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,

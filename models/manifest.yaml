@@ -1,7 +1,6 @@
-# NetGuardia v10 model manifest — authored 2026-04-16 as part of v12 M1.
-# Schema: structural/semantic info lives here; preprocessing arrays
-# (scaler mean/std, clip params, feature weights) stay in inference_config.json
-# referenced by `preprocessing.scaler_sidecar` below.
+# NetGuardia model manifest. Structural/semantic fields live here;
+# preprocessing arrays (scaler mean/std, clip params, feature weights) stay
+# in the JSON sidecar referenced by `preprocessing.scaler_sidecar`.
 
 name: netguardia-v10
 adapter: multi_task
@@ -46,9 +45,12 @@ features:
   - fwd_bwd_bytes_ratio
   - iat_cv
 
-# `confirmations` / `playbook` are parsed today; M2 wires them into the aggregator.
+# `confirmations` sets the per-class aggregator firing threshold. Classes
+# with single-shot semantics (C2 / Bot / DNS tunneling / exploit) use 1 so
+# the aggregator alerts on the first detection; noisier classes can raise
+# it (DoS/DDoS: 2). Absent entries fall back to the engine default.
 labels:
-  "0": { name: Bot }
+  "0": { name: Bot, confirmations: 1 }
   "1": { name: Brute Force }
   "2": { name: C2 Communication, confirmations: 1 }
   "3": { name: DNS Tunneling, confirmations: 1 }
@@ -64,6 +66,9 @@ thresholds:
   c2: 0.9085615873336792
   class_min_confidence: 0.4
   ae: 0.23011694848537445
+  # Average score must exceed `class_min_confidence * alert_multiplier`
+  # before the aggregator fires. Raising this suppresses borderline hits.
+  alert_multiplier: 1.2
 
 preprocessing:
   scaler_sidecar: inference_config.json

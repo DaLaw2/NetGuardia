@@ -6,16 +6,28 @@
 //! but none of them touch anything outside those fields.
 
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use macros::log;
 
 use crate::core::soar::engine::SoarEngine;
-use crate::model::event::ThreatDetectedEvent;
+use crate::model::event::{DetectionSource, ThreatDetectedEvent};
 use crate::model::log::soar::SoarLog;
 use crate::model::soar::condition::{ConditionType, PlaybookCondition};
 use crate::model::soar::playbook::Playbook;
+
+/// Default frequency-condition window when the playbook omits `value2`.
+const DEFAULT_FREQUENCY_WINDOW_SECS: u64 = 60;
+
+/// Default minimum confidence for `SingleSourceHigh` when the playbook
+/// omits `value2`. Conservative enough that ad-hoc solo playbooks don't
+/// auto-block noisy single-source hits.
+const DEFAULT_SINGLE_SOURCE_HIGH_MIN_CONFIDENCE: f32 = 0.95;
+
+/// Default expiry for cooldown cleanup when no playbook has a cooldown set.
+const DEFAULT_COOLDOWN_EXPIRY_SECS: u64 = 3600;
 
 impl SoarEngine {
     /// Find playbooks matching the event via trigger_event + multi-condition AND logic.
@@ -142,13 +154,81 @@ impl SoarEngine {
                     Ok(v) => v,
                     Err(_) => return false,
                 };
-                let window_secs = cond.value2.as_ref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(60);
+                let window_secs = cond
+                    .value2
+                    .as_ref()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_FREQUENCY_WINDOW_SECS);
                 let count = self
                     .frequency_tracker
                     .record_and_count(pb.id, &event.source_ip, window_secs);
                 let met = count >= required;
                 if !met {
                     log!(SoarLog::FrequencyNotMet(pb.name.clone(), count, required, window_secs));
+                }
+                met
+            }
+            ConditionType::MultiSourceMin => {
+                let required = match cond.value.parse::<usize>() {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let met = event.active_source_count >= required;
+                if !met {
+                    log!(SoarLog::ConditionNotMet(
+                        "multi_source_min".to_string(),
+                        pb.name.clone(),
+                        format!("{} / {}", event.active_source_count, required),
+                    ));
+                }
+                met
+            }
+            ConditionType::SingleSourceHigh => {
+                // `value` names the target source (canonical Display form
+                // or a common alias); `value2` is the minimum confidence.
+                let target_source = match DetectionSource::from_str(&cond.value) {
+                    Ok(s) => s,
+                    Err(_) => return false,
+                };
+                let min_conf = cond
+                    .value2
+                    .as_ref()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(DEFAULT_SINGLE_SOURCE_HIGH_MIN_CONFIDENCE);
+                // Solo = exactly one contributing source AND it matches the
+                // target source AND confidence clears the escape-hatch bar.
+                let solo_match =
+                    event.active_source_count == 1 && event.sources.len() == 1 && event.sources[0] == target_source;
+                let conf_met = event.confidence >= min_conf;
+                let met = solo_match && conf_met;
+                if !met {
+                    log!(SoarLog::ConditionNotMet(
+                        "single_source_high".to_string(),
+                        pb.name.clone(),
+                        format!(
+                            "sources={:?} count={} conf={:.3} target={} need_conf>={:.3}",
+                            event.sources, event.active_source_count, event.confidence, cond.value, min_conf
+                        ),
+                    ));
+                }
+                met
+            }
+            ConditionType::FusedConfidenceAbove => {
+                let threshold = match cond.value.parse::<f32>() {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let met = if cond.operator == "<=" {
+                    event.fused_confidence <= threshold
+                } else {
+                    event.fused_confidence >= threshold
+                };
+                if !met {
+                    log!(SoarLog::ConditionNotMet(
+                        "fused_confidence_above".to_string(),
+                        pb.name.clone(),
+                        format!("{:.3} vs {:.3}", event.fused_confidence, threshold),
+                    ));
                 }
                 met
             }
@@ -178,9 +258,13 @@ impl SoarEngine {
     pub fn cleanup_expired_cooldowns(&self) {
         let max_cooldown_secs = {
             let playbooks = self.playbooks.read();
-            playbooks.iter().map(|p| p.cooldown_secs as u64).max().unwrap_or(3600)
+            playbooks
+                .iter()
+                .map(|p| p.cooldown_secs as u64)
+                .max()
+                .unwrap_or(DEFAULT_COOLDOWN_EXPIRY_SECS)
         };
-        let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(3600));
+        let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(DEFAULT_COOLDOWN_EXPIRY_SECS));
         let before = self.cooldowns.len();
         self.cooldowns.retain(|_, instant| instant.elapsed() < expiry);
         let removed = before.saturating_sub(self.cooldowns.len());

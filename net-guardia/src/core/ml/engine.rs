@@ -1,3 +1,9 @@
+//! ML engine — orchestrates flow tracking, feature extraction, adapter-
+//! dispatched inference, and alert broadcast. Each inference tick cleans up
+//! stale flows, gathers the latest batch, optionally logs a Flow Trace row,
+//! and — when the inference source is Active — updates drift and runs
+//! adapter-dispatched inference.
+
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,14 +18,17 @@ use super::alert::MLAlert;
 use super::drift_detector::DriftDetector;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
-use super::model_loader::MLModels;
 use super::traffic_logger::TrafficLogger;
 use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::model::detection::flow_features::FlowFeatures;
 use crate::model::detection::ml_detection::{EngineConfig, FlowKey, InferenceStats};
 use crate::model::log::ml::MLLog;
 use crate::model::monitoring::user_packet::UserPacket;
-use crate::model::system::config::MLInferenceConfig;
+
+/// Divisor applied to "ticks per aggregator window" to derive the fallback
+/// confirmations count: 2 means a default-behaviour detection must fire
+/// across at least half the window's ticks before alerting.
+const DEFAULT_CONFIRMATION_WINDOW_FRACTION: u64 = 2;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
@@ -32,29 +41,29 @@ pub struct Engine {
     drift_detector: Arc<Mutex<DriftDetector>>,
     ml_alert: Arc<MLAlert>,
     min_packets: usize,
+    /// Confirmations count used when the active manifest's label has no
+    /// explicit `confirmations` override.
+    default_confirmations: usize,
     batch_size: usize,
     inference_interval_secs: u64,
     traffic_logger: Option<Arc<TrafficLogger>>,
 }
 
 impl Engine {
+    /// Build an Engine around an already-constructed Inference pipeline.
+    /// The Inference's state (Dormant / Active / Error) is consulted per tick.
     pub fn new(
-        models: Arc<MLModels>,
-        config: Arc<MLInferenceConfig>,
+        inference_pipeline: Arc<Inference>,
         ml_alert: Arc<MLAlert>,
         drift_detector: Arc<Mutex<DriftDetector>>,
         engine_config: EngineConfig,
         traffic_logger: Option<Arc<TrafficLogger>>,
         num_threads: u32,
     ) -> Self {
-        let inference_pipeline = Arc::new(Inference::new(models, config));
-
-        let min_detections =
-            ((engine_config.aggregator_window_secs / engine_config.inference_interval_secs) / 2).max(1) as usize;
-        let aggregator = Mutex::new(AttackAggregator::new(
-            engine_config.aggregator_window_secs,
-            min_detections,
-        ));
+        let interval_secs = engine_config.inference_interval_secs.max(1);
+        let ticks_per_window = engine_config.aggregator_window_secs / interval_secs;
+        let default_confirmations = (ticks_per_window / DEFAULT_CONFIRMATION_WINDOW_FRACTION).max(1) as usize;
+        let aggregator = Mutex::new(AttackAggregator::new(engine_config.aggregator_window_secs));
 
         let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
         let trackers: Vec<ThreadTracker> = (0..num_threads)
@@ -68,14 +77,11 @@ impl Engine {
             drift_detector,
             ml_alert,
             min_packets: engine_config.min_packets,
+            default_confirmations,
             batch_size: engine_config.batch_size,
             inference_interval_secs: engine_config.inference_interval_secs,
             traffic_logger,
         }
-    }
-
-    pub fn inference_pipeline(&self) -> &Arc<Inference> {
-        &self.inference_pipeline
     }
 
     /// xsk_manager calls this per queue_id; with symmetric hash each queue has its own tracker.
@@ -103,21 +109,15 @@ impl Engine {
             1 => 1,
             // UDP
             17 => match flow_key.dst_port {
-                // DNS: amplification, DGA, tunneling can be 1-2 packets
                 53 => 1,
-                // NTP amplification
                 123 => 2,
-                // Known mining pool ports
                 3333 | 45700 => 2,
                 _ => global,
             },
             // TCP
             6 => match flow_key.dst_port {
-                // DNS over TCP
                 53 => 2,
-                // Common C2 ports: Metasploit, Cobalt Strike, reverse shells
                 4444 | 8443 | 8080 | 1337 | 31337 => 2,
-                // Stratum mining
                 3333 | 45700 => 2,
                 _ => global,
             },
@@ -142,7 +142,6 @@ impl Engine {
                 _ = ticker.tick() => {}
             }
 
-            // Move CPU-bound ML inference off the tokio executor
             let engine = Arc::clone(&self);
             let _ = spawn_blocking(move || {
                 engine.run_inference_tick();
@@ -151,6 +150,10 @@ impl Engine {
         }
     }
 
+    /// Phased tick: clean up stale flows, gather the uninferred batch
+    /// (min-packet filtered), optionally write a Flow Trace row, and when
+    /// the inference source is Active update drift then run inference.
+    /// Dormant / Error states short-circuit before drift + inference.
     fn run_inference_tick(&self) {
         let mut all_flows = Vec::new();
         let mut total_count = 0;
@@ -159,13 +162,11 @@ impl Engine {
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 
-        // Phase 0: clean up stale / terminated flows
         for tracker in &self.trackers {
             let mut t = tracker.lock();
             t.cleanup_stale_flows(now_us);
         }
 
-        // Phase 1: short lock per tracker — clone uninferred flows, mark as inferred
         for tracker in &self.trackers {
             let mut t = tracker.lock();
             total_count += t.flow_count();
@@ -174,7 +175,6 @@ impl Engine {
                     flow.packet_count() >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
                 }),
             );
-            // lock released here
         }
 
         log!(MLLog::FlowStats(
@@ -190,9 +190,14 @@ impl Engine {
 
         if let Some(ref logger) = self.traffic_logger {
             self.log_traffic(&all_flows, logger);
-        } else {
-            self.run_inference(&all_flows);
         }
+
+        if !self.inference_pipeline.is_active() {
+            return;
+        }
+
+        self.update_drift(&all_flows);
+        self.run_inference(&all_flows);
     }
 
     fn log_traffic(&self, flows: &[FlowData], logger: &TrafficLogger) {
@@ -203,32 +208,36 @@ impl Engine {
         }
     }
 
+    /// Update drift baseline — only called when inference state is Active,
+    /// guaranteeing the ArcSwap snapshot the next `infer_batch` sees matches
+    /// the features we just normalized against.
+    fn update_drift(&self, batch: &[FlowData]) {
+        let batch = &batch[..batch.len().min(self.batch_size)];
+        let config = &self.inference_pipeline.config;
+        let mut dd = self.drift_detector.lock();
+        for flow in batch {
+            let features = FlowFeatures::extract(flow, &config.ae_feature_names);
+            let normalized: Vec<f64> = features
+                .features
+                .iter()
+                .zip(config.ae_scaler_mean.iter().zip(config.ae_scaler_std.iter()))
+                .map(|(&val, (&mean, &std))| if std.abs() > 1e-12 { (val - mean) / std } else { 0.0 })
+                .collect();
+            dd.update(&normalized);
+        }
+    }
+
     fn run_inference(&self, flows: &[FlowData]) {
         let batch = &flows[..flows.len().min(self.batch_size)];
 
         log!(MLLog::RunningInference(batch.len()));
-
-        // Feed normalized features into drift detector for each flow in the batch
-        {
-            let config = &self.inference_pipeline.config;
-            let mut dd = self.drift_detector.lock();
-            for flow in batch.iter() {
-                let features = FlowFeatures::extract(flow, &config.ae_feature_names);
-                let normalized: Vec<f64> = features
-                    .features
-                    .iter()
-                    .zip(config.ae_scaler_mean.iter().zip(config.ae_scaler_std.iter()))
-                    .map(|(&val, (&mean, &std))| if std.abs() > 1e-12 { (val - mean) / std } else { 0.0 })
-                    .collect();
-                dd.update(&normalized);
-            }
-        }
 
         let start = Instant::now();
         let results = self.inference_pipeline.infer_batch(batch);
         let elapsed_us = start.elapsed().as_micros() as u64;
 
         let stats = InferenceStats::from_results(&results, elapsed_us);
+        self.inference_pipeline.record_tick_qps(stats.flows_per_second);
 
         if results.len() != batch.len() {
             log!(MLLog::InferenceResults(batch.len(), results.len()));
@@ -242,39 +251,42 @@ impl Engine {
             stats.flows_per_second
         ));
 
-        {
-            let mut aggregator = self.aggregator.lock();
-            for result in &results {
-                if result.is_attack {
-                    let should_alert = aggregator.should_alert(
-                        &result.flow_key_raw,
+        let mut aggregator = self.aggregator.lock();
+        let config = &self.inference_pipeline.config;
+        for result in &results {
+            if result.is_attack {
+                let required_confirmations = result
+                    .attack_type
+                    .as_deref()
+                    .and_then(|at| self.inference_pipeline.confirmations_for_attack_type(at))
+                    .unwrap_or(self.default_confirmations);
+                let should_alert = aggregator.should_alert(
+                    &result.flow_key_raw,
+                    result.confidence,
+                    config.class_min_confidence,
+                    required_confirmations,
+                    config.alert_threshold_multiplier,
+                );
+
+                if should_alert {
+                    log!(MLLog::ThreatDetected(
+                        format!("{:?}", result.direction),
+                        result.flow_key.clone(),
+                        result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
                         result.confidence,
-                        self.inference_pipeline.config.class_min_confidence,
-                        result.attack_type.as_deref(),
-                    );
+                        result.ae_score,
+                    ));
 
-                    if should_alert {
-                        log!(MLLog::ThreatDetected(
-                            format!("{:?}", result.direction),
-                            result.flow_key.clone(),
-                            result.attack_type.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-                            result.confidence,
-                            result.ae_score,
-                        ));
-
-                        self.ml_alert.broadcast_alert(result);
-                    }
+                    self.ml_alert.broadcast_alert(result);
                 }
             }
-
-            aggregator.cleanup();
         }
+
+        aggregator.cleanup();
     }
 }
 
-/// Adapter that exposes one `ThreadTracker` (per AF_XDP queue) as a
-/// `PacketSink`. `XskManager` holds `Arc<dyn PacketSink>` per queue and never
-/// touches `FlowTracker` concrete types.
+/// Adapter that exposes one `ThreadTracker` (per AF_XDP queue) as a `PacketSink`.
 struct QueueTrackerSink {
     tracker: ThreadTracker,
 }
