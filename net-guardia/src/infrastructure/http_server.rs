@@ -11,8 +11,8 @@ use macros::log;
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::{
     acl, api_keys, audit as audit_api, auth, default, filter, fusion, health as health_api, logs as logs_api, ml,
-    notification as notification_api, rate_limit as rate_limit_api, report as report_api, setup as setup_api, soar,
-    stats, system as system_api,
+    model_upload, notification as notification_api, rate_limit as rate_limit_api, report as report_api,
+    setup as setup_api, soar, stats, system as system_api,
 };
 use crate::adapter::persistence::Database;
 use crate::adapter::websocket::routes as ws;
@@ -281,6 +281,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
                     .service(stats::initialize())
                     .service(health_api::initialize())
                     .service(ml::initialize())
+                    .service(model_upload::initialize())
                     .service(fusion::initialize())
                     .service(system_api::initialize())
                     .service(soar::initialize())

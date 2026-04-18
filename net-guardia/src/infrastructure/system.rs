@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -14,6 +15,7 @@ use tokio::sync::oneshot;
 use tokio::time::{interval, sleep};
 
 use crate::adapter::ebpf::EbpfServices;
+use crate::adapter::http::model_upload;
 use crate::adapter::persistence::Database;
 use crate::core::acl_service::AclService;
 use crate::core::auth::jwt::JwtService;
@@ -44,6 +46,7 @@ use crate::infrastructure::suricata_monitor::SuricataMonitor;
 use crate::interface::port::audit::AuditRepo;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::stats::StatsRepo;
+use crate::model::config::constants::{MODELS_DIR, STAGING_SUBDIR};
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
@@ -155,6 +158,19 @@ impl System {
     /// Returns the shutdown mode requested (Shutdown or Restart).
     pub async fn run(&mut self) -> Result<ShutdownMode, Error> {
         log!(SystemLog::Initializing);
+
+        // Sweep model-upload staging directories left over from failed
+        // uploads before the model watcher starts listening. A stale
+        // `.staging/<uuid>/` would otherwise outlive restarts and eat
+        // disk if the admin repeatedly aborted uploads mid-stream.
+        {
+            let staging_root = PathBuf::from(MODELS_DIR).join(STAGING_SUBDIR);
+            match model_upload::clean_staging_orphans(&staging_root, Duration::from_secs(3600)) {
+                Ok(0) => {}
+                Ok(n) => log!(SystemLog::StagingOrphansCleaned(n as u64)),
+                Err(e) => log!(SystemLog::StagingOrphansSweepFailed(e.to_string())),
+            }
+        }
 
         // ML source state snapshot. Day 1 with no manifest renders as Dormant
         // — the rest of the stack still runs (3-source fusion).

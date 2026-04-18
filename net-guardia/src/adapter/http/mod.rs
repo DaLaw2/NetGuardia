@@ -8,6 +8,7 @@ pub mod fusion;
 pub mod health;
 pub mod logs;
 pub mod ml;
+pub mod model_upload;
 pub mod notification;
 pub mod rate_limit;
 pub mod report;

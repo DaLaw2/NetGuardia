@@ -155,5 +155,11 @@ loggable! {
 
         #[error("HTML report generated at {path}")]
         HtmlReportGenerated { path: String } => tracing::Level::INFO,
+
+        #[error("Cleaned {count} stale model-upload staging directories")]
+        StagingOrphansCleaned { count: u64 } => tracing::Level::INFO,
+
+        #[error("Staging-orphan sweep failed: {error}")]
+        StagingOrphansSweepFailed { error: String } => tracing::Level::WARN,
     }
 }

@@ -20,6 +20,8 @@ actix = { workspace = true }
 actix-web = { workspace = true }
 actix-cors = { workspace = true }
 actix-ws = { workspace = true }
+actix-multipart = "0.7"
+uuid = { version = "1", features = ["v4"] }
 rust-embed = "8.11.0"
 mime_guess = "2.0.5"
 url = "2.5.8"
