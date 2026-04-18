@@ -2,6 +2,7 @@ pub mod acl;
 pub mod api_keys;
 pub mod audit;
 pub mod auth;
+pub mod byo;
 pub mod default;
 pub mod filter;
 pub mod flow_trace;

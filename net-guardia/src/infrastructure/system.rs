@@ -344,6 +344,7 @@ impl System {
             force_https,
             shutdown_handle: shutdown_handle.clone(),
             suricata_manager: self.suricata_manager.clone(),
+            soar_engine: self.soar_engine.clone(),
         };
         let ready_for_http = ready_flag_for_set.clone();
         actix::spawn(async move {

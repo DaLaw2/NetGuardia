@@ -47,7 +47,7 @@ fn required_permission(path: &str, method: &Method) -> Option<String> {
         return Some("users:admin".to_string());
     } else if path.starts_with("/api/health/") || path.starts_with("/api/stats/") {
         "dashboard"
-    } else if path.starts_with("/api/ml/") {
+    } else if path.starts_with("/api/ml/") || path.starts_with("/api/byo/") {
         "ai_detection"
     } else if path.starts_with("/api/fusion/") {
         "fusion"

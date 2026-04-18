@@ -18,6 +18,18 @@ pub fn feature_is_known(name: &str) -> bool {
     FEATURE_REGISTRY.contains_key(name)
 }
 
+/// Every name (canonical or alias) the system accepts inside a
+/// `manifest.features` list, sorted alphabetically so the BYO
+/// Quickstart endpoint returns a deterministic ordering. Callers
+/// treat this as an opaque string list; aliases for the same
+/// underlying feature appear next to each other after sort only by
+/// coincidence, not as a structural guarantee.
+pub fn feature_registry_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = FEATURE_REGISTRY.keys().copied().collect();
+    names.sort_unstable();
+    names
+}
+
 impl FlowFeatures {
     pub fn extract(flow: &FlowData, feature_names: &[String]) -> Self {
         let precomputed = PrecomputedStats::compute(flow);
@@ -761,6 +773,28 @@ mod tests {
         for f in V10_FEATURES {
             assert!(feature_is_known(f), "v10 feature '{f}' missing from FEATURE_REGISTRY");
         }
+    }
+
+    #[test]
+    fn feature_registry_names_returns_sorted_unique_list() {
+        let names = feature_registry_names();
+        assert!(
+            names.len() > 30,
+            "FEATURE_REGISTRY should carry at least the v10 feature set plus aliases"
+        );
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "feature_registry_names must be sorted");
+        let mut dedup = names.clone();
+        dedup.dedup();
+        assert_eq!(
+            names.len(),
+            dedup.len(),
+            "feature_registry_names must have no duplicates"
+        );
+        // Spot-check a canonical + alias pair both surface.
+        assert!(names.contains(&"Flow Duration"));
+        assert!(names.contains(&"flow_duration"));
     }
 
     #[test]

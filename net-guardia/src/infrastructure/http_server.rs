@@ -11,7 +11,7 @@ use macros::log;
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::model_upload::PromoteLock;
 use crate::adapter::http::{
-    acl, api_keys, audit as audit_api, auth, default, filter, flow_trace, fusion, health as health_api,
+    acl, api_keys, audit as audit_api, auth, byo, default, filter, flow_trace, fusion, health as health_api,
     logs as logs_api, ml, model_upload, notification as notification_api, rate_limit as rate_limit_api,
     report as report_api, setup as setup_api, soar, stats, system as system_api,
 };
@@ -28,6 +28,7 @@ use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
+use crate::core::soar::engine::SoarEngine;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
@@ -69,6 +70,7 @@ pub struct HttpServerParams {
     pub force_https: ForceHttpsFlag,
     pub shutdown_handle: Arc<ShutdownHandle>,
     pub suricata_manager: Arc<SuricataManager>,
+    pub soar_engine: Arc<SoarEngine>,
 }
 
 /// CORS configuration shared by both full and setup servers.
@@ -234,6 +236,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let force_https = params.force_https;
     let shutdown_handle = params.shutdown_handle;
     let suricata_manager = params.suricata_manager;
+    let soar_engine = params.soar_engine;
     let port = app_config.http.http_server_bind_port;
 
     // Shared across every actix worker so concurrent model uploads
@@ -279,6 +282,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(playbook_service.clone()))
             .app_data(web::Data::from(rate_limit_service.clone()))
             .app_data(web::Data::from(suricata_manager.clone()))
+            .app_data(web::Data::from(soar_engine.clone()))
             .app_data(web::Data::from(promote_lock.clone()));
         app.wrap(SetupGuard)
             .service(
@@ -293,6 +297,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
                     .service(health_api::initialize())
                     .service(ml::initialize())
                     .service(model_upload::initialize())
+                    .service(byo::initialize())
                     .service(fusion::initialize())
                     .service(flow_trace::initialize())
                     .service(system_api::initialize())
