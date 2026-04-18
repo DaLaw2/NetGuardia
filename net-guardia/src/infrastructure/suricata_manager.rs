@@ -15,8 +15,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use macros::log;
-use parking_lot::RwLock;
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
@@ -29,7 +29,7 @@ use crate::model::system::suricata::SuricataHealth;
 
 pub struct SuricataManager {
     config: Arc<AppConfig>,
-    health: Arc<RwLock<SuricataHealth>>,
+    health: Arc<ArcSwap<SuricataHealth>>,
 }
 
 impl SuricataManager {
@@ -43,12 +43,12 @@ impl SuricataManager {
         };
         Arc::new(Self {
             config,
-            health: Arc::new(RwLock::new(initial)),
+            health: Arc::new(ArcSwap::from_pointee(initial)),
         })
     }
 
     /// Shared handle for HTTP handlers and the health broadcast.
-    pub fn health(&self) -> Arc<RwLock<SuricataHealth>> {
+    pub fn health(&self) -> Arc<ArcSwap<SuricataHealth>> {
         self.health.clone()
     }
 
@@ -73,20 +73,22 @@ impl SuricataManager {
         loop {
             // Pre-flight: validate binary + config exist before spawning.
             if let Err(e) = Self::preflight(&self.config) {
-                *self.health.write() = SuricataHealth::Stopped { reason: e.to_string() };
+                self.health
+                    .store(Arc::new(SuricataHealth::Stopped { reason: e.to_string() }));
                 return;
             }
 
             let mut child = match self.spawn_child() {
                 Ok(c) => c,
                 Err(e) => {
-                    *self.health.write() = SuricataHealth::Stopped { reason: e.to_string() };
+                    self.health
+                        .store(Arc::new(SuricataHealth::Stopped { reason: e.to_string() }));
                     return;
                 }
             };
 
             let pid = child.id().unwrap_or(0);
-            *self.health.write() = SuricataHealth::Running { pid };
+            self.health.store(Arc::new(SuricataHealth::Running { pid }));
             log!(SuricataLog::Started(pid));
 
             tokio::select! {
@@ -98,21 +100,21 @@ impl SuricataManager {
                     if self.config.suricata.auto_restart_on_crash {
                         let backoff = self.config.suricata.restart_backoff_secs;
                         log!(SuricataLog::CrashedRestartPending(reason.clone(), backoff));
-                        *self.health.write() = SuricataHealth::Stopped { reason };
+                        self.health.store(Arc::new(SuricataHealth::Stopped { reason }));
                         sleep(Duration::from_secs(backoff)).await;
                         continue;
                     } else {
                         log!(SuricataLog::Stopped(reason.clone()));
-                        *self.health.write() = SuricataHealth::Stopped { reason };
+                        self.health.store(Arc::new(SuricataHealth::Stopped { reason }));
                         return;
                     }
                 }
                 _ = &mut shutdown_rx => {
                     log!(SuricataLog::ShutdownRequested);
                     Self::graceful_stop(&mut child).await;
-                    *self.health.write() = SuricataHealth::Stopped {
+                    self.health.store(Arc::new(SuricataHealth::Stopped {
                         reason: "shutdown".to_string(),
-                    };
+                    }));
                     return;
                 }
             }

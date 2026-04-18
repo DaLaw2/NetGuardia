@@ -56,7 +56,10 @@ const SETTINGS_MAP: &[(&str, &[&str])] = &[
     ("misc", &["geoip_db_name"]),
     ("soar", &["soar_max_auto_block_cap", "soar_max_ttl_secs"]),
     ("ml", &["ml_drift_window_secs"]),
-    ("telegram", &["telegram_max_messages_per_minute"]),
+    (
+        "telegram",
+        &["telegram_rate_limit_max_messages", "telegram_rate_limit_window_secs"],
+    ),
     ("dns", &["dns_max_domains_per_request"]),
     ("smtp", &["smtp_host", "smtp_port", "smtp_username", "smtp_recipient"]),
 ];
@@ -129,7 +132,8 @@ impl ConfigService {
                 "ml_drift_window_secs": get("ml_drift_window_secs"),
             },
             "telegram": {
-                "telegram_max_messages_per_minute": get("telegram_max_messages_per_minute"),
+                "telegram_rate_limit_max_messages": get("telegram_rate_limit_max_messages"),
+                "telegram_rate_limit_window_secs": get("telegram_rate_limit_window_secs"),
             },
             "dns": {
                 "dns_max_domains_per_request": get("dns_max_domains_per_request"),

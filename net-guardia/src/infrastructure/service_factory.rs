@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
-use parking_lot::{Mutex, RwLock};
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
 
 use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
@@ -91,7 +92,7 @@ pub struct AppState {
     /// or to `Unavailable { stage, category, reason }` when any stage fails.
     /// Read by `SystemHealth` for the metrics broadcast and by HTTP handlers
     /// that render runtime status to the frontend.
-    pub ebpf_health: Arc<RwLock<EbpfHealth>>,
+    pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
     pub suricata_manager: Arc<SuricataManager>,
 }
 
@@ -138,7 +139,7 @@ impl ServiceFactory {
 
         // Shared eBPF health handle. Initialized Healthy; downgraded to
         // Unavailable with a classified reason if any stage below fails.
-        let ebpf_health = Arc::new(RwLock::new(EbpfHealth::Healthy));
+        let ebpf_health = Arc::new(ArcSwap::from_pointee(EbpfHealth::Healthy));
 
         // Attempt full eBPF bring-up. On any failure we classify the error,
         // write it into `ebpf_health`, and fall back to an `EbpfServices`
@@ -152,7 +153,7 @@ impl ServiceFactory {
             Err((stage, err)) => {
                 let health = ebpf_preflight::classify(stage, &err, None);
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
-                *ebpf_health.write() = health;
+                ebpf_health.store(Arc::new(health));
                 (
                     None,
                     None,

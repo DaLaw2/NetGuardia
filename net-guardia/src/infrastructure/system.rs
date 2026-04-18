@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, ProgramArray};
 use macros::log;
-use parking_lot::{Mutex, RwLock};
 use sd_notify::NotifyState;
 use tokio::signal::ctrl_c;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
@@ -65,26 +65,23 @@ pub enum ShutdownMode {
     Restart,
 }
 
-/// Handle for triggering shutdown from HTTP endpoints.
-/// Uses a parking_lot::Mutex<Option<oneshot::Sender>> so it can be shared as app_data.
+/// Handle for triggering shutdown from HTTP endpoints. Backed by a
+/// capacity-1 mpsc so the first trigger atomically wins via `try_send`,
+/// and subsequent calls receive `TrySendError::Full` — no lock, no
+/// `Option::take`, no `Mutex`.
 pub struct ShutdownHandle {
-    tx: Mutex<Option<oneshot::Sender<ShutdownMode>>>,
+    tx: mpsc::Sender<ShutdownMode>,
 }
 
 impl ShutdownHandle {
-    fn new(tx: oneshot::Sender<ShutdownMode>) -> Self {
-        Self {
-            tx: Mutex::new(Some(tx)),
-        }
+    fn new(tx: mpsc::Sender<ShutdownMode>) -> Self {
+        Self { tx }
     }
 
-    /// Trigger shutdown. Returns false if already triggered.
+    /// Trigger shutdown. Returns false if already triggered or the
+    /// receiver has been dropped.
     pub fn trigger(&self, mode: ShutdownMode) -> bool {
-        if let Some(tx) = self.tx.lock().take() {
-            tx.send(mode).is_ok()
-        } else {
-            false
-        }
+        self.tx.try_send(mode).is_ok()
     }
 }
 
@@ -115,7 +112,7 @@ pub struct System {
     pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
     pub shutdown_handle: Option<Arc<ShutdownHandle>>,
     _ingress_program_array: Option<ProgramArray<MapData>>,
-    pub ebpf_health: Arc<RwLock<EbpfHealth>>,
+    pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
     pub suricata_manager: Arc<SuricataManager>,
     suricata_shutdown: Option<oneshot::Sender<()>>,
 }
@@ -222,7 +219,7 @@ impl System {
             let iface = self.app_config.network.ingress_ifname.as_str();
             let health = ebpf_preflight::classify(EbpfFailStage::AfXdpBind, &e, Some(iface));
             log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
-            *self.ebpf_health.write() = health;
+            self.ebpf_health.store(Arc::new(health));
         }
         app_services.run().await?;
 
@@ -314,8 +311,10 @@ impl System {
         // SOAR engine started above (self.soar_engine.start succeeded)
         readiness_state.soar_engine_running.store(true, Ordering::SeqCst);
 
-        // Create shutdown channel for API-triggered shutdown/restart
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<ShutdownMode>();
+        // Create shutdown channel for API-triggered shutdown/restart.
+        // Capacity 1 means only the first `try_send` lands a value; later
+        // ones report Full, which `ShutdownHandle::trigger` surfaces as `false`.
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownMode>(1);
         let shutdown_handle = Arc::new(ShutdownHandle::new(shutdown_tx));
         self.shutdown_handle = Some(shutdown_handle.clone());
 
@@ -393,7 +392,7 @@ impl System {
             _ = ctrl_c() => {
                 Ok(ShutdownMode::Shutdown)
             }
-            mode = shutdown_rx => {
+            mode = shutdown_rx.recv() => {
                 Ok(mode.unwrap_or(ShutdownMode::Shutdown))
             }
         }
@@ -535,7 +534,7 @@ impl System {
                 };
                 let health = ebpf_preflight::classify(EbpfFailStage::XdpAttach, err, Some(iface));
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
-                *self.ebpf_health.write() = health;
+                self.ebpf_health.store(Arc::new(health));
             }
         }
 

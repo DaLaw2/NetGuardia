@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use chrono::{NaiveDateTime, Utc};
 use dashmap::DashMap;
 use macros::log;
-use parking_lot::RwLock;
 use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Mutex as TokioMutex, broadcast};
@@ -45,9 +45,9 @@ pub struct SoarEngine {
     pub(super) db: Arc<dyn AppRepo>,
     pub(super) access_control: Arc<dyn AccessControlPort>,
     /// In-memory cache of playbooks (loaded at startup, refreshed on change).
-    pub(super) playbooks: RwLock<Vec<Playbook>>,
+    pub(super) playbooks: ArcSwap<Vec<Playbook>>,
     /// In-memory cache of admin whitelist IPs.
-    pub(super) admin_whitelist: RwLock<HashSet<String>>,
+    pub(super) admin_whitelist: ArcSwap<HashSet<String>>,
     /// Cooldown tracker: maps (playbook_id, source_ip) → last execution time.
     pub(super) cooldowns: DashMap<CooldownKey, Instant>,
     /// Frequency tracker for frequency-based conditions.
@@ -83,8 +83,8 @@ impl SoarEngine {
         let engine = Self {
             db,
             access_control,
-            playbooks: RwLock::new(Vec::new()),
-            admin_whitelist: RwLock::new(HashSet::new()),
+            playbooks: ArcSwap::from_pointee(Vec::new()),
+            admin_whitelist: ArcSwap::from_pointee(HashSet::new()),
             cooldowns: DashMap::new(),
             frequency_tracker: FrequencyTracker::new(),
             active_block_count: AtomicU32::new(0),
@@ -201,21 +201,20 @@ impl SoarEngine {
             }
         }
 
-        *self.playbooks.write() = playbooks;
+        let playbook_count = playbooks.len();
+        self.playbooks.store(Arc::new(playbooks));
 
         // Load admin whitelist
         let whitelist = self.db.load_admin_whitelist()?;
-        *self.admin_whitelist.write() = whitelist.into_iter().collect();
+        let whitelist: HashSet<String> = whitelist.into_iter().collect();
+        let whitelist_count = whitelist.len();
+        self.admin_whitelist.store(Arc::new(whitelist));
 
         // Initialize block counter from DB
         let count = self.db.count_active_soar_blocks()?;
         self.active_block_count.store(count, Ordering::SeqCst);
 
-        log!(SoarLog::CacheLoaded(
-            self.playbooks.read().len(),
-            self.admin_whitelist.read().len(),
-            count,
-        ));
+        log!(SoarLog::CacheLoaded(playbook_count, whitelist_count, count));
 
         Ok(())
     }
@@ -759,18 +758,18 @@ mod tests {
         let engine = SoarEngine::new(db.clone(), mock, None, None, None, cache, None).expect("Failed to create engine");
 
         // Should have loaded default playbooks
-        let count = engine.playbooks.read().len();
+        let count = engine.playbooks.load().len();
         assert!(count > 0, "Should have loaded default playbooks");
 
         // Add a new playbook directly to DB
         db.insert_playbook("test_pb", "port_scan", None, None, None, 60).ok();
 
         // Cache should not have it yet
-        assert_eq!(engine.playbooks.read().len(), count);
+        assert_eq!(engine.playbooks.load().len(), count);
 
         // After reload, should have one more
         engine.reload_cache().expect("reload should succeed");
-        assert_eq!(engine.playbooks.read().len(), count + 1);
+        assert_eq!(engine.playbooks.load().len(), count + 1);
     }
 
     fn test_event(confidence: f32, country: Option<&str>, ip: &str, repeat: bool) -> ThreatDetectedEvent {

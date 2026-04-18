@@ -1,6 +1,7 @@
 use std::collections::{HashMap as StdHashMap, HashSet};
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::MapData;
 use aya::maps::lpm_trie::{Key, LpmTrie};
@@ -23,7 +24,7 @@ struct GeoIndex {
 pub struct GeoBlock {
     geo_block_v4: RwLock<Option<LpmTrie<MapData, u32, u8>>>,
     geo_block_v6: RwLock<Option<LpmTrie<MapData, u128, u8>>>,
-    blocked_countries: RwLock<HashSet<String>>,
+    blocked_countries: ArcSwap<HashSet<String>>,
     index: Arc<GeoIndex>,
 }
 
@@ -43,7 +44,7 @@ impl GeoBlock {
         Ok(Self {
             geo_block_v4: RwLock::new(Some(v4_trie)),
             geo_block_v6: RwLock::new(Some(v6_trie)),
-            blocked_countries: RwLock::new(HashSet::new()),
+            blocked_countries: ArcSwap::from_pointee(HashSet::new()),
             index: Arc::new(index),
         })
     }
@@ -63,7 +64,7 @@ impl GeoBlock {
         Self {
             geo_block_v4: RwLock::new(None),
             geo_block_v6: RwLock::new(None),
-            blocked_countries: RwLock::new(HashSet::new()),
+            blocked_countries: ArcSwap::from_pointee(HashSet::new()),
             index: Arc::new(index),
         }
     }
@@ -116,42 +117,44 @@ impl GeoBlock {
 
     /// Block multiple countries at once, rebuilding tries only once.
     pub fn block_countries(&self, country_codes: &[String]) -> Result<u64, Error> {
-        {
-            let mut countries = self.blocked_countries.write();
+        self.blocked_countries.rcu(|cur| {
+            let mut next: HashSet<String> = (**cur).clone();
             for code in country_codes {
                 let upper = code.trim().to_uppercase();
                 if upper.len() == 2 && upper.chars().all(|c| c.is_ascii_alphabetic()) {
-                    countries.insert(upper);
+                    next.insert(upper);
                 }
             }
-        }
+            next
+        });
         self.rebuild_tries()
     }
 
     /// Unblock multiple countries at once, rebuilding tries only once.
     pub fn unblock_countries(&self, country_codes: &[String]) -> Result<u64, Error> {
-        {
-            let mut countries = self.blocked_countries.write();
+        self.blocked_countries.rcu(|cur| {
+            let mut next: HashSet<String> = (**cur).clone();
             for code in country_codes {
-                countries.remove(&code.trim().to_uppercase());
+                next.remove(&code.trim().to_uppercase());
             }
-        }
+            next
+        });
         self.rebuild_tries()
     }
 
     pub fn get_blocked_countries(&self) -> Vec<String> {
-        self.blocked_countries.read().iter().cloned().collect()
+        self.blocked_countries.load().iter().cloned().collect()
     }
 
     /// Rebuild LPM tries from pre-indexed data. Fast — no DB scan.
     fn rebuild_tries(&self) -> Result<u64, Error> {
-        let countries = self.blocked_countries.read().clone();
+        let countries = self.blocked_countries.load_full();
 
         // Collect entries from index (no DB scan)
         let mut v4_entries: Vec<(Key<u32>, u8)> = Vec::new();
         let mut v6_entries: Vec<(Key<u128>, u8)> = Vec::new();
 
-        for code in &countries {
+        for code in countries.iter() {
             if let Some(prefixes) = self.index.v4.get(code) {
                 for &(ip_be, prefix_len) in prefixes {
                     v4_entries.push((Key::new(prefix_len, ip_be), 1u8));

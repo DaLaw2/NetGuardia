@@ -2,6 +2,7 @@ use std::env::consts;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
 use macros::log;
 use sysinfo::{Components, Networks, System};
 use tokio::sync::{RwLock, broadcast, oneshot};
@@ -22,11 +23,11 @@ pub struct SystemHealth {
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     ingress_interface: String,
     egress_interface: String,
-    ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
+    ebpf_health: Arc<ArcSwap<EbpfHealth>>,
 }
 
 impl SystemHealth {
-    pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>) -> Result<Self, Error> {
+    pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
         let (broadcast_tx, _) = broadcast::channel(100);
 
         let health = SystemHealth {
@@ -74,7 +75,7 @@ impl SystemHealth {
         let networks = self.networks.read().await;
         let components = self.components.read().await;
 
-        let ebpf = self.ebpf_health.read().clone();
+        let ebpf = (**self.ebpf_health.load()).clone();
         let metrics = Self::collect_metrics(
             &system,
             &networks,
@@ -243,7 +244,7 @@ impl SystemHealth {
         let networks = self.networks.read().await;
         let components = self.components.read().await;
 
-        let ebpf = self.ebpf_health.read().clone();
+        let ebpf = (**self.ebpf_health.load()).clone();
         Self::collect_metrics(
             &system,
             &networks,
@@ -257,7 +258,7 @@ impl SystemHealth {
     /// Returns a handle to the shared eBPF health state. Consumers (HTTP
     /// handlers, setup wizard, frontend) can read the current eBPF state
     /// without going through the full metrics broadcast.
-    pub fn ebpf_health(&self) -> &Arc<parking_lot::RwLock<EbpfHealth>> {
+    pub fn ebpf_health(&self) -> &Arc<ArcSwap<EbpfHealth>> {
         &self.ebpf_health
     }
 

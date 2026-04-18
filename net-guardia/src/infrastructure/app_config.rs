@@ -69,7 +69,8 @@ impl AppConfig {
             // ML
             ("ml_drift_window_secs", "3600".into()),
             // Telegram
-            ("telegram_max_messages_per_minute", "20".into()),
+            ("telegram_rate_limit_max_messages", "20".into()),
+            ("telegram_rate_limit_window_secs", "60".into()),
             // Directories
             ("report_dir", "/var/lib/netguardia/reports".into()),
             ("log_dir", "logs".into()),

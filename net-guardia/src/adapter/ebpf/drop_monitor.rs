@@ -1,6 +1,7 @@
 use std::mem;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
@@ -9,14 +10,13 @@ use tokio::time::interval;
 
 use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent as RawDropEvent;
-use parking_lot::Mutex;
 
 use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
-use crate::model::monitoring::drop_event::{DropCounters, DropEventMessage};
+use crate::model::monitoring::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,
-    counters: Mutex<DropCounters>,
+    counters: DropCountersAtomic,
 }
 
 impl DropMonitor {
@@ -24,7 +24,7 @@ impl DropMonitor {
         let (tx, _) = broadcast::channel(DROP_CHANNEL_CAPACITY);
         Self {
             broadcast_tx: tx,
-            counters: Mutex::new(DropCounters::default()),
+            counters: DropCountersAtomic::default(),
         }
     }
 
@@ -33,25 +33,24 @@ impl DropMonitor {
     }
 
     pub fn get_counters(&self) -> DropCounters {
-        self.counters.lock().clone()
+        self.counters.snapshot()
     }
 
     fn process_event(&self, raw: &RawDropEvent) {
-        // Update counters
-        {
-            let mut c = self.counters.lock();
-            c.total += 1;
-            match raw.reason {
-                DROP_REASON_ACL_BLACKLIST => c.acl_blacklist += 1,
-                DROP_REASON_RATE_LIMIT_PKT => c.rate_limit_pkt += 1,
-                DROP_REASON_RATE_LIMIT_SYN => c.rate_limit_syn += 1,
-                DROP_REASON_RATE_LIMIT_UDP => c.rate_limit_udp += 1,
-                DROP_REASON_RATE_LIMIT_DNS => c.rate_limit_dns += 1,
-                DROP_REASON_PROTOCOL_FILTER => c.protocol_filter += 1,
-                DROP_REASON_DNS_BLACKLIST => c.dns_blacklist += 1,
-                DROP_REASON_GEO_BLOCK => c.geo_block += 1,
-                _ => {}
-            }
+        self.counters.total.fetch_add(1, Ordering::Relaxed);
+        let bucket = match raw.reason {
+            DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
+            DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
+            DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
+            DROP_REASON_RATE_LIMIT_UDP => Some(&self.counters.rate_limit_udp),
+            DROP_REASON_RATE_LIMIT_DNS => Some(&self.counters.rate_limit_dns),
+            DROP_REASON_PROTOCOL_FILTER => Some(&self.counters.protocol_filter),
+            DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
+            DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
+            _ => None,
+        };
+        if let Some(counter) = bucket {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
 
         let reason_str = reason_to_str(raw.reason);

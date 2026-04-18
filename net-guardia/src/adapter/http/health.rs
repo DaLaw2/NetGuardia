@@ -22,11 +22,11 @@ async fn get_health_status(health: web::Data<SystemHealth>) -> impl Responder {
 }
 
 async fn get_ebpf_health(health: web::Data<SystemHealth>) -> impl Responder {
-    let ebpf = health.ebpf_health().read().clone();
+    let ebpf = (**health.ebpf_health().load()).clone();
     HttpResponse::Ok().json(ebpf)
 }
 
 async fn get_suricata_health(manager: web::Data<SuricataManager>) -> impl Responder {
-    let state = manager.health().read().clone();
+    let state = (**manager.health().load()).clone();
     HttpResponse::Ok().json(state)
 }

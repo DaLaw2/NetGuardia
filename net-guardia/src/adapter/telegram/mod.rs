@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use macros::log;
-use parking_lot::Mutex;
 use reqwest::Client;
 use tokio::time::sleep;
 
@@ -22,8 +22,10 @@ pub struct TelegramAdapter {
     notif: Arc<dyn SettingRepo>,
     repo: Arc<dyn AppRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
-    /// Rate limiter: (count, window_start)
-    rate_state: Mutex<(u32, Instant)>,
+    /// Packed rate-limit state: high 32 bits = window-start unix seconds,
+    /// low 32 bits = count consumed in this window. Updated via CAS so the
+    /// hot path stays lock-free.
+    rate_state: AtomicU64,
 }
 
 impl TelegramAdapter {
@@ -42,7 +44,7 @@ impl TelegramAdapter {
             notif,
             repo,
             secrets,
-            rate_state: Mutex::new((0, Instant::now())),
+            rate_state: AtomicU64::new(0),
         })
     }
 
@@ -73,30 +75,60 @@ impl TelegramAdapter {
         }
     }
 
-    /// Check rate limit. Returns true if send is allowed.
-    fn check_rate_limit(&self) -> bool {
-        let mut state = self.rate_state.lock();
-        let (count, window_start) = &mut *state;
-
-        // Reset window if >60s has passed
-        if window_start.elapsed() > Duration::from_secs(60) {
-            *count = 0;
-            *window_start = Instant::now();
-        }
-
-        let max_per_min: u32 = self
-            .repo
-            .get_setting("telegram_max_messages_per_minute")
+    /// Read the configured per-window message cap from settings.
+    fn rate_limit_max_messages(&self) -> u32 {
+        self.repo
+            .get_setting("telegram_rate_limit_max_messages")
             .ok()
             .flatten()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(20);
-        if *count >= max_per_min {
+            .unwrap_or(20)
+    }
+
+    /// Read the configured window length (seconds) from settings.
+    fn rate_limit_window_secs(&self) -> u32 {
+        self.repo
+            .get_setting("telegram_rate_limit_window_secs")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60)
+    }
+
+    /// Check rate limit. Returns true if send is allowed.
+    fn check_rate_limit(&self) -> bool {
+        let max_messages = self.rate_limit_max_messages();
+        if max_messages == 0 {
             return false;
         }
+        let window_secs = self.rate_limit_window_secs().max(1);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
 
-        *count += 1;
-        true
+        loop {
+            let cur = self.rate_state.load(Ordering::Acquire);
+            let count = cur as u32;
+            let window = (cur >> 32) as u32;
+
+            let (next_count, next_window) = if now.saturating_sub(window) >= window_secs {
+                (1u32, now)
+            } else if count >= max_messages {
+                return false;
+            } else {
+                (count + 1, window)
+            };
+
+            let new = ((next_window as u64) << 32) | next_count as u64;
+            if self
+                .rate_state
+                .compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
     }
 
     /// Send a message via Telegram Bot API with retry on 429.
@@ -200,15 +232,9 @@ impl AlertNotifier for TelegramAdapter {
         };
 
         if !self.check_rate_limit() {
-            let max_per_min: u32 = self
-                .repo
-                .get_setting("telegram_max_messages_per_minute")
-                .ok()
-                .flatten()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(20);
             log!(SystemLog::TelegramLocalRateLimitDropped(
-                max_per_min,
+                self.rate_limit_max_messages(),
+                self.rate_limit_window_secs(),
                 payload.source_ip.clone(),
             ));
             return Ok(());

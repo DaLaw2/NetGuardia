@@ -41,7 +41,7 @@ impl SoarEngine {
         }
 
         // Check admin whitelist
-        if self.admin_whitelist.read().contains(&event.source_ip) {
+        if self.admin_whitelist.load().contains(&event.source_ip) {
             log!(SoarLog::WhitelistSkipped(
                 event.source_ip.clone(),
                 playbook.name.clone()
@@ -465,7 +465,7 @@ impl SoarEngine {
     /// Only fires when source_ip is present.
     pub(super) async fn execute_fallback(&self, event: &ThreatDetectedEvent) -> Result<(), Error> {
         // Check admin whitelist — never block admin IPs even in fallback
-        if self.admin_whitelist.read().contains(&event.source_ip) {
+        if self.admin_whitelist.load().contains(&event.source_ip) {
             log!(SoarLog::WhitelistSkipped(
                 event.source_ip.clone(),
                 "fallback".to_string()

@@ -33,8 +33,8 @@ const DEFAULT_COOLDOWN_EXPIRY_SECS: u64 = 3600;
 impl SoarEngine {
     /// Find playbooks matching the event via trigger_event + multi-condition AND logic.
     pub(super) fn find_matching_playbooks(&self, event: &ThreatDetectedEvent) -> Vec<Playbook> {
-        let playbooks = self.playbooks.read();
-        playbooks
+        self.playbooks
+            .load()
             .iter()
             .filter(|pb| pb.enabled && pb.trigger_event == event.attack_type)
             .filter(|pb| self.evaluate_conditions(pb, event))
@@ -257,14 +257,13 @@ impl SoarEngine {
     /// Remove expired cooldown entries to prevent unbounded growth.
     /// Called by TTL scheduler every 60 seconds.
     pub fn cleanup_expired_cooldowns(&self) {
-        let max_cooldown_secs = {
-            let playbooks = self.playbooks.read();
-            playbooks
-                .iter()
-                .map(|p| p.cooldown_secs as u64)
-                .max()
-                .unwrap_or(DEFAULT_COOLDOWN_EXPIRY_SECS)
-        };
+        let max_cooldown_secs = self
+            .playbooks
+            .load()
+            .iter()
+            .map(|p| p.cooldown_secs as u64)
+            .max()
+            .unwrap_or(DEFAULT_COOLDOWN_EXPIRY_SECS);
         let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(DEFAULT_COOLDOWN_EXPIRY_SECS));
         let before = self.cooldowns.len();
         self.cooldowns.retain(|_, instant| instant.elapsed() < expiry);
@@ -310,8 +309,11 @@ impl SoarEngine {
     /// admin so they don't assume a `would_fire=true` playbook will
     /// definitely fire on the next matching real event.
     pub fn dry_run(&self, event: &ThreatDetectedEvent) -> Vec<DryRunMatch> {
-        let playbooks = self.playbooks.read();
-        playbooks.iter().map(|pb| simulate_playbook(pb, event)).collect()
+        self.playbooks
+            .load()
+            .iter()
+            .map(|pb| simulate_playbook(pb, event))
+            .collect()
     }
 
     /// Check if an IP address is private/loopback/link-local (SSRF protection).

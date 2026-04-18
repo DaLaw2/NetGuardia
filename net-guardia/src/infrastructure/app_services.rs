@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use arc_swap::ArcSwap;
 use crossbeam::queue::SegQueue;
 use macros::log;
 use tokio::sync::oneshot;
@@ -50,7 +51,7 @@ impl AppServices {
         inference_config: Arc<MLInferenceConfig>,
         ml_manifest: Option<ModelManifest>,
         drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
-        ebpf_health: Arc<parking_lot::RwLock<EbpfHealth>>,
+        ebpf_health: Arc<ArcSwap<EbpfHealth>>,
         comm: Arc<CommunicationManager>,
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone(), ebpf_health)?;

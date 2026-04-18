@@ -111,8 +111,8 @@ loggable! {
         #[error("Telegram not configured, skipping alert")]
         TelegramNotConfiguredSkipped => tracing::Level::DEBUG,
 
-        #[error("Telegram rate limit reached ({max_per_min}/min), dropping alert for IP {source_ip}")]
-        TelegramLocalRateLimitDropped { max_per_min: u32, source_ip: String } => tracing::Level::WARN,
+        #[error("Telegram rate limit reached ({max_messages} per {window_secs}s), dropping alert for IP {source_ip}")]
+        TelegramLocalRateLimitDropped { max_messages: u32, window_secs: u32, source_ip: String } => tracing::Level::WARN,
 
         #[error("Stats aggregator started (1h interval)")]
         StatsAggregatorStarted => tracing::Level::INFO,

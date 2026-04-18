@@ -1,8 +1,7 @@
 use core::str;
-use std::collections::HashSet;
 
 use common::model::dns_name::DnsName;
-use parking_lot::RwLock;
+use dashmap::DashSet;
 
 use crate::interface::port::dns_filter_api::DnsFilterPort;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
@@ -10,30 +9,33 @@ use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
 pub struct DnsFilter {
-    blacklist: RwLock<HashSet<DnsName>>,
+    blacklist: DashSet<DnsName>,
 }
 
 impl DnsFilter {
     pub fn new() -> Self {
         Self {
-            blacklist: RwLock::new(HashSet::new()),
+            blacklist: DashSet::new(),
         }
     }
 
     pub fn add_domain(&self, domain: &str) -> Result<(), Error> {
         let name = domain_to_wire_format(domain)?;
-        self.blacklist.write().insert(name);
+        self.blacklist.insert(name);
         Ok(())
     }
 
     pub fn remove_domain(&self, domain: &str) -> Result<(), Error> {
         let name = domain_to_wire_format(domain)?;
-        self.blacklist.write().remove(&name);
+        self.blacklist.remove(&name);
         Ok(())
     }
 
     pub fn list_domains(&self) -> Vec<String> {
-        self.blacklist.read().iter().filter_map(wire_format_to_domain).collect()
+        self.blacklist
+            .iter()
+            .filter_map(|entry| wire_format_to_domain(&entry))
+            .collect()
     }
 
     /// Fast-path helper combining `parse_query_name` + `is_blacklisted` — used
@@ -47,12 +49,11 @@ impl DnsFilter {
 
     /// Check if a DNS query name (in wire format) or any of its parent domains is blacklisted.
     pub fn is_blacklisted(&self, name: &DnsName, name_len: usize) -> bool {
-        let bl = self.blacklist.read();
-        if bl.is_empty() {
+        if self.blacklist.is_empty() {
             return false;
         }
         // Check exact match
-        if bl.contains(name) {
+        if self.blacklist.contains(name) {
             return true;
         }
         // Check parent domains
@@ -76,7 +77,7 @@ impl DnsFilter {
             let mut parent = DnsName::zeroed();
             let remaining = name_len - offset;
             parent.data[..remaining.min(128)].copy_from_slice(&name.data[offset..offset + remaining.min(128)]);
-            if bl.contains(&parent) {
+            if self.blacklist.contains(&parent) {
                 return true;
             }
         }
