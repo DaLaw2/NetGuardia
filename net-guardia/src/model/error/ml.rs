@@ -28,6 +28,10 @@ traceable! {
         FeatureMismatch { model: PathBuf, declared: usize, onnx_dim: usize } => tracing::Level::ERROR,
 
         #[no_source]
+        #[error("Model load timed out after {seconds}s: {path:?}")]
+        ModelLoadTimeout { path: PathBuf, seconds: u64 } => tracing::Level::ERROR,
+
+        #[no_source]
         #[error("Unknown feature '{name}' — not registered in FEATURE_REGISTRY")]
         UnknownFeature { name: String } => tracing::Level::ERROR,
 
