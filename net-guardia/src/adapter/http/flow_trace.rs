@@ -105,7 +105,6 @@ pub fn is_safe_flow_trace_name(name: &str) -> bool {
 /// `Engine` if the logger is active. Returns `None` when Flow Trace
 /// isn't enabled (Dormant state).
 fn flow_trace_directory(engine: &web::Data<Engine>) -> Option<PathBuf> {
-    let _ = engine; // placeholder until Engine exposes logger directory
     engine.traffic_logger_directory().map(Path::to_path_buf)
 }
 

@@ -35,6 +35,7 @@ use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::system::ShutdownHandle;
 use crate::interface::port::api_key::ApiKeyRepo;
 use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::audit::AuditRepo;
 use crate::model::config::constants::HTTP_FALLBACK_PORT;
 use crate::model::error::Error;
 use crate::model::error::http::HttpError;
@@ -155,6 +156,7 @@ pub fn start_setup_server(
             .wrap(cors(vec![]))
             .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
             .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyRepo>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn AuditRepo>))
             .app_data(web::Data::from(db.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
@@ -255,6 +257,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(drop_monitor.clone()))
             .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
             .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyRepo>))
+            .app_data(web::Data::from(db.clone() as Arc<dyn AuditRepo>))
             .app_data(web::Data::from(db.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))

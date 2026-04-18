@@ -366,7 +366,11 @@ impl Database {
                 "system:admin",
                 "users:read",
                 "users:write",
-                "users:admin"
+                "users:admin",
+                "fusion:read",
+                "fusion:write",
+                "flow_trace:read",
+                "flow_trace:write"
             ])
             .to_string();
             let viewer_permissions = serde_json::json!([
@@ -380,7 +384,9 @@ impl Database {
                 "dns_filter:read",
                 "rate_limit:read",
                 "protocol_filter:read",
-                "system:read"
+                "system:read",
+                "fusion:read",
+                "flow_trace:read"
             ])
             .to_string();
 
@@ -1652,6 +1658,28 @@ impl Database {
         Ok(rows)
     }
 
+    /// Read audit entries whose `action` matches exactly, newest-first,
+    /// capped at `limit`. Drives the fusion explain endpoint.
+    pub fn list_audit_logs_by_action(&self, action: &str, limit: i64) -> Result<Vec<AuditLogEntry>, Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, actor, action, detail, ts FROM audit_log WHERE action = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![action, limit], |row| {
+                Ok(AuditLogEntry {
+                    id: row.get(0)?,
+                    actor: row.get(1)?,
+                    action: row.get(2)?,
+                    detail: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Walk the entire audit_log in id order and verify the hash chain.
     /// Returns `Ok(count)` on success; returns `Err` at the first mismatch,
     /// naming the offending row id and the kind of mismatch.
@@ -2066,6 +2094,9 @@ impl AuditRepo for Database {
     }
     fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
         self.list_audit_logs()
+    }
+    fn list_audit_logs_by_action(&self, action: &str, limit: i64) -> Result<Vec<AuditLogEntry>, Error> {
+        self.list_audit_logs_by_action(action, limit)
     }
     fn verify_audit_log_chain(&self) -> Result<usize, Error> {
         self.verify_audit_log_chain()

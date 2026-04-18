@@ -23,6 +23,12 @@ pub trait AuditRepo: Send + Sync {
     /// Read all audit entries ordered by id ASC.
     fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error>;
 
+    /// Read audit entries whose `action` exactly matches, newest first,
+    /// capped at `limit`. Drives the fusion explain endpoint, which
+    /// filters on `fused_threat_emitted` rather than walking the full
+    /// chain for every request.
+    fn list_audit_logs_by_action(&self, action: &str, limit: i64) -> Result<Vec<AuditLogEntry>, Error>;
+
     /// Walk the full chain and verify every `row_hash` matches
     /// `H(ts || actor || action || detail || prev_hash)`. Returns the number
     /// of entries verified. Errors on the first broken link.

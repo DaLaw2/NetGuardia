@@ -49,6 +49,10 @@ fn required_permission(path: &str, method: &Method) -> Option<String> {
         "dashboard"
     } else if path.starts_with("/api/ml/") {
         "ai_detection"
+    } else if path.starts_with("/api/fusion/") {
+        "fusion"
+    } else if path.starts_with("/api/flow-trace/") {
+        "flow_trace"
     } else if path.starts_with("/api/acl/geo/") {
         "geo_block"
     } else if path.starts_with("/api/acl/") {
