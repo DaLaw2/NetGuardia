@@ -651,22 +651,23 @@ mod tests {
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
             dest_ip: "10.0.0.1".to_string(),
-            attack_type: "threat_detected".to_string(),
+            attack_type: "c2_beacon".to_string(),
             confidence: 0.95,
             flow_count: 1,
             packet_rate: 0.0,
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![DetectionSource::ML],
-            active_source_count: 1,
-            fused_confidence: 0.95,
+            sources: vec![DetectionSource::Suricata, DetectionSource::ML],
+            active_source_count: 2,
+            fused_confidence: 0.97,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,
         };
 
-        // Find a matching playbook — default "threat_detected" playbook should exist
+        // The multi-source c2_beacon seed playbook matches a 2-source fusion
+        // event and its first action is block_ip.
         let playbooks = engine.find_matching_playbooks(&event);
         assert!(!playbooks.is_empty(), "Should have matching playbooks");
 
@@ -698,16 +699,16 @@ mod tests {
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
             dest_ip: "10.0.0.1".to_string(),
-            attack_type: "threat_detected".to_string(),
+            attack_type: "c2_beacon".to_string(),
             confidence: 0.95,
             flow_count: 1,
             packet_rate: 0.0,
             protocol: 6,
             geoip_country: None,
             is_repeat_offender: false,
-            sources: vec![DetectionSource::ML],
-            active_source_count: 1,
-            fused_confidence: 0.95,
+            sources: vec![DetectionSource::Suricata, DetectionSource::ML],
+            active_source_count: 2,
+            fused_confidence: 0.97,
             ae_score: 0.0,
             anomaly_score: 0.0,
             c2_score: 0.0,

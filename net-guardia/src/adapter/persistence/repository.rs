@@ -1552,46 +1552,40 @@ impl Database {
         }
         drop(conn);
 
-        // 1. default_block: threat_detected, threshold 0.85 → block_ip(1800s) + log
-        let pb1 = self.insert_playbook("default_block", "threat_detected", Some(0.85), None, None, 300)?;
-        self.insert_playbook_action(pb1, 1, "block_ip", r#"{"ttl_secs": 1800}"#)?;
-        self.insert_playbook_action(pb1, 2, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb1, "threshold", ">=", "0.85", None)?;
+        // 1. brute_force_block: brute_force, count 5 in 60s → block_ip(3600s) + send_telegram + log
+        let pb1 = self.insert_playbook("brute_force_block", "brute_force", None, Some(5), Some(60), 600)?;
+        self.insert_playbook_action(pb1, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
+        self.insert_playbook_action(pb1, 2, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb1, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb1, "frequency", ">=", "5", Some("60"))?;
 
-        // 2. brute_force_block: brute_force, count 5 in 60s → block_ip(3600s) + send_telegram + log
-        let pb2 = self.insert_playbook("brute_force_block", "brute_force", None, Some(5), Some(60), 600)?;
-        self.insert_playbook_action(pb2, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb2, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb2, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb2, "frequency", ">=", "5", Some("60"))?;
+        // 2. port_scan_alert: port_scan, threshold 0.7 → send_telegram + log (no block)
+        let pb2 = self.insert_playbook("port_scan_alert", "port_scan", Some(0.7), None, None, 300)?;
+        self.insert_playbook_action(pb2, 1, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb2, 2, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb2, "threshold", ">=", "0.7", None)?;
 
-        // 3. port_scan_alert: port_scan, threshold 0.7 → send_telegram + log (no block)
-        let pb3 = self.insert_playbook("port_scan_alert", "port_scan", Some(0.7), None, None, 300)?;
-        self.insert_playbook_action(pb3, 1, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb3, 2, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb3, "threshold", ">=", "0.7", None)?;
-
-        // 4. fusion_c2_multi_source_block — C2 beacon observed by ≥2 sources
+        // 3. fusion_c2_multi_source_block — C2 beacon observed by ≥2 sources
         //    (e.g. Suricata trojan-activity + Beaconing CV + ML c2 class) is
         //    the highest-precision fusion signal we ship. Block for 1h and
         //    notify, no solo-source threshold so single-source C2 hits still
         //    require the solo playbook below to act.
-        let pb4 = self.insert_playbook("fusion_c2_multi_source_block", "c2_beacon", None, None, None, 600)?;
-        self.insert_playbook_action(pb4, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb4, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb4, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb4, "multi_source_min", ">=", "2", None)?;
+        let pb3 = self.insert_playbook("fusion_c2_multi_source_block", "c2_beacon", None, None, None, 600)?;
+        self.insert_playbook_action(pb3, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
+        self.insert_playbook_action(pb3, 2, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb3, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb3, "multi_source_min", ">=", "2", None)?;
 
-        // 5. fusion_c2_suricata_solo_high_block — the escape hatch for
+        // 4. fusion_c2_suricata_solo_high_block — the escape hatch for
         //    Suricata signature hits with very high confidence (>=0.95).
         //    Lets known-good rules fire without waiting for agreement from a
         //    second source, matching how analysts intuitively treat a
         //    signature "dead-on" match.
-        let pb5 = self.insert_playbook("fusion_c2_suricata_solo_high_block", "c2_beacon", None, None, None, 600)?;
-        self.insert_playbook_action(pb5, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb5, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb5, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb5, "single_source_high", "==", "Suricata", Some("0.95"))?;
+        let pb4 = self.insert_playbook("fusion_c2_suricata_solo_high_block", "c2_beacon", None, None, None, 600)?;
+        self.insert_playbook_action(pb4, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
+        self.insert_playbook_action(pb4, 2, "send_telegram", "{}")?;
+        self.insert_playbook_action(pb4, 3, "log", r#"{"level": "warn"}"#)?;
+        self.insert_playbook_condition(pb4, "single_source_high", "==", "Suricata", Some("0.95"))?;
 
         Ok(())
     }
