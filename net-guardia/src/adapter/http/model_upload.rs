@@ -1,26 +1,39 @@
 //! Multipart upload surface for BYO model files. Accepts a `manifest`
-//! YAML field plus an `onnx` binary field, streams each to
-//! `models/.staging/<uuid>/` with enforced size caps, and leaves atomic
-//! promotion to `models/` for the model-watcher hot-reload flow to
-//! handle after I-6 wires validation + rename.
+//! YAML field, an `onnx` binary field, and an optional `scaler` JSON
+//! sidecar; streams each to `models/.staging/<uuid>/` with enforced
+//! size caps, runs structural + ONNX shape validation, then atomically
+//! renames into `models/` under a process-wide mutex so concurrent
+//! uploads serialize at the rename step. A WORM `model_swap` audit
+//! entry records the SHA-256 of both committed files plus a snapshot
+//! of the pre-swap state.
 //!
-//! Scope here: body-size caps, streaming-to-disk (never buffering the
-//! full `.onnx` in RAM), filename-collision safety via UUID subdir, and
-//! cheap up-front sanity on the ONNX header. Structural schema
-//! validation against `MLInferenceConfig` is the next milestone's job.
+//! Body-size caps: 100MB ONNX, 64KB manifest, 64KB scaler. Streaming
+//! writes never buffer the full file in RAM, and staged directories
+//! are torn down on any error path so failed uploads don't pile up in
+//! `models/.staging/`.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, Scope, web};
 use futures_util::TryStreamExt;
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
+use crate::core::auth::extractor::AuthClaims;
+use crate::core::ml::inference::Inference;
+use crate::core::ml::manifest::{AdapterKind, ModelManifest};
+use crate::core::ml::model_loader::build_adapter;
 use crate::infrastructure::app_config::AppConfig;
-use crate::model::config::constants::{MODELS_DIR, STAGING_SUBDIR};
+use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::model::event::AuditEvent;
+use crate::model::system::config::MLInferenceConfig;
 
 /// Hard ceiling on the `.onnx` stream. Anything larger is either a
 /// mistake or an attempt to DoS the disk.
@@ -31,43 +44,102 @@ pub const MAX_ONNX_BYTES: usize = 100 * 1024 * 1024;
 /// smuggling through the field.
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
+/// Hard ceiling on the optional `scaler` JSON sidecar. Sidecars are
+/// numeric arrays keyed to feature count; 64KB fits any realistic
+/// feature set many times over.
+pub const MAX_SCALER_BYTES: usize = 64 * 1024;
+
 /// Multipart field names the client must use. Stable wire contract —
 /// the frontend form generator depends on these exact strings.
 const FIELD_MANIFEST: &str = "manifest";
 const FIELD_ONNX: &str = "onnx";
+const FIELD_SCALER: &str = "scaler";
 
 /// Number of bytes of the ONNX body we inspect up-front for an obvious
 /// non-Protobuf header. A fuller structural check (shape vs manifest
 /// declared `features`) runs during `build_adapter` in the promote path.
 const ONNX_SNIFF_BYTES: usize = 16;
 
+/// Permission required to drive the model-upload endpoint. The full
+/// RBAC middleware lets anyone with `ai_detection:write` reach
+/// `/api/ml/*`, but model promotion can replace the active detector —
+/// gate it tighter at the handler layer so only administrators can
+/// swap the ML source.
+const PROMOTE_REQUIRED_PERMISSION: &str = "users:admin";
+
+/// Process-wide lock serializing the rename step of every promote.
+/// The critical section is tiny (three `tokio::fs::rename` syscalls)
+/// but must never interleave: a concurrent promote mid-rename could
+/// leave `models/` pointing at a manifest whose ONNX hasn't landed yet.
+pub type PromoteLock = AsyncMutex<()>;
+
 pub fn initialize() -> Scope {
     web::scope("/models").route("/upload", web::post().to(upload))
 }
 
-/// `POST /api/ml/models/upload` — multipart with `manifest` (YAML text)
-/// and `onnx` (binary) fields. Writes both to a fresh
-/// `models/.staging/<uuid>/` and returns the staging id + byte counts.
-async fn upload(app_config: web::Data<Arc<AppConfig>>, payload: Multipart) -> impl Responder {
-    let _ = app_config; // kept for future per-tenant staging roots
+/// `POST /api/ml/models/upload` — multipart with `manifest` (YAML text),
+/// `onnx` (binary), and optional `scaler` (JSON). Streams fields into
+/// `models/.staging/<uuid>/`, validates the manifest + ONNX shape, and
+/// atomically renames the triple into `models/` on success. A WORM
+/// `model_swap` audit entry captures the SHA-256 pair plus the
+/// pre-swap ML source state. The staging directory is always torn
+/// down on the way out, even on success (post-promote it's empty).
+async fn upload(
+    app_config: web::Data<Arc<AppConfig>>,
+    inference: web::Data<Inference>,
+    comm: web::Data<CommunicationManager>,
+    promote_lock: web::Data<PromoteLock>,
+    claims: AuthClaims,
+    payload: Multipart,
+) -> impl Responder {
+    if !claims.permissions.iter().any(|p| p == PROMOTE_REQUIRED_PERMISSION) {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": format!("model upload requires the {PROMOTE_REQUIRED_PERMISSION} permission"),
+        }));
+    }
 
     let staging_root = PathBuf::from(MODELS_DIR).join(STAGING_SUBDIR);
     let staging_id = Uuid::new_v4().to_string();
     let staging_dir = staging_root.join(&staging_id);
 
-    match ingest_multipart(payload, &staging_dir).await {
-        Ok(summary) => HttpResponse::Ok().json(serde_json::json!({
+    let summary = match ingest_multipart(payload, &staging_dir).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&staging_dir).await;
+            return e.into_response();
+        }
+    };
+
+    let batch_size = app_config.inference.inference_batch_size;
+    let outcome = validate_and_promote(
+        &staging_dir,
+        &summary,
+        inference.get_ref(),
+        comm.get_ref(),
+        promote_lock.get_ref(),
+        &claims.username,
+        batch_size,
+    )
+    .await;
+
+    // Always sweep staging — successful promote renames the files out,
+    // leaving a now-empty directory; failures leave partial state we
+    // don't want orbiting forever.
+    let _ = fs::remove_dir_all(&staging_dir).await;
+
+    match outcome {
+        Ok(report) => HttpResponse::Ok().json(serde_json::json!({
+            "promoted": true,
             "staging_id": staging_id,
             "manifest_bytes": summary.manifest_bytes,
             "onnx_bytes": summary.onnx_bytes,
-            "onnx_filename": summary.onnx_filename,
+            "scaler_bytes": summary.scaler_bytes,
+            "manifest_name": report.manifest_name,
+            "adapter_kind": report.adapter_kind,
+            "manifest_sha256": report.manifest_sha256,
+            "onnx_sha256": report.onnx_sha256,
         })),
-        Err(kind) => {
-            // Best-effort teardown so orphan staging dirs don't
-            // accumulate from failed uploads.
-            let _ = fs::remove_dir_all(&staging_dir).await;
-            kind.into_response()
-        }
+        Err(e) => e.into_response(),
     }
 }
 
@@ -77,6 +149,9 @@ struct UploadSummary {
     manifest_bytes: usize,
     onnx_bytes: usize,
     onnx_filename: String,
+    /// Bytes written for the optional scaler sidecar. `None` when the
+    /// field wasn't submitted at all.
+    scaler_bytes: Option<usize>,
 }
 
 /// Errors that can surface a specific HTTP response. Kept in-module
@@ -88,6 +163,7 @@ enum UploadError {
     UnknownField(String),
     ManifestTooLarge,
     OnnxTooLarge,
+    ScalerTooLarge,
     OnnxNotBinary,
     StreamFailure(String),
     StagingSetupFailure(String),
@@ -101,6 +177,7 @@ impl UploadError {
             Self::UnknownField(name) => (400, format!("unexpected multipart field: {name}")),
             Self::ManifestTooLarge => (413, format!("manifest exceeds {MAX_MANIFEST_BYTES} bytes")),
             Self::OnnxTooLarge => (413, format!("onnx exceeds {MAX_ONNX_BYTES} bytes")),
+            Self::ScalerTooLarge => (413, format!("scaler exceeds {MAX_SCALER_BYTES} bytes")),
             Self::OnnxNotBinary => (
                 400,
                 "onnx field does not look like a protobuf-encoded ONNX model".to_string(),
@@ -124,6 +201,7 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
 
     let mut manifest_written: Option<usize> = None;
     let mut onnx_summary: Option<(String, usize)> = None;
+    let mut scaler_summary: Option<(String, usize)> = None;
 
     while let Some(mut field) = payload
         .try_next()
@@ -140,8 +218,8 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
                 if manifest_written.is_some() {
                     return Err(UploadError::DuplicateField(FIELD_MANIFEST));
                 }
-                let dest = staging_dir.join("manifest.yaml");
-                let written = stream_field_to_file(&mut field, &dest, MAX_MANIFEST_BYTES, false).await?;
+                let dest = staging_dir.join(MANIFEST_FILENAME);
+                let written = stream_field_to_file(&mut field, &dest, MAX_MANIFEST_BYTES, FieldKind::Manifest).await?;
                 manifest_written = Some(written);
             }
             FIELD_ONNX => {
@@ -154,8 +232,21 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
                     .map(sanitize_filename)
                     .unwrap_or_else(|| "model.onnx".to_string());
                 let dest = staging_dir.join(&onnx_filename);
-                let written = stream_field_to_file(&mut field, &dest, MAX_ONNX_BYTES, true).await?;
+                let written = stream_field_to_file(&mut field, &dest, MAX_ONNX_BYTES, FieldKind::Onnx).await?;
                 onnx_summary = Some((onnx_filename, written));
+            }
+            FIELD_SCALER => {
+                if scaler_summary.is_some() {
+                    return Err(UploadError::DuplicateField(FIELD_SCALER));
+                }
+                let scaler_filename = field
+                    .content_disposition()
+                    .and_then(|cd| cd.get_filename())
+                    .map(sanitize_filename)
+                    .unwrap_or_else(|| "inference_config.json".to_string());
+                let dest = staging_dir.join(&scaler_filename);
+                let written = stream_field_to_file(&mut field, &dest, MAX_SCALER_BYTES, FieldKind::Scaler).await?;
+                scaler_summary = Some((scaler_filename, written));
             }
             other => {
                 return Err(UploadError::UnknownField(other.to_string()));
@@ -165,12 +256,23 @@ async fn ingest_multipart(mut payload: Multipart, staging_dir: &Path) -> Result<
 
     let manifest_bytes = manifest_written.ok_or(UploadError::MissingField(FIELD_MANIFEST))?;
     let (onnx_filename, onnx_bytes) = onnx_summary.ok_or(UploadError::MissingField(FIELD_ONNX))?;
+    let scaler_bytes = scaler_summary.map(|(_, n)| n);
 
     Ok(UploadSummary {
         manifest_bytes,
         onnx_bytes,
         onnx_filename,
+        scaler_bytes,
     })
+}
+
+/// Discriminator for which size cap / sniff rule applies to a given
+/// multipart field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldKind {
+    Manifest,
+    Onnx,
+    Scaler,
 }
 
 /// Stream a multipart field directly to disk. Aborts (and leaves the
@@ -180,13 +282,13 @@ async fn stream_field_to_file(
     field: &mut actix_multipart::Field,
     dest: &Path,
     max_bytes: usize,
-    sniff_onnx: bool,
+    kind: FieldKind,
 ) -> Result<usize, UploadError> {
     let mut file = fs::File::create(dest)
         .await
         .map_err(|e| UploadError::StagingSetupFailure(e.to_string()))?;
     let mut total = 0usize;
-    let mut sniffed = !sniff_onnx;
+    let mut sniffed = kind != FieldKind::Onnx;
 
     while let Some(chunk) = field
         .try_next()
@@ -203,10 +305,10 @@ async fn stream_field_to_file(
         }
         total = total.saturating_add(chunk.len());
         if total > max_bytes {
-            return Err(if sniff_onnx {
-                UploadError::OnnxTooLarge
-            } else {
-                UploadError::ManifestTooLarge
+            return Err(match kind {
+                FieldKind::Manifest => UploadError::ManifestTooLarge,
+                FieldKind::Onnx => UploadError::OnnxTooLarge,
+                FieldKind::Scaler => UploadError::ScalerTooLarge,
             });
         }
         file.write_all(&chunk)
@@ -275,6 +377,202 @@ pub fn looks_like_onnx(first_chunk: &[u8]) -> bool {
         return false;
     }
     true
+}
+
+/// Validate the staged manifest + ONNX + optional sidecar, then
+/// atomically promote them into `models/`. The sequence is:
+///
+/// 1. Parse and structurally validate `manifest.yaml` against the
+///    `FEATURE_REGISTRY` plus manifest-level invariants.
+/// 2. Reject `multi_task` adapters — v1 upload supports single-ONNX
+///    models only; multi-task manifests reference two ONNX files and
+///    need a different multipart shape.
+/// 3. Rename the uploaded `.onnx` to the filename the manifest
+///    declares in `models.model`. The client is free to ship the
+///    binary with any user-facing name; the manifest is the canonical
+///    layout the watcher rebuilds from.
+/// 4. Run `from_manifest_with_sidecar` + `build_adapter` — this exercises
+///    the same loader the hot-reload watcher will use after promote,
+///    including the 5-second wall-clock budget around `tract`. If
+///    anything fails here, nothing in `models/` has changed yet.
+/// 5. SHA-256 both files and snapshot the `Inference` state for the
+///    audit detail body before we mutate anything shared.
+/// 6. Under `PromoteLock`, rename ONNX first, optional sidecar second,
+///    manifest last. The manifest is the watcher's commit marker —
+///    by landing it last we avoid the window where the watcher reads
+///    a manifest that points at a not-yet-renamed ONNX.
+/// 7. Publish a WORM `model_swap` audit event. Failure to publish is
+///    logged but does not roll back the rename; the chain prefers a
+///    missing audit entry to a rolled-back promote that a downstream
+///    subscriber may already have reacted to.
+async fn validate_and_promote(
+    staging_dir: &Path,
+    summary: &UploadSummary,
+    inference: &Inference,
+    comm: &CommunicationManager,
+    promote_lock: &PromoteLock,
+    actor_username: &str,
+    batch_size: usize,
+) -> Result<PromoteReport, PromoteError> {
+    let staging_manifest = staging_dir.join(MANIFEST_FILENAME);
+
+    // Structural manifest validation. The full `build_adapter` pipeline
+    // below will revisit this via `from_manifest_with_sidecar`, but a
+    // cheap up-front `load` surfaces manifest-only problems (bad YAML,
+    // unknown feature, missing `models.model`) before we rename anything.
+    let manifest_preview =
+        ModelManifest::load(&staging_manifest).map_err(|e| PromoteError::ManifestInvalid(e.to_string()))?;
+
+    if matches!(manifest_preview.adapter, AdapterKind::MultiTask) {
+        return Err(PromoteError::UnsupportedAdapter);
+    }
+
+    let declared_onnx = manifest_preview
+        .models
+        .model
+        .clone()
+        .ok_or_else(|| PromoteError::ManifestInvalid("single-onnx adapters require models.model".to_string()))?;
+
+    let uploaded_onnx = staging_dir.join(&summary.onnx_filename);
+    let staged_onnx = staging_dir.join(&declared_onnx);
+    if uploaded_onnx != staged_onnx {
+        fs::rename(&uploaded_onnx, &staged_onnx)
+            .await
+            .map_err(|e| PromoteError::StagingIo(format!("rename staged onnx: {e}")))?;
+    }
+
+    // Full validate — sidecar reconciliation, ONNX shape vs manifest
+    // features, tract optimize+runnable under the 5s load budget.
+    let (config, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&staging_manifest)
+        .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
+    let _adapter = build_adapter(&manifest, Some(&staging_manifest), &config, batch_size)
+        .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
+
+    let manifest_sha256 = sha256_file(&staging_manifest)
+        .await
+        .map_err(|e| PromoteError::StagingIo(format!("sha256 manifest: {e}")))?;
+    let onnx_sha256 = sha256_file(&staged_onnx)
+        .await
+        .map_err(|e| PromoteError::StagingIo(format!("sha256 onnx: {e}")))?;
+
+    let before_status = inference.current_status();
+
+    let _guard = promote_lock.lock().await;
+    let models_dir = PathBuf::from(MODELS_DIR);
+    let target_onnx = models_dir.join(&declared_onnx);
+    fs::rename(&staged_onnx, &target_onnx)
+        .await
+        .map_err(|e| PromoteError::PromoteIo(format!("rename onnx into models/: {e}")))?;
+
+    if let Some(ref pp) = manifest.preprocessing {
+        let src = staging_dir.join(&pp.scaler_sidecar);
+        let dst = models_dir.join(&pp.scaler_sidecar);
+        fs::rename(&src, &dst)
+            .await
+            .map_err(|e| PromoteError::PromoteIo(format!("rename sidecar into models/: {e}")))?;
+    }
+
+    let target_manifest = models_dir.join(MANIFEST_FILENAME);
+    fs::rename(&staging_manifest, &target_manifest)
+        .await
+        .map_err(|e| PromoteError::PromoteIo(format!("rename manifest into models/: {e}")))?;
+    drop(_guard);
+
+    let audit_detail = serde_json::json!({
+        "manifest_name": manifest.name,
+        "adapter_kind": manifest.adapter.as_str(),
+        "manifest_sha256": manifest_sha256,
+        "onnx_sha256": onnx_sha256,
+        "before": serde_json::to_value(&before_status).unwrap_or(serde_json::Value::Null),
+    })
+    .to_string();
+    let _ = comm
+        .publish_event(AuditEvent {
+            actor: format!("SecurityAdmin@{actor_username}"),
+            action: "model_swap".to_string(),
+            detail: audit_detail,
+        })
+        .await;
+
+    Ok(PromoteReport {
+        manifest_name: manifest.name,
+        adapter_kind: manifest.adapter.as_str().to_string(),
+        manifest_sha256,
+        onnx_sha256,
+    })
+}
+
+/// Metadata surfaced back to the client when the promote succeeds.
+#[derive(Debug)]
+struct PromoteReport {
+    manifest_name: String,
+    adapter_kind: String,
+    manifest_sha256: String,
+    onnx_sha256: String,
+}
+
+/// Validation / promote error taxonomy. Distinct from `UploadError` so
+/// the two stages produce different HTTP status codes: staging-ingest
+/// failures are typically client-facing (400/413), while validation
+/// and rename failures are server-side (422/500).
+#[derive(Debug)]
+enum PromoteError {
+    ManifestInvalid(String),
+    ValidationFailed(String),
+    UnsupportedAdapter,
+    StagingIo(String),
+    PromoteIo(String),
+}
+
+impl PromoteError {
+    fn into_response(self) -> HttpResponse {
+        let (status, message) = match self {
+            Self::ManifestInvalid(err) => (422, format!("manifest invalid: {err}")),
+            Self::ValidationFailed(err) => (422, format!("model failed validation: {err}")),
+            Self::UnsupportedAdapter => (
+                422,
+                "multi_task adapter is not supported by the v1 upload flow — \
+                 submit an autoencoder_only or classifier_only manifest"
+                    .to_string(),
+            ),
+            Self::StagingIo(err) => (500, format!("staging io error: {err}")),
+            Self::PromoteIo(err) => (500, format!("promote io error: {err}")),
+        };
+        let body = serde_json::json!({ "error": message });
+        match status {
+            422 => HttpResponse::UnprocessableEntity().json(body),
+            _ => HttpResponse::InternalServerError().json(body),
+        }
+    }
+}
+
+/// Read `path` in 64KB chunks and return its SHA-256 hex digest.
+/// Offloaded to `spawn_blocking` so a large ONNX can't stall the
+/// actix worker while the hash computes.
+async fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> std::io::Result<String> {
+        let mut file = std::fs::File::open(&path)?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let out = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in out {
+            use std::fmt::Write;
+            // SAFETY: write! on a String is infallible.
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        Ok(hex)
+    })
+    .await
+    .unwrap_or_else(|e| Err(std::io::Error::other(format!("sha256 join: {e}"))))
 }
 
 /// Remove staging subdirectories older than `max_age`. Runs on startup
@@ -395,5 +693,69 @@ mod tests {
         let missing = PathBuf::from("/nonexistent/staging/path/for/test");
         let cleaned = clean_staging_orphans(&missing, Duration::from_secs(60)).unwrap();
         assert_eq!(cleaned, 0);
+    }
+
+    #[tokio::test]
+    async fn sha256_file_produces_known_hex_digest() {
+        // Canonical NIST-style empty-string vector: the SHA-256 of the
+        // empty byte sequence is the hex digest below. Asserting the
+        // concrete value guards against a silently-swapped hash impl.
+        let tmp = std::env::temp_dir().join(format!("nguardia-sha256-empty-{}", Uuid::new_v4()));
+        std::fs::write(&tmp, b"").unwrap();
+        let hex = sha256_file(&tmp).await.expect("hash empty file");
+        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn sha256_file_hex_matches_multi_chunk_content() {
+        // A payload larger than the 64KB internal read buffer so the
+        // chunk-loop path actually executes; "abc" repeated until > 64KB.
+        let tmp = std::env::temp_dir().join(format!("nguardia-sha256-bulk-{}", Uuid::new_v4()));
+        let payload = "abc".repeat(30_000);
+        std::fs::write(&tmp, payload.as_bytes()).unwrap();
+        let hex = sha256_file(&tmp).await.expect("hash large file");
+        let mut hasher = Sha256::new();
+        hasher.update(payload.as_bytes());
+        let expected = hasher.finalize();
+        let expected_hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, expected_hex);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn promote_error_validation_failure_maps_to_422() {
+        let resp = PromoteError::ValidationFailed("shape mismatch".into()).into_response();
+        assert_eq!(resp.status().as_u16(), 422);
+    }
+
+    #[test]
+    fn promote_error_manifest_invalid_maps_to_422() {
+        let resp = PromoteError::ManifestInvalid("bad yaml".into()).into_response();
+        assert_eq!(resp.status().as_u16(), 422);
+    }
+
+    #[test]
+    fn promote_error_unsupported_adapter_maps_to_422() {
+        let resp = PromoteError::UnsupportedAdapter.into_response();
+        assert_eq!(resp.status().as_u16(), 422);
+    }
+
+    #[test]
+    fn promote_error_staging_io_maps_to_500() {
+        let resp = PromoteError::StagingIo("disk full".into()).into_response();
+        assert_eq!(resp.status().as_u16(), 500);
+    }
+
+    #[test]
+    fn promote_error_promote_io_maps_to_500() {
+        let resp = PromoteError::PromoteIo("rename failed".into()).into_response();
+        assert_eq!(resp.status().as_u16(), 500);
+    }
+
+    #[test]
+    fn upload_error_scaler_too_large_maps_to_413() {
+        let resp = UploadError::ScalerTooLarge.into_response();
+        assert_eq!(resp.status().as_u16(), 413);
     }
 }

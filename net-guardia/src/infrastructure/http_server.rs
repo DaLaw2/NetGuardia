@@ -9,6 +9,7 @@ use actix_web::{App, HttpResponse, HttpServer, web};
 use macros::log;
 
 use crate::adapter::ebpf::EbpfServices;
+use crate::adapter::http::model_upload::PromoteLock;
 use crate::adapter::http::{
     acl, api_keys, audit as audit_api, auth, default, filter, flow_trace, fusion, health as health_api,
     logs as logs_api, ml, model_upload, notification as notification_api, rate_limit as rate_limit_api,
@@ -235,6 +236,12 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let suricata_manager = params.suricata_manager;
     let port = app_config.http.http_server_bind_port;
 
+    // Shared across every actix worker so concurrent model uploads
+    // serialize their rename-into-`models/` critical section. Built
+    // here rather than threaded through HttpServerParams because
+    // nothing outside the HTTP boundary needs to observe it.
+    let promote_lock: Arc<PromoteLock> = Arc::new(PromoteLock::new(()));
+
     HttpServer::new(move || {
         let app = App::new()
             .wrap(HttpsRedirect)
@@ -271,7 +278,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(notification_service.clone()))
             .app_data(web::Data::from(playbook_service.clone()))
             .app_data(web::Data::from(rate_limit_service.clone()))
-            .app_data(web::Data::from(suricata_manager.clone()));
+            .app_data(web::Data::from(suricata_manager.clone()))
+            .app_data(web::Data::from(promote_lock.clone()));
         app.wrap(SetupGuard)
             .service(
                 web::scope("/api")
