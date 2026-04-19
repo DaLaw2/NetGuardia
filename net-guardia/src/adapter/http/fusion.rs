@@ -7,8 +7,6 @@
 //! analysts can answer "why was this IP blocked?" without parsing
 //! logs by hand.
 
-use std::sync::Arc;
-
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 
 use crate::core::detection::metrics::FusionMetrics;
@@ -38,7 +36,7 @@ pub fn initialize() -> Scope {
 /// `GET /api/fusion/metrics` — lock-free snapshot of fusion counters and
 /// derived rates. Drives the operator dashboard's "how well is fusion
 /// working on my network?" view.
-async fn get_metrics(metrics: web::Data<Arc<FusionMetrics>>) -> impl Responder {
+async fn get_metrics(metrics: web::Data<FusionMetrics>) -> impl Responder {
     HttpResponse::Ok().json(metrics.snapshot())
 }
 
@@ -46,7 +44,7 @@ async fn get_metrics(metrics: web::Data<Arc<FusionMetrics>>) -> impl Responder {
 /// Scans the WORM audit chain for `fused_threat_emitted` entries that
 /// match `src_ip`, returning them oldest-first so the UI can render a
 /// chronological "why was this IP blocked" view.
-async fn explain_ip(req: HttpRequest, audit: web::Data<Arc<dyn AuditRepo>>) -> impl Responder {
+async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl Responder {
     let src_ip = match req.match_info().get("src_ip") {
         Some(ip) => ip.to_string(),
         None => {

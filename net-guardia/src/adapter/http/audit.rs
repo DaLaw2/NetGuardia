@@ -1,10 +1,10 @@
-use std::sync::Arc;
-
 use actix_web::{HttpResponse, Scope, web};
 
 use crate::adapter::persistence::Database;
 use crate::core::auth::extractor::AuthClaims;
 use crate::interface::port::audit::AuditRepo;
+use crate::model::error::Error;
+use crate::model::error::database::DatabaseError;
 
 pub fn initialize() -> Scope {
     web::scope("/audit")
@@ -39,14 +39,40 @@ async fn list_audit_logs(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
 /// `--verify-audit-log` flag performs, so auditors can check chain
 /// integrity without shell access. Any mismatch returns the offending
 /// row id inside `error` so the dashboard can link straight to it.
-async fn verify_chain(_auth: AuthClaims, audit: web::Data<Arc<dyn AuditRepo>>) -> HttpResponse {
+async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> HttpResponse {
     match audit.verify_audit_log_chain() {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({
             "chain_intact": true,
             "verified": count,
         })),
+        // Tamper detection is a successful verify outcome, not a server
+        // failure — return 200 with `chain_intact: false` so frontend
+        // retry/error handling treats real chain corruption as a
+        // distinct condition from transient DB connectivity issues.
+        Err(Error::Database(DatabaseError::AuditPrevHashMismatch { id, expected, found })) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "chain_intact": false,
+                "verified": 0,
+                "kind": "prev_hash_mismatch",
+                "id": id,
+                "expected": expected,
+                "found": found,
+            }))
+        }
+        Err(Error::Database(DatabaseError::AuditRowHashMismatch { id, computed, stored })) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "chain_intact": false,
+                "verified": 0,
+                "kind": "row_hash_mismatch",
+                "id": id,
+                "computed": computed,
+                "stored": stored,
+            }))
+        }
+        // Any other error is a real server-side failure (DB unreachable,
+        // query failed, IO) — keep 500 so monitoring / alerts fire.
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "chain_intact": false,
+            "chain_intact": null,
             "verified": 0,
             "error": e.to_string(),
         })),

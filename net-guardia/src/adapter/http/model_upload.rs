@@ -19,7 +19,6 @@ use std::fs::File as StdFile;
 use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -132,7 +131,7 @@ pub fn initialize() -> Scope {
 /// pre-swap ML source state. The staging directory is always torn
 /// down on the way out, even on success (post-promote it's empty).
 async fn upload(
-    app_config: web::Data<Arc<AppConfig>>,
+    app_config: web::Data<AppConfig>,
     inference: web::Data<Inference>,
     comm: web::Data<CommunicationManager>,
     promote_lock: web::Data<PromoteGate>,
@@ -406,6 +405,42 @@ pub fn sanitize_filename(raw: impl AsRef<str>) -> String {
     }
 }
 
+/// Reject manifest-declared filenames that aren't single-segment basenames.
+/// The multipart layer sanitizes client-sent part filenames (silent rewrite),
+/// but manifest fields like `models.model` and `preprocessing.scaler_sidecar`
+/// are user-controlled YAML — a value such as `../../../etc/cron.d/evil` would
+/// otherwise flow into `staging_dir.join(..)` / `models_dir.join(..)` and let
+/// `users:admin` write outside the models tree. Reject loudly rather than
+/// silently rewriting so an operator who fat-fingered a path sees the failure.
+fn validate_manifest_basename(field: &str, value: &str) -> Result<(), PromoteError> {
+    if value.is_empty() {
+        return Err(PromoteError::ManifestInvalid(format!(
+            "manifest field {field} is empty"
+        )));
+    }
+    if value.contains('/') || value.contains('\\') {
+        return Err(PromoteError::ManifestInvalid(format!(
+            "manifest field {field} must be a basename, not a path: {value:?}"
+        )));
+    }
+    if value == "." || value == ".." || value.contains("..") {
+        return Err(PromoteError::ManifestInvalid(format!(
+            "manifest field {field} must not contain path-traversal segments: {value:?}"
+        )));
+    }
+    if Path::new(value).is_absolute() {
+        return Err(PromoteError::ManifestInvalid(format!(
+            "manifest field {field} must be relative, not absolute: {value:?}"
+        )));
+    }
+    if Path::new(value).file_name().and_then(|s| s.to_str()) != Some(value) {
+        return Err(PromoteError::ManifestInvalid(format!(
+            "manifest field {field} must be a plain basename: {value:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Loose first-chunk heuristic. An ONNX protobuf starts with a varint
 /// tag byte — the field=1 wire=varint (`0x08` for `ir_version`) and
 /// field=1 wire=length-delimited (`0x0a`) patterns both occur in real
@@ -501,6 +536,10 @@ async fn validate_and_promote(
         .model
         .clone()
         .ok_or_else(|| PromoteError::ManifestInvalid("single-onnx adapters require models.model".to_string()))?;
+    validate_manifest_basename("models.model", &declared_onnx)?;
+    if let Some(ref pp) = manifest_preview.preprocessing {
+        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
+    }
 
     let uploaded_onnx = staging_dir.join(&summary.onnx_filename);
     let staged_onnx = staging_dir.join(&declared_onnx);
@@ -534,6 +573,7 @@ async fn validate_and_promote(
         .map_err(|e| PromoteError::PromoteIo(format!("rename onnx into models/: {e}")))?;
 
     if let Some(ref pp) = manifest.preprocessing {
+        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
         let src = staging_dir.join(&pp.scaler_sidecar);
         let dst = models_dir.join(&pp.scaler_sidecar);
         fs::rename(&src, &dst)

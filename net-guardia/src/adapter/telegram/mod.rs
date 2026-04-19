@@ -37,7 +37,7 @@ impl TelegramAdapter {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
-            .map_err(NotificationError::TelegramRequestFailed)?;
+            .map_err(|e| NotificationError::TelegramRequestFailed(e.without_url()))?;
 
         Ok(Self {
             client,
@@ -150,7 +150,11 @@ impl TelegramAdapter {
                     if e.is_timeout() {
                         NotificationError::Timeout
                     } else {
-                        NotificationError::TelegramRequestFailed(e)
+                        // Strip URL — it embeds the bot token in the path
+                        // (`/bot<TOKEN>/sendMessage`) and reqwest::Error's
+                        // Display includes the full URL by default, which
+                        // would leak the token into journal/error logs.
+                        NotificationError::TelegramRequestFailed(e.without_url())
                     }
                 })?;
 
