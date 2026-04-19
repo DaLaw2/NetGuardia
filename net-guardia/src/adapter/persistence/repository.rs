@@ -122,6 +122,9 @@ impl Database {
         use std::fmt::Write;
 
         type HmacSha256 = Hmac<Sha256>;
+        // SAFETY: HMAC-SHA256 accepts keys of any length; the only error
+        // `new_from_slice` returns (`InvalidLength`) is unreachable for this
+        // algorithm. The unreachable!() is the correct sentinel.
         let mut mac = HmacSha256::new_from_slice(&self.api_key_hmac).unwrap_or_else(|_| unreachable!());
         mac.update(raw_key.as_bytes());
         let result = mac.finalize().into_bytes();
@@ -1980,7 +1983,7 @@ impl SoarRepo for Database {
         self.list_soar_executions(limit)
     }
 
-    // --- tx-4 / tx-5: intra-aggregate atomic operations ---
+    // --- intra-aggregate atomic operations ---
 
     fn insert_playbook_atomic(
         &self,
@@ -2116,7 +2119,7 @@ impl ApiKeyRepo for Database {
 }
 
 impl DbAdminRepo for Database {
-    /// tx-1 — Commit a SOAR-driven block to both `soar_block_rules` and
+    /// Commit a SOAR-driven block to both `soar_block_rules` and
     /// `acl_rules` in one transaction. Callers must have already installed
     /// the eBPF block before calling this, and are responsible for removing
     /// the eBPF block if this returns Err.
@@ -2142,8 +2145,8 @@ impl DbAdminRepo for Database {
         Ok(soar_block_id)
     }
 
-    /// tx-2 / tx-3 — Clear a SOAR-driven block: remove the `acl_rules` entry
-    /// and mark the `soar_block_rules` row as unblocked in one transaction.
+    /// Clear a SOAR-driven block: remove the `acl_rules` entry and mark
+    /// the `soar_block_rules` row as unblocked in one transaction.
     /// Callers handle eBPF unblock separately.
     fn commit_soar_unblock_to_db(&self, soar_block_id: i64, ip_version: u8, source_ip: &str) -> Result<(), Error> {
         let mut conn = self.conn()?;
@@ -2333,7 +2336,7 @@ mod tests {
         assert_eq!(identity.user_count().unwrap(), 1);
     }
 
-    /// tx-1 — happy path. Verifies `commit_soar_block_to_db` writes both
+    /// Happy path. Verifies `commit_soar_block_to_db` writes both
     /// `soar_block_rules` and `acl_rules` atomically.
     #[test]
     fn test_commit_soar_block_happy_path() {
@@ -2360,8 +2363,8 @@ mod tests {
         assert_eq!(rules[0].3, "10.0.0.99");
     }
 
-    /// tx-2 / tx-3 — verifies `commit_soar_unblock_to_db` removes the ACL row
-    /// and marks the SOAR row as unblocked in one transaction.
+    /// Verifies `commit_soar_unblock_to_db` removes the ACL row and marks
+    /// the SOAR row as unblocked in one transaction.
     #[test]
     fn test_commit_soar_unblock_clears_both_tables() {
         let db = test_db();
@@ -2380,7 +2383,7 @@ mod tests {
         assert!(db.get_active_soar_blocks().unwrap().is_empty());
     }
 
-    /// tx-4 — `insert_playbook_atomic` writes playbook + actions + conditions
+    /// Verifies `insert_playbook_atomic` writes playbook + actions + conditions
     /// atomically.
     #[test]
     fn test_insert_playbook_atomic_writes_all_three_tables() {

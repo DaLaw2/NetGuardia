@@ -121,7 +121,7 @@ impl PlaybookService {
     }
 
     pub fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
-        // tx-4: single atomic insert (playbook + actions + conditions)
+        // Single atomic insert (playbook + actions + conditions).
         let actions: Vec<(i64, String, String)> = input
             .actions
             .iter()
@@ -163,7 +163,7 @@ impl PlaybookService {
             condition_window_secs: input.condition_window_secs,
             cooldown_secs: input.cooldown_secs,
         };
-        // tx-5: single atomic update (playbook metadata + replace actions/conditions)
+        // Single atomic update (playbook metadata + replace actions/conditions).
         let actions: Vec<(i64, String, String)> = input
             .actions
             .iter()
@@ -233,8 +233,8 @@ impl PlaybookService {
         // Remove from eBPF ACL
         self.access_control.unblock_ip(source_ip)?;
 
-        // Atomically drop acl_rules entry AND mark soar_block_rules unblocked
-        // in one transaction (R2 mitigation, tx-3 per M2_CARVE_PLAN §4b).
+        // Atomically drop acl_rules entry AND mark soar_block_rules
+        // unblocked in one transaction.
         let ip_version = ip_version_from_str(source_ip);
         self.db.commit_soar_unblock_to_db(id, ip_version, source_ip)?;
 

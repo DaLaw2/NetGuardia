@@ -44,6 +44,7 @@ use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::suricata_monitor::SuricataMonitor;
 use crate::interface::port::audit::AuditRepo;
+use crate::interface::port::packet_sink::PacketSinkFactory;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::stats::StatsRepo;
 use crate::model::config::constants::{MODELS_DIR, STAGING_SUBDIR};
@@ -211,8 +212,7 @@ impl System {
         // When maps exist but bind fails (e.g. igb on kernel < 6.17), record
         // the classified reason and continue — the ML engine will see no
         // packets, same as a network that is simply quiet.
-        let sink_factory: Arc<dyn crate::interface::port::packet_sink::PacketSinkFactory> =
-            app_services.ml_engine.clone();
+        let sink_factory: Arc<dyn PacketSinkFactory> = app_services.ml_engine.clone();
         if let Err(e) = ebpf_services.run(sink_factory).await {
             use crate::infrastructure::ebpf_preflight;
             use crate::model::system::health::EbpfFailStage;

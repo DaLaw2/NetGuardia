@@ -41,8 +41,12 @@ use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::access_control::AccessControlPort;
+use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::dns_filter_api::DnsFilterPort;
+use crate::interface::port::geo_block_api::GeoBlockPort;
 use crate::interface::port::notification::AlertNotifier;
+use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::soar::SoarRepo;
@@ -259,8 +263,7 @@ impl ServiceFactory {
             Arc::new(EbpfAccessControlAdapter::new(ebpf_services.access_control.clone()));
 
         // Create SOAR engine
-        let rate_limit_port: Arc<dyn crate::interface::port::rate_limit_api::RateLimitPort> =
-            ebpf_services.rate_limit.clone();
+        let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
         let soar_engine = Arc::new(SoarEngine::new(
             db.clone(),
             access_control_port.clone(),
@@ -280,12 +283,9 @@ impl ServiceFactory {
 
         // Create domain services (Phase 2B) — upcast concrete eBPF services to
         // their port-layer traits so the core services see only abstract ports.
-        let access_control_admin: Arc<dyn crate::interface::port::access_control_admin::AccessControlAdminPort> =
-            ebpf_services.access_control.clone();
-        let geo_block_port: Arc<dyn crate::interface::port::geo_block_api::GeoBlockPort> =
-            ebpf_services.geo_block.clone();
-        let dns_filter_port: Arc<dyn crate::interface::port::dns_filter_api::DnsFilterPort> =
-            ebpf_services.dns_filter.clone();
+        let access_control_admin: Arc<dyn AccessControlAdminPort> = ebpf_services.access_control.clone();
+        let geo_block_port: Arc<dyn GeoBlockPort> = ebpf_services.geo_block.clone();
+        let dns_filter_port: Arc<dyn DnsFilterPort> = ebpf_services.dns_filter.clone();
         let acl_service = Arc::new(AclService::new(
             db.clone() as Arc<dyn AppRepo>,
             access_control_admin,

@@ -89,8 +89,8 @@ impl TtlScheduler {
                 ));
             }
 
-            // Atomically drop acl_rules entry AND mark soar_block_rules unblocked
-            // in one transaction (R2 mitigation, tx-2 per M2_CARVE_PLAN §4b).
+            // Atomically drop acl_rules entry AND mark soar_block_rules
+            // unblocked in one transaction.
             let ip_version = ip_version_from_str(source_ip);
             self.db.commit_soar_unblock_to_db(*id, ip_version, source_ip)?;
             self.soar_engine.decrement_block_count();

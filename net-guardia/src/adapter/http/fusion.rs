@@ -10,7 +10,7 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 
 use crate::core::detection::metrics::FusionMetrics;
-use crate::interface::port::audit::AuditRepo;
+use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
 
 /// Maximum audit rows scanned per explain request. Caps DB work in
 /// case the audit chain grows large enough that a naive full-table
@@ -80,12 +80,8 @@ async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl R
 ///
 /// Extracted as a free function so tests can cover the filter /
 /// ordering / cap behaviour without an in-memory DB.
-pub fn filter_fusion_evidence_for_ip(
-    entries: &[crate::interface::port::audit::AuditLogEntry],
-    target_ip: &str,
-    cap: usize,
-) -> Vec<serde_json::Value> {
-    let mut filtered: Vec<&crate::interface::port::audit::AuditLogEntry> = entries
+pub fn filter_fusion_evidence_for_ip(entries: &[AuditLogEntry], target_ip: &str, cap: usize) -> Vec<serde_json::Value> {
+    let mut filtered: Vec<&AuditLogEntry> = entries
         .iter()
         .filter(|entry| detail_matches_src_ip(&entry.detail, target_ip))
         .collect();
@@ -117,7 +113,6 @@ fn detail_matches_src_ip(detail_json: &str, target_ip: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::port::audit::AuditLogEntry;
 
     fn entry(id: i64, src_ip: &str, attack: &str) -> AuditLogEntry {
         let detail = serde_json::json!({

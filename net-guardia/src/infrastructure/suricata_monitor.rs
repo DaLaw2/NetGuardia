@@ -37,6 +37,23 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// How long to wait between checks while the file does not yet exist.
 const FILE_WAIT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// IANA protocol numbers for Suricata's `proto` strings.
+const IANA_PROTO_ICMP: u8 = 1;
+const IANA_PROTO_TCP: u8 = 6;
+const IANA_PROTO_UDP: u8 = 17;
+
+/// Suricata severity → SOAR confidence mapping. Higher severity ⇒ higher
+/// confidence so SOAR thresholds tend to trip on real alerts.
+const SURICATA_CONFIDENCE_HIGH: f32 = 0.95;
+const SURICATA_CONFIDENCE_MEDIUM: f32 = 0.80;
+const SURICATA_CONFIDENCE_LOW: f32 = 0.65;
+const SURICATA_CONFIDENCE_INFO: f32 = 0.50;
+
+/// Suricata severity numeric encoding (eve.json `alert.severity`).
+const SURICATA_SEVERITY_HIGH: u64 = 1;
+const SURICATA_SEVERITY_MEDIUM: u64 = 2;
+const SURICATA_SEVERITY_LOW: u64 = 3;
+
 pub struct SuricataMonitor {
     config: Arc<AppConfig>,
     detection_tx: mpsc::Sender<DetectionEvent>,
@@ -145,9 +162,9 @@ impl SuricataMonitor {
         let dest_ip = v.get("dest_ip")?.as_str()?.to_string();
         let proto_str = v.get("proto").and_then(|x| x.as_str()).unwrap_or("");
         let protocol: u8 = match proto_str {
-            "TCP" => 6,
-            "UDP" => 17,
-            "ICMP" => 1,
+            "TCP" => IANA_PROTO_TCP,
+            "UDP" => IANA_PROTO_UDP,
+            "ICMP" => IANA_PROTO_ICMP,
             _ => 0,
         };
 
@@ -161,12 +178,15 @@ impl SuricataMonitor {
         // Suricata severity: 1=high, 2=medium, 3=low, 4=informational.
         // Map to confidence in [0.5, 1.0] so high-severity alerts tend to trip
         // SOAR condition thresholds.
-        let severity = alert.get("severity").and_then(|x| x.as_u64()).unwrap_or(3);
+        let severity = alert
+            .get("severity")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(SURICATA_SEVERITY_LOW);
         let confidence = match severity {
-            1 => 0.95,
-            2 => 0.80,
-            3 => 0.65,
-            _ => 0.50,
+            SURICATA_SEVERITY_HIGH => SURICATA_CONFIDENCE_HIGH,
+            SURICATA_SEVERITY_MEDIUM => SURICATA_CONFIDENCE_MEDIUM,
+            SURICATA_SEVERITY_LOW => SURICATA_CONFIDENCE_LOW,
+            _ => SURICATA_CONFIDENCE_INFO,
         };
 
         log!(SuricataLog::AlertForwarded(

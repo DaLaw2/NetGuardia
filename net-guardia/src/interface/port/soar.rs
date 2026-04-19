@@ -95,9 +95,9 @@ pub trait SoarRepo: Send + Sync {
     ) -> Result<i64, Error>;
     fn list_soar_executions(&self, limit: i64) -> Result<Vec<SoarExecutionRow>, Error>;
 
-    // --- Intra-aggregate atomic operations (tx-4 / tx-5 per M2_CARVE_PLAN §4b) ---
+    // --- Intra-aggregate atomic operations ---
 
-    /// tx-4 — Atomically create a playbook with its conditions and actions.
+    /// Atomically create a playbook with its conditions and actions.
     /// All rows (playbook + conditions + actions) commit together; any error
     /// rolls back the whole insert. Returns the new playbook id.
     ///
@@ -116,9 +116,9 @@ pub trait SoarRepo: Send + Sync {
         conditions: &[(String, String, String, Option<String>)],
     ) -> Result<i64, Error>;
 
-    /// tx-5 — Atomically update a playbook's metadata and replace its
-    /// conditions and actions. Returns `Ok(false)` if no playbook with that
-    /// id exists; otherwise `Ok(true)` after the whole update commits.
+    /// Atomically update a playbook's metadata and replace its conditions
+    /// and actions. Returns `Ok(false)` if no playbook with that id exists;
+    /// otherwise `Ok(true)` after the whole update commits.
     fn update_playbook_atomic(
         &self,
         id: i64,
