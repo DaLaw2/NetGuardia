@@ -1,13 +1,20 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::Serialize;
+
 use crate::interface::communication::event::Event;
 
 // -- Detection Source ---------------------------------------------------------
 
 /// Identifies which detection subsystem produced a detection.
 /// Used for attribution tracking and cross-source deduplication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Serialized as the canonical `Display` form ("ML", "Suricata", "Beaconing",
+/// "Correlation") so the WebSocket wire matches the SOAR `SingleSourceHigh`
+/// `value` field — frontend rendering and playbook authoring share one
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum DetectionSource {
     ML,
     Correlation,
@@ -66,8 +73,11 @@ pub struct DetectionEvent {
 // -- Threat Events ------------------------------------------------------------
 
 /// Fired when the DetectionOrchestrator emits a deduplicated, enriched threat.
-/// Consumed by the SOAR engine to trigger automated responses.
-#[derive(Debug, Clone)]
+/// Consumed by the SOAR engine to trigger automated responses, and broadcast
+/// to the dashboard over `/ws/fusion` so the operator's "Recent Threats"
+/// stream surfaces post-fusion (multi-source) detections rather than raw
+/// per-flow ML alerts.
+#[derive(Debug, Clone, Serialize)]
 pub struct ThreatDetectedEvent {
     pub attack_type: String,
     pub confidence: f32,

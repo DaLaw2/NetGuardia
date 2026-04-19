@@ -7,6 +7,7 @@ pub mod dns_filter_service;
 pub mod email;
 pub mod ml;
 pub mod notification_service;
+pub mod observability;
 pub mod playbook_service;
 pub mod rate_limit_service;
 pub mod report;

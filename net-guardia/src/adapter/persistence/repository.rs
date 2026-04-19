@@ -47,7 +47,25 @@ impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for Sqlite
             // Use a parameterised query to avoid SQL-injection via the key value.
             conn.pragma_update(None, "key", key)?;
         }
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // PRAGMA tuning notes:
+        // - `journal_mode=WAL`: many concurrent readers + one writer; the only
+        //   journal mode that survives crashes without losing committed rows.
+        // - `synchronous=NORMAL`: canonical pairing with WAL — `FULL` adds an
+        //   extra fsync per commit that buys no durability guarantees beyond
+        //   what WAL already provides for a power-loss event.
+        // - `busy_timeout=5000`: WAL still serializes writers (SOAR, audit,
+        //   drift, SQL hooks all share one DB), and the default 0ms returns
+        //   SQLITE_BUSY immediately on any contention. 5s gives the loser
+        //   enough time to wait out a normal commit (sub-ms) without masking
+        //   genuine deadlocks.
+        // - `foreign_keys=ON`: enforce FK constraints at the connection
+        //   level (SQLite's default is OFF for backwards compatibility).
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; \
+             PRAGMA synchronous=NORMAL; \
+             PRAGMA busy_timeout=5000; \
+             PRAGMA foreign_keys=ON;",
+        )?;
         Ok(())
     }
 }

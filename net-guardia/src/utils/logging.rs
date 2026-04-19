@@ -10,6 +10,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::core::observability::log_buffer::LogBufferLayer;
 use crate::model::error::Error;
 use crate::model::error::io::IOError;
 
@@ -78,6 +79,7 @@ impl Logging {
             .with(filter_layer)
             .with(stdout_layer)
             .with(file_layer)
+            .with(LogBufferLayer::new())
             .init();
 
         // Store type-erased handle for runtime log level changes
@@ -102,14 +104,47 @@ impl Logging {
 
         handle.reload_filter(new_filter)?;
 
-        Ok(parsed_level.to_string())
+        Ok(parsed_level.to_string().to_lowercase())
     }
 
-    /// Get the current log level filter string.
+    /// Get the current global log level as a bare lowercase directive —
+    /// e.g. `"info"`, not the full `"maxminddb=warn,info"` EnvFilter string.
+    /// Per-target overrides (like `maxminddb=warn`) are internal tuning and
+    /// would break the frontend `<select>` that only knows five options.
     pub fn current_level() -> String {
         FILTER_HANDLE
             .get()
-            .map(|h| h.current_filter())
+            .map(|h| extract_main_level(&h.current_filter()))
             .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+/// Strip per-target directives out of an EnvFilter string and return the
+/// bare level directive in lowercase. Falls back to the raw string if no
+/// bare directive is present.
+fn extract_main_level(raw: &str) -> String {
+    raw.split(',')
+        .map(str::trim)
+        .find(|d| !d.is_empty() && !d.contains('='))
+        .unwrap_or(raw)
+        .to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_per_target_directives() {
+        assert_eq!(extract_main_level("maxminddb=warn,debug"), "debug");
+        assert_eq!(extract_main_level("info,maxminddb=warn"), "info");
+        assert_eq!(extract_main_level("DEBUG"), "debug");
+    }
+
+    #[test]
+    fn falls_back_when_no_bare_level() {
+        // Only per-target directives → return lowercased raw so the UI at
+        // least shows *something* rather than silently misleading.
+        assert_eq!(extract_main_level("maxminddb=warn"), "maxminddb=warn");
     }
 }

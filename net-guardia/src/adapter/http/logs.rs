@@ -4,13 +4,24 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use actix_web::{HttpResponse, Scope, web};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::core::observability::log_buffer::{self, LogEntry};
 
 /// Hardcoded log directory — not configurable via API to prevent directory traversal.
 const LOG_DIR: &str = "logs";
 
 /// Maximum downloadable log file size (50 MB). Prevents OOM from reading huge files.
 const MAX_DOWNLOAD_SIZE: u64 = 50 * 1024 * 1024;
+
+/// Default page size for `/live` when the client does not specify `limit`.
+/// Chosen so a 2 s poll against a DEBUG-chatty deployment catches up in
+/// one round-trip without being absurd payload-wise.
+const LIVE_DEFAULT_LIMIT: usize = 500;
+
+/// Hard cap on `/live?limit=` — prevents pathological clients from asking
+/// for the entire buffer at once.
+const LIVE_MAX_LIMIT: usize = 2_000;
 
 /// Validate log filename: only alphanumeric, dots, underscores, hyphens.
 /// Prevents path traversal.
@@ -25,7 +36,50 @@ fn is_valid_log_filename(name: &str) -> bool {
 pub fn initialize() -> Scope {
     web::scope("/logs")
         .route("", web::get().to(list_logs))
+        .route("/live", web::get().to(live_logs))
         .route("/{filename}", web::get().to(download_log))
+}
+
+#[derive(Deserialize)]
+struct LiveQuery {
+    #[serde(default)]
+    since_id: Option<u64>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    min_level: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LiveResponse {
+    entries: Vec<LogEntry>,
+    next_id: u64,
+    total_buffered: usize,
+    dropped_oldest: bool,
+}
+
+async fn live_logs(query: web::Query<LiveQuery>) -> HttpResponse {
+    let since_id = query.since_id.unwrap_or(0);
+    let limit = query.limit.unwrap_or(LIVE_DEFAULT_LIMIT).clamp(1, LIVE_MAX_LIMIT);
+    let min_severity = query
+        .min_level
+        .as_deref()
+        .map(|s| log_buffer::level_severity(&s.to_ascii_uppercase()))
+        .unwrap_or(log_buffer::level_severity("TRACE"));
+
+    let snap = log_buffer::snapshot(since_id, min_severity, limit);
+    // Signal to the UI that it lagged enough for the ring to evict rows
+    // between polls. Frontend can warn "older entries dropped" without
+    // silently skipping a gap.
+    let dropped_oldest = since_id > 0 && snap.entries.first().is_some_and(|e| e.id > since_id + 1);
+    let next_id = snap.entries.last().map(|e| e.id).unwrap_or(snap.latest_id);
+
+    HttpResponse::Ok().json(LiveResponse {
+        entries: snap.entries,
+        next_id,
+        total_buffered: snap.total,
+        dropped_oldest,
+    })
 }
 
 #[derive(Serialize)]
