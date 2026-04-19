@@ -7,6 +7,7 @@
 
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -32,7 +33,10 @@ const DEFAULT_COOLDOWN_EXPIRY_SECS: u64 = 3600;
 
 impl SoarEngine {
     /// Find playbooks matching the event via trigger_event + multi-condition AND logic.
-    pub(super) fn find_matching_playbooks(&self, event: &ThreatDetectedEvent) -> Vec<Playbook> {
+    /// Returns `Arc<Playbook>` so the per-event hot path bumps a refcount
+    /// instead of cloning the playbook (with all its nested conditions and
+    /// actions) on every fired detection.
+    pub(super) fn find_matching_playbooks(&self, event: &ThreatDetectedEvent) -> Vec<Arc<Playbook>> {
         self.playbooks
             .load()
             .iter()

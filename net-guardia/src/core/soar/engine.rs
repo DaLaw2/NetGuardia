@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use macros::log;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -31,6 +32,15 @@ use crate::model::soar::playbook::{Playbook, PlaybookAction};
 /// Cooldown key: (playbook_id, source_ip)
 type CooldownKey = (i64, String);
 
+/// Maximum number of `handle_threat_event` futures allowed in flight at the
+/// same time. Replaces the previous unbounded `tokio::spawn`-per-event
+/// pattern, which under fusion-emit bursts could pile up faster than the
+/// executor drains and starve other async work. When all permits are held,
+/// the event loop blocks at `Semaphore::acquire_owned` — backpressure then
+/// surfaces as broadcast `Lagged` (visible in the receiver-lag metric)
+/// rather than as silent task-queue growth.
+const SOAR_HANDLE_CONCURRENCY: usize = 16;
+
 /// SOAR Engine — subscribes to ThreatDetectedEvent and executes matching playbooks.
 ///
 /// The engine is intentionally split across three files within `core::soar`:
@@ -45,7 +55,7 @@ pub struct SoarEngine {
     pub(super) db: Arc<dyn AppRepo>,
     pub(super) access_control: Arc<dyn AccessControlPort>,
     /// In-memory cache of playbooks (loaded at startup, refreshed on change).
-    pub(super) playbooks: ArcSwap<Vec<Playbook>>,
+    pub(super) playbooks: ArcSwap<Vec<Arc<Playbook>>>,
     /// In-memory cache of admin whitelist IPs.
     pub(super) admin_whitelist: ArcSwap<HashSet<String>>,
     /// Cooldown tracker: maps (playbook_id, source_ip) → last execution time.
@@ -201,6 +211,10 @@ impl SoarEngine {
         }
 
         let playbook_count = playbooks.len();
+        // Wrap each playbook in Arc so the per-event matcher hot path can
+        // hand out cheap Arc clones instead of cloning the full Playbook
+        // (with its nested Vec<PlaybookCondition> / Vec<PlaybookAction>).
+        let playbooks: Vec<Arc<Playbook>> = playbooks.into_iter().map(Arc::new).collect();
         self.playbooks.store(Arc::new(playbooks));
 
         // Load admin whitelist
@@ -236,14 +250,24 @@ impl SoarEngine {
 
     async fn event_loop(self: Arc<Self>, mut rx: broadcast::Receiver<ThreatDetectedEvent>) {
         log!(SoarLog::EngineStarted);
+        let semaphore = Arc::new(Semaphore::new(SOAR_HANDLE_CONCURRENCY));
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // Bounded fan-out: hold one permit per in-flight handler.
+                    // When SOAR_HANDLE_CONCURRENCY are already running, this
+                    // await blocks the recv loop, which is the backpressure
+                    // signal — broadcast surfaces it as Lagged on overflow.
+                    let permit = match Arc::clone(&semaphore).acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    };
                     let engine = Arc::clone(&self);
                     tokio::spawn(async move {
                         if let Err(e) = engine.handle_threat_event(&event).await {
                             log!(SoarLog::EventHandlingFailed(e.to_string()));
                         }
+                        drop(permit);
                     });
                 }
                 Err(RecvError::Lagged(n)) => {
