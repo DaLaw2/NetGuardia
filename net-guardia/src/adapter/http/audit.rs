@@ -45,36 +45,33 @@ async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> Htt
             "chain_intact": true,
             "verified": count,
         })),
-        // Tamper detection is a successful verify outcome, not a server
-        // failure — return 200 with `chain_intact: false` so frontend
-        // retry/error handling treats real chain corruption as a
-        // distinct condition from transient DB connectivity issues.
-        Err(Error::Database(DatabaseError::AuditPrevHashMismatch { id, expected, found })) => {
-            HttpResponse::Ok().json(serde_json::json!({
-                "chain_intact": false,
-                "verified": 0,
-                "kind": "prev_hash_mismatch",
-                "id": id,
-                "expected": expected,
-                "found": found,
-            }))
+        Err(e) => {
+            // Tamper detection is a successful verify outcome, not a server
+            // failure — return 200 with `chain_intact: false` so frontend
+            // retry/error handling treats real chain corruption as a
+            // distinct condition from transient DB connectivity issues.
+            // Reserve 500 for actual DB/IO failures.
+            let prev_mismatch = matches!(&e, Error::Database(DatabaseError::AuditPrevHashMismatch { .. }));
+            let row_mismatch = matches!(&e, Error::Database(DatabaseError::AuditRowHashMismatch { .. }));
+            if prev_mismatch || row_mismatch {
+                let kind = if prev_mismatch {
+                    "prev_hash_mismatch"
+                } else {
+                    "row_hash_mismatch"
+                };
+                HttpResponse::Ok().json(serde_json::json!({
+                    "chain_intact": false,
+                    "verified": 0,
+                    "kind": kind,
+                    "detail": e.to_string(),
+                }))
+            } else {
+                HttpResponse::InternalServerError().json(serde_json::json!({
+                    "chain_intact": null,
+                    "verified": 0,
+                    "error": e.to_string(),
+                }))
+            }
         }
-        Err(Error::Database(DatabaseError::AuditRowHashMismatch { id, computed, stored })) => {
-            HttpResponse::Ok().json(serde_json::json!({
-                "chain_intact": false,
-                "verified": 0,
-                "kind": "row_hash_mismatch",
-                "id": id,
-                "computed": computed,
-                "stored": stored,
-            }))
-        }
-        // Any other error is a real server-side failure (DB unreachable,
-        // query failed, IO) — keep 500 so monitoring / alerts fire.
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "chain_intact": null,
-            "verified": 0,
-            "error": e.to_string(),
-        })),
     }
 }
