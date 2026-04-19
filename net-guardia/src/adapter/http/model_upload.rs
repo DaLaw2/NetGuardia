@@ -120,7 +120,11 @@ impl Drop for PromoteGuard<'_> {
 }
 
 pub fn initialize() -> Scope {
-    web::scope("/models").route("/upload", web::post().to(upload))
+    // Mounted under `/ml/models/upload` so the entire ML model lifecycle
+    // (status, dormant, upload) lives under one URL subtree. The peer
+    // `/ml/models/current` GET/DELETE routes live in `ml::initialize()`;
+    // actix dispatches each path to whichever scope owns it.
+    web::scope("/ml/models").route("/upload", web::post().to(upload))
 }
 
 /// `POST /api/ml/models/upload` — multipart with `manifest` (YAML text),

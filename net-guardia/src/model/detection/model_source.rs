@@ -44,7 +44,7 @@ impl ModelInfo {
 }
 
 /// Wire-format ML source status. Broadcast to frontend; returned by
-/// `GET /api/models/current`. Serde-tagged so the frontend can discriminate
+/// `GET /api/ml/models/current`. Serde-tagged so the frontend can discriminate
 /// on the `state` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
