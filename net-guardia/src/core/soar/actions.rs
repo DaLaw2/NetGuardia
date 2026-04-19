@@ -130,26 +130,15 @@ impl SoarEngine {
     ) -> Result<String, Error> {
         let ttl_secs = action.params.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(1800);
 
-        // Validate TTL (runtime-configurable via DB)
-        let max_ttl: u64 = self
-            .db
-            .get_setting("soar_max_ttl_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(86400);
+        // Two settings read together off the tokio worker thread — r2d2's
+        // pool.get() and rusqlite are blocking, so back-to-back calls inside
+        // an async fn can stall the executor under burst load.
+        let (max_ttl, max_cap) = read_block_caps(self.db.clone()).await?;
         if ttl_secs > max_ttl {
             Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
 
-        // Atomically check cap and reserve a slot using CAS loop (runtime-configurable via DB)
-        let max_cap: u32 = self
-            .db
-            .get_setting("soar_max_auto_block_cap")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(100);
+        // Atomically check cap and reserve a slot using CAS loop.
         loop {
             let current_count = self.active_block_count.load(Ordering::SeqCst);
             if current_count >= max_cap {
@@ -175,13 +164,19 @@ impl SoarEngine {
         let expires_at = Utc::now() + ChronoDuration::seconds(ttl_secs as i64);
         let expires_str = expires_at.format("%Y-%m-%d %H:%M:%S").to_string();
 
-        // tx-1 (R2 mitigation): atomically write soar_block_rules + acl_rules.
-        // Either both commit or both roll back — no half-state possible.
+        // Atomically write soar_block_rules + acl_rules. Either both commit
+        // or both roll back — no half-state possible. Offloaded so the
+        // SQLite WAL fsync can't block the tokio worker.
         let ip_version = ip_version_from_str(&event.source_ip);
-        if let Err(e) = self
-            .db
-            .commit_soar_block_to_db(&event.source_ip, ip_version, playbook_id, &expires_str)
-        {
+        let commit_result = commit_block_blocking(
+            self.db.clone(),
+            event.source_ip.clone(),
+            ip_version,
+            playbook_id,
+            expires_str.clone(),
+        )
+        .await;
+        if let Err(e) = commit_result {
             // DB tx rolled back both rows; now roll back the eBPF block.
             if let Err(unblock_err) = self.access_control.unblock_ip(&event.source_ip) {
                 log!(SoarLog::EventHandlingFailed(format!(
@@ -189,7 +184,7 @@ impl SoarEngine {
                     event.source_ip, unblock_err
                 )));
                 // Write to pending_unblock table so recovery can retry later
-                if let Err(pend_err) = self.db.insert_pending_unblock(&event.source_ip) {
+                if let Err(pend_err) = insert_pending_unblock_blocking(self.db.clone(), event.source_ip.clone()).await {
                     log!(SoarLog::EventHandlingFailed(format!(
                         "CRITICAL: Failed to queue pending unblock for IP {}: {}",
                         event.source_ip, pend_err
@@ -220,13 +215,7 @@ impl SoarEngine {
             Err(SoarError::InvalidRateLimitFactor(factor))?;
         }
 
-        let max_ttl: u64 = self
-            .db
-            .get_setting("soar_max_ttl_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(86400);
+        let max_ttl = read_max_ttl(self.db.clone()).await;
         if ttl_secs > max_ttl {
             Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
@@ -448,4 +437,61 @@ impl SoarEngine {
         log!(SoarLog::FallbackExecuted(event.source_ip.clone()));
         Ok(())
     }
+}
+
+use std::sync::Arc;
+
+use crate::interface::port::app_repo::AppRepo;
+
+/// Read both block-related caps in a single offloaded blocking call so the
+/// async caller pays one spawn_blocking hop instead of two.
+async fn read_block_caps(db: Arc<dyn AppRepo>) -> Result<(u64, u32), Error> {
+    spawn_blocking(move || {
+        let max_ttl: u64 = db
+            .get_setting("soar_max_ttl_secs")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(86400);
+        let max_cap: u32 = db
+            .get_setting("soar_max_auto_block_cap")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        Ok::<_, Error>((max_ttl, max_cap))
+    })
+    .await
+    .map_err(|e| SoarError::ActionFailed("read_block_caps", e))?
+}
+
+async fn read_max_ttl(db: Arc<dyn AppRepo>) -> u64 {
+    spawn_blocking(move || {
+        db.get_setting("soar_max_ttl_secs")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(86400)
+    })
+    .await
+    .unwrap_or(86400)
+}
+
+async fn commit_block_blocking(
+    db: Arc<dyn AppRepo>,
+    source_ip: String,
+    ip_version: u8,
+    playbook_id: i64,
+    expires_str: String,
+) -> Result<(), Error> {
+    spawn_blocking(move || db.commit_soar_block_to_db(&source_ip, ip_version, playbook_id, &expires_str))
+        .await
+        .map_err(|e| SoarError::ActionFailed("commit_soar_block_to_db", e))??;
+    Ok(())
+}
+
+async fn insert_pending_unblock_blocking(db: Arc<dyn AppRepo>, source_ip: String) -> Result<i64, Error> {
+    spawn_blocking(move || db.insert_pending_unblock(&source_ip))
+        .await
+        .map_err(|e| SoarError::ActionFailed("insert_pending_unblock", e))?
 }

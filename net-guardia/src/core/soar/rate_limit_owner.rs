@@ -53,6 +53,11 @@ impl RateLimitOwnerHandle {
     /// Spawn the owner task on the current tokio runtime. The owner holds
     /// the only mutating references to the DB rate-limit settings and the
     /// eBPF rate-limit map for the duration of an Adjust / Restore batch.
+    ///
+    /// Each command body runs inside `spawn_blocking` because both halves
+    /// (rusqlite via r2d2 and eBPF map writes) are synchronous I/O — running
+    /// them directly inside the async owner loop would block the tokio
+    /// worker thread for the entire adjust/restore batch.
     pub fn spawn(db: Arc<dyn AppRepo>, rate_limit: Arc<dyn RateLimitPort>) -> Self {
         let (tx, mut rx) = mpsc::channel::<RateLimitCmd>(RATE_LIMIT_CMD_CHANNEL_CAPACITY);
         tokio::spawn(async move {
@@ -65,11 +70,26 @@ impl RateLimitOwnerHandle {
                         attack_type,
                         reply,
                     } => {
-                        let result = adjust(&db, rate_limit.as_ref(), factor, ttl_secs, &source_ip, &attack_type);
+                        let db_c = db.clone();
+                        let rl_c = rate_limit.clone();
+                        let join = tokio::task::spawn_blocking(move || {
+                            adjust(&db_c, rl_c.as_ref(), factor, ttl_secs, &source_ip, &attack_type)
+                        })
+                        .await;
+                        let result = match join {
+                            Ok(r) => r,
+                            Err(e) => Err(SoarError::RateLimitOwnerJoinFailed(e.to_string()).into()),
+                        };
                         let _ = reply.send(result);
                     }
                     RateLimitCmd::RestoreIfExpired { reply } => {
-                        let result = restore_if_expired(&db, rate_limit.as_ref());
+                        let db_c = db.clone();
+                        let rl_c = rate_limit.clone();
+                        let join = tokio::task::spawn_blocking(move || restore_if_expired(&db_c, rl_c.as_ref())).await;
+                        let result = match join {
+                            Ok(r) => r,
+                            Err(e) => Err(SoarError::RateLimitOwnerJoinFailed(e.to_string()).into()),
+                        };
                         let _ = reply.send(result);
                     }
                 }

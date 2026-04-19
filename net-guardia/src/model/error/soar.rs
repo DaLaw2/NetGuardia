@@ -59,5 +59,9 @@ traceable! {
         #[no_source]
         #[error("Rate-limit owner task is unavailable (channel closed)")]
         RateLimitOwnerUnavailable => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Rate-limit owner blocking task panicked or was cancelled: {detail}")]
+        RateLimitOwnerJoinFailed { detail: String } => tracing::Level::ERROR,
     }
 }

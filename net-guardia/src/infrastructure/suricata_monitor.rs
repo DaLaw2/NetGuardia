@@ -115,6 +115,14 @@ impl SuricataMonitor {
         if raw.is_empty() {
             return;
         }
+        // Cheap pre-filter: a busy Suricata writes flow/stats/dns/http/fileinfo
+        // lines that vastly outnumber alerts. Parsing every line into
+        // serde_json::Value just to drop it dominates CPU on this tail. The
+        // substring match is a sound over-approximation — false positives go
+        // through the full parse + the strict event_type=="alert" check below.
+        if !raw.contains("\"event_type\":\"alert\"") {
+            return;
+        }
         let v: serde_json::Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(_) => return,
