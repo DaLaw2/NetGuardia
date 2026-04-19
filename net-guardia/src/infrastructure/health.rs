@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arc_swap::ArcSwap;
 use macros::log;
 use sysinfo::{Components, Networks, System};
-use tokio::sync::{RwLock, broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
 use crate::infrastructure::app_config::AppConfig;
@@ -16,10 +16,16 @@ use crate::model::system::health::{
     SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };
 
+/// Lock-free system health.
+///
+/// A single owner task on the tokio runtime owns the sysinfo handles
+/// (`System`, `Networks`, `Components`). It refreshes them on a tick,
+/// computes a fresh `SystemHealthMetrics`, publishes the snapshot via
+/// `ArcSwap`, and broadcasts to streaming subscribers. Readers
+/// (`get_current_metrics`, `is_system_healthy`, HTTP handlers) just
+/// `.load()` the `ArcSwap` — no locks crossed, no `await` needed.
 pub struct SystemHealth {
-    system: RwLock<System>,
-    networks: RwLock<Networks>,
-    components: RwLock<Components>,
+    metrics: Arc<ArcSwap<SystemHealthMetrics>>,
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     ingress_interface: String,
     egress_interface: String,
@@ -29,71 +35,80 @@ pub struct SystemHealth {
 impl SystemHealth {
     pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
         let (broadcast_tx, _) = broadcast::channel(100);
+        let ingress_interface = config.network.ingress_ifname.clone();
+        let egress_interface = config.network.egress_ifname.clone();
 
-        let health = SystemHealth {
-            system: RwLock::new(System::new_all()),
-            networks: RwLock::new(Networks::new_with_refreshed_list()),
-            components: RwLock::new(Components::new_with_refreshed_list()),
+        // Bootstrap snapshot so readers don't have to handle a "no metrics yet"
+        // case before the refresh task fires for the first time. The
+        // `*_with_refreshed_list` constructors already do an initial refresh.
+        let system = System::new_all();
+        let networks = Networks::new_with_refreshed_list();
+        let components = Components::new_with_refreshed_list();
+        let initial = Self::collect_metrics(
+            &system,
+            &networks,
+            &components,
+            &ingress_interface,
+            &egress_interface,
+            (**ebpf_health.load()).clone(),
+        );
+
+        Ok(SystemHealth {
+            metrics: Arc::new(ArcSwap::from_pointee(initial)),
             broadcast_tx,
-            ingress_interface: config.network.ingress_ifname.clone(),
-            egress_interface: config.network.egress_ifname.clone(),
+            ingress_interface,
+            egress_interface,
             ebpf_health,
-        };
-
-        Ok(health)
+        })
     }
 
     pub async fn run(self: Arc<Self>, monitoring_interval: Duration) -> oneshot::Sender<()> {
         let (sender, mut receiver) = oneshot::channel();
-        let health = self.clone();
+        let metrics = self.metrics.clone();
+        let broadcast_tx = self.broadcast_tx.clone();
+        let ingress_interface = self.ingress_interface.clone();
+        let egress_interface = self.egress_interface.clone();
+        let ebpf_health = self.ebpf_health.clone();
 
         tokio::spawn(async move {
+            // Owner task exclusively holds these sysinfo handles, so no locks
+            // are needed on the data plane.
+            let mut system = System::new_all();
+            let mut networks = Networks::new_with_refreshed_list();
+            let mut components = Components::new_with_refreshed_list();
             let mut interval_timer = interval(monitoring_interval);
 
             loop {
                 tokio::select! {
                     biased;
-                    _ = &mut receiver => {
-                        break;
-                    }
+                    _ = &mut receiver => break,
                     _ = interval_timer.tick() => {
-                        health.refresh_and_broadcast().await;
+                        system.refresh_all();
+                        networks.refresh(true);
+                        components.refresh(true);
+
+                        let snapshot = Self::collect_metrics(
+                            &system,
+                            &networks,
+                            &components,
+                            &ingress_interface,
+                            &egress_interface,
+                            (**ebpf_health.load()).clone(),
+                        );
+
+                        metrics.store(Arc::new(snapshot.clone()));
+
+                        if broadcast_tx.receiver_count() > 0
+                            && let Err(e) = broadcast_tx.send(snapshot)
+                        {
+                            log!(Health::BroadcastFailed(e.to_string()));
+                        }
                     }
                 }
             }
         });
 
         sender
-    }
-
-    async fn refresh_and_broadcast(&self) {
-        self.system.write().await.refresh_all();
-        self.networks.write().await.refresh(true);
-        self.components.write().await.refresh(true);
-
-        let system = self.system.read().await;
-        let networks = self.networks.read().await;
-        let components = self.components.read().await;
-
-        let ebpf = (**self.ebpf_health.load()).clone();
-        let metrics = Self::collect_metrics(
-            &system,
-            &networks,
-            &components,
-            &self.ingress_interface,
-            &self.egress_interface,
-            ebpf,
-        );
-
-        drop(system);
-        drop(networks);
-        drop(components);
-
-        if self.broadcast_tx.receiver_count() > 0
-            && let Err(e) = self.broadcast_tx.send(metrics)
-        {
-            log!(Health::BroadcastFailed(e.to_string()));
-        }
     }
 
     fn collect_metrics(
@@ -239,20 +254,8 @@ impl SystemHealth {
         ConfiguredNetworkStats { ingress, egress }
     }
 
-    pub async fn get_current_metrics(&self) -> SystemHealthMetrics {
-        let system = self.system.read().await;
-        let networks = self.networks.read().await;
-        let components = self.components.read().await;
-
-        let ebpf = (**self.ebpf_health.load()).clone();
-        Self::collect_metrics(
-            &system,
-            &networks,
-            &components,
-            &self.ingress_interface,
-            &self.egress_interface,
-            ebpf,
-        )
+    pub fn get_current_metrics(&self) -> SystemHealthMetrics {
+        (**self.metrics.load()).clone()
     }
 
     /// Returns a handle to the shared eBPF health state. Consumers (HTTP
@@ -266,8 +269,8 @@ impl SystemHealth {
         self.broadcast_tx.subscribe()
     }
 
-    pub async fn is_system_healthy(&self) -> SystemHealthStatus {
-        let metrics = self.get_current_metrics().await;
+    pub fn is_system_healthy(&self) -> SystemHealthStatus {
+        let metrics = self.get_current_metrics();
 
         let mut status = SystemHealthStatus {
             overall_healthy: true,

@@ -1,10 +1,17 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use tokio::sync::{mpsc, oneshot};
+
 use crate::model::detection::drift::{DriftReport, FeatureBaselines};
 
 /// Maximum number of snapshots to retain, preventing unbounded memory growth.
 const MAX_SNAPSHOTS: usize = 10_000;
+
+/// Channel depth for the owner-task command queue. With a typical inference
+/// batch of 100 flows per second, 1024 gives ~10s of cushion before the
+/// hot path begins shedding samples.
+const DRIFT_CMD_CHANNEL_CAPACITY: usize = 1024;
 
 /// Tracks rolling mean/stddev of normalized input features over a configurable window.
 /// Compares against training-time baselines to detect data drift.
@@ -103,6 +110,64 @@ impl DriftDetector {
                 break;
             }
         }
+    }
+}
+
+/// Command queue between drift-detector callers and the owner task.
+enum DriftCmd {
+    Update(Vec<f64>),
+    CheckDrift {
+        reply: oneshot::Sender<Option<DriftReport>>,
+    },
+}
+
+/// Lock-free handle to a `DriftDetector` running on its own tokio task.
+///
+/// The hot path is `update`, called from the ML engine's inference tick on
+/// the spawn-blocking pool — it must not await, so we use `try_send` and
+/// silently drop the sample when the channel is full. Drift is a statistical
+/// signal computed over thousands of snapshots in a window; losing a few
+/// samples under back-pressure does not change the verdict.
+///
+/// `check_drift` is called from the periodic drift monitor (tokio task), so
+/// it can `await` the round-trip naturally.
+#[derive(Clone)]
+pub struct DriftDetectorHandle {
+    tx: mpsc::Sender<DriftCmd>,
+}
+
+impl DriftDetectorHandle {
+    /// Spawn the owner task on the current tokio runtime and return a handle.
+    pub fn spawn(baselines: Option<FeatureBaselines>, drift_window: Duration) -> Self {
+        let (tx, mut rx) = mpsc::channel::<DriftCmd>(DRIFT_CMD_CHANNEL_CAPACITY);
+        tokio::spawn(async move {
+            let mut detector = DriftDetector::new(baselines, drift_window);
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    DriftCmd::Update(features) => detector.update(&features),
+                    DriftCmd::CheckDrift { reply } => {
+                        let _ = reply.send(detector.check_drift());
+                    }
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    /// Fire-and-forget update. Drops the sample silently when the channel is
+    /// full or the owner task has shut down (statistical tolerance — see the
+    /// type-level doc).
+    pub fn update(&self, features: Vec<f64>) {
+        let _ = self.tx.try_send(DriftCmd::Update(features));
+    }
+
+    /// Round-trip drift query. Returns `None` if the channel is closed.
+    pub async fn check_drift(&self) -> Option<DriftReport> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self.tx.send(DriftCmd::CheckDrift { reply: reply_tx }).await.is_err() {
+            return None;
+        }
+        reply_rx.await.unwrap_or(None)
     }
 }
 

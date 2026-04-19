@@ -166,7 +166,7 @@ impl SoarEngine {
         }
 
         // Block IP via AccessControlPort (handles IPv4/IPv6 dispatch internally)
-        if let Err(e) = self.access_control.block_ip(&event.source_ip).await {
+        if let Err(e) = self.access_control.block_ip(&event.source_ip) {
             self.decrement_block_count();
             return Err(e);
         }
@@ -183,7 +183,7 @@ impl SoarEngine {
             .commit_soar_block_to_db(&event.source_ip, ip_version, playbook_id, &expires_str)
         {
             // DB tx rolled back both rows; now roll back the eBPF block.
-            if let Err(unblock_err) = self.access_control.unblock_ip(&event.source_ip).await {
+            if let Err(unblock_err) = self.access_control.unblock_ip(&event.source_ip) {
                 log!(SoarLog::EventHandlingFailed(format!(
                     "CRITICAL: Failed to unblock IP {} after DB error — queueing for retry: {}",
                     event.source_ip, unblock_err
@@ -211,7 +211,7 @@ impl SoarEngine {
         action: &PlaybookAction,
         event: &ThreatDetectedEvent,
     ) -> Result<String, Error> {
-        let rate_limit = self.rate_limit.as_ref().ok_or(SoarError::RateLimitUnavailable)?;
+        let owner = self.rate_limit.as_ref().ok_or(SoarError::RateLimitUnavailable)?;
 
         let factor = action.params.get("factor").and_then(|v| v.as_f64()).unwrap_or(0.5);
         let ttl_secs = action.params.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(600);
@@ -231,67 +231,9 @@ impl SoarEngine {
             Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
 
-        // Acquire lock to serialize rate limit read-save-write (Item 6: atomicity)
-        let _guard = self.rate_limit_lock.lock().await;
-
-        // Read current rates, save originals, apply reduced rates
-        let current_packet = rate_limit.get_packet_rate().unwrap_or(10000);
-        let current_syn = rate_limit.get_syn_rate().unwrap_or(1000);
-        let current_udp = rate_limit.get_udp_rate().unwrap_or(5000);
-        let current_dns = rate_limit.get_dns_rate().unwrap_or(2000);
-
-        // Store original rates for restoration (only if not already adjusted)
-        let key = "soar_rate_limit_original";
-        if self.db.get_setting(key)?.filter(|s| !s.is_empty()).is_none() {
-            let original = serde_json::json!({
-                "packet_rate": current_packet,
-                "syn_rate": current_syn,
-                "udp_rate": current_udp,
-                "dns_rate": current_dns,
-            });
-            self.db.set_setting(key, &original.to_string())?;
-        }
-
-        // Store TTL for restoration
-        let expires_at = Utc::now() + ChronoDuration::seconds(ttl_secs as i64);
-        self.db.set_setting(
-            "soar_rate_limit_expires",
-            &expires_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-        )?;
-
-        // Apply reduced rates
-        let new_packet = (current_packet as f64 * factor) as u64;
-        let new_syn = (current_syn as f64 * factor) as u64;
-        let new_udp = (current_udp as f64 * factor) as u64;
-        let new_dns = (current_dns as f64 * factor) as u64;
-
-        rate_limit.set_packet_rate(new_packet.max(1))?;
-        rate_limit.set_syn_rate(new_syn.max(1))?;
-        rate_limit.set_udp_rate(new_udp.max(1))?;
-        rate_limit.set_dns_rate(new_dns.max(1))?;
-
-        log!(SoarLog::RateLimitAdjusted(
-            format!("{}", factor),
-            ttl_secs,
-            event.source_ip.clone(),
-            event.attack_type.clone(),
-            format!(
-                "packet {}→{}, syn {}→{}, udp {}→{}, dns {}→{}",
-                current_packet,
-                new_packet.max(1),
-                current_syn,
-                new_syn.max(1),
-                current_udp,
-                new_udp.max(1),
-                current_dns,
-                new_dns.max(1),
-            ),
-        ));
-
-        Ok(format!(
-            "Rate limits reduced by factor {} for {}s (triggered by {})",
-            factor, ttl_secs, event.source_ip
-        ))
+        owner
+            .adjust(factor, ttl_secs, event.source_ip.clone(), event.attack_type.clone())
+            .await
     }
 
     /// Send Telegram notification.

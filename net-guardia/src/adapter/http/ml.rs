@@ -16,7 +16,7 @@ pub fn initialize() -> Scope {
 async fn get_status(engine: web::Data<Engine>) -> impl Responder {
     let trackers = engine.trackers();
     let num_trackers = trackers.len();
-    let total_flows: usize = trackers.iter().map(|t| t.lock().flow_count()).sum();
+    let total_flows: usize = trackers.iter().map(|t| t.flow_count()).sum();
     let has_traffic_logger = engine.has_traffic_logger();
 
     HttpResponse::Ok().json(serde_json::json!({

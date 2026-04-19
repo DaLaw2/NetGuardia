@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
-use async_trait::async_trait;
 use common::model::ip_address::Port;
 
 use crate::model::access_control::list_type::ListType;
@@ -13,38 +12,27 @@ use crate::model::monitoring::direction::FlowDirection;
 /// Distinct from `AccessControlPort` (which only exposes `block_ip` /
 /// `unblock_ip` for SOAR). `AclService` uses this richer API to serve the
 /// `/api/acl` HTTP routes.
-#[async_trait]
 #[allow(dead_code)]
 pub trait AccessControlAdminPort: Send + Sync {
-    async fn add_ipv4_list(
+    fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error>;
+
+    fn add_ipv6_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error>;
+
+    fn remove_ipv4_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error>;
 
-    async fn add_ipv6_list(
+    fn remove_ipv6_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error>;
 
-    async fn remove_ipv4_list(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV4,
-    ) -> Result<(), Error>;
+    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>>;
 
-    async fn remove_ipv6_list(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV6,
-    ) -> Result<(), Error>;
-
-    async fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>>;
-
-    async fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>>;
+    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>>;
 }

@@ -12,12 +12,12 @@ pub fn initialize() -> Scope {
 }
 
 async fn get_current_metrics(health: web::Data<SystemHealth>) -> impl Responder {
-    let metrics = health.get_current_metrics().await;
+    let metrics = health.get_current_metrics();
     HttpResponse::Ok().json(metrics)
 }
 
 async fn get_health_status(health: web::Data<SystemHealth>) -> impl Responder {
-    let status = health.is_system_healthy().await;
+    let status = health.is_system_healthy();
     HttpResponse::Ok().json(status)
 }
 

@@ -20,6 +20,7 @@ use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use actix_multipart::Multipart;
@@ -29,7 +30,6 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::task;
 use uuid::Uuid;
 
@@ -75,11 +75,50 @@ const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
 /// chain too.
 const AUDIT_ACTION_MODEL_SWAP: &str = "model_swap";
 
-/// Process-wide lock serializing the rename step of every promote.
-/// The critical section is tiny (three `tokio::fs::rename` syscalls)
-/// but must never interleave: a concurrent promote mid-rename could
+/// Process-wide gate that ensures only one promote ever runs the rename
+/// section at a time. The critical section is tiny (three `tokio::fs::rename`
+/// syscalls) but must never interleave: a concurrent promote mid-rename could
 /// leave `models/` pointing at a manifest whose ONNX hasn't landed yet.
-pub type PromoteLock = AsyncMutex<()>;
+///
+/// Unlike a mutex, the gate does not queue. A second concurrent promote sees
+/// the gate held and gets `PromoteError::ConcurrentPromote` immediately —
+/// administrators wanting to swap models should know another swap is in flight
+/// rather than silently waiting behind it.
+#[derive(Default)]
+pub struct PromoteGate {
+    in_progress: AtomicBool,
+}
+
+impl PromoteGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Try to claim the gate. Returns `Some(guard)` on success; `None` when
+    /// another promote is already inside the rename section. The guard
+    /// releases the gate when dropped, including on panic.
+    fn try_acquire(&self) -> Option<PromoteGuard<'_>> {
+        if self
+            .in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            Some(PromoteGuard { gate: self })
+        } else {
+            None
+        }
+    }
+}
+
+struct PromoteGuard<'a> {
+    gate: &'a PromoteGate,
+}
+
+impl Drop for PromoteGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.in_progress.store(false, Ordering::Release);
+    }
+}
 
 pub fn initialize() -> Scope {
     web::scope("/models").route("/upload", web::post().to(upload))
@@ -96,7 +135,7 @@ async fn upload(
     app_config: web::Data<Arc<AppConfig>>,
     inference: web::Data<Inference>,
     comm: web::Data<CommunicationManager>,
-    promote_lock: web::Data<PromoteLock>,
+    promote_lock: web::Data<PromoteGate>,
     claims: AuthClaims,
     payload: Multipart,
 ) -> impl Responder {
@@ -440,7 +479,7 @@ async fn validate_and_promote(
     summary: &UploadSummary,
     inference: &Inference,
     comm: &CommunicationManager,
-    promote_lock: &PromoteLock,
+    promote_lock: &PromoteGate,
     actor_username: &str,
     batch_size: usize,
 ) -> Result<PromoteReport, PromoteError> {
@@ -487,7 +526,7 @@ async fn validate_and_promote(
 
     let before_status = inference.current_status();
 
-    let _guard = promote_lock.lock().await;
+    let _guard = promote_lock.try_acquire().ok_or(PromoteError::ConcurrentPromote)?;
     let models_dir = PathBuf::from(MODELS_DIR);
     let target_onnx = models_dir.join(&declared_onnx);
     fs::rename(&staged_onnx, &target_onnx)
@@ -552,6 +591,7 @@ enum PromoteError {
     UnsupportedAdapter,
     StagingIo(String),
     PromoteIo(String),
+    ConcurrentPromote,
 }
 
 impl PromoteError {
@@ -567,10 +607,12 @@ impl PromoteError {
             ),
             Self::StagingIo(err) => (500, format!("staging io error: {err}")),
             Self::PromoteIo(err) => (500, format!("promote io error: {err}")),
+            Self::ConcurrentPromote => (409, "another model promote is already in progress".to_string()),
         };
         let body = serde_json::json!({ "error": message });
         match status {
             422 => HttpResponse::UnprocessableEntity().json(body),
+            409 => HttpResponse::Conflict().json(body),
             _ => HttpResponse::InternalServerError().json(body),
         }
     }

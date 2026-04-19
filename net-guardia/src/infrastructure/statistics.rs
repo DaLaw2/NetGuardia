@@ -42,8 +42,7 @@ impl FlowStatistics {
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
         let mut entries = Vec::new();
         for tracker in self.engine.trackers() {
-            let t = tracker.lock();
-            entries.extend(t.get_flows().iter().map(FlowStatsEntry::from));
+            entries.extend(tracker.get_flows().iter().map(FlowStatsEntry::from));
         }
         entries
     }

@@ -25,7 +25,7 @@ use crate::core::detection::beaconing::BeaconingDetector;
 use crate::core::detection::orchestrator::DetectionOrchestrator;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::drift_detector::DriftDetectorHandle;
 use crate::core::ml::model_watcher::ModelWatcher;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -109,7 +109,7 @@ pub struct System {
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
     pub geoip: Option<Arc<GeoIpService>>,
-    pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+    pub drift_detector: DriftDetectorHandle,
     pub shutdown_handle: Option<Arc<ShutdownHandle>>,
     _ingress_program_array: Option<ProgramArray<MapData>>,
     pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
@@ -430,14 +430,11 @@ impl System {
     }
 
     /// Periodically check the drift detector and publish DriftDetectedEvent when drift is found.
-    async fn run_drift_monitor(
-        drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
-        comm: Arc<CommunicationManager>,
-    ) {
+    async fn run_drift_monitor(drift_detector: DriftDetectorHandle, comm: Arc<CommunicationManager>) {
         let mut interval = interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            let report = drift_detector.lock().check_drift();
+            let report = drift_detector.check_drift().await;
             if let Some(report) = report {
                 log!(SystemLog::DriftDetected(
                     report.drifted_features.len(),

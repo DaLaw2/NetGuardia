@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
-use async_trait::async_trait;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
 use common::model::ip_address::{IPv4, IPv6, Port};
 use common::model::port_rule::PortRule;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
 use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::model::access_control::ip_address::NativeConvert;
@@ -57,27 +56,27 @@ impl AccessControl {
         }
     }
 
-    pub async fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
+    pub fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
         let map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.read().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.read().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.read().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.read().await,
+            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.read(),
+            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.read(),
+            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.read(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.read(),
         };
         map_wrapper.get_list()
     }
 
-    pub async fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
+    pub fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
         let map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.read().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.read().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.read().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.read().await,
+            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.read(),
+            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.read(),
+            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.read(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.read(),
         };
         map_wrapper.get_list()
     }
 
-    pub async fn add_ipv4_list(
+    pub fn add_ipv4_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
@@ -86,15 +85,15 @@ impl AccessControl {
         let ip: u32 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.write().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.write().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.write().await,
+            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write(),
+            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.write(),
+            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.write(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.write(),
         };
         map_wrapper.add(ip, port)
     }
 
-    pub async fn add_ipv6_list(
+    pub fn add_ipv6_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
@@ -103,15 +102,15 @@ impl AccessControl {
         let ip: u128 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.write().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.write().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.write().await,
+            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write(),
+            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.write(),
+            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.write(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.write(),
         };
         map_wrapper.add(ip, port)
     }
 
-    pub async fn remove_ipv4_list(
+    pub fn remove_ipv4_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
@@ -120,15 +119,15 @@ impl AccessControl {
         let ip: u32 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.write().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.write().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.write().await,
+            (FlowDirection::Source, ListType::White) => self.ipv4_src_whitelist.write(),
+            (FlowDirection::Source, ListType::Black) => self.ipv4_src_blacklist.write(),
+            (FlowDirection::Destination, ListType::White) => self.ipv4_dst_whitelist.write(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv4_dst_blacklist.write(),
         };
         map_wrapper.remove(ip, port)
     }
 
-    pub async fn remove_ipv6_list(
+    pub fn remove_ipv6_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
@@ -137,54 +136,43 @@ impl AccessControl {
         let ip: u128 = (*address.ip()).to_bits().to_be();
         let port = address.port();
         let mut map_wrapper = match (direction, list_type) {
-            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write().await,
-            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.write().await,
-            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.write().await,
-            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.write().await,
+            (FlowDirection::Source, ListType::White) => self.ipv6_src_whitelist.write(),
+            (FlowDirection::Source, ListType::Black) => self.ipv6_src_blacklist.write(),
+            (FlowDirection::Destination, ListType::White) => self.ipv6_dst_whitelist.write(),
+            (FlowDirection::Destination, ListType::Black) => self.ipv6_dst_blacklist.write(),
         };
         map_wrapper.remove(ip, port)
     }
 }
 
-#[async_trait]
 impl AccessControlAdminPort for AccessControl {
-    async fn add_ipv4_list(
+    fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error> {
+        self.add_ipv4_list(direction, list_type, address)
+    }
+    fn add_ipv6_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error> {
+        self.add_ipv6_list(direction, list_type, address)
+    }
+    fn remove_ipv4_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error> {
-        self.add_ipv4_list(direction, list_type, address).await
+        self.remove_ipv4_list(direction, list_type, address)
     }
-    async fn add_ipv6_list(
+    fn remove_ipv6_list(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error> {
-        self.add_ipv6_list(direction, list_type, address).await
+        self.remove_ipv6_list(direction, list_type, address)
     }
-    async fn remove_ipv4_list(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV4,
-    ) -> Result<(), Error> {
-        self.remove_ipv4_list(direction, list_type, address).await
+    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
+        self.get_ipv4_list(direction, list_type)
     }
-    async fn remove_ipv6_list(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV6,
-    ) -> Result<(), Error> {
-        self.remove_ipv6_list(direction, list_type, address).await
-    }
-    async fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
-        self.get_ipv4_list(direction, list_type).await
-    }
-    async fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
-        self.get_ipv6_list(direction, list_type).await
+    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
+        self.get_ipv6_list(direction, list_type)
     }
 }
 

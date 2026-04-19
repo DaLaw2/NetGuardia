@@ -231,7 +231,7 @@ impl PlaybookService {
         let source_ip = &block.1;
 
         // Remove from eBPF ACL
-        self.access_control.unblock_ip(source_ip).await?;
+        self.access_control.unblock_ip(source_ip)?;
 
         // Atomically drop acl_rules entry AND mark soar_block_rules unblocked
         // in one transaction (R2 mitigation, tx-3 per M2_CARVE_PLAN §4b).

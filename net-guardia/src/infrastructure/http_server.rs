@@ -9,7 +9,7 @@ use actix_web::{App, HttpResponse, HttpServer, web};
 use macros::log;
 
 use crate::adapter::ebpf::EbpfServices;
-use crate::adapter::http::model_upload::PromoteLock;
+use crate::adapter::http::model_upload::PromoteGate;
 use crate::adapter::http::{
     acl, api_keys, audit as audit_api, auth, byo, default, filter, flow_trace, fusion, health as health_api,
     logs as logs_api, ml, model_upload, notification as notification_api, rate_limit as rate_limit_api,
@@ -243,7 +243,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     // serialize their rename-into-`models/` critical section. Built
     // here rather than threaded through HttpServerParams because
     // nothing outside the HTTP boundary needs to observe it.
-    let promote_lock: Arc<PromoteLock> = Arc::new(PromoteLock::new(()));
+    let promote_lock: Arc<PromoteGate> = Arc::new(PromoteGate::new());
 
     HttpServer::new(move || {
         let app = App::new()

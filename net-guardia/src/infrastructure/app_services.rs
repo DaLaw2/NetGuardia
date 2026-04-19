@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use crate::core::detection::metrics::FusionMetrics;
 use crate::core::ml::adapter::ModelSourceState;
 use crate::core::ml::alert::MLAlert;
-use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::drift_detector::DriftDetectorHandle;
 use crate::core::ml::engine::Engine;
 use crate::core::ml::inference::Inference;
 use crate::core::ml::manifest::ModelManifest;
@@ -50,7 +50,7 @@ impl AppServices {
         app_config: Arc<AppConfig>,
         inference_config: Arc<MLInferenceConfig>,
         ml_manifest: Option<ModelManifest>,
-        drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+        drift_detector: DriftDetectorHandle,
         ebpf_health: Arc<ArcSwap<EbpfHealth>>,
         comm: Arc<CommunicationManager>,
     ) -> Result<Self, Error> {

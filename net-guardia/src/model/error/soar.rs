@@ -55,5 +55,9 @@ traceable! {
         #[no_source]
         #[error("Unknown SOAR condition type: {condition_type}")]
         UnknownConditionType { condition_type: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Rate-limit owner task is unavailable (channel closed)")]
+        RateLimitOwnerUnavailable => tracing::Level::ERROR,
     }
 }

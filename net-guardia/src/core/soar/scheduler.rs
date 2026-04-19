@@ -82,7 +82,7 @@ impl TtlScheduler {
             }
 
             // Remove from eBPF ACL via AccessControlPort
-            if let Err(e) = self.access_control.unblock_ip(source_ip).await {
+            if let Err(e) = self.access_control.unblock_ip(source_ip) {
                 log!(SoarLog::RecoveryFailed(
                     source_ip.clone(),
                     format!("unblock failed: {}", e)

@@ -4,20 +4,21 @@
 //! fire based on how many hits a given attack class needs (manifest-driven)
 //! and how far the rolling-average score beats the confidence threshold.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 
 use crate::model::detection::ml_detection::FlowKey;
 
 pub struct AttackAggregator {
-    detections: HashMap<FlowKey, Vec<(Instant, f32)>>,
+    detections: DashMap<FlowKey, Vec<(Instant, f32)>>,
     window_duration: Duration,
 }
 
 impl AttackAggregator {
     pub fn new(window_secs: u64) -> Self {
         Self {
-            detections: HashMap::new(),
+            detections: DashMap::new(),
             window_duration: Duration::from_secs(window_secs),
         }
     }
@@ -30,7 +31,7 @@ impl AttackAggregator {
     /// - `alert_multiplier`: scales `threshold` before the average-score
     ///   comparison, driven by the manifest's `thresholds.alert_multiplier`.
     pub fn should_alert(
-        &mut self,
+        &self,
         flow_key: &FlowKey,
         score: f32,
         threshold: f32,
@@ -39,7 +40,7 @@ impl AttackAggregator {
     ) -> bool {
         let now = Instant::now();
 
-        let detections = self.detections.entry(flow_key.clone()).or_default();
+        let mut detections = self.detections.entry(flow_key.clone()).or_default();
         detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
         detections.push((now, score));
 
@@ -51,7 +52,7 @@ impl AttackAggregator {
         false
     }
 
-    pub fn cleanup(&mut self) {
+    pub fn cleanup(&self) {
         let now = Instant::now();
         self.detections.retain(|_, detections| {
             detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
@@ -79,7 +80,7 @@ mod tests {
 
     #[test]
     fn required_three_fires_on_third_hit() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         assert!(!agg.should_alert(&key, 5.0, 1.0, 3, TEST_MULTIPLIER));
         assert!(!agg.should_alert(&key, 5.0, 1.0, 3, TEST_MULTIPLIER));
@@ -88,14 +89,14 @@ mod tests {
 
     #[test]
     fn required_one_fires_immediately() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         assert!(agg.should_alert(&key, 5.0, 1.0, 1, TEST_MULTIPLIER));
     }
 
     #[test]
     fn required_six_needs_six_hits() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         for _ in 0..5 {
             assert!(!agg.should_alert(&key, 5.0, 1.0, 6, TEST_MULTIPLIER));
@@ -105,7 +106,7 @@ mod tests {
 
     #[test]
     fn average_score_at_or_below_scaled_threshold_does_not_fire() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         // score 1.0, threshold 1.0, multiplier 1.2 → gate is 1.2; 1.0 misses.
         assert!(!agg.should_alert(&key, 1.0, 1.0, 1, TEST_MULTIPLIER));
@@ -113,7 +114,7 @@ mod tests {
 
     #[test]
     fn larger_multiplier_raises_the_bar() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         // multiplier 2.5, threshold 1.0 → gate is 2.5; score 2.0 misses.
         assert!(!agg.should_alert(&key, 2.0, 1.0, 1, 2.5));
@@ -121,7 +122,7 @@ mod tests {
 
     #[test]
     fn cleanup_preserves_fresh_entries() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key = test_key();
         agg.should_alert(&key, 5.0, 1.0, 10, TEST_MULTIPLIER);
         assert!(agg.detections.contains_key(&key));
@@ -131,7 +132,7 @@ mod tests {
 
     #[test]
     fn independent_flows_track_separately() {
-        let mut agg = AttackAggregator::new(60);
+        let agg = AttackAggregator::new(60);
         let key_a = test_key();
         let mut key_b = test_key();
         key_b.dst_port = 81;

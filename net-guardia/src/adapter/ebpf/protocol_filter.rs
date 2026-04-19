@@ -6,7 +6,7 @@ use aya::{Ebpf, Pod};
 use common::model::http_method::{HttpMethod, HttpMethodBitmap};
 use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
 use common::model::placeholder::PlaceHolder;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
 use crate::model::access_control::ip_address::NativeConvert;
 use crate::model::error::Error;
@@ -55,140 +55,124 @@ impl ProtocolFilter {
         }
     }
 
-    pub async fn get_ipv4_http_service(&self) -> HashMap<SocketAddrV4, Vec<HttpMethod>> {
-        self.ipv4_http_service.read().await.get_http_method()
+    pub fn get_ipv4_http_service(&self) -> HashMap<SocketAddrV4, Vec<HttpMethod>> {
+        self.ipv4_http_service.read().get_http_method()
     }
 
-    pub async fn get_ipv6_http_service(&self) -> HashMap<SocketAddrV6, Vec<HttpMethod>> {
-        self.ipv6_http_service.read().await.get_http_method()
+    pub fn get_ipv6_http_service(&self) -> HashMap<SocketAddrV6, Vec<HttpMethod>> {
+        self.ipv6_http_service.read().get_http_method()
     }
 
-    pub async fn add_ipv4_http_service(
-        &self,
-        address: SocketAddrV4,
-        http_method: Vec<HttpMethod>,
-    ) -> Result<(), Error> {
-        self.ipv4_http_service
-            .write()
-            .await
-            .add_http_service(address, http_method)
+    pub fn add_ipv4_http_service(&self, address: SocketAddrV4, http_method: Vec<HttpMethod>) -> Result<(), Error> {
+        self.ipv4_http_service.write().add_http_service(address, http_method)
     }
 
-    pub async fn add_ipv6_http_service(
-        &self,
-        address: SocketAddrV6,
-        http_method: Vec<HttpMethod>,
-    ) -> Result<(), Error> {
-        self.ipv6_http_service
-            .write()
-            .await
-            .add_http_service(address, http_method)
+    pub fn add_ipv6_http_service(&self, address: SocketAddrV6, http_method: Vec<HttpMethod>) -> Result<(), Error> {
+        self.ipv6_http_service.write().add_http_service(address, http_method)
     }
 
-    pub async fn remove_ipv4_http_service(
+    pub fn remove_ipv4_http_service(
         &self,
         address: SocketAddrV4,
         removed_http_method: Vec<HttpMethod>,
     ) -> Result<(), Error> {
         self.ipv4_http_service
             .write()
-            .await
             .remove_http_service(address, removed_http_method)
     }
 
-    pub async fn remove_ipv6_http_service(
+    pub fn remove_ipv6_http_service(
         &self,
         address: SocketAddrV6,
         removed_http_method: Vec<HttpMethod>,
     ) -> Result<(), Error> {
         self.ipv6_http_service
             .write()
-            .await
             .remove_http_service(address, removed_http_method)
     }
 
-    pub async fn is_ssh_white_list_enable(&self) -> bool {
-        self.ssh_white_list_enable.read().await.is_white_list_enable()
+    pub fn is_ssh_white_list_enable(&self) -> bool {
+        self.ssh_white_list_enable.read().is_white_list_enable()
     }
 
-    pub async fn enable_ssh_white_list(&self) -> Result<(), Error> {
-        self.ssh_white_list_enable.write().await.enable_white_list()
+    pub fn enable_ssh_white_list(&self) -> Result<(), Error> {
+        self.ssh_white_list_enable.write().enable_white_list()
     }
 
-    pub async fn disable_ssh_white_list(&self) -> Result<(), Error> {
-        self.ssh_white_list_enable.write().await.disable_white_list()
+    pub fn disable_ssh_white_list(&self) -> Result<(), Error> {
+        self.ssh_white_list_enable.write().disable_white_list()
     }
 
-    pub async fn get_ipv4_ssh_service(&self) -> Vec<SocketAddrV4> {
-        self.ipv4_ssh_service.read().await.get_all()
+    pub fn get_ipv4_ssh_service(&self) -> Vec<SocketAddrV4> {
+        self.ipv4_ssh_service.read().get_all()
     }
 
-    pub async fn get_ipv6_ssh_service(&self) -> Vec<SocketAddrV6> {
-        self.ipv6_ssh_service.read().await.get_all()
+    pub fn get_ipv6_ssh_service(&self) -> Vec<SocketAddrV6> {
+        self.ipv6_ssh_service.read().get_all()
     }
 
-    pub async fn add_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().await.add(address)
+    pub fn add_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
+        self.ipv4_ssh_service.write().add(address)
     }
 
-    pub async fn add_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().await.add(address)
+    pub fn add_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
+        self.ipv6_ssh_service.write().add(address)
     }
 
-    pub async fn remove_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().await.remove(address)
+    pub fn remove_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
+        self.ipv4_ssh_service.write().remove(address)
     }
 
-    pub async fn remove_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().await.remove(address)
+    pub fn remove_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
+        self.ipv6_ssh_service.write().remove(address)
     }
 
-    pub async fn get_ipv4_ssh_white_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_white_list.read().await.get_all()
+    pub fn get_ipv4_ssh_white_list(&self) -> Vec<Ipv4Addr> {
+        self.ipv4_ssh_white_list.read().get_all()
     }
 
-    pub async fn get_ipv6_ssh_white_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_white_list.read().await.get_all()
+    pub fn get_ipv6_ssh_white_list(&self) -> Vec<Ipv6Addr> {
+        self.ipv6_ssh_white_list.read().get_all()
     }
 
-    pub async fn add_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().await.add(ip)
+    pub fn add_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.ipv4_ssh_white_list.write().add(ip)
     }
 
-    pub async fn add_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().await.add(ip)
+    pub fn add_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.ipv6_ssh_white_list.write().add(ip)
     }
 
-    pub async fn remove_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().await.remove(ip)
+    pub fn remove_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.ipv4_ssh_white_list.write().remove(ip)
     }
 
-    pub async fn remove_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().await.remove(ip)
+    pub fn remove_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.ipv6_ssh_white_list.write().remove(ip)
     }
 
-    pub async fn get_ipv4_ssh_black_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_black_list.read().await.get_all()
+    pub fn get_ipv4_ssh_black_list(&self) -> Vec<Ipv4Addr> {
+        self.ipv4_ssh_black_list.read().get_all()
     }
 
-    pub async fn get_ipv6_ssh_black_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_black_list.read().await.get_all()
+    pub fn get_ipv6_ssh_black_list(&self) -> Vec<Ipv6Addr> {
+        self.ipv6_ssh_black_list.read().get_all()
     }
 
-    pub async fn add_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().await.add(ip)
+    pub fn add_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.ipv4_ssh_black_list.write().add(ip)
     }
 
-    pub async fn add_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().await.add(ip)
+    pub fn add_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.ipv6_ssh_black_list.write().add(ip)
     }
 
-    pub async fn remove_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().await.remove(ip)
+    pub fn remove_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.ipv4_ssh_black_list.write().remove(ip)
     }
 
-    pub async fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().await.remove(ip)
+    pub fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.ipv6_ssh_black_list.write().remove(ip)
     }
 }
 

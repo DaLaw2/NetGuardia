@@ -4,14 +4,14 @@ use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use chrono::{NaiveDateTime, Utc};
 use dashmap::DashMap;
 use macros::log;
 use serde_json::Value;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Mutex as TokioMutex, broadcast};
 
 use crate::core::soar::frequency::FrequencyTracker;
+use crate::core::soar::rate_limit_owner::RateLimitOwnerHandle;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::interface::port::access_control::AccessControlPort;
@@ -58,12 +58,11 @@ pub struct SoarEngine {
     pub(super) alert_notifier: Option<Arc<dyn AlertNotifier>>,
     /// Optional GeoIP service for country lookups.
     pub(super) geoip: Option<Arc<GeoIpService>>,
-    /// Optional rate limit config for adjust_rate_limit action.
-    pub(super) rate_limit: Option<Arc<dyn RateLimitPort>>,
-    /// Serializes rate-limit read-save-write sequences so concurrent SOAR
-    /// actions can't race the `soar_rate_limit_*` DB settings into an
-    /// inconsistent pair.
-    pub(super) rate_limit_lock: TokioMutex<()>,
+    /// Owner-task handle that serializes the rate-limit DB+eBPF
+    /// read-modify-write batch. `None` when no `RateLimitPort` was wired
+    /// up (eBPF unavailable); SOAR actions that need rate-limit then
+    /// fail with `SoarError::RateLimitUnavailable`.
+    pub(super) rate_limit: Option<RateLimitOwnerHandle>,
     /// Cached enforce level: Monitor=0, MlOnly=1, Enforce=2.
     pub(super) enforce_level_cache: Arc<AtomicU8>,
     /// Secret store for decrypting SMTP passwords etc.
@@ -80,6 +79,7 @@ impl SoarEngine {
         enforce_level_cache: Arc<AtomicU8>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Result<Self, Error> {
+        let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(db.clone(), rl));
         let engine = Self {
             db,
             access_control,
@@ -90,8 +90,7 @@ impl SoarEngine {
             active_block_count: AtomicU32::new(0),
             alert_notifier,
             geoip,
-            rate_limit,
-            rate_limit_lock: TokioMutex::new(()),
+            rate_limit: rate_limit_owner,
             enforce_level_cache,
             secrets,
         };
@@ -290,7 +289,7 @@ impl SoarEngine {
 
         for (_id, source_ip, _playbook_id, _expires_at) in &active_blocks {
             // Preserve original error-swallowing behavior during recovery
-            if let Err(e) = self.access_control.block_ip(source_ip).await {
+            if let Err(e) = self.access_control.block_ip(source_ip) {
                 log!(SoarLog::RecoveryFailed(source_ip.clone(), e.to_string()));
             }
         }
@@ -326,7 +325,7 @@ impl SoarEngine {
                 continue;
             }
 
-            match self.access_control.unblock_ip(&source_ip).await {
+            match self.access_control.unblock_ip(&source_ip) {
                 Ok(()) => {
                     let _ = self.db.delete_pending_unblock(id);
                     log!(SoarLog::EventHandlingFailed(format!(
@@ -351,76 +350,10 @@ impl SoarEngine {
     /// Restore original rate limits if the TTL has expired.
     /// Called by TTL scheduler on each sweep.
     pub async fn check_rate_limit_restoration(&self) -> Result<(), Error> {
-        let _guard = self.rate_limit_lock.lock().await;
-
-        let expires_str = match self
-            .db
-            .get_setting("soar_rate_limit_expires")?
-            .filter(|s| !s.is_empty())
-        {
-            Some(s) => s,
-            None => return Ok(()), // No active adjustment
-        };
-
-        let expires = NaiveDateTime::parse_from_str(&expires_str, "%Y-%m-%d %H:%M:%S")
-            .map(|dt| dt.and_utc())
-            .unwrap_or_else(|_| Utc::now());
-
-        if Utc::now() < expires {
-            return Ok(()); // Not yet expired
+        match &self.rate_limit {
+            Some(owner) => owner.restore_if_expired().await,
+            None => Ok(()),
         }
-
-        // Restore original rates
-        let original_str = match self
-            .db
-            .get_setting("soar_rate_limit_original")?
-            .filter(|s| !s.is_empty())
-        {
-            Some(s) => s,
-            None => {
-                // No originals saved, just clean up
-                self.db.set_setting("soar_rate_limit_expires", "")?;
-                return Ok(());
-            }
-        };
-
-        if let (Some(rate_limit), Ok(original)) = (
-            &self.rate_limit,
-            serde_json::from_str::<serde_json::Value>(&original_str),
-        ) {
-            let mut restore_errors = Vec::new();
-            if let Some(v) = original.get("packet_rate").and_then(|v| v.as_u64())
-                && let Err(e) = rate_limit.set_packet_rate(v)
-            {
-                restore_errors.push(format!("packet_rate: {}", e));
-            }
-            if let Some(v) = original.get("syn_rate").and_then(|v| v.as_u64())
-                && let Err(e) = rate_limit.set_syn_rate(v)
-            {
-                restore_errors.push(format!("syn_rate: {}", e));
-            }
-            if let Some(v) = original.get("udp_rate").and_then(|v| v.as_u64())
-                && let Err(e) = rate_limit.set_udp_rate(v)
-            {
-                restore_errors.push(format!("udp_rate: {}", e));
-            }
-            if let Some(v) = original.get("dns_rate").and_then(|v| v.as_u64())
-                && let Err(e) = rate_limit.set_dns_rate(v)
-            {
-                restore_errors.push(format!("dns_rate: {}", e));
-            }
-            if restore_errors.is_empty() {
-                log!(SoarLog::RateLimitRestored);
-            } else {
-                log!(SoarLog::RateLimitRestoreFailed(restore_errors.join(", ")));
-            }
-        }
-
-        // Clean up settings
-        self.db.set_setting("soar_rate_limit_original", "")?;
-        self.db.set_setting("soar_rate_limit_expires", "")?;
-
-        Ok(())
     }
 }
 
@@ -429,7 +362,7 @@ mod tests {
     use super::*;
     use crate::model::error::ebpf::EbpfError;
     use crate::model::event::DetectionSource;
-    use chrono::Duration as ChronoDuration;
+    use chrono::{Duration as ChronoDuration, Utc};
     use parking_lot::Mutex;
     use std::sync::atomic::AtomicBool;
 
@@ -450,9 +383,8 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl AccessControlPort for MockAccessControl {
-        async fn block_ip(&self, ip: &str) -> Result<(), Error> {
+        fn block_ip(&self, ip: &str) -> Result<(), Error> {
             if self.should_fail.load(Ordering::SeqCst) {
                 Err(EbpfError::UnknownError)?;
             }
@@ -460,7 +392,7 @@ mod tests {
             Ok(())
         }
 
-        async fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
+        fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
             if self.should_fail.load(Ordering::SeqCst) {
                 Err(EbpfError::UnknownError)?;
             }

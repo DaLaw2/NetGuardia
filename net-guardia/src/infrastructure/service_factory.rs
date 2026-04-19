@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 
 use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
@@ -24,7 +23,7 @@ use crate::core::acl_service::AclService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::drift_detector::DriftDetectorHandle;
 use crate::core::ml::manifest::ModelManifest;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
@@ -82,7 +81,7 @@ pub struct AppState {
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
     pub geoip: Option<Arc<GeoIpService>>,
-    pub drift_detector: Arc<Mutex<DriftDetector>>,
+    pub drift_detector: DriftDetectorHandle,
     pub ingress_ebpf: Option<Ebpf>,
     pub egress_ebpf: Option<Ebpf>,
     /// Held to keep the eBPF program array map FD alive. `None` when eBPF
@@ -181,10 +180,7 @@ impl ServiceFactory {
             .flatten()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
-        let drift_detector = Arc::new(Mutex::new(DriftDetector::new(
-            baselines,
-            Duration::from_secs(drift_window_secs),
-        )));
+        let drift_detector = DriftDetectorHandle::spawn(baselines, Duration::from_secs(drift_window_secs));
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
@@ -575,12 +571,9 @@ impl ServiceFactory {
                 };
                 let result = match ip_version {
                     4 => match ip_address.parse::<Ipv4Addr>() {
-                        Ok(addr) => {
-                            ebpf_services
-                                .access_control
-                                .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port))
-                                .await
-                        }
+                        Ok(addr) => ebpf_services
+                            .access_control
+                            .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)),
                         Err(e) => {
                             log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
                             continue;
@@ -591,7 +584,6 @@ impl ServiceFactory {
                             ebpf_services
                                 .access_control
                                 .add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0))
-                                .await
                         }
                         Err(e) => {
                             log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));

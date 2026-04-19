@@ -8,14 +8,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use macros::log;
-use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio::time::interval;
 
 use super::aggregator::AttackAggregator;
 use super::alert::MLAlert;
-use super::drift_detector::DriftDetector;
+use super::drift_detector::DriftDetectorHandle;
 use super::flow_tracker::{FlowData, FlowTracker};
 use super::inference::Inference;
 use super::traffic_logger::TrafficLogger;
@@ -41,13 +40,15 @@ const ML_MIN_PACKETS_FLOOR: usize = 5;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
-pub type ThreadTracker = Arc<Mutex<FlowTracker>>;
+/// `FlowTracker` itself is internally synchronized (DashMap), so the
+/// per-queue handle is a plain `Arc`.
+pub type ThreadTracker = Arc<FlowTracker>;
 
 pub struct Engine {
     trackers: Vec<ThreadTracker>,
     inference_pipeline: Arc<Inference>,
-    aggregator: Mutex<AttackAggregator>,
-    drift_detector: Arc<Mutex<DriftDetector>>,
+    aggregator: AttackAggregator,
+    drift_detector: DriftDetectorHandle,
     ml_alert: Arc<MLAlert>,
     min_packets: usize,
     /// Confirmations count used when the active manifest's label has no
@@ -64,7 +65,7 @@ impl Engine {
     pub fn new(
         inference_pipeline: Arc<Inference>,
         ml_alert: Arc<MLAlert>,
-        drift_detector: Arc<Mutex<DriftDetector>>,
+        drift_detector: DriftDetectorHandle,
         engine_config: EngineConfig,
         traffic_logger: Option<Arc<TrafficLogger>>,
         num_threads: u32,
@@ -72,11 +73,11 @@ impl Engine {
         let interval_secs = engine_config.inference_interval_secs.max(1);
         let ticks_per_window = engine_config.aggregator_window_secs / interval_secs;
         let default_confirmations = (ticks_per_window / DEFAULT_CONFIRMATION_WINDOW_FRACTION).max(1) as usize;
-        let aggregator = Mutex::new(AttackAggregator::new(engine_config.aggregator_window_secs));
+        let aggregator = AttackAggregator::new(engine_config.aggregator_window_secs);
 
         let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
         let trackers: Vec<ThreadTracker> = (0..num_threads)
-            .map(|_| Arc::new(Mutex::new(FlowTracker::new(max_flows_per_thread))))
+            .map(|_| Arc::new(FlowTracker::new(max_flows_per_thread)))
             .collect();
 
         Self {
@@ -216,14 +217,12 @@ impl Engine {
             .unwrap_or(0);
 
         for tracker in &self.trackers {
-            let mut t = tracker.lock();
-            t.cleanup_stale_flows(now_us);
+            tracker.cleanup_stale_flows(now_us);
         }
 
         for tracker in &self.trackers {
-            let mut t = tracker.lock();
-            total_count += t.flow_count();
-            all_flows.extend(t.get_uninferred_flows().into_iter().filter(|flow| {
+            total_count += tracker.flow_count();
+            all_flows.extend(tracker.get_uninferred_flows().into_iter().filter(|flow| {
                 let total_packets = flow.packet_count();
                 total_packets >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
                     && !Self::is_strong_benign(
@@ -272,7 +271,6 @@ impl Engine {
     fn update_drift(&self, batch: &[FlowData]) {
         let batch = &batch[..batch.len().min(self.batch_size)];
         let config = &self.inference_pipeline.config;
-        let mut dd = self.drift_detector.lock();
         for flow in batch {
             let features = FlowFeatures::extract(flow, &config.ae_feature_names);
             let normalized: Vec<f64> = features
@@ -281,7 +279,7 @@ impl Engine {
                 .zip(config.ae_scaler_mean.iter().zip(config.ae_scaler_std.iter()))
                 .map(|(&val, (&mean, &std))| if std.abs() > 1e-12 { (val - mean) / std } else { 0.0 })
                 .collect();
-            dd.update(&normalized);
+            self.drift_detector.update(normalized);
         }
     }
 
@@ -309,7 +307,6 @@ impl Engine {
             stats.flows_per_second
         ));
 
-        let mut aggregator = self.aggregator.lock();
         let config = &self.inference_pipeline.config;
         for result in &results {
             if result.is_attack {
@@ -318,7 +315,7 @@ impl Engine {
                     .as_deref()
                     .and_then(|at| self.inference_pipeline.confirmations_for_attack_type(at))
                     .unwrap_or(self.default_confirmations);
-                let should_alert = aggregator.should_alert(
+                let should_alert = self.aggregator.should_alert(
                     &result.flow_key_raw,
                     result.confidence,
                     config.class_min_confidence,
@@ -340,7 +337,7 @@ impl Engine {
             }
         }
 
-        aggregator.cleanup();
+        self.aggregator.cleanup();
     }
 }
 
@@ -351,7 +348,7 @@ struct QueueTrackerSink {
 
 impl PacketSink for QueueTrackerSink {
     fn process_packet(&self, packet: UserPacket, is_ingress: bool) {
-        self.tracker.lock().process_packet(packet, is_ingress);
+        self.tracker.process_packet(packet, is_ingress);
     }
 }
 

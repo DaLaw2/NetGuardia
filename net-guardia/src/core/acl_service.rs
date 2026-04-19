@@ -32,13 +32,8 @@ impl AclService {
         }
     }
 
-    pub async fn add_ipv4(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV4,
-    ) -> Result<(), Error> {
-        self.access_control.add_ipv4_list(direction, list_type, address).await?;
+    pub fn add_ipv4(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error> {
+        self.access_control.add_ipv4_list(direction, list_type, address)?;
         if let Err(e) = self.db.insert_acl_rule(
             4,
             direction_str(direction),
@@ -46,11 +41,7 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self
-                .access_control
-                .remove_ipv4_list(direction, list_type, address)
-                .await
-            {
+            if let Err(rollback_err) = self.access_control.remove_ipv4_list(direction, list_type, address) {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
@@ -58,13 +49,8 @@ impl AclService {
         Ok(())
     }
 
-    pub async fn add_ipv6(
-        &self,
-        direction: FlowDirection,
-        list_type: ListType,
-        address: SocketAddrV6,
-    ) -> Result<(), Error> {
-        self.access_control.add_ipv6_list(direction, list_type, address).await?;
+    pub fn add_ipv6(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error> {
+        self.access_control.add_ipv6_list(direction, list_type, address)?;
         if let Err(e) = self.db.insert_acl_rule(
             6,
             direction_str(direction),
@@ -72,11 +58,7 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self
-                .access_control
-                .remove_ipv6_list(direction, list_type, address)
-                .await
-            {
+            if let Err(rollback_err) = self.access_control.remove_ipv6_list(direction, list_type, address) {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
@@ -84,15 +66,13 @@ impl AclService {
         Ok(())
     }
 
-    pub async fn remove_ipv4(
+    pub fn remove_ipv4(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV4,
     ) -> Result<(), Error> {
-        self.access_control
-            .remove_ipv4_list(direction, list_type, address)
-            .await?;
+        self.access_control.remove_ipv4_list(direction, list_type, address)?;
         if let Err(e) = self.db.delete_acl_rule(
             4,
             direction_str(direction),
@@ -100,7 +80,7 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self.access_control.add_ipv4_list(direction, list_type, address).await {
+            if let Err(rollback_err) = self.access_control.add_ipv4_list(direction, list_type, address) {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
@@ -108,15 +88,13 @@ impl AclService {
         Ok(())
     }
 
-    pub async fn remove_ipv6(
+    pub fn remove_ipv6(
         &self,
         direction: FlowDirection,
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error> {
-        self.access_control
-            .remove_ipv6_list(direction, list_type, address)
-            .await?;
+        self.access_control.remove_ipv6_list(direction, list_type, address)?;
         if let Err(e) = self.db.delete_acl_rule(
             6,
             direction_str(direction),
@@ -124,7 +102,7 @@ impl AclService {
             &address.ip().to_string(),
             address.port(),
         ) {
-            if let Err(rollback_err) = self.access_control.add_ipv6_list(direction, list_type, address).await {
+            if let Err(rollback_err) = self.access_control.add_ipv6_list(direction, list_type, address) {
                 log!(EbpfError::RollbackFailed(rollback_err));
             }
             return Err(e);
