@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="1200" height="900">
+  <defs>
+    <style>
+      text { font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif; fill: #e5e7eb; }
+      .title { font-size: 26px; font-weight: 700; fill: #f9fafb; }
+      .band-label { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; fill: #9ca3af; }
+      .box-title { font-size: 14px; font-weight: 600; fill: #f3f4f6; }
+      .box-title-lg { font-size: 16px; font-weight: 700; fill: #f3f4f6; }
+      .box-sub { font-size: 12px; fill: #cbd5e1; }
+      .box-bullet { font-size: 12px; fill: #cbd5e1; }
+      .arrow-label { font-size: 11px; font-weight: 500; fill: #d1d5db; }
+      .arrow-label-bg { fill: #0f0f1a; }
+      .legend-label { font-size: 11px; fill: #9ca3af; }
+    </style>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#60a5fa"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#fb923c"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#9ca3af"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="900" fill="#0f0f1a"/>
+  <text class="title" x="600" y="46" text-anchor="middle">NetGuardia architecture</text>
+  <rect x="40" y="70" width="1120" height="80" rx="10" fill="#161627" stroke="#2a2a4a" stroke-width="1"/>
+  <text class="band-label" x="60" y="92">CONTROL PLANE</text>
+  <rect x="400" y="100" width="400" height="40" rx="8" fill="#1f1f36" stroke="#60a5fa" stroke-width="1.5"/>
+  <text class="box-title" x="600" y="126" text-anchor="middle">Web UI + REST / WebSocket API</text>
+  <rect x="40" y="170" width="1120" height="500" rx="10" fill="#161627" stroke="#2a2a4a" stroke-width="1"/>
+  <text class="band-label" x="60" y="192">USER SPACE — DETECTION &amp; RESPONSE</text>
+  <rect x="115" y="210" width="220" height="80" rx="8" fill="#1f1f36" stroke="#a78bfa" stroke-width="1.5"/>
+  <text class="box-title" x="225" y="244" text-anchor="middle">ML Inference</text>
+  <text class="box-sub" x="225" y="266" text-anchor="middle">tract-onnx · BYO model</text>
+  <rect x="365" y="210" width="220" height="80" rx="8" fill="#1f1f36" stroke="#a78bfa" stroke-width="1.5"/>
+  <text class="box-title" x="475" y="244" text-anchor="middle">Beaconing</text>
+  <text class="box-sub" x="475" y="266" text-anchor="middle">temporal CV</text>
+  <rect x="615" y="210" width="220" height="80" rx="8" fill="#1f1f36" stroke="#a78bfa" stroke-width="1.5"/>
+  <text class="box-title" x="725" y="244" text-anchor="middle">Correlation</text>
+  <text class="box-sub" x="725" y="266" text-anchor="middle">graph topology</text>
+  <rect x="865" y="210" width="220" height="80" rx="8" fill="#1f1f36" stroke="#a78bfa" stroke-width="1.5"/>
+  <text class="box-title" x="975" y="244" text-anchor="middle">Suricata</text>
+  <text class="box-sub" x="975" y="266" text-anchor="middle">eve.json ingest</text>
+  <rect x="300" y="350" width="600" height="130" rx="10" fill="#1f1f36" stroke="#60a5fa" stroke-width="2"/>
+  <text class="box-title-lg" x="600" y="378" text-anchor="middle">Detection Orchestrator</text>
+  <text class="box-bullet" x="340" y="410">• canonicalize attack type</text>
+  <text class="box-bullet" x="340" y="432">• fuse:  1 − ∏(1 − c_i)</text>
+  <text class="box-bullet" x="340" y="454">• WORM audit (SHA-256 chained)</text>
+  <rect x="300" y="520" width="600" height="130" rx="10" fill="#1f1f36" stroke="#fb923c" stroke-width="2"/>
+  <text class="box-title-lg" x="600" y="548" text-anchor="middle">SOAR Engine</text>
+  <text class="box-bullet" x="340" y="580">• playbook match</text>
+  <text class="box-bullet" x="340" y="602">• cooldown + dry-run</text>
+  <text class="box-bullet" x="340" y="624">• actions:  block / rate-limit / webhook / email / telegram</text>
+  <rect x="40" y="690" width="1120" height="140" rx="10" fill="#161627" stroke="#2a2a4a" stroke-width="1"/>
+  <text class="band-label" x="60" y="712">KERNEL SPACE — eBPF / XDP</text>
+  <rect x="80" y="750" width="180" height="60" rx="8" fill="#1f1f36" stroke="#34d399" stroke-width="1.5"/>
+  <text class="box-title" x="170" y="787" text-anchor="middle">ACL</text>
+  <rect x="295" y="750" width="180" height="60" rx="8" fill="#1f1f36" stroke="#34d399" stroke-width="1.5"/>
+  <text class="box-title" x="385" y="787" text-anchor="middle">Rate Limit</text>
+  <rect x="510" y="750" width="180" height="60" rx="8" fill="#1f1f36" stroke="#34d399" stroke-width="1.5"/>
+  <text class="box-title" x="600" y="787" text-anchor="middle">Protocol Filter</text>
+  <rect x="725" y="750" width="180" height="60" rx="8" fill="#1f1f36" stroke="#34d399" stroke-width="1.5"/>
+  <text class="box-title" x="815" y="787" text-anchor="middle">Geo Block</text>
+  <rect x="940" y="750" width="180" height="60" rx="8" fill="#1f1f36" stroke="#34d399" stroke-width="1.5"/>
+  <text class="box-title" x="1030" y="787" text-anchor="middle">DNS Filter</text>
+  <line x1="262" y1="780" x2="293" y2="780" stroke="#34d399" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <line x1="477" y1="780" x2="508" y2="780" stroke="#34d399" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <line x1="692" y1="780" x2="723" y2="780" stroke="#34d399" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <line x1="907" y1="780" x2="938" y2="780" stroke="#34d399" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <line x1="590" y1="140" x2="590" y2="348" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-gray)"/>
+  <line x1="610" y1="348" x2="610" y2="142" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-gray)"/>
+  <rect class="arrow-label-bg" x="535" y="156" width="130" height="18" rx="2"/>
+  <text class="arrow-label" x="600" y="169" text-anchor="middle">admin &amp; live events</text>
+  <path d="M 225,290 L 225,320 L 420,340 L 420,350" fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <path d="M 475,290 L 475,320 L 540,340 L 540,350" fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <path d="M 725,290 L 725,320 L 660,340 L 660,350" fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <path d="M 975,290 L 975,320 L 780,340 L 780,350" fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <line x1="600" y1="480" x2="600" y2="520" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect class="arrow-label-bg" x="612" y="488" width="135" height="18" rx="2"/>
+  <text class="arrow-label" x="680" y="501" text-anchor="middle">ThreatDetectedEvent</text>
+  <path d="M 320,650 L 320,680 L 115,680 L 115,745 L 170,745 L 170,750" fill="none" stroke="#fb923c" stroke-width="2" marker-end="url(#arrow-orange)"/>
+  <rect class="arrow-label-bg" x="130" y="670" width="170" height="18" rx="2"/>
+  <text class="arrow-label" x="215" y="683" text-anchor="middle">enforce (block / rate-limit)</text>
+  <path d="M 1095,750 L 1095,310 L 1005,310 L 1005,290" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow-purple)"/>
+  <rect class="arrow-label-bg" x="1030" y="468" width="100" height="18" rx="2"/>
+  <text class="arrow-label" x="1080" y="481" text-anchor="middle">AF_XDP mirror</text>
+  <line x1="60" y1="870" x2="84" y2="870" stroke="#60a5fa" stroke-width="2"/>
+  <text class="legend-label" x="90" y="874">detection events</text>
+  <line x1="216" y1="870" x2="240" y2="870" stroke="#34d399" stroke-width="2"/>
+  <text class="legend-label" x="246" y="874">fused event / kernel pipeline</text>
+  <line x1="450" y1="870" x2="474" y2="870" stroke="#fb923c" stroke-width="2"/>
+  <text class="legend-label" x="480" y="874">enforcement action</text>
+  <line x1="618" y1="870" x2="642" y2="870" stroke="#a78bfa" stroke-width="2"/>
+  <text class="legend-label" x="648" y="874">AF_XDP mirror</text>
+  <line x1="756" y1="870" x2="780" y2="870" stroke="#9ca3af" stroke-width="2"/>
+  <text class="legend-label" x="786" y="874">admin / control</text>
+</svg>
