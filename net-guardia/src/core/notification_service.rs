@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::adapter::telegram::TelegramAdapter;
 use crate::core::email::scheduler::SmtpClient;
 use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::notification::AlertNotifier;
+use crate::interface::port::notification::AlertNotifierFactory;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
@@ -17,11 +16,22 @@ pub struct NotificationService {
     notif: Arc<dyn SettingRepo>,
     repo: Arc<dyn AppRepo>,
     secrets: Arc<dyn SecretStorePort>,
+    alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
 }
 
 impl NotificationService {
-    pub fn new(notif: Arc<dyn SettingRepo>, repo: Arc<dyn AppRepo>, secrets: Arc<dyn SecretStorePort>) -> Self {
-        Self { notif, repo, secrets }
+    pub fn new(
+        notif: Arc<dyn SettingRepo>,
+        repo: Arc<dyn AppRepo>,
+        secrets: Arc<dyn SecretStorePort>,
+        alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
+    ) -> Self {
+        Self {
+            notif,
+            repo,
+            secrets,
+            alert_notifier_factory,
+        }
     }
 
     /// Get Telegram config with redacted bot_token.
@@ -65,10 +75,13 @@ impl NotificationService {
         self.notif.set_notification_config("telegram", &config_json)
     }
 
-    /// Send a test Telegram message using current config.
+    /// Send a test Telegram message using current config. The factory
+    /// constructs a fresh notifier on every call so the test reflects the
+    /// most-recently-saved config (the user typically clicks "test"
+    /// immediately after `set_telegram_config`).
     pub async fn test_telegram(&self) -> Result<(), Error> {
-        let adapter = TelegramAdapter::new(self.notif.clone(), self.repo.clone(), Some(self.secrets.clone()))?;
-        adapter.send_test_message().await
+        let notifier = self.alert_notifier_factory.create()?;
+        notifier.send_test_message().await
     }
 
     /// Send a test email using current SMTP config.

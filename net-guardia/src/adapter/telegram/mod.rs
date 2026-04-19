@@ -8,7 +8,7 @@ use reqwest::Client;
 use tokio::time::sleep;
 
 use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::notification::{AlertNotifier, AlertPayload};
+use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory, AlertPayload};
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
 use crate::model::config::constants::TELEGRAM_MAX_RETRIES;
@@ -260,5 +260,28 @@ impl AlertNotifier for TelegramAdapter {
             "✅ <b>NetGuardia connected successfully</b>\n\nTelegram notifications are working.",
         )
         .await
+    }
+}
+
+/// Adapter-side factory that satisfies the `AlertNotifierFactory` port. Holds
+/// the same shared dependencies the long-lived adapter uses; each `create()`
+/// call instantiates a fresh `TelegramAdapter` so the test path observes
+/// whatever config the user just saved.
+pub struct TelegramAdapterFactory {
+    notif: Arc<dyn SettingRepo>,
+    repo: Arc<dyn AppRepo>,
+    secrets: Option<Arc<dyn SecretStorePort>>,
+}
+
+impl TelegramAdapterFactory {
+    pub fn new(notif: Arc<dyn SettingRepo>, repo: Arc<dyn AppRepo>, secrets: Option<Arc<dyn SecretStorePort>>) -> Self {
+        Self { notif, repo, secrets }
+    }
+}
+
+impl AlertNotifierFactory for TelegramAdapterFactory {
+    fn create(&self) -> Result<Arc<dyn AlertNotifier>, Error> {
+        let adapter = TelegramAdapter::new(self.notif.clone(), self.repo.clone(), self.secrets.clone())?;
+        Ok(Arc::new(adapter))
     }
 }

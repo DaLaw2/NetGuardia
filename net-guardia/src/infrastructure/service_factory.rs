@@ -18,7 +18,7 @@ use crate::core::auth::jwt::JwtService;
 use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
-use crate::adapter::telegram::TelegramAdapter;
+use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
 use crate::core::acl_service::AclService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
@@ -45,7 +45,7 @@ use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::dns_filter_api::DnsFilterPort;
 use crate::interface::port::geo_block_api::GeoBlockPort;
-use crate::interface::port::notification::AlertNotifier;
+use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory};
 use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
@@ -300,10 +300,16 @@ impl ServiceFactory {
         ));
         let config_service =
             Arc::new(ConfigService::new(db.clone() as Arc<dyn AppRepo>).with_secret_store(secret_store_port.clone()));
+        let notifier_factory: Arc<dyn AlertNotifierFactory> = Arc::new(TelegramAdapterFactory::new(
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
+            Some(secret_store_port.clone()),
+        ));
         let notification_service = Arc::new(NotificationService::new(
             db.clone() as Arc<dyn SettingRepo>,
             db.clone() as Arc<dyn AppRepo>,
             secret_store_port,
+            notifier_factory,
         ));
 
         let suricata_manager = SuricataManager::new(app_config.clone());
