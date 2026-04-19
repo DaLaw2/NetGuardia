@@ -34,6 +34,15 @@ pub struct LogEntry {
     pub message: String,
 }
 
+/// `Mutex<VecDeque>` rather than a lock-free ring because `snapshot()` needs
+/// an internally-consistent view: it filters by `since_id` + severity, then
+/// clones matching entries. A seqlock / `ArrayQueue`-based design would
+/// either require a retry loop that tears across concurrent writes or would
+/// lose the snapshot API entirely (`ArrayQueue` only supports push/pop, not
+/// iteration). The write path holds the lock for one `pop_front` +
+/// `push_back` — micros under load — which the tracing subscriber can
+/// comfortably pay on the event-emit hot path. Revisit if log volume grows
+/// past ~10k events/sec per writer, not before.
 struct LogRingBuffer {
     entries: Mutex<VecDeque<LogEntry>>,
     capacity: usize,

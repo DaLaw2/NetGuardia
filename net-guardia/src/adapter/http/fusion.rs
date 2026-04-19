@@ -63,11 +63,11 @@ async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl R
         }
     };
 
-    let matches = filter_fusion_evidence_for_ip(&entries, &src_ip, FUSION_EXPLAIN_RESPONSE_CAP);
+    let (matches, truncated) = filter_fusion_evidence_for_ip(&entries, &src_ip, FUSION_EXPLAIN_RESPONSE_CAP);
     HttpResponse::Ok().json(serde_json::json!({
         "src_ip": src_ip,
         "match_count": matches.len(),
-        "truncated": matches.len() >= FUSION_EXPLAIN_RESPONSE_CAP,
+        "truncated": truncated,
         "entries": matches,
     }))
 }
@@ -78,17 +78,29 @@ async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl R
 /// append-only, so a malformed row is an integrity concern for the
 /// audit-verify endpoint to surface, not this handler.
 ///
+/// Returns `(entries_up_to_cap, truncated)`. `truncated` is `true` when
+/// at least one matching entry was dropped — `matches.len() == cap` does
+/// NOT imply truncation, so we look at `cap + 1` candidates and set the
+/// flag only when the overflow entry exists.
+///
 /// Extracted as a free function so tests can cover the filter /
 /// ordering / cap behaviour without an in-memory DB.
-pub fn filter_fusion_evidence_for_ip(entries: &[AuditLogEntry], target_ip: &str, cap: usize) -> Vec<serde_json::Value> {
+pub fn filter_fusion_evidence_for_ip(
+    entries: &[AuditLogEntry],
+    target_ip: &str,
+    cap: usize,
+) -> (Vec<serde_json::Value>, bool) {
     let mut filtered: Vec<&AuditLogEntry> = entries
         .iter()
         .filter(|entry| detail_matches_src_ip(&entry.detail, target_ip))
         .collect();
     filtered.sort_by_key(|entry| entry.id);
-    filtered
+    let truncated = filtered.len() > cap;
+    if truncated {
+        filtered.truncate(cap);
+    }
+    let rendered = filtered
         .into_iter()
-        .take(cap)
         .map(|entry| {
             let detail: serde_json::Value = serde_json::from_str(&entry.detail).unwrap_or(serde_json::Value::Null);
             serde_json::json!({
@@ -99,7 +111,8 @@ pub fn filter_fusion_evidence_for_ip(entries: &[AuditLogEntry], target_ip: &str,
                 "detail": detail,
             })
         })
-        .collect()
+        .collect();
+    (rendered, truncated)
 }
 
 fn detail_matches_src_ip(detail_json: &str, target_ip: &str) -> bool {
@@ -138,8 +151,9 @@ mod tests {
             entry(2, "10.0.0.5", "port_scan"),
             entry(3, "1.2.3.4", "exploit"),
         ];
-        let got = filter_fusion_evidence_for_ip(&entries, "1.2.3.4", 100);
+        let (got, truncated) = filter_fusion_evidence_for_ip(&entries, "1.2.3.4", 100);
         assert_eq!(got.len(), 2);
+        assert!(!truncated);
         assert_eq!(got[0]["id"], 1);
         assert_eq!(got[1]["id"], 3);
     }
@@ -152,7 +166,7 @@ mod tests {
             entry(10, "1.1.1.1", "b"),
             entry(20, "1.1.1.1", "c"),
         ];
-        let got = filter_fusion_evidence_for_ip(&entries, "1.1.1.1", 100);
+        let (got, _) = filter_fusion_evidence_for_ip(&entries, "1.1.1.1", 100);
         let ids: Vec<i64> = got.iter().map(|v| v["id"].as_i64().unwrap()).collect();
         assert_eq!(ids, vec![10, 20, 30]);
     }
@@ -160,10 +174,21 @@ mod tests {
     #[test]
     fn filter_applies_response_cap() {
         let entries: Vec<AuditLogEntry> = (1..=10).map(|i| entry(i, "9.9.9.9", "x")).collect();
-        let got = filter_fusion_evidence_for_ip(&entries, "9.9.9.9", 3);
+        let (got, truncated) = filter_fusion_evidence_for_ip(&entries, "9.9.9.9", 3);
         assert_eq!(got.len(), 3);
+        assert!(truncated, "10 matching rows with cap=3 must set truncated");
         let ids: Vec<i64> = got.iter().map(|v| v["id"].as_i64().unwrap()).collect();
         assert_eq!(ids, vec![1, 2, 3], "cap takes oldest, not newest");
+    }
+
+    #[test]
+    fn filter_exactly_cap_is_not_truncated() {
+        // Regression guard: `matches.len() == cap` with no overflow row must
+        // return `truncated = false`. Earlier `>=` check mis-flagged this.
+        let entries: Vec<AuditLogEntry> = (1..=3).map(|i| entry(i, "9.9.9.9", "x")).collect();
+        let (got, truncated) = filter_fusion_evidence_for_ip(&entries, "9.9.9.9", 3);
+        assert_eq!(got.len(), 3);
+        assert!(!truncated, "exactly cap matches must NOT report truncated");
     }
 
     #[test]
@@ -176,7 +201,7 @@ mod tests {
             detail: "{{not json".into(),
             created_at: "2026-04-18T10:00:02Z".into(),
         };
-        let got = filter_fusion_evidence_for_ip(&[good, bad], "1.2.3.4", 100);
+        let (got, _) = filter_fusion_evidence_for_ip(&[good, bad], "1.2.3.4", 100);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["id"], 1);
     }
@@ -184,13 +209,15 @@ mod tests {
     #[test]
     fn filter_nonmatching_ip_returns_empty() {
         let entries = [entry(1, "1.2.3.4", "brute_force")];
-        assert!(filter_fusion_evidence_for_ip(&entries, "5.6.7.8", 100).is_empty());
+        let (got, truncated) = filter_fusion_evidence_for_ip(&entries, "5.6.7.8", 100);
+        assert!(got.is_empty());
+        assert!(!truncated);
     }
 
     #[test]
     fn filter_preserves_detail_structure_in_response() {
         let entries = [entry(1, "1.2.3.4", "brute_force")];
-        let got = filter_fusion_evidence_for_ip(&entries, "1.2.3.4", 100);
+        let (got, _) = filter_fusion_evidence_for_ip(&entries, "1.2.3.4", 100);
         assert_eq!(got.len(), 1);
         let detail = &got[0]["detail"];
         assert_eq!(detail["attack_type"], "brute_force");

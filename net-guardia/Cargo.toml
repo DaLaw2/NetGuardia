@@ -59,7 +59,7 @@ async-trait = "0.1"
 dashmap = "6"
 arc-swap = "1"
 moka = { version = "0.12", features = ["sync"] }
-notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
+notify = "7"
 
 # Utilities
 parking_lot = { workspace = true }

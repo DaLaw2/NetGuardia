@@ -145,7 +145,7 @@ impl FlowData {
             if self.fwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
                 self.fwd_packets.push(packet_data.clone());
             }
-            self.fwd_total_bytes += packet.payload_length as u64;
+            self.fwd_total_bytes += packet.packet_length as u64;
             self.fwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_fwd == 0 {
                 self.init_win_bytes_fwd = packet.tcp_window_size;
@@ -155,7 +155,7 @@ impl FlowData {
             if self.bwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
                 self.bwd_packets.push(packet_data.clone());
             }
-            self.bwd_total_bytes += packet.payload_length as u64;
+            self.bwd_total_bytes += packet.packet_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_bwd == 0 {
                 self.init_win_bytes_bwd = packet.tcp_window_size;

@@ -5,7 +5,6 @@ use crate::model::error::Error;
 /// Split into five per-protocol knobs to match the underlying eBPF per-class
 /// counters. `RateLimitService` (HTTP CRUD) and `SoarEngine` (the
 /// adjust-rate-limit action) both depend on this port.
-#[allow(dead_code)]
 pub trait RateLimitPort: Send + Sync {
     fn set_packet_rate(&self, rate: u64) -> Result<(), Error>;
     fn set_syn_rate(&self, rate: u64) -> Result<(), Error>;

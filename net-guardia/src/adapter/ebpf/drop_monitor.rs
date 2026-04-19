@@ -36,6 +36,29 @@ impl DropMonitor {
         self.counters.snapshot()
     }
 
+    /// Record a userspace drop decision (XSK worker's DNS filter) by the
+    /// per-reason counter. Callers at this layer haven't parsed src/dst yet,
+    /// so no broadcast event is emitted — `/api/stats/drops` stays correct,
+    /// `/ws/drops` simply does not surface the individual packet. Parse the
+    /// packet upstream if you need a structured event.
+    pub fn record_userspace_drop_count_only(&self, reason: u8) {
+        self.counters.total.fetch_add(1, Ordering::Relaxed);
+        let bucket = match reason {
+            DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
+            DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
+            DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
+            DROP_REASON_RATE_LIMIT_UDP => Some(&self.counters.rate_limit_udp),
+            DROP_REASON_RATE_LIMIT_DNS => Some(&self.counters.rate_limit_dns),
+            DROP_REASON_PROTOCOL_FILTER => Some(&self.counters.protocol_filter),
+            DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
+            DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
+            _ => None,
+        };
+        if let Some(counter) = bucket {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn process_event(&self, raw: &RawDropEvent) {
         self.counters.total.fetch_add(1, Ordering::Relaxed);
         let bucket = match raw.reason {

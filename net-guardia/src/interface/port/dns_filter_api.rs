@@ -4,7 +4,6 @@ use crate::model::error::Error;
 /// Used by `DnsFilterService` (HTTP-driven CRUD). Kept separate from
 /// `DnsQueryFilter` (which is the fast-path check) to reflect their distinct
 /// call sites and latency profiles.
-#[allow(dead_code)]
 pub trait DnsFilterPort: Send + Sync {
     fn add_domain(&self, domain: &str) -> Result<(), Error>;
     fn remove_domain(&self, domain: &str) -> Result<(), Error>;

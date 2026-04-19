@@ -8,7 +8,6 @@ pub type AclRuleTuple = (u8, String, String, String, u16);
 /// Owns ACL rules (user-managed block/allow lists) and the admin whitelist that
 /// SOAR must not block. Kept disjoint from `EnforcementRepo` (rate-limit / DNS /
 /// geo) so policy tables can evolve independently of packet-matching tables.
-#[allow(dead_code)]
 pub trait AclRepo: Send + Sync {
     fn insert_acl_rule(
         &self,
@@ -27,8 +26,6 @@ pub trait AclRepo: Send + Sync {
         ip_address: &str,
         port: u16,
     ) -> Result<(), Error>;
-
-    fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error>;
 
     /// Returns true if a manual (non-SOAR) ACL rule exists for this IP.
     /// Used by the TTL scheduler to avoid removing an eBPF block that the user

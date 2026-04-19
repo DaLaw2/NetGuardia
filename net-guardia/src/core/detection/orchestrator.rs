@@ -27,7 +27,11 @@ const CLEANUP_INTERVAL_SECS: u64 = 60;
 const REPEAT_OFFENDER_WINDOW_SECS: u64 = 2 * 60 * 60;
 
 /// Maximum dedup entries to prevent unbounded memory growth under sustained attack.
-const MAX_DEDUP_ENTRIES: usize = 50_000;
+/// Declared as `NonZero` at compile time so `LruCache::new` never needs a
+/// runtime unwrap — if this ever goes to zero, the const expression fails
+/// to compile, not the running server.
+// SAFETY: NonZero::new on a non-zero literal is infallible; const-evaluated.
+const MAX_DEDUP_ENTRIES: NonZero<usize> = NonZero::new(50_000).unwrap();
 
 /// Actor recorded on every fusion-chain WORM entry. Stable across releases —
 /// downstream audit tooling filters on this string.
@@ -92,10 +96,11 @@ impl DetectionOrchestrator {
             comm,
             geoip,
             metrics,
-            // SAFETY: NonZero::new on a non-zero literal is infallible.
+            // SAFETY: NonZero::new on non-zero literals; MAX_DEDUP_ENTRIES is
+            // already a NonZero const so no unwrap needed for that one.
             src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
             repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
-            dedup: LruCache::new(NonZero::new(MAX_DEDUP_ENTRIES).unwrap()),
+            dedup: LruCache::new(MAX_DEDUP_ENTRIES),
             dedup_window: Duration::from_secs(DEDUP_WINDOW_SECS),
             fusion_windows: FusionWindowLengths::default(),
         }
@@ -205,10 +210,7 @@ impl DetectionOrchestrator {
         let key_was_absent = self.dedup.peek(&key).is_none();
         if was_full && key_was_absent {
             self.metrics.record_eviction();
-            log!(DetectionLog::FusionWindowEvicted {
-                key_src: key.0.clone(),
-                key_type: key.1.clone(),
-            });
+            log!(DetectionLog::FusionWindowEvicted(key.0.clone(), key.1.clone()));
         }
 
         self.dedup.put(
@@ -279,7 +281,7 @@ impl DetectionOrchestrator {
         };
 
         if let Err(e) = self.comm.publish_event(audit).await {
-            log!(DetectionLog::FusionAuditPublishFailed { err: e.to_string() });
+            log!(DetectionLog::FusionAuditPublishFailed(e.to_string()));
         }
     }
 
@@ -344,18 +346,27 @@ impl DetectionOrchestrator {
     }
 
     fn cleanup_expired(&mut self) {
+        // Full scan: LRU order reflects access time, not insertion time, so
+        // peek_lru + break-on-first-unexpired would skip older idle entries
+        // sitting in the middle of the map. Dedup touches an entry's LRU
+        // position via `get_mut` on every re-emit, which can leave an entry
+        // with an older `first_emitted_at` deeper in the cache than a newly
+        // inserted neighbour. A full retain is O(N) but cleanup runs every
+        // 60s and `MAX_DEDUP_ENTRIES` caps N at 50_000 — one walk is cheap.
         let now = Instant::now();
         let window = self.dedup_window;
-        while let Some((_, entry)) = self.dedup.peek_lru() {
+        let mut expired: Vec<(String, String)> = Vec::new();
+        for (key, entry) in self.dedup.iter() {
             if now
                 .checked_duration_since(entry.first_emitted_at)
                 .unwrap_or(Duration::ZERO)
                 >= window
             {
-                self.dedup.pop_lru();
-            } else {
-                break;
+                expired.push(key.clone());
             }
+        }
+        for key in expired {
+            self.dedup.pop(&key);
         }
     }
 }

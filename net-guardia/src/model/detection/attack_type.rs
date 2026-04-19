@@ -114,7 +114,12 @@ pub fn translate(source: DetectionSource, raw_label: &str) -> CanonicalAttackTyp
 fn translate_ml(label: &str) -> CanonicalAttackType {
     match label {
         "brute force" | "brute_force" | "bruteforce" => CanonicalAttackType::BruteForce,
-        "reconnaissance" | "recon" | "port_scan" | "portscan" => CanonicalAttackType::Reconnaissance,
+        // `port_scan` / `portscan` map to the specific `PortScan` bucket so
+        // ML agreement with Correlation's `scan` / `port_scan` collapses onto
+        // the same dedup key — the precondition for cross-source fusion.
+        // Generic recon labels stay on `Reconnaissance`.
+        "port_scan" | "portscan" => CanonicalAttackType::PortScan,
+        "reconnaissance" | "recon" => CanonicalAttackType::Reconnaissance,
         "c2 communication" | "c2" | "c2_beacon" | "command_and_control" => CanonicalAttackType::C2Beacon,
         "dns tunneling" | "dns_tunnel" | "dns tunnel" => CanonicalAttackType::DnsTunnel,
         "sql injection" | "sql_injection" | "sqli" => CanonicalAttackType::SqlInjection,
@@ -138,6 +143,11 @@ fn translate_beaconing(_label: &str) -> CanonicalAttackType {
 }
 
 /// Correlation (Layer 3 graph) splits across scan / lateral / botnet.
+///
+/// Note: Correlation's scan detector looks for fanout on the port dimension,
+/// so every scan-flavored sub-tag maps to `PortScan`. ML's own `port_scan`
+/// label uses the same bucket so the dedup orchestrator fuses agreement
+/// from both sources onto one `(src_ip, port_scan)` key.
 fn translate_correlation(label: &str) -> CanonicalAttackType {
     match label {
         "scan" | "port_scan" | "reconnaissance" => CanonicalAttackType::PortScan,
@@ -154,8 +164,11 @@ fn translate_correlation(label: &str) -> CanonicalAttackType {
 fn translate_suricata(label: &str) -> CanonicalAttackType {
     // classtype strings come lowercase+trimmed from `translate`
     match label {
-        // Scan / reconnaissance
-        "attempted-recon" | "network-scan" | "misc-activity" => CanonicalAttackType::Reconnaissance,
+        // Port scan specifically — must match ML `port_scan` + Correlation
+        // `scan` on the same canonical key so cross-source fusion fires.
+        "network-scan" => CanonicalAttackType::PortScan,
+        // Broader recon (non-port-scan host discovery, protocol probing)
+        "attempted-recon" | "misc-activity" => CanonicalAttackType::Reconnaissance,
         // Exploits / admin compromise
         "attempted-admin" | "successful-admin" | "attempted-user" | "successful-user" | "shellcode-detect"
         | "attempted-exploit" => CanonicalAttackType::Exploit,
@@ -305,13 +318,39 @@ mod tests {
     fn dedup_key_non_collision_across_sources() {
         // The central invariant: two sources hitting the SAME attack on the
         // SAME src_ip produce the SAME canonical wire string, so dedup collides.
-        let ml = translate(DetectionSource::ML, "Brute Force");
-        let suricata = translate(DetectionSource::Suricata, "brute-force");
-        assert_eq!(
-            ml.as_str(),
-            suricata.as_str(),
-            "cross-source dedup key MUST match for the same canonical attack",
-        );
+        let pairs = [
+            // ML vs Suricata: brute force
+            (
+                translate(DetectionSource::ML, "Brute Force"),
+                translate(DetectionSource::Suricata, "brute-force"),
+            ),
+            // ML vs Correlation: port scan — historically mapped to two
+            // different canonicals (Reconnaissance vs PortScan) until
+            // 2026-04-19. Kept as a regression guard.
+            (
+                translate(DetectionSource::ML, "port_scan"),
+                translate(DetectionSource::Correlation, "scan"),
+            ),
+            // Suricata network-scan vs Correlation scan — both land on
+            // `PortScan` so a Suricata scan alert fuses with Correlation's
+            // graph-based scan detection on the same src_ip.
+            (
+                translate(DetectionSource::Suricata, "network-scan"),
+                translate(DetectionSource::Correlation, "scan"),
+            ),
+            // ML vs Suricata: C2
+            (
+                translate(DetectionSource::ML, "C2 Communication"),
+                translate(DetectionSource::Suricata, "trojan-activity"),
+            ),
+        ];
+        for (a, b) in pairs {
+            assert_eq!(
+                a.as_str(),
+                b.as_str(),
+                "cross-source dedup key MUST match for the same canonical attack ({a:?} vs {b:?})",
+            );
+        }
     }
 
     #[test]

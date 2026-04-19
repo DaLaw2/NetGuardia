@@ -28,7 +28,6 @@ use std::task::{Context, Poll};
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::http::Method;
-use actix_web::http::header::HeaderMap;
 use actix_web::{Error as ActixError, HttpResponse};
 
 /// Request header carrying the CSRF token. Clients (frontend fetch /
@@ -132,13 +131,6 @@ fn is_csrf_exempt_path(path: &str) -> bool {
         return true;
     }
     false
-}
-
-/// Convenience accessor used by request-scoped code that would
-/// otherwise reach into `req.headers().get(CSRF_HEADER)` directly.
-#[allow(dead_code)]
-pub fn csrf_token_from_headers(headers: &HeaderMap) -> Option<&str> {
-    headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok())
 }
 
 #[cfg(test)]

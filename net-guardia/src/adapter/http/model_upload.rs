@@ -2,8 +2,9 @@
 //! YAML field, an `onnx` binary field, and an optional `scaler` JSON
 //! sidecar; streams each to `models/.staging/<uuid>/` with enforced
 //! size caps, runs structural + ONNX shape validation, then atomically
-//! renames into `models/` under a process-wide mutex so concurrent
-//! uploads serialize at the rename step. A WORM `model_swap` audit
+//! renames into `models/` under a process-wide gate (AtomicBool, not a
+//! mutex — see `PromoteGate`): a second concurrent promote is rejected
+//! with 409 Conflict rather than queued. A WORM `model_swap` audit
 //! entry records the SHA-256 of both committed files plus a snapshot
 //! of the pre-swap state.
 //!

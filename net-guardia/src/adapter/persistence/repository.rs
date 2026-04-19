@@ -13,7 +13,7 @@ use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyRepo};
 use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
 use crate::interface::port::db_admin::DbAdminRepo;
 use crate::interface::port::enforcement::EnforcementRepo;
-use crate::interface::port::identity::{IdentityRepo, UserGroupTuple, UserListItem, UserTuple, UserWithGroups};
+use crate::interface::port::identity::{IdentityRepo, UserGroupTuple, UserTuple, UserWithGroups};
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarRepo};
 use crate::interface::port::stats::StatsRepo;
@@ -662,26 +662,6 @@ impl Database {
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
     }
 
-    pub fn list_users(&self) -> Result<Vec<UserListItem>, Error> {
-        let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT id, username, role, force_password_change, created_at FROM users ORDER BY id")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)? != 0,
-                row.get::<_, String>(4)?,
-            ))
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
     pub fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -1082,6 +1062,10 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Test-only helper: direct insert of a SOAR block rule row. Production
+    /// code goes through `commit_soar_block_to_db` which atomically writes
+    /// both `soar_block_rules` and `acl_rules` under a transaction.
+    #[cfg(test)]
     pub fn insert_soar_block_rule(&self, source_ip: &str, playbook_id: i64, expires_at: &str) -> Result<i64, Error> {
         let conn = self.conn()?;
         conn.execute(
@@ -1271,25 +1255,6 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn update_playbook(&self, id: i64, row: &UpdatePlaybookRow) -> Result<bool, Error> {
-        let conn = self.conn()?;
-        let rows = conn.execute(
-            "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
-             condition_count = ?5, condition_window_secs = ?6, cooldown_secs = ?7, \
-             updated_at = datetime('now') WHERE id = ?1",
-            params![
-                id,
-                row.name,
-                row.trigger_event,
-                row.condition_threshold,
-                row.condition_count,
-                row.condition_window_secs,
-                row.cooldown_secs
-            ],
-        )?;
-        Ok(rows > 0)
-    }
-
     pub fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
         let conn = self.conn()?;
         let rows = conn.execute(
@@ -1303,24 +1268,6 @@ impl Database {
         let conn = self.conn()?;
         let rows = conn.execute("DELETE FROM playbooks WHERE id = ?1", params![id])?;
         Ok(rows > 0)
-    }
-
-    pub fn delete_playbook_actions(&self, playbook_id: i64) -> Result<(), Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM playbook_actions WHERE playbook_id = ?1",
-            params![playbook_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_playbook_conditions(&self, playbook_id: i64) -> Result<(), Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM playbook_conditions WHERE playbook_id = ?1",
-            params![playbook_id],
-        )?;
-        Ok(())
     }
 
     pub fn insert_playbook_condition(
@@ -1757,9 +1704,6 @@ impl AclRepo for Database {
     ) -> Result<(), Error> {
         self.delete_acl_rule(ip_version, direction, list_type, ip_address, port)
     }
-    fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
-        self.load_acl_rules()
-    }
     fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error> {
         self.has_manual_acl_rule(ip_address)
     }
@@ -1778,26 +1722,17 @@ impl EnforcementRepo for Database {
     fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> {
         self.set_rate_limit(key, value)
     }
-    fn load_rate_limit_config(&self) -> Result<Vec<(String, u64)>, Error> {
-        self.load_rate_limit_config()
-    }
     fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> {
         self.insert_dns_domain(domain)
     }
     fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> {
         self.delete_dns_domain(domain)
     }
-    fn load_dns_domains(&self) -> Result<Vec<String>, Error> {
-        self.load_dns_domains()
-    }
     fn insert_geo_country(&self, code: &str) -> Result<(), Error> {
         self.insert_geo_country(code)
     }
     fn delete_geo_country(&self, code: &str) -> Result<(), Error> {
         self.delete_geo_country(code)
-    }
-    fn load_geo_countries(&self) -> Result<Vec<String>, Error> {
-        self.load_geo_countries()
     }
 }
 
@@ -1841,12 +1776,6 @@ impl IdentityRepo for Database {
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
         self.update_user_password(user_id, password_hash)
     }
-    fn user_count(&self) -> Result<i64, Error> {
-        self.user_count()
-    }
-    fn list_users(&self) -> Result<Vec<UserListItem>, Error> {
-        self.list_users()
-    }
     fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
         self.list_users_with_groups()
     }
@@ -1883,9 +1812,6 @@ impl IdentityRepo for Database {
     fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
         self.get_user_permissions(user_id)
     }
-    fn cleanup_user_memberships(&self, user_id: i64) -> Result<(), Error> {
-        self.cleanup_user_memberships(user_id)
-    }
     fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
         self.get_group_member_ids(group_id)
     }
@@ -1904,31 +1830,8 @@ impl IdentityRepo for Database {
 }
 
 impl SoarRepo for Database {
-    fn insert_playbook(
-        &self,
-        name: &str,
-        trigger_event: &str,
-        threshold: Option<f64>,
-        count: Option<i64>,
-        window: Option<i64>,
-        cooldown: i64,
-    ) -> Result<i64, Error> {
-        self.insert_playbook(name, trigger_event, threshold, count, window, cooldown)
-    }
-    fn insert_playbook_action(
-        &self,
-        playbook_id: i64,
-        action_order: i64,
-        action_type: &str,
-        params_json: &str,
-    ) -> Result<i64, Error> {
-        self.insert_playbook_action(playbook_id, action_order, action_type, params_json)
-    }
     fn load_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error> {
         self.load_playbooks_with_actions()
-    }
-    fn update_playbook(&self, id: i64, row: &UpdatePlaybookRow) -> Result<bool, Error> {
-        self.update_playbook(id, row)
     }
     fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
         self.update_playbook_enabled(id, enabled)
@@ -1936,30 +1839,11 @@ impl SoarRepo for Database {
     fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
         self.delete_playbook(id)
     }
-    fn delete_playbook_actions(&self, playbook_id: i64) -> Result<(), Error> {
-        self.delete_playbook_actions(playbook_id)
-    }
-    fn delete_playbook_conditions(&self, playbook_id: i64) -> Result<(), Error> {
-        self.delete_playbook_conditions(playbook_id)
-    }
     fn seed_default_playbooks(&self) -> Result<(), Error> {
         self.seed_default_playbooks()
     }
-    fn insert_playbook_condition(
-        &self,
-        playbook_id: i64,
-        condition_type: &str,
-        operator: &str,
-        value: &str,
-        value2: Option<&str>,
-    ) -> Result<i64, Error> {
-        self.insert_playbook_condition(playbook_id, condition_type, operator, value, value2)
-    }
     fn load_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
         self.load_all_playbook_conditions()
-    }
-    fn insert_soar_block_rule(&self, source_ip: &str, playbook_id: i64, expires_at: &str) -> Result<i64, Error> {
-        self.insert_soar_block_rule(source_ip, playbook_id, expires_at)
     }
     fn count_active_soar_blocks(&self) -> Result<u32, Error> {
         self.count_active_soar_blocks()
@@ -2106,9 +1990,6 @@ impl StatsRepo for Database {
 impl AuditRepo for Database {
     fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error> {
         self.insert_audit_log(actor, action, detail)
-    }
-    fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
-        self.list_audit_logs()
     }
     fn list_audit_logs_by_action(&self, action: &str, limit: i64) -> Result<Vec<AuditLogEntry>, Error> {
         self.list_audit_logs_by_action(action, limit)
@@ -2345,13 +2226,17 @@ mod tests {
 
         let acl: &dyn AclRepo = &db;
         acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
-        let rules = acl.load_acl_rules().unwrap();
+        // load_acl_rules is an inherent Database method (not on AclRepo),
+        // so go through `&db` directly for this read-back assertion.
+        let rules = db.load_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
 
         let identity: &dyn IdentityRepo = &db;
-        assert_eq!(identity.user_count().unwrap(), 0);
+        // user_count is inherent — inserts still go through the trait so
+        // the vtable has something to exercise.
+        assert_eq!(db.user_count().unwrap(), 0);
         identity.insert_user("test", "hash", "viewer", false).unwrap();
-        assert_eq!(identity.user_count().unwrap(), 1);
+        assert_eq!(db.user_count().unwrap(), 1);
     }
 
     /// Happy path. Verifies `commit_soar_block_to_db` writes both

@@ -68,7 +68,12 @@ impl ModelWatcher {
             }
             sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
             while rx.try_recv().is_ok() {}
-            self.try_reload();
+            // `try_reload` loads the manifest + sidecar + ONNX off disk, any
+            // of which can block for >10ms on a cold cache — move it off the
+            // tokio worker so the rest of the async runtime keeps turning.
+            let inference = Arc::clone(&self.inference);
+            let app_config = Arc::clone(&self.app_config);
+            let _ = tokio::task::spawn_blocking(move || try_reload(&inference, &app_config)).await;
         }
 
         Ok(())
@@ -80,7 +85,10 @@ impl ModelWatcher {
                 if !is_relevant_event(&event) {
                     return;
                 }
-                let _ = tx.blocking_send(());
+                // The callback runs on notify's OS dispatch thread, which must
+                // not block on a full channel — the debounce loop coalesces
+                // duplicates anyway, so dropping when full is safe.
+                let _ = tx.try_send(());
             }
         })
         .map_err(MLError::ModelWatcherFailed)?;
@@ -92,53 +100,55 @@ impl ModelWatcher {
             .map_err(MLError::ModelWatcherFailed)?;
         Ok(watcher)
     }
+}
 
-    /// Full reload: manifest presence check → config re-parse → adapter build →
-    /// atomic state swap. Any failure lands the pipeline in `Error` rather
-    /// than crashing.
-    fn try_reload(&self) {
-        let manifest_path = PathBuf::from(MODELS_DIR).join(MANIFEST_FILENAME);
+/// Full reload: manifest presence check → config re-parse → adapter build →
+/// atomic state swap. Any failure lands the pipeline in `Error` rather
+/// than crashing. Runs under `spawn_blocking` because manifest + sidecar +
+/// ONNX loads are synchronous disk I/O plus a `tract` graph solve that
+/// routinely takes >10 ms.
+fn try_reload(inference: &Inference, app_config: &AppConfig) {
+    let manifest_path = PathBuf::from(MODELS_DIR).join(MANIFEST_FILENAME);
 
-        // Path 1 — manifest disappeared: transition to Dormant.
-        if !manifest_path.exists() {
-            log!(MLLog::ModelReloadStarting);
-            self.inference.swap_state(ModelSourceState::Dormant);
-            log!(MLLog::ModelReloadSuccess);
-            return;
-        }
-
-        // Path 2 — manifest present: re-read + rebuild adapter.
+    // Path 1 — manifest disappeared: transition to Dormant.
+    if !manifest_path.exists() {
         log!(MLLog::ModelReloadStarting);
-        let batch_size = self.app_config.inference.inference_batch_size;
-        match MLInferenceConfig::from_manifest_with_sidecar(&manifest_path) {
-            Ok((config, manifest)) => match build_adapter(&manifest, Some(&manifest_path), &config, batch_size) {
-                Ok(adapter) => {
-                    let info = ModelInfo::new(
-                        manifest.name.clone(),
-                        manifest.adapter.as_str().to_string(),
-                        manifest.features.len(),
-                    );
-                    self.inference.swap_state(ModelSourceState::Active { adapter, info });
-                    log!(MLLog::ModelReloadSuccess);
-                }
-                Err(e) => {
-                    self.record_error(e.to_string(), Some(manifest_path.clone()));
-                }
-            },
-            Err(e) => {
-                self.record_error(e.to_string(), Some(manifest_path.clone()));
-            }
-        }
+        inference.swap_state(ModelSourceState::Dormant);
+        log!(MLLog::ModelReloadSuccess);
+        return;
     }
 
-    fn record_error(&self, msg: String, last_attempted_path: Option<PathBuf>) {
-        log!(MLLog::ModelReloadFailed(msg.clone()));
-        self.inference.swap_state(ModelSourceState::Error {
-            msg,
-            since: SystemTime::now(),
-            last_attempted_path,
-        });
+    // Path 2 — manifest present: re-read + rebuild adapter.
+    log!(MLLog::ModelReloadStarting);
+    let batch_size = app_config.inference.inference_batch_size;
+    match MLInferenceConfig::from_manifest_with_sidecar(&manifest_path) {
+        Ok((config, manifest)) => match build_adapter(&manifest, Some(&manifest_path), &config, batch_size) {
+            Ok(adapter) => {
+                let info = ModelInfo::new(
+                    manifest.name.clone(),
+                    manifest.adapter.as_str().to_string(),
+                    manifest.features.len(),
+                );
+                inference.swap_state(ModelSourceState::Active { adapter, info });
+                log!(MLLog::ModelReloadSuccess);
+            }
+            Err(e) => {
+                record_error(inference, e.to_string(), Some(manifest_path.clone()));
+            }
+        },
+        Err(e) => {
+            record_error(inference, e.to_string(), Some(manifest_path.clone()));
+        }
     }
+}
+
+fn record_error(inference: &Inference, msg: String, last_attempted_path: Option<PathBuf>) {
+    log!(MLLog::ModelReloadFailed(msg.clone()));
+    inference.swap_state(ModelSourceState::Error {
+        msg,
+        since: SystemTime::now(),
+        last_attempted_path,
+    });
 }
 
 /// Inbound event filter. Ignore `.staging/` paths entirely; pass through

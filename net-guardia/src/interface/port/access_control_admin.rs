@@ -12,7 +12,6 @@ use crate::model::monitoring::direction::FlowDirection;
 /// Distinct from `AccessControlPort` (which only exposes `block_ip` /
 /// `unblock_ip` for SOAR). `AclService` uses this richer API to serve the
 /// `/api/acl` HTTP routes.
-#[allow(dead_code)]
 pub trait AccessControlAdminPort: Send + Sync {
     fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error>;
 

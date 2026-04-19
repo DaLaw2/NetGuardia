@@ -20,6 +20,7 @@ use url::Url;
 use crate::core::email::scheduler::SmtpClient;
 use crate::core::playbook_service::ip_version_from_str;
 use crate::core::soar::engine::SoarEngine;
+use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::notification::AlertPayload;
 use crate::model::error::Error;
@@ -192,8 +193,12 @@ impl SoarEngine {
             }
         }
 
-        // Block IP via AccessControlPort (handles IPv4/IPv6 dispatch internally)
-        if let Err(e) = self.access_control.block_ip(&event.source_ip) {
+        // Block IP via AccessControlPort (handles IPv4/IPv6 dispatch internally).
+        // Offloaded to `spawn_blocking` so the tokio worker is not stuck while
+        // parking_lot::RwLock + aya map syscalls run — under SOAR burst with
+        // `active_block_count` approaching `max_cap`, this keeps the rest of
+        // the runtime responsive.
+        if let Err(e) = block_ip_blocking(Arc::clone(&self.access_control), event.source_ip.clone()).await {
             self.decrement_block_count();
             return Err(e);
         }
@@ -216,7 +221,8 @@ impl SoarEngine {
         .await;
         if let Err(e) = commit_result {
             // DB tx rolled back both rows; now roll back the eBPF block.
-            if let Err(unblock_err) = self.access_control.unblock_ip(&event.source_ip) {
+            let unblock_outcome = unblock_ip_blocking(Arc::clone(&self.access_control), event.source_ip.clone()).await;
+            if let Err(unblock_err) = unblock_outcome {
                 log!(SoarLog::EventHandlingFailed(format!(
                     "CRITICAL: Failed to unblock IP {} after DB error — queueing for retry: {}",
                     event.source_ip, unblock_err
@@ -539,4 +545,20 @@ async fn insert_pending_unblock_blocking(db: Arc<dyn AppRepo>, source_ip: String
     spawn_blocking(move || db.insert_pending_unblock(&source_ip))
         .await
         .map_err(|e| SoarError::ActionFailed("insert_pending_unblock", e))?
+}
+
+/// Offload `AccessControlPort::block_ip` onto a blocking thread. The port is
+/// synchronous because its eBPF-map critical sections are tiny (microseconds),
+/// but under SOAR burst many tokio workers would contend on the same
+/// `parking_lot::RwLock` and the aya syscall itself blocks the executor.
+async fn block_ip_blocking(access_control: Arc<dyn AccessControlPort>, ip: String) -> Result<(), Error> {
+    spawn_blocking(move || access_control.block_ip(&ip))
+        .await
+        .map_err(|e| SoarError::ActionFailed("block_ip", e))?
+}
+
+async fn unblock_ip_blocking(access_control: Arc<dyn AccessControlPort>, ip: String) -> Result<(), Error> {
+    spawn_blocking(move || access_control.unblock_ip(&ip))
+        .await
+        .map_err(|e| SoarError::ActionFailed("unblock_ip", e))?
 }

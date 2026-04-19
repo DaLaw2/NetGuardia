@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::manifest::{LabelSpec, ModelManifest};
+use super::manifest::{AdapterKind, LabelSpec, ModelManifest};
 use crate::model::error::ml::MLError;
 use crate::model::system::config::MLInferenceConfig;
 
@@ -45,11 +45,16 @@ impl MLInferenceConfig {
 
         reconcile_features(&manifest, &config, manifest_path)?;
         apply_manifest_overrides(&manifest, &mut config);
+        validate_for_adapter(&config, manifest.adapter)?;
 
         Ok((config, manifest))
     }
 }
 
+/// Shape checks that apply to every sidecar regardless of adapter kind:
+/// feature list non-empty, scaler arrays match feature count. Per-adapter
+/// output-head counts live in `validate_for_adapter` and only run via the
+/// manifest path where the adapter kind is known.
 fn validate(config: &MLInferenceConfig) -> Result<(), MLError> {
     if config.ae_feature_names.is_empty() {
         return Err(MLError::ConfigParseFailed("ae_feature_names is empty"));
@@ -60,10 +65,25 @@ fn validate(config: &MLInferenceConfig) -> Result<(), MLError> {
     if config.ae_scaler_std.len() != config.ae_feature_names.len() {
         return Err(MLError::ConfigParseFailed("scaler std length mismatch"));
     }
-    if config.output_names.len() != 3 {
-        return Err(MLError::ConfigParseFailed(
-            "MultiTaskModel requires exactly 3 output_names (anomaly, class_probs, c2_score)",
-        ));
+    Ok(())
+}
+
+/// Adapter-specific output-head count check. MultiTask ships three heads
+/// (anomaly / class_probs / c2_score); single-head adapters (Classifier,
+/// Autoencoder) ship one. Mismatch here means the sidecar belongs to a
+/// different adapter kind than the manifest declares — a deployment bug
+/// rather than a runtime fault.
+fn validate_for_adapter(config: &MLInferenceConfig, adapter: AdapterKind) -> Result<(), MLError> {
+    let expected = match adapter {
+        AdapterKind::MultiTask => 3,
+        AdapterKind::ClassifierOnly | AdapterKind::AutoencoderOnly => 1,
+    };
+    if config.output_names.len() != expected {
+        return Err(MLError::ConfigParseFailed(match adapter {
+            AdapterKind::MultiTask => "MultiTaskModel requires exactly 3 output_names (anomaly, class_probs, c2_score)",
+            AdapterKind::ClassifierOnly => "ClassifierOnly adapter requires exactly 1 output_name (class_probs)",
+            AdapterKind::AutoencoderOnly => "AutoencoderOnly adapter requires exactly 1 output_name (reconstruction)",
+        }));
     }
     Ok(())
 }

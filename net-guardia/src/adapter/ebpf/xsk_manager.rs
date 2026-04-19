@@ -16,6 +16,9 @@ use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
+use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
+
+use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::infrastructure::app_config::AppConfig;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
@@ -93,6 +96,7 @@ impl XskManager {
         &self,
         sinks: Option<Arc<dyn PacketSinkFactory>>,
         dns_filter: Option<Arc<dyn DnsQueryFilter>>,
+        drop_monitor: Option<Arc<DropMonitor>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
         // If eBPF failed to load, there are no XSK maps to bind and no queues
@@ -119,6 +123,7 @@ impl XskManager {
                 Direction::Ingress,
                 sink.clone(),
                 dns_filter.clone(),
+                drop_monitor.clone(),
             )?;
 
             let egress_xsk = XskPair::new(
@@ -129,6 +134,7 @@ impl XskManager {
                 Direction::Egress,
                 sink,
                 None,
+                drop_monitor.clone(),
             )?;
 
             let mut xsk_guard = self.xsk_map.lock();
@@ -172,11 +178,13 @@ pub struct XskPair {
     frame_pool: Vec<FrameDesc>,
     sink: Option<Arc<dyn PacketSink>>,
     dns_filter: Option<Arc<dyn DnsQueryFilter>>,
+    drop_monitor: Option<Arc<DropMonitor>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
 }
 
 impl XskPair {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: NetworkConfig,
         queue_id: u32,
@@ -185,6 +193,7 @@ impl XskPair {
         direction: Direction,
         sink: Option<Arc<dyn PacketSink>>,
         dns_filter: Option<Arc<dyn DnsQueryFilter>>,
+        drop_monitor: Option<Arc<DropMonitor>>,
     ) -> Result<Self, Error> {
         let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfig)?;
 
@@ -241,6 +250,7 @@ impl XskPair {
             frame_pool: pool_frames,
             sink,
             dns_filter,
+            drop_monitor,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
         };
@@ -353,10 +363,16 @@ impl XskPair {
 
                 let raw = &contents[..packet_len];
 
-                // DNS blacklist check — drop blacklisted DNS queries before forwarding
+                // DNS blacklist check — drop blacklisted DNS queries before forwarding.
+                // Report to DropMonitor so `/api/stats/drops` and `/ws/drops`
+                // reflect userspace-decided drops (the kernel eBPF never saw
+                // this packet's DNS payload, so it emits no DROP_EVENTS entry).
                 if let Some(ref dns) = self.dns_filter
                     && dns.is_query_blacklisted(raw)
                 {
+                    if let Some(ref monitor) = self.drop_monitor {
+                        monitor.record_userspace_drop_count_only(DROP_REASON_DNS_BLACKLIST);
+                    }
                     continue;
                 }
 
@@ -439,7 +455,6 @@ impl XskPair {
             return Ok(0);
         }
 
-        let sent_count = frames.len();
         for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
             unsafe {
                 self.umem
@@ -465,8 +480,12 @@ impl XskPair {
             log!(EbpfLog::TXWakeupFailed(e.to_string()));
         }
 
-        // Log dropped packets when frames < packets
-        let dropped = total_packets - sent_count;
+        // Drop accounting: a packet is dropped whenever we couldn't put it
+        // on the TX ring. That includes both the frame-pool-exhausted path
+        // (frames.len() < total_packets) and the TX-ring backpressure path
+        // (nb_submitted < frames.len()). Using `nb_submitted` as the sent
+        // count covers both.
+        let dropped = total_packets - nb_submitted;
         if dropped > 0 {
             log!(EbpfLog::FramePoolExhausted(dropped));
         }

@@ -87,7 +87,12 @@ impl EbpfServices {
     pub async fn run(self: Arc<Self>, sink_factory: Arc<dyn PacketSinkFactory>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
         let dns: Arc<dyn DnsQueryFilter> = self.dns_filter.clone();
-        xsk_manager.run(Some(sink_factory), Some(dns), &self.shutdowns)?;
+        xsk_manager.run(
+            Some(sink_factory),
+            Some(dns),
+            Some(self.drop_monitor.clone()),
+            &self.shutdowns,
+        )?;
 
         let ring_buf = self.drop_ring_buf.lock().take();
         if let Some(ring_buf) = ring_buf {

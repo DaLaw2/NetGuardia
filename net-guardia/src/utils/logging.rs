@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::filter::Directive;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -17,6 +18,12 @@ use crate::model::error::io::IOError;
 /// Type-erased reload handle stored as a trait object.
 /// We erase the complex layered type by boxing the modify closure.
 static FILTER_HANDLE: OnceLock<Box<dyn FilterControl>> = OnceLock::new();
+
+/// Snapshot of the per-target directives (e.g. `maxminddb=warn`) in effect
+/// at `initialize()` time. `set_level` rebuilds the filter from scratch
+/// around a new root level; reapplying these keeps any RUST_LOG overrides
+/// the operator configured for specific crates from being silently lost.
+static PRESERVED_DIRECTIVES: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Trait to erase the complex generic type of reload::Handle.
 trait FilterControl: Send + Sync {
@@ -68,10 +75,31 @@ impl Logging {
                 Level::INFO
             });
 
-        let filter = EnvFilter::from_default_env()
-            .add_directive(level.into())
-            // SAFETY: "maxminddb=warn" is a valid tracing directive literal
-            .add_directive("maxminddb=warn".parse().unwrap_or_else(|_| unreachable!()));
+        // Collect per-target directives from RUST_LOG plus our hardcoded
+        // `maxminddb=warn` so `set_level` can reapply them on each rebuild
+        // instead of losing them to `EnvFilter::new(level)`.
+        let mut preserved: Vec<String> = env::var("RUST_LOG")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|d| !d.is_empty() && d.contains('='))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !preserved.iter().any(|d| d == "maxminddb=warn") {
+            preserved.push("maxminddb=warn".to_string());
+        }
+        let _ = PRESERVED_DIRECTIVES.set(preserved);
+
+        let mut filter = EnvFilter::from_default_env().add_directive(level.into());
+        if let Some(directives) = PRESERVED_DIRECTIVES.get() {
+            for d in directives {
+                if let Ok(parsed) = d.parse::<Directive>() {
+                    filter = filter.add_directive(parsed);
+                }
+            }
+        }
 
         let (filter_layer, reload_handle) = reload::Layer::new(filter);
 
@@ -99,8 +127,14 @@ impl Logging {
             )
         })?;
 
-        let new_filter = EnvFilter::new(parsed_level.to_string())
-            .add_directive("maxminddb=warn".parse().unwrap_or_else(|_| unreachable!()));
+        let mut new_filter = EnvFilter::new(parsed_level.to_string());
+        if let Some(directives) = PRESERVED_DIRECTIVES.get() {
+            for d in directives {
+                if let Ok(parsed) = d.parse::<Directive>() {
+                    new_filter = new_filter.add_directive(parsed);
+                }
+            }
+        }
 
         handle.reload_filter(new_filter)?;
 

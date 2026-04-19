@@ -168,7 +168,11 @@ impl ConfigService {
             }
         }
 
-        // Route secret keys through SecretStore (encrypted storage)
+        // Route secret keys through SecretStore (encrypted storage).
+        // After writing to SecretStore, scrub the plaintext row in `settings`
+        // so a legacy plaintext value from pre-SecretStore deployments cannot
+        // linger — readers fall back to SecretStore when the plaintext row
+        // is empty.
         if let Some(ref secrets) = self.secrets {
             for key in SECRET_KEYS {
                 // Secret keys live under their parent section (e.g., smtp_password under smtp)
@@ -180,6 +184,7 @@ impl ConfigService {
                     .and_then(json_value_as_string)
                 {
                     secrets.set_secret(key, &val)?;
+                    self.db.set_setting(key, "")?;
                     updated.push(key.to_string());
                 }
             }

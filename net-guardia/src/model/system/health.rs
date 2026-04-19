@@ -34,13 +34,6 @@ pub enum EbpfHealth {
     },
 }
 
-impl EbpfHealth {
-    #[allow(dead_code)] // exposed to HTTP handlers in task #2; keep alongside the type
-    pub fn is_healthy(&self) -> bool {
-        matches!(self, EbpfHealth::Healthy)
-    }
-}
-
 /// Which stage of eBPF bring-up failed.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]

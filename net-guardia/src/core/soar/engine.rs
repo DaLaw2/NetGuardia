@@ -425,9 +425,9 @@ mod tests {
         }
     }
 
-    fn test_db() -> Arc<dyn AppRepo> {
+    fn test_db() -> Arc<crate::adapter::persistence::Database> {
         use crate::adapter::persistence::Database;
-        Arc::new(Database::new(":memory:").expect("Failed to create test database")) as Arc<dyn AppRepo>
+        Arc::new(Database::new(":memory:").expect("Failed to create test database"))
     }
 
     fn test_engine(ac: Arc<dyn AccessControlPort>) -> SoarEngine {
@@ -437,7 +437,8 @@ mod tests {
         db.set_setting("enforce_mode", "enforce").ok();
         // enforce=2
         let cache = Arc::new(AtomicU8::new(2));
-        SoarEngine::new(db, ac, None, None, None, cache, None).expect("Failed to create SOAR engine")
+        SoarEngine::new(db as Arc<dyn AppRepo>, ac, None, None, None, cache, None)
+            .expect("Failed to create SOAR engine")
     }
 
     #[tokio::test]
@@ -527,7 +528,8 @@ mod tests {
         db.insert_soar_block_rule("192.168.1.100", 1, &expires).ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db, mock.clone(), None, None, None, cache, None).expect("Failed to create engine");
+        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
+            .expect("Failed to create engine");
         engine.recover_active_blocks().await.expect("Recovery should succeed");
 
         let blocked = mock.blocked_ips.lock();
@@ -548,7 +550,8 @@ mod tests {
         db.insert_soar_block_rule("10.0.0.1", 1, &expires).ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db, mock.clone(), None, None, None, cache, None).expect("Failed to create engine");
+        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
+            .expect("Failed to create engine");
 
         // Should not panic — errors are logged, not propagated
         let result = engine.recover_active_blocks().await;
@@ -649,7 +652,8 @@ mod tests {
         db.insert_admin_whitelist("1.2.3.4").ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db, mock.clone(), None, None, None, cache, None).expect("Failed to create engine");
+        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
+            .expect("Failed to create engine");
 
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
@@ -711,7 +715,8 @@ mod tests {
         db.seed_default_playbooks().ok();
 
         let cache = Arc::new(AtomicU8::new(0));
-        let engine = SoarEngine::new(db.clone(), mock, None, None, None, cache, None).expect("Failed to create engine");
+        let engine = SoarEngine::new(db.clone() as Arc<dyn AppRepo>, mock, None, None, None, cache, None)
+            .expect("Failed to create engine");
 
         // Should have loaded default playbooks
         let count = engine.playbooks.load().len();

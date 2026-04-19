@@ -15,13 +15,9 @@ pub struct AuditLogEntry {
 ///
 /// The append-only constraint is enforced by SQLite triggers
 /// (`audit_log_no_update` / `audit_log_no_delete`), not by this trait.
-#[allow(dead_code)]
 pub trait AuditRepo: Send + Sync {
     /// Append a new audit entry. `detail` is typically a JSON blob.
     fn insert_audit_log(&self, actor: &str, action: &str, detail: &str) -> Result<(), Error>;
-
-    /// Read all audit entries ordered by id ASC.
-    fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error>;
 
     /// Read audit entries whose `action` exactly matches, newest first,
     /// capped at `limit`. Drives the fusion explain endpoint, which

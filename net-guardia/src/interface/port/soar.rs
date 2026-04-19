@@ -31,48 +31,19 @@ pub type SoarExecutionRow = (i64, i64, Option<String>, String, String, String);
 /// writes that block actions depend on live in `SettingRepo` and `AclRepo`
 /// respectively; cross-aggregate atomicity is handled via
 /// `DbAdminRepo::with_transaction` + `TxRepos`.
-#[allow(dead_code)]
 pub trait SoarRepo: Send + Sync {
     // --- Playbooks ---
-    fn insert_playbook(
-        &self,
-        name: &str,
-        trigger_event: &str,
-        threshold: Option<f64>,
-        count: Option<i64>,
-        window: Option<i64>,
-        cooldown: i64,
-    ) -> Result<i64, Error>;
-    fn insert_playbook_action(
-        &self,
-        playbook_id: i64,
-        action_order: i64,
-        action_type: &str,
-        params_json: &str,
-    ) -> Result<i64, Error>;
     fn load_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error>;
-    fn update_playbook(&self, id: i64, row: &UpdatePlaybookRow) -> Result<bool, Error>;
     fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error>;
     fn delete_playbook(&self, id: i64) -> Result<bool, Error>;
-    fn delete_playbook_actions(&self, playbook_id: i64) -> Result<(), Error>;
-    fn delete_playbook_conditions(&self, playbook_id: i64) -> Result<(), Error>;
     fn seed_default_playbooks(&self) -> Result<(), Error>;
 
     // --- Playbook Conditions ---
-    fn insert_playbook_condition(
-        &self,
-        playbook_id: i64,
-        condition_type: &str,
-        operator: &str,
-        value: &str,
-        value2: Option<&str>,
-    ) -> Result<i64, Error>;
     /// Returns: (condition_id, playbook_id, condition_type, operator, value, value2)
     #[allow(clippy::type_complexity)]
     fn load_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error>;
 
     // --- Block Rules ---
-    fn insert_soar_block_rule(&self, source_ip: &str, playbook_id: i64, expires_at: &str) -> Result<i64, Error>;
     fn count_active_soar_blocks(&self) -> Result<u32, Error>;
     fn get_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error>;
     fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error>;

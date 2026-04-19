@@ -379,7 +379,10 @@ fn build_event(req: DryRunRequest) -> Result<ThreatDetectedEvent, String> {
             .collect::<Result<Vec<_>, _>>()?,
         None => vec![DetectionSource::ML],
     };
-    let active_source_count = req.active_source_count.unwrap_or(sources.len()).max(1);
+    if sources.is_empty() {
+        return Err("sources[] must contain at least one DetectionSource (send null to default to [ML])".to_string());
+    }
+    let active_source_count = req.active_source_count.unwrap_or(sources.len());
     let fused_confidence = req.fused_confidence.unwrap_or(req.confidence);
     Ok(ThreatDetectedEvent {
         attack_type: req.attack_type,
