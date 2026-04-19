@@ -1,14 +1,16 @@
+use actix_web::rt::spawn;
 use actix_web::{HttpRequest, HttpResponse, Result, web};
 use actix_ws::{Message, MessageStream, Session, handle};
 use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
-use crate::core::ebpf::drop_monitor::DropMonitor;
-use crate::model::drop_event::DropEventMessage;
+use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
+use crate::model::monitoring::drop_event::DropEventMessage;
 
 pub async fn websocket_drops(
     req: HttpRequest,
@@ -19,7 +21,7 @@ pub async fn websocket_drops(
 
     let broadcast_rx = monitor.subscribe();
 
-    actix_web::rt::spawn(async move {
+    spawn(async move {
         handle_drop_connection(session, msg_stream, broadcast_rx).await;
     });
 
@@ -45,11 +47,11 @@ async fn handle_drop_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    Err(RecvError::Lagged(skipped)) => {
                         log!(HttpLog::WebSocketLagged(skipped));
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Err(RecvError::Closed) => {
                         break;
                     }
                 }

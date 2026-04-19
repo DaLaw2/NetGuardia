@@ -1,32 +1,28 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
+
+use serde_json::Value;
 
 use crate::core::soar::engine::SoarEngine;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::soar::SoarPort;
-use macros::log;
-
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::soar::playbook_data::{
     ActionData, ActiveBlockData, ConditionData, CreatePlaybookInput, ExecutionData, PlaybookData, UpdatePlaybookRow,
 };
 
-use std::collections::HashMap;
-
 /// Domain service for SOAR playbook CRUD operations.
 /// Coordinates DB reads/writes, SOAR engine cache refresh, and eBPF unblock.
 pub struct PlaybookService {
-    db: Arc<dyn SoarPort>,
+    db: Arc<dyn AppRepo>,
     soar_engine: Arc<SoarEngine>,
     access_control: Arc<dyn AccessControlPort>,
 }
 
 impl PlaybookService {
-    pub fn new(
-        db: Arc<dyn SoarPort>,
-        soar_engine: Arc<SoarEngine>,
-        access_control: Arc<dyn AccessControlPort>,
-    ) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, soar_engine: Arc<SoarEngine>, access_control: Arc<dyn AccessControlPort>) -> Self {
         Self {
             db,
             soar_engine,
@@ -98,7 +94,7 @@ impl PlaybookService {
                     id: aid,
                     action_order: order,
                     action_type: atype,
-                    params: serde_json::from_str(&params_str).unwrap_or(serde_json::Value::Null),
+                    params: serde_json::from_str(&params_str).unwrap_or(Value::Null),
                 });
             }
         }
@@ -125,27 +121,35 @@ impl PlaybookService {
     }
 
     pub fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
-        let playbook_id = self.db.insert_playbook(
+        // Single atomic insert (playbook + actions + conditions).
+        let actions: Vec<(i64, String, String)> = input
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, params))| ((i + 1) as i64, ty.clone(), params.clone()))
+            .collect();
+        let conditions: Vec<(String, String, String, Option<String>)> = input
+            .conditions
+            .iter()
+            .map(|c| {
+                (
+                    c.condition_type.clone(),
+                    c.operator.clone(),
+                    c.value.clone(),
+                    c.value2.clone(),
+                )
+            })
+            .collect();
+        let playbook_id = self.db.insert_playbook_atomic(
             &input.name,
             &input.trigger_event,
             input.condition_threshold,
             input.condition_count,
             input.condition_window_secs,
             input.cooldown_secs,
+            &actions,
+            &conditions,
         )?;
-        for (i, (action_type, params_str)) in input.actions.iter().enumerate() {
-            self.db
-                .insert_playbook_action(playbook_id, (i + 1) as i64, action_type, params_str)?;
-        }
-        for cond in &input.conditions {
-            self.db.insert_playbook_condition(
-                playbook_id,
-                &cond.condition_type,
-                &cond.operator,
-                &cond.value,
-                cond.value2.as_deref(),
-            )?;
-        }
         self.soar_engine.reload_cache()?;
         Ok(playbook_id)
     }
@@ -159,27 +163,28 @@ impl PlaybookService {
             condition_window_secs: input.condition_window_secs,
             cooldown_secs: input.cooldown_secs,
         };
-        let updated = self.db.update_playbook(id, &row)?;
+        // Single atomic update (playbook metadata + replace actions/conditions).
+        let actions: Vec<(i64, String, String)> = input
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, params))| ((i + 1) as i64, ty.clone(), params.clone()))
+            .collect();
+        let conditions: Vec<(String, String, String, Option<String>)> = input
+            .conditions
+            .iter()
+            .map(|c| {
+                (
+                    c.condition_type.clone(),
+                    c.operator.clone(),
+                    c.value.clone(),
+                    c.value2.clone(),
+                )
+            })
+            .collect();
+        let updated = self.db.update_playbook_atomic(id, &row, &actions, &conditions)?;
         if !updated {
             return Ok(false);
-        }
-
-        // Delete old actions and conditions, then re-insert
-        self.db.delete_playbook_actions(id)?;
-        self.db.delete_playbook_conditions(id)?;
-
-        for (i, (action_type, params_str)) in input.actions.iter().enumerate() {
-            self.db
-                .insert_playbook_action(id, (i + 1) as i64, action_type, params_str)?;
-        }
-        for cond in &input.conditions {
-            self.db.insert_playbook_condition(
-                id,
-                &cond.condition_type,
-                &cond.operator,
-                &cond.value,
-                cond.value2.as_deref(),
-            )?;
         }
         self.soar_engine.reload_cache()?;
         Ok(true)
@@ -214,29 +219,24 @@ impl PlaybookService {
             .collect())
     }
 
-    /// Manually unblock an IP: remove from eBPF, mark DB, decrement counter.
+    /// Manually unblock an IP: remove from eBPF, atomically clear both DB
+    /// tables via `DbAdminRepo::commit_soar_unblock_to_db` (tx-3), decrement
+    /// counter.
     pub async fn manual_unblock(&self, id: i64) -> Result<(), Error> {
         // Look up the block to get source_ip
         let block = self
             .db
             .get_soar_block_by_id(id)?
-            .ok_or_else(|| SoarError::ActionFailed {
-                action_type: "manual_unblock".to_string(),
-                reason: format!("Block rule {} not found", id),
-            })?;
+            .ok_or_else(|| SoarError::UnblockRuleNotFound(id))?;
         let source_ip = &block.1;
 
         // Remove from eBPF ACL
-        self.access_control.unblock_ip(source_ip).await?;
+        self.access_control.unblock_ip(source_ip)?;
 
-        // Also remove the auto-added acl_rules entry
+        // Atomically drop acl_rules entry AND mark soar_block_rules
+        // unblocked in one transaction.
         let ip_version = ip_version_from_str(source_ip);
-        if let Err(e) = self.db.delete_acl_rule(ip_version, "source", "blacklist", source_ip, 0) {
-            log!(SoarError::AclCleanupFailed(e));
-        }
-
-        // Mark as unblocked in DB
-        self.db.mark_soar_block_unblocked(id)?;
+        self.db.commit_soar_unblock_to_db(id, ip_version, source_ip)?;
 
         // Decrement active block counter
         self.soar_engine.decrement_block_count();
@@ -254,7 +254,7 @@ impl PlaybookService {
                     playbook_id: pb_id,
                     source_ip,
                     trigger_event,
-                    actions_executed: serde_json::from_str(&actions).unwrap_or(serde_json::Value::Null),
+                    actions_executed: serde_json::from_str(&actions).unwrap_or(Value::Null),
                     created_at,
                 },
             )
@@ -280,9 +280,9 @@ impl PlaybookService {
 
 /// Determine IP version from a string address using proper parsing.
 pub fn ip_version_from_str(ip: &str) -> u8 {
-    match ip.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(_)) => 4,
-        Ok(std::net::IpAddr::V6(_)) => 6,
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => 4,
+        Ok(IpAddr::V6(_)) => 6,
         Err(_) => {
             if ip.contains(':') {
                 6

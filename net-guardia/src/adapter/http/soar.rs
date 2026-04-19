@@ -1,8 +1,12 @@
+use std::str::FromStr;
+
 use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::playbook_service::PlaybookService;
+use crate::core::soar::engine::SoarEngine;
+use crate::model::event::{DetectionSource, ThreatDetectedEvent};
 use crate::model::soar::playbook_data::{CreateConditionInput, CreatePlaybookInput};
 
 #[derive(Deserialize)]
@@ -44,6 +48,7 @@ pub fn initialize() -> Scope {
         .route("/whitelist", web::get().to(list_whitelist))
         .route("/whitelist", web::post().to(add_whitelist))
         .route("/whitelist/{ip}", web::delete().to(remove_whitelist))
+        .route("/dry-run", web::post().to(dry_run))
 }
 
 async fn list_playbooks(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
@@ -316,4 +321,84 @@ async fn remove_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>, pa
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({"removed": true})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
+}
+
+/// Client shape for `POST /api/soar/dry-run`. Only the fields a SOAR
+/// matcher actually reads are carried — `dest_ip`, `protocol`,
+/// `packet_rate`, `flow_count` participate in neither trigger-matching
+/// nor condition evaluation, so accepting them would just invite
+/// confusion. Sensible defaults fill in the rest of the synthetic
+/// `ThreatDetectedEvent` body.
+#[derive(Deserialize)]
+struct DryRunRequest {
+    attack_type: String,
+    confidence: f32,
+    source_ip: String,
+    #[serde(default)]
+    sources: Option<Vec<String>>,
+    #[serde(default)]
+    active_source_count: Option<usize>,
+    #[serde(default)]
+    fused_confidence: Option<f32>,
+    #[serde(default)]
+    geoip_country: Option<String>,
+    #[serde(default)]
+    is_repeat_offender: Option<bool>,
+}
+
+/// `POST /api/soar/dry-run` — simulate every enabled playbook against
+/// a synthetic event. No actions execute, no cooldown or frequency
+/// state gets recorded. Useful for an admin who just edited a
+/// playbook's conditions and wants to sanity-check the match logic
+/// before enabling it.
+async fn dry_run(_auth: AuthClaims, engine: web::Data<SoarEngine>, body: web::Json<DryRunRequest>) -> HttpResponse {
+    let event = match build_event(body.into_inner()) {
+        Ok(e) => e,
+        Err(msg) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+        }
+    };
+    let matches = engine.dry_run(&event);
+    HttpResponse::Ok().json(serde_json::json!({
+        "match_count": matches.iter().filter(|m| m.would_fire).count(),
+        "playbooks_evaluated": matches.len(),
+        "results": matches,
+    }))
+}
+
+/// Translate a wire `DryRunRequest` into a synthetic `ThreatDetectedEvent`.
+/// Errors on typo'd `DetectionSource` names so an admin dry-running a
+/// `SingleSourceHigh` condition doesn't silently get an empty sources
+/// vector and a "doesn't match" result they misread as the playbook
+/// being broken.
+fn build_event(req: DryRunRequest) -> Result<ThreatDetectedEvent, String> {
+    let sources: Vec<DetectionSource> = match req.sources {
+        Some(names) => names
+            .iter()
+            .map(|n| DetectionSource::from_str(n).map_err(|_| format!("unknown DetectionSource: {n}")))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => vec![DetectionSource::ML],
+    };
+    if sources.is_empty() {
+        return Err("sources[] must contain at least one DetectionSource (send null to default to [ML])".to_string());
+    }
+    let active_source_count = req.active_source_count.unwrap_or(sources.len());
+    let fused_confidence = req.fused_confidence.unwrap_or(req.confidence);
+    Ok(ThreatDetectedEvent {
+        attack_type: req.attack_type,
+        confidence: req.confidence,
+        source_ip: req.source_ip,
+        dest_ip: "0.0.0.0".to_string(),
+        flow_count: 1,
+        packet_rate: 0.0,
+        protocol: 6,
+        geoip_country: req.geoip_country,
+        is_repeat_offender: req.is_repeat_offender.unwrap_or(false),
+        sources,
+        active_source_count,
+        fused_confidence,
+        ae_score: 0.0,
+        anomaly_score: 0.0,
+        c2_score: 0.0,
+    })
 }

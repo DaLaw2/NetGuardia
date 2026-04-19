@@ -1,0 +1,74 @@
+# NetGuardia model manifest. Structural/semantic fields live here;
+# preprocessing arrays (scaler mean/std, clip params, feature weights) stay
+# in the JSON sidecar referenced by `preprocessing.scaler_sidecar`.
+
+name: netguardia-v10
+adapter: multi_task
+
+models:
+  autoencoder: deep_autoencoder.onnx
+  classifier: classifier.onnx
+
+# 31 AE-input features. Order matters — must match ONNX input column order
+# and inference_config.json `ae_feature_names`. The classifier takes these
+# plus `ae_anomaly_score` appended as the 32nd input (handled in code).
+features:
+  - flow_duration
+  - fwd_packets
+  - bwd_packets
+  - fwd_bytes
+  - bwd_bytes
+  - flow_bytes_per_sec
+  - flow_pkts_per_sec
+  - fwd_win_bytes
+  - bwd_win_bytes
+  - fwd_pkt_len_mean
+  - bwd_pkt_len_mean
+  - fwd_iat_mean
+  - bwd_iat_mean
+  - flow_iat_mean
+  - pkt_len_mean
+  - dst_port
+  - protocol
+  - psh_flag_cnt
+  - ack_flag_cnt
+  - syn_flag_cnt
+  - fin_flag_cnt
+  - rst_flag_cnt
+  - pkt_len_std
+  - fwd_pkt_len_std
+  - bwd_pkt_len_std
+  - fwd_seg_size_min
+  - fwd_act_data_pkts
+  - fwd_iat_std
+  - bwd_iat_std
+  - fwd_bwd_bytes_ratio
+  - iat_cv
+
+# `confirmations` sets the per-class aggregator firing threshold. Classes
+# with single-shot semantics (C2 / Bot / DNS tunneling / exploit) use 1 so
+# the aggregator alerts on the first detection; noisier classes can raise
+# it (DoS/DDoS: 2). Absent entries fall back to the engine default.
+labels:
+  "0": { name: Bot, confirmations: 1 }
+  "1": { name: Brute Force }
+  "2": { name: C2 Communication, confirmations: 1 }
+  "3": { name: DNS Tunneling, confirmations: 1 }
+  "4": { name: DoS/DDoS, confirmations: 2 }
+  "5": { name: Exploitation, confirmations: 1 }
+  "6": { name: Malware }
+  "7": { name: Normal }
+  "8": { name: Reconnaissance }
+  "9": { name: Web Attack }
+
+thresholds:
+  anomaly: 0.9179317355155945
+  c2: 0.9085615873336792
+  class_min_confidence: 0.4
+  ae: 0.23011694848537445
+  # Average score must exceed `class_min_confidence * alert_multiplier`
+  # before the aggregator fires. Raising this suppresses borderline hits.
+  alert_multiplier: 1.2
+
+preprocessing:
+  scaler_sidecar: inference_config.json

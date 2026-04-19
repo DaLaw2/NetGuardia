@@ -22,6 +22,9 @@ traceable! {
         #[error("Failed to attach XDP program")]
         AttachProgramFailed => tracing::Level::ERROR,
 
+        #[error("Failed to obtain eBPF program FD")]
+        ProgramFdFailed => tracing::Level::ERROR,
+
         #[error("Failed to set umem")]
         UmemSetFailed => tracing::Level::ERROR,
 
@@ -75,5 +78,9 @@ traceable! {
 
         #[error("eBPF rollback failed during ACL update: {err}")]
         RollbackFailed => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("eBPF data plane is not loaded on this run — operation unavailable")]
+        NotLoaded => tracing::Level::WARN,
     }
 }

@@ -1,12 +1,17 @@
+use std::fs;
+
 use actix_web::{HttpResponse, Scope, web};
+use chrono::Local;
+use tokio::task::spawn_blocking;
 
 use crate::adapter::persistence::Database;
 use crate::core::auth::extractor::AuthClaims;
+use crate::core::email::report::generate_weekly_report;
 use crate::core::email::scheduler::SmtpClient;
 use crate::core::report::engine;
 use crate::infrastructure::secret_store::SecretStore;
-use crate::interface::port::repository::RepositoryPort;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 pub fn initialize() -> Scope {
     web::scope("/report")
         .route("/generate", web::post().to(generate_report))
@@ -20,14 +25,14 @@ async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
         .ok()
         .flatten()
         .unwrap_or_else(|| "/var/lib/netguardia/reports".to_string());
-    if let Err(e) = std::fs::create_dir_all(&report_dir) {
+    if let Err(e) = fs::create_dir_all(&report_dir) {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("Failed to create report directory: {}", e)
         }));
     }
     let db_ref = db.get_ref();
-    match engine::generate_html_report(db_ref as &dyn RepositoryPort, &report_dir) {
-        Ok(path) => match std::fs::read(&path) {
+    match engine::generate_html_report(db_ref as &dyn SettingRepo, &report_dir) {
+        Ok(path) => match fs::read(&path) {
             Ok(content) => HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
                 .insert_header((
@@ -52,7 +57,7 @@ async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
 
 async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
     let db_ref = db.get_ref();
-    match engine::generate_report_json(db_ref as &dyn RepositoryPort) {
+    match engine::generate_report_json(db_ref as &dyn SettingRepo) {
         Ok(data) => HttpResponse::Ok().json(data),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -60,7 +65,7 @@ async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse
 
 /// Manually trigger: generate the weekly report and send it via SMTP now.
 async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::Data<SecretStore>) -> HttpResponse {
-    let db_ref = db.get_ref() as &dyn RepositoryPort;
+    let db_ref = db.get_ref() as &dyn SettingRepo;
     let secrets_ref = secrets.get_ref() as &dyn SecretStorePort;
 
     let smtp = match SmtpClient::from_database(db_ref, Some(secrets_ref)) {
@@ -89,7 +94,7 @@ async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::D
         }
     };
 
-    let html = match crate::core::email::report::generate_weekly_report(db_ref) {
+    let html = match generate_weekly_report(db_ref) {
         Ok(h) => h,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -99,9 +104,9 @@ async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::D
         }
     };
 
-    let subject = format!("NetGuardia Weekly Report — {}", chrono::Local::now().format("%Y-%m-%d"));
+    let subject = format!("NetGuardia Weekly Report — {}", Local::now().format("%Y-%m-%d"));
 
-    let send_result = tokio::task::spawn_blocking(move || smtp.send(&recipient, &subject, &html)).await;
+    let send_result = spawn_blocking(move || smtp.send(&recipient, &subject, &html)).await;
 
     match send_result {
         Ok(Ok(())) => HttpResponse::Ok().json(serde_json::json!({

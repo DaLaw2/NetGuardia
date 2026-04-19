@@ -1,51 +1,58 @@
-use std::collections::HashMap;
+//! Per-flow detection aggregator.
+//!
+//! Records per-key hits within a rolling time window; callers decide when to
+//! fire based on how many hits a given attack class needs (manifest-driven)
+//! and how far the rolling-average score beats the confidence threshold.
+
 use std::time::{Duration, Instant};
 
-use crate::model::ml_detection::FlowKey;
+use dashmap::DashMap;
+
+use crate::model::detection::ml_detection::FlowKey;
 
 pub struct AttackAggregator {
-    detections: HashMap<FlowKey, Vec<(Instant, f32)>>,
+    detections: DashMap<FlowKey, Vec<(Instant, f32)>>,
     window_duration: Duration,
-    min_detections: usize,
-    alert_threshold_multiplier: f32,
 }
 
 impl AttackAggregator {
-    pub fn new(window_secs: u64, min_detections: usize) -> Self {
+    pub fn new(window_secs: u64) -> Self {
         Self {
-            detections: HashMap::new(),
+            detections: DashMap::new(),
             window_duration: Duration::from_secs(window_secs),
-            min_detections,
-            alert_threshold_multiplier: 1.2,
         }
     }
 
-    pub fn should_alert(&mut self, flow_key: &FlowKey, score: f32, threshold: f32, attack_type: Option<&str>) -> bool {
+    /// Record a detection and decide whether the flow should fire an alert.
+    ///
+    /// - `required_confirmations`: in-window hit count the flow must reach.
+    ///   Resolved by the caller from the active manifest's per-label value;
+    ///   validated at manifest load to be ≥ 1, so no runtime floor is needed.
+    /// - `alert_multiplier`: scales `threshold` before the average-score
+    ///   comparison, driven by the manifest's `thresholds.alert_multiplier`.
+    pub fn should_alert(
+        &self,
+        flow_key: &FlowKey,
+        score: f32,
+        threshold: f32,
+        required_confirmations: usize,
+        alert_multiplier: f32,
+    ) -> bool {
         let now = Instant::now();
 
-        let detections = self.detections.entry(flow_key.clone()).or_default();
+        let mut detections = self.detections.entry(flow_key.clone()).or_default();
         detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
         detections.push((now, score));
 
-        // Per-attack-type adaptive min_detections:
-        // DDoS/DoS: high frequency, need more confirmations to avoid alert storms
-        // C2/Cryptomining: low frequency, alert on first detection
-        let effective_min = match attack_type {
-            Some("DDoS") | Some("DoS") => self.min_detections.saturating_mul(2).max(1),
-            Some("C2 Communication") | Some("Cryptomining") => 1,
-            _ => self.min_detections,
-        };
-
-        if detections.len() >= effective_min {
+        if detections.len() >= required_confirmations {
             let avg_score: f32 = detections.iter().map(|(_, s)| s).sum::<f32>() / detections.len() as f32;
-
-            return avg_score > threshold * self.alert_threshold_multiplier;
+            return avg_score > threshold * alert_multiplier;
         }
 
         false
     }
 
-    pub fn cleanup(&mut self) {
+    pub fn cleanup(&self) {
         let now = Instant::now();
         self.detections.retain(|_, detections| {
             detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
@@ -57,6 +64,8 @@ impl AttackAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_MULTIPLIER: f32 = 1.2;
 
     fn test_key() -> FlowKey {
         FlowKey {
@@ -70,47 +79,66 @@ mod tests {
     }
 
     #[test]
-    fn default_attack_type_uses_base_min_detections() {
-        let mut agg = AttackAggregator::new(60, 3);
+    fn required_three_fires_on_third_hit() {
+        let agg = AttackAggregator::new(60);
         let key = test_key();
-        // Need 3 detections for default type
-        assert!(!agg.should_alert(&key, 5.0, 1.0, Some("Brute Force")));
-        assert!(!agg.should_alert(&key, 5.0, 1.0, Some("Brute Force")));
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("Brute Force")));
+        assert!(!agg.should_alert(&key, 5.0, 1.0, 3, TEST_MULTIPLIER));
+        assert!(!agg.should_alert(&key, 5.0, 1.0, 3, TEST_MULTIPLIER));
+        assert!(agg.should_alert(&key, 5.0, 1.0, 3, TEST_MULTIPLIER));
     }
 
     #[test]
-    fn ddos_requires_double_min_detections() {
-        let mut agg = AttackAggregator::new(60, 3);
+    fn required_one_fires_immediately() {
+        let agg = AttackAggregator::new(60);
         let key = test_key();
-        // DDoS needs 6 detections (3 * 2)
+        assert!(agg.should_alert(&key, 5.0, 1.0, 1, TEST_MULTIPLIER));
+    }
+
+    #[test]
+    fn required_six_needs_six_hits() {
+        let agg = AttackAggregator::new(60);
+        let key = test_key();
         for _ in 0..5 {
-            assert!(!agg.should_alert(&key, 5.0, 1.0, Some("DDoS")));
+            assert!(!agg.should_alert(&key, 5.0, 1.0, 6, TEST_MULTIPLIER));
         }
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("DDoS")));
+        assert!(agg.should_alert(&key, 5.0, 1.0, 6, TEST_MULTIPLIER));
     }
 
     #[test]
-    fn c2_alerts_on_first_detection() {
-        let mut agg = AttackAggregator::new(60, 3);
+    fn average_score_at_or_below_scaled_threshold_does_not_fire() {
+        let agg = AttackAggregator::new(60);
         let key = test_key();
-        // C2 Communication alerts immediately (min=1)
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("C2 Communication")));
+        // score 1.0, threshold 1.0, multiplier 1.2 → gate is 1.2; 1.0 misses.
+        assert!(!agg.should_alert(&key, 1.0, 1.0, 1, TEST_MULTIPLIER));
     }
 
     #[test]
-    fn cryptomining_alerts_on_first_detection() {
-        let mut agg = AttackAggregator::new(60, 3);
+    fn larger_multiplier_raises_the_bar() {
+        let agg = AttackAggregator::new(60);
         let key = test_key();
-        assert!(agg.should_alert(&key, 5.0, 1.0, Some("Cryptomining")));
+        // multiplier 2.5, threshold 1.0 → gate is 2.5; score 2.0 misses.
+        assert!(!agg.should_alert(&key, 2.0, 1.0, 1, 2.5));
     }
 
     #[test]
-    fn none_attack_type_uses_default() {
-        let mut agg = AttackAggregator::new(60, 3);
+    fn cleanup_preserves_fresh_entries() {
+        let agg = AttackAggregator::new(60);
         let key = test_key();
-        assert!(!agg.should_alert(&key, 5.0, 1.0, None));
-        assert!(!agg.should_alert(&key, 5.0, 1.0, None));
-        assert!(agg.should_alert(&key, 5.0, 1.0, None));
+        agg.should_alert(&key, 5.0, 1.0, 10, TEST_MULTIPLIER);
+        assert!(agg.detections.contains_key(&key));
+        agg.cleanup();
+        assert!(agg.detections.contains_key(&key));
+    }
+
+    #[test]
+    fn independent_flows_track_separately() {
+        let agg = AttackAggregator::new(60);
+        let key_a = test_key();
+        let mut key_b = test_key();
+        key_b.dst_port = 81;
+        assert!(!agg.should_alert(&key_a, 5.0, 1.0, 2, TEST_MULTIPLIER));
+        assert!(!agg.should_alert(&key_b, 5.0, 1.0, 2, TEST_MULTIPLIER));
+        assert!(agg.should_alert(&key_a, 5.0, 1.0, 2, TEST_MULTIPLIER));
+        assert!(agg.should_alert(&key_b, 5.0, 1.0, 2, TEST_MULTIPLIER));
     }
 }

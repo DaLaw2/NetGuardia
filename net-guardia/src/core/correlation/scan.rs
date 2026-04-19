@@ -72,11 +72,7 @@ impl ScanDetector {
         };
 
         if let Some((unique_ports, last_dst_ip)) = should_alert {
-            log!(DetectionLog::ScanDetected {
-                src_ip: key.clone(),
-                unique_ports,
-                window_secs: SCAN_WINDOW_SECS,
-            });
+            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, SCAN_WINDOW_SECS,));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
@@ -87,6 +83,9 @@ impl ScanDetector {
                 protocol: alert.protocol,
                 packet_count: 0,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = detection_tx.try_send(event);
@@ -137,6 +136,8 @@ mod tests {
             attack_type: Some("Reconnaissance".to_string()),
             confidence: 0.7,
             ae_score: 0.3,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
             packet_count: 5,
             flow_duration_us: 100_000,
         }

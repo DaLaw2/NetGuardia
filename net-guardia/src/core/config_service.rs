@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::interface::port::repository::RepositoryPort;
+use serde_json::Value;
+
+use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
@@ -54,19 +56,22 @@ const SETTINGS_MAP: &[(&str, &[&str])] = &[
     ("misc", &["geoip_db_name"]),
     ("soar", &["soar_max_auto_block_cap", "soar_max_ttl_secs"]),
     ("ml", &["ml_drift_window_secs"]),
-    ("telegram", &["telegram_max_messages_per_minute"]),
+    (
+        "telegram",
+        &["telegram_rate_limit_max_messages", "telegram_rate_limit_window_secs"],
+    ),
     ("dns", &["dns_max_domains_per_request"]),
     ("smtp", &["smtp_host", "smtp_port", "smtp_username", "smtp_recipient"]),
 ];
 
 /// Domain service for system configuration read/write.
 pub struct ConfigService {
-    db: Arc<dyn RepositoryPort>,
+    db: Arc<dyn AppRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
 impl ConfigService {
-    pub fn new(db: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>) -> Self {
         Self { db, secrets: None }
     }
 
@@ -127,7 +132,8 @@ impl ConfigService {
                 "ml_drift_window_secs": get("ml_drift_window_secs"),
             },
             "telegram": {
-                "telegram_max_messages_per_minute": get("telegram_max_messages_per_minute"),
+                "telegram_rate_limit_max_messages": get("telegram_rate_limit_max_messages"),
+                "telegram_rate_limit_window_secs": get("telegram_rate_limit_window_secs"),
             },
             "dns": {
                 "dns_max_domains_per_request": get("dns_max_domains_per_request"),
@@ -162,7 +168,11 @@ impl ConfigService {
             }
         }
 
-        // Route secret keys through SecretStore (encrypted storage)
+        // Route secret keys through SecretStore (encrypted storage).
+        // After writing to SecretStore, scrub the plaintext row in `settings`
+        // so a legacy plaintext value from pre-SecretStore deployments cannot
+        // linger — readers fall back to SecretStore when the plaintext row
+        // is empty.
         if let Some(ref secrets) = self.secrets {
             for key in SECRET_KEYS {
                 // Secret keys live under their parent section (e.g., smtp_password under smtp)
@@ -174,9 +184,7 @@ impl ConfigService {
                     .and_then(json_value_as_string)
                 {
                     secrets.set_secret(key, &val)?;
-                    // Clear plaintext residue from settings table to prevent
-                    // pre-migration plaintext passwords from persisting.
-                    let _ = self.db.set_setting(key, "");
+                    self.db.set_setting(key, "")?;
                     updated.push(key.to_string());
                 }
             }
@@ -190,14 +198,11 @@ impl ConfigService {
                         let stages: Vec<&str> = val.split(',').map(|s| s.trim()).collect();
                         for stage in &stages {
                             if !stage.is_empty() && !VALID_PIPELINE_STAGES.contains(stage) {
-                                return Err(MiscError::ValidationError {
-                                    message: format!(
-                                        "Invalid pipeline stage '{}'. Valid stages: {}",
-                                        stage,
-                                        VALID_PIPELINE_STAGES.join(", ")
-                                    ),
-                                }
-                                .into());
+                                Err(MiscError::ValidationError(format!(
+                                    "Invalid pipeline stage '{}'. Valid stages: {}",
+                                    stage,
+                                    VALID_PIPELINE_STAGES.join(", ")
+                                )))?;
                             }
                         }
                     }
@@ -214,9 +219,9 @@ impl ConfigService {
 /// Extract a JSON value as a non-empty string, handling string, boolean, and number types.
 fn json_value_as_string(v: &serde_json::Value) -> Option<String> {
     match v {
-        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }

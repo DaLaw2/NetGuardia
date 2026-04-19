@@ -1,4 +1,6 @@
-use crate::interface::port::repository::RepositoryPort;
+use chrono::Local;
+
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 
 /// Generate an HTML weekly report email body.
@@ -12,7 +14,7 @@ use crate::model::error::Error;
 ///   - `weekly_system_health` (JSON object with cpu, memory, disk fields)
 ///
 /// If a key is missing the report uses empty/zero defaults.
-pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> {
+pub fn generate_weekly_report(db: &dyn SettingRepo) -> Result<String, Error> {
     let threats_count = db
         .get_setting("weekly_threats_count")?
         .unwrap_or_else(|| "0".to_string());
@@ -77,7 +79,7 @@ pub fn generate_weekly_report(db: &dyn RepositoryPort) -> Result<String, Error> 
     let mem = health["memory_percent"].as_f64().unwrap_or(0.0);
     let disk = health["disk_percent"].as_f64().unwrap_or(0.0);
 
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
+    let now = Local::now().format("%Y-%m-%d %H:%M");
 
     let html = format!(
         r#"<!DOCTYPE html>

@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use std::time::Duration;
+
+use arc_swap::ArcSwap;
 
 use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
@@ -12,15 +16,15 @@ use common::define::pipeline::*;
 use crate::core::auth::jwt::JwtService;
 
 use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
+use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
-use crate::adapter::telegram::TelegramAdapter;
+use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
 use crate::core::acl_service::AclService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::ebpf::EbpfServices;
 use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::config_loader::InferenceConfig;
-use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::drift_detector::DriftDetectorHandle;
+use crate::core::ml::manifest::ModelManifest;
 use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
@@ -29,30 +33,42 @@ use crate::core::soar::scheduler::TtlScheduler;
 use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::ebpf_preflight;
 use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::secret_store::SecretStore;
+use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::access_control_admin::AccessControlAdminPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::dns_filter_api::DnsFilterPort;
+use crate::interface::port::geo_block_api::GeoBlockPort;
+use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory};
+use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::soar::SoarPort;
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::soar::SoarRepo;
+use crate::model::access_control::list_type::ListType;
 use crate::model::detection::drift::FeatureBaselines;
-use crate::model::direction::FlowDirection;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
-use crate::model::list_type::ListType;
+use crate::model::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
 use crate::model::log::ebpf::EbpfLog;
+use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
+use crate::model::monitoring::direction::FlowDirection;
+use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfFailStage;
+use crate::model::system::health::EbpfHealth;
 use macros::log;
 
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
     pub app_config: Arc<AppConfig>,
-    pub inference_config: Arc<InferenceConfig>,
+    pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
     pub db: Arc<Database>,
@@ -69,11 +85,18 @@ pub struct AppState {
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
     pub geoip: Option<Arc<GeoIpService>>,
-    pub drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
-    pub ingress_ebpf: Ebpf,
-    pub egress_ebpf: Ebpf,
-    /// Held to keep the eBPF program array map FD alive.
-    pub _ingress_program_array: ProgramArray<MapData>,
+    pub drift_detector: DriftDetectorHandle,
+    pub ingress_ebpf: Option<Ebpf>,
+    pub egress_ebpf: Option<Ebpf>,
+    /// Held to keep the eBPF program array map FD alive. `None` when eBPF
+    /// failed to load.
+    pub _ingress_program_array: Option<ProgramArray<MapData>>,
+    /// Shared eBPF health state. Populated to `Healthy` on successful bring-up,
+    /// or to `Unavailable { stage, category, reason }` when any stage fails.
+    /// Read by `SystemHealth` for the metrics broadcast and by HTTP handlers
+    /// that render runtime status to the frontend.
+    pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
+    pub suricata_manager: Arc<SuricataManager>,
 }
 
 /// Maps stage name (from config.toml) to (function_name, stage_id).
@@ -96,35 +119,62 @@ impl ServiceFactory {
         AppConfig::seed_defaults(&db)?;
         let app_config = Arc::new(AppConfig::new(&db)?);
 
-        let mut ingress_ebpf = Self::load_ebpf("ingress")?;
-        let mut egress_ebpf = Self::load_ebpf("egress")?;
+        // Prefer `models/manifest.yaml` when present (v12 BYO-model path). The manifest
+        // is the user-authored source of truth for features, labels, thresholds, and
+        // model filenames; the legacy JSON-only path is the fallback.
+        let manifest_path = PathBuf::from("models/manifest.yaml");
+        let (inference_config, ml_manifest): (Arc<MLInferenceConfig>, Option<ModelManifest>) = if manifest_path.exists()
+        {
+            let (cfg, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&manifest_path)?;
+            log!(MLLog::ManifestLoaded(
+                manifest.name.clone(),
+                manifest.adapter.as_str().to_string(),
+                manifest.features.len(),
+                manifest.labels.len(),
+            ));
+            (Arc::new(cfg), Some(manifest))
+        } else {
+            (
+                Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?),
+                None,
+            )
+        };
 
-        let ingress_program_array = Self::configure_ingress_pipeline(&mut ingress_ebpf, &app_config.pipeline.ingress)?;
+        // Shared eBPF health handle. Initialized Healthy; downgraded to
+        // Unavailable with a classified reason if any stage below fails.
+        let ebpf_health = Arc::new(ArcSwap::from_pointee(EbpfHealth::Healthy));
 
-        let inference_config = Arc::new(InferenceConfig::load_file(&app_config.inference.models_config_name)?);
-
-        // Write queue count to eBPF maps for symmetric hash redirect
-        let num_queues = app_config.network.combined_queue_count;
-        Self::write_num_queues(&mut ingress_ebpf, num_queues)?;
-        Self::write_num_queues(&mut egress_ebpf, num_queues)?;
+        // Attempt full eBPF bring-up. On any failure we classify the error,
+        // write it into `ebpf_health`, and fall back to an `EbpfServices`
+        // whose eBPF-backed operations return `EbpfError::NotLoaded`. The
+        // rest of the system (HTTP API, SOAR, ML engine, auth) is built
+        // regardless so the operator can still reach the frontend and see
+        // the reason.
+        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) = match Self::try_build_ebpf(&app_config)
+        {
+            Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
+            Err((stage, err)) => {
+                let health = ebpf_preflight::classify(stage, &err, None);
+                log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+                ebpf_health.store(Arc::new(health));
+                (
+                    None,
+                    None,
+                    None,
+                    Arc::new(EbpfServices::unavailable(app_config.clone())),
+                )
+            }
+        };
 
         // Ensure enforce_mode setting exists (default: monitor)
         if db.get_setting("enforce_mode")?.is_none() {
             db.set_setting("enforce_mode", "monitor")?;
         }
 
-        // Create secret store and run plaintext migration before anything reads secrets
         let secret_store = Arc::new(SecretStore::new(db.clone()));
-        secret_store.migrate_plaintext_secrets()?;
         let secret_store_port: Arc<dyn SecretStorePort> = secret_store.clone();
 
         let jwt_service = Arc::new(JwtService::new(&secret_store_port, app_config.http.jwt_expiry_hours)?);
-
-        let ebpf_services = Arc::new(EbpfServices::new(
-            app_config.clone(),
-            &mut ingress_ebpf,
-            &mut egress_ebpf,
-        )?);
 
         // Initialize ML drift detector from inference config baselines
         let baselines = FeatureBaselines::from_inference_config(&inference_config);
@@ -134,16 +184,7 @@ impl ServiceFactory {
             .flatten()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
-        let drift_detector = Arc::new(parking_lot::Mutex::new(DriftDetector::new(
-            baselines,
-            std::time::Duration::from_secs(drift_window_secs),
-        )));
-
-        let app_services = Arc::new(AppServices::new(
-            app_config.clone(),
-            inference_config.clone(),
-            drift_detector.clone(),
-        )?);
+        let drift_detector = DriftDetectorHandle::spawn(baselines, Duration::from_secs(drift_window_secs));
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
@@ -152,10 +193,27 @@ impl ServiceFactory {
             enforce_mode_to_u8(&mode_str)
         }));
 
-        // Create CommunicationManager and register enforce-mode handler
+        // CommunicationManager and its event channels must exist before
+        // AppServices spins up the TrafficLogger: the writer thread can
+        // publish `flow_trace_stopped` audit events the moment it tries
+        // to open its first rotated file, and an unregistered channel
+        // would silently drop that evidence.
         let comm = Arc::new(CommunicationManager::new());
+        comm.register_event_type::<ThreatDetectedEvent>();
+        comm.register_event_type::<DriftDetectedEvent>();
+        comm.register_event_type::<AuditEvent>();
+
+        let app_services = Arc::new(AppServices::new(
+            app_config.clone(),
+            inference_config.clone(),
+            ml_manifest.clone(),
+            drift_detector.clone(),
+            ebpf_health.clone(),
+            comm.clone(),
+        )?);
+
         let enforce_handler = Arc::new(EnforceModeHandler::new(
-            db.clone() as Arc<dyn RepositoryPort>,
+            db.clone() as Arc<dyn AppRepo>,
             comm.clone(),
             enforce_level_cache.clone(),
         ));
@@ -166,13 +224,8 @@ impl ServiceFactory {
             .query::<GetEnforceModeQuery>()
             .build();
 
-        // Register event type channels
-        comm.register_event_type::<crate::model::event::ThreatDetectedEvent>();
-        comm.register_event_type::<crate::model::event::DriftDetectedEvent>();
-        comm.register_event_type::<crate::model::event::AuditEvent>();
-
         // Seed default SOAR playbooks if empty
-        (db.as_ref() as &dyn SoarPort).seed_default_playbooks()?;
+        (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;
 
         // Restore persisted state from database
         Self::restore_dns_blacklist(&db, &ebpf_services);
@@ -182,8 +235,8 @@ impl ServiceFactory {
 
         // Create TelegramAdapter as alert notifier (may fail if not configured yet)
         let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(
-            db.clone() as Arc<dyn NotificationConfigPort>,
-            db.clone() as Arc<dyn RepositoryPort>,
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
             Some(secret_store_port.clone()),
         ) {
             Ok(adapter) => Some(Arc::new(adapter)),
@@ -210,12 +263,13 @@ impl ServiceFactory {
             Arc::new(EbpfAccessControlAdapter::new(ebpf_services.access_control.clone()));
 
         // Create SOAR engine
+        let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
         let soar_engine = Arc::new(SoarEngine::new(
             db.clone(),
             access_control_port.clone(),
             alert_notifier.clone(),
             geoip.clone(),
-            Some(ebpf_services.rate_limit.clone()),
+            Some(rate_limit_port.clone()),
             enforce_level_cache,
             Some(secret_store_port.clone()),
         )?);
@@ -225,35 +279,40 @@ impl ServiceFactory {
 
         // Create Report scheduler
         let report_scheduler =
-            ReportScheduler::new(db.clone() as Arc<dyn RepositoryPort>, Some(secret_store_port.clone()));
+            ReportScheduler::new(db.clone() as Arc<dyn SettingRepo>, Some(secret_store_port.clone()));
 
-        // Create domain services (Phase 2B)
+        // Create domain services (Phase 2B) — upcast concrete eBPF services to
+        // their port-layer traits so the core services see only abstract ports.
+        let access_control_admin: Arc<dyn AccessControlAdminPort> = ebpf_services.access_control.clone();
+        let geo_block_port: Arc<dyn GeoBlockPort> = ebpf_services.geo_block.clone();
+        let dns_filter_port: Arc<dyn DnsFilterPort> = ebpf_services.dns_filter.clone();
         let acl_service = Arc::new(AclService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.access_control.clone(),
-            ebpf_services.geo_block.clone(),
+            db.clone() as Arc<dyn AppRepo>,
+            access_control_admin,
+            geo_block_port,
         ));
-        let dns_filter_service = Arc::new(DnsFilterService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.dns_filter.clone(),
-        ));
-        let rate_limit_service = Arc::new(RateLimitService::new(
-            db.clone() as Arc<dyn RepositoryPort>,
-            ebpf_services.rate_limit.clone(),
-        ));
+        let dns_filter_service = Arc::new(DnsFilterService::new(db.clone() as Arc<dyn AppRepo>, dns_filter_port));
+        let rate_limit_service = Arc::new(RateLimitService::new(db.clone() as Arc<dyn AppRepo>, rate_limit_port));
         let playbook_service = Arc::new(PlaybookService::new(
             db.clone(),
             soar_engine.clone(),
             access_control_port,
         ));
-        let config_service = Arc::new(
-            ConfigService::new(db.clone() as Arc<dyn RepositoryPort>).with_secret_store(secret_store_port.clone()),
-        );
-        let notification_service = Arc::new(NotificationService::new(
-            db.clone() as Arc<dyn NotificationConfigPort>,
-            db.clone() as Arc<dyn RepositoryPort>,
-            secret_store_port,
+        let config_service =
+            Arc::new(ConfigService::new(db.clone() as Arc<dyn AppRepo>).with_secret_store(secret_store_port.clone()));
+        let notifier_factory: Arc<dyn AlertNotifierFactory> = Arc::new(TelegramAdapterFactory::new(
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
+            Some(secret_store_port.clone()),
         ));
+        let notification_service = Arc::new(NotificationService::new(
+            db.clone() as Arc<dyn SettingRepo>,
+            db.clone() as Arc<dyn AppRepo>,
+            secret_store_port,
+            notifier_factory,
+        ));
+
+        let suricata_manager = SuricataManager::new(app_config.clone());
 
         Ok(AppState {
             app_config,
@@ -278,16 +337,44 @@ impl ServiceFactory {
             ingress_ebpf,
             egress_ebpf,
             _ingress_program_array: ingress_program_array,
+            ebpf_health,
+            suricata_manager,
         })
     }
 
     // --- eBPF loading helpers ---
 
+    /// Attempt the full eBPF bring-up chain: load both .o files, configure the
+    /// ingress pipeline, write queue counts, and hand out map handles to the
+    /// services. Returns the original stage on the first failure so the
+    /// classifier can render targeted diagnostics.
+    #[allow(clippy::type_complexity)]
+    fn try_build_ebpf(
+        app_config: &Arc<AppConfig>,
+    ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (EbpfFailStage, Error)> {
+        use crate::model::system::health::EbpfFailStage;
+
+        let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
+        let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;
+
+        let pipeline = Self::configure_ingress_pipeline(&mut ingress, &app_config.pipeline.ingress)
+            .map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+
+        let num_queues = app_config.network.combined_queue_count;
+        Self::write_num_queues(&mut ingress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+        Self::write_num_queues(&mut egress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
+
+        let services = EbpfServices::new(app_config.clone(), &mut ingress, &mut egress)
+            .map_err(|e| (EbpfFailStage::MapsBind, e))?;
+
+        Ok((ingress, egress, pipeline, services))
+    }
+
     fn load_ebpf(name: &str) -> Result<Ebpf, Error> {
         let bytes = match name {
             "ingress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-ingress")),
             "egress" => aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net-guardia-egress")),
-            _ => return Err(EbpfError::ProgramNotFound.into()),
+            _ => Err(EbpfError::ProgramNotFound)?,
         };
         Ok(Ebpf::load(bytes).map_err(EbpfError::EbpfNotFound)?)
     }
@@ -356,7 +443,7 @@ impl ServiceFactory {
             .try_into()
             .map_err(EbpfError::MapOperationError)?;
         program.load().map_err(EbpfError::AttachProgramFailed)?;
-        let fd = program.fd().map_err(|_| EbpfError::UnknownError)?;
+        let fd = program.fd().map_err(EbpfError::ProgramFdFailed)?;
         program_array.set(slot, fd, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
@@ -409,7 +496,7 @@ impl ServiceFactory {
             }
             Err(skb_err) => {
                 log!(EbpfLog::XdpAttachFailed(ifname.to_string(), skb_err.to_string()));
-                Err(EbpfError::AttachProgramFailed(skb_err).into())
+                Err(EbpfError::AttachProgramFailed(skb_err))?
             }
         }
     }
@@ -490,12 +577,9 @@ impl ServiceFactory {
                 };
                 let result = match ip_version {
                     4 => match ip_address.parse::<Ipv4Addr>() {
-                        Ok(addr) => {
-                            ebpf_services
-                                .access_control
-                                .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port))
-                                .await
-                        }
+                        Ok(addr) => ebpf_services
+                            .access_control
+                            .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)),
                         Err(e) => {
                             log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
                             continue;
@@ -506,7 +590,6 @@ impl ServiceFactory {
                             ebpf_services
                                 .access_control
                                 .add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0))
-                                .await
                         }
                         Err(e) => {
                             log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));

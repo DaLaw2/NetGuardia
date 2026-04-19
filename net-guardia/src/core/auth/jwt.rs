@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode, errors::ErrorKind};
 
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::auth::Claims;
 use crate::model::error::Error;
 use crate::model::error::auth::AuthError;
+use crate::model::identity::auth::Claims;
 
 pub struct JwtService {
     encoding_key: EncodingKey,
@@ -14,20 +15,15 @@ pub struct JwtService {
 }
 
 impl JwtService {
-    pub fn new(secrets: &Arc<dyn SecretStorePort>, expiry_hours: u64) -> Result<Self, Error> {
-        let raw_bytes = match secrets.get_secret("jwt_secret")? {
-            Some(hex_str) => hex_decode(&hex_str).map_err(|_| AuthError::InvalidToken)?,
-            None => {
-                use rand::Rng;
-                let secret: [u8; 32] = rand::rng().random();
-                secrets.set_secret("jwt_secret", &hex_encode(&secret))?;
-                secret.to_vec()
-            }
-        };
+    /// Generate a fresh random JWT signing secret on every boot.
+    /// This intentionally invalidates all existing tokens on restart.
+    pub fn new(_secrets: &Arc<dyn SecretStorePort>, expiry_hours: u64) -> Result<Self, Error> {
+        use rand::Rng;
+        let secret: [u8; 32] = rand::rng().random();
 
         Ok(Self {
-            encoding_key: EncodingKey::from_secret(&raw_bytes),
-            decoding_key: DecodingKey::from_secret(&raw_bytes),
+            encoding_key: EncodingKey::from_secret(&secret),
+            decoding_key: DecodingKey::from_secret(&secret),
             expiry_hours,
         })
     }
@@ -39,9 +35,9 @@ impl JwtService {
         role: &str,
         permissions: Vec<String>,
     ) -> Result<String, Error> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or(std::time::Duration::ZERO)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         let claims = Claims {
@@ -65,25 +61,6 @@ impl JwtService {
             })?;
         Ok(token_data.claims)
     }
-}
-
-fn hex_encode(data: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(data.len() * 2);
-    for b in data {
-        write!(s, "{:02x}", b).unwrap();
-    }
-    s
-}
-
-fn hex_decode(hex: &str) -> Result<Vec<u8>, &'static str> {
-    if !hex.len().is_multiple_of(2) {
-        return Err("odd-length hex string");
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| "invalid hex"))
-        .collect()
 }
 
 #[cfg(test)]
@@ -137,18 +114,17 @@ mod tests {
     }
 
     #[test]
-    fn test_jwt_secret_persistence() {
+    fn test_jwt_secret_changes_on_new_instance() {
         let db = Arc::new(Database::new(":memory:").unwrap());
         let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
 
-        // First creation generates and stores secret
         let jwt1 = JwtService::new(&secrets, 24).unwrap();
         let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
 
-        // Second creation reuses stored secret
+        // New instance = new secret = old token invalid (simulates restart)
         let jwt2 = JwtService::new(&secrets, 24).unwrap();
-        let claims = jwt2.validate_token(&token).unwrap();
-        assert_eq!(claims.username, "admin");
+        let result = jwt2.validate_token(&token);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -159,37 +135,5 @@ mod tests {
         let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
         let result = jwt2.validate_token(&token);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_hex_decode_valid() {
-        let result = hex_decode("48656c6c6f").unwrap();
-        assert_eq!(result, b"Hello");
-    }
-
-    #[test]
-    fn test_hex_decode_empty() {
-        let result = hex_decode("").unwrap();
-        assert_eq!(result, Vec::<u8>::new());
-    }
-
-    #[test]
-    fn test_hex_decode_odd_length() {
-        let result = hex_decode("abc");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_hex_decode_invalid_chars() {
-        let result = hex_decode("gg");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_hex_roundtrip() {
-        let data = b"NetGuardia\x00\xff";
-        let encoded = hex_encode(data);
-        let decoded = hex_decode(&encoded).unwrap();
-        assert_eq!(decoded, data);
     }
 }

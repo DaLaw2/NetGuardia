@@ -1,16 +1,25 @@
 use std::fmt;
+use std::str::FromStr;
+
+use serde::Serialize;
 
 use crate::interface::communication::event::Event;
 
 // -- Detection Source ---------------------------------------------------------
 
 /// Identifies which detection subsystem produced a detection.
-/// Used for attribution tracking and future cross-source deduplication.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Used for attribution tracking and cross-source deduplication.
+///
+/// Serialized as the canonical `Display` form ("ML", "Suricata", "Beaconing",
+/// "Correlation") so the WebSocket wire matches the SOAR `SingleSourceHigh`
+/// `value` field — frontend rendering and playbook authoring share one
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum DetectionSource {
     ML,
     Correlation,
     Beaconing,
+    Suricata,
 }
 
 impl fmt::Display for DetectionSource {
@@ -19,6 +28,23 @@ impl fmt::Display for DetectionSource {
             DetectionSource::ML => write!(f, "ML"),
             DetectionSource::Correlation => write!(f, "Correlation"),
             DetectionSource::Beaconing => write!(f, "Beaconing"),
+            DetectionSource::Suricata => write!(f, "Suricata"),
+        }
+    }
+}
+
+impl FromStr for DetectionSource {
+    type Err = ();
+
+    /// Accepts the canonical `Display` form plus common aliases so playbook
+    /// authors can write `"CV"` for Beaconing or `"Graph"` for Correlation.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ML" | "ml" => Ok(Self::ML),
+            "Suricata" | "suricata" => Ok(Self::Suricata),
+            "Beaconing" | "beaconing" | "CV" | "cv" => Ok(Self::Beaconing),
+            "Correlation" | "correlation" | "Graph" | "graph" => Ok(Self::Correlation),
+            _ => Err(()),
         }
     }
 }
@@ -38,13 +64,20 @@ pub struct DetectionEvent {
     pub protocol: u8,
     pub packet_count: u64,
     pub flow_duration_us: u64,
+    /// Per-model scores for observability (ML source only)
+    pub ae_score: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
 }
 
 // -- Threat Events ------------------------------------------------------------
 
 /// Fired when the DetectionOrchestrator emits a deduplicated, enriched threat.
-/// Consumed by the SOAR engine to trigger automated responses.
-#[derive(Debug, Clone)]
+/// Consumed by the SOAR engine to trigger automated responses, and broadcast
+/// to the dashboard over `/ws/fusion` so the operator's "Recent Threats"
+/// stream surfaces post-fusion (multi-source) detections rather than raw
+/// per-flow ML alerts.
+#[derive(Debug, Clone, Serialize)]
 pub struct ThreatDetectedEvent {
     pub attack_type: String,
     pub confidence: f32,
@@ -62,8 +95,22 @@ pub struct ThreatDetectedEvent {
     pub geoip_country: Option<String>,
     /// Whether this src_ip had a block action in the past 24h
     pub is_repeat_offender: bool,
-    /// Which detection sources contributed to this threat (for attribution)
+    /// Which detection sources contributed to this threat (for attribution).
+    /// Single-source events have length 1; fused events have 2..=4.
     pub sources: Vec<DetectionSource>,
+    /// Number of distinct sources that contributed to this event.
+    /// Used by SOAR `MultiSourceMin` / `SingleSourceHigh` conditions —
+    /// counts unique sources, not per-source fires within the window.
+    pub active_source_count: usize,
+    /// Cross-source fused confidence (1 − ∏(1 − c_i)). Equal to
+    /// `confidence` after the fusion engine runs; retained as a separate
+    /// field so SOAR policies can discriminate "single source" from
+    /// "fused multi-source" numerically identical confidences.
+    pub fused_confidence: f32,
+    /// Per-model scores for debugging false positives.
+    pub ae_score: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
 }
 
 impl Event for ThreatDetectedEvent {}

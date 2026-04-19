@@ -2,8 +2,8 @@ use macros::log;
 use tokio::sync::broadcast;
 
 use crate::model::config::constants::ML_ALERT_CHANNEL_CAPACITY;
+use crate::model::detection::ml_detection::{AlertMessage, DetectionResult};
 use crate::model::log::ml::MLLog;
-use crate::model::ml_detection::{AlertMessage, DetectionResult};
 
 pub struct MLAlert {
     broadcast_tx: broadcast::Sender<AlertMessage>,

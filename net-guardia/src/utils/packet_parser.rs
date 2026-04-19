@@ -1,6 +1,6 @@
-use std::time;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::model::user_packet::UserPacket;
+use crate::model::monitoring::user_packet::UserPacket;
 
 pub fn parse_packet(packet_data: &[u8]) -> Option<(UserPacket, usize)> {
     if packet_data.len() < 14 {
@@ -9,10 +9,7 @@ pub fn parse_packet(packet_data: &[u8]) -> Option<(UserPacket, usize)> {
 
     let eth_type = u16::from_be_bytes([packet_data[12], packet_data[13]]);
 
-    let timestamp_us = time::SystemTime::now()
-        .duration_since(time::UNIX_EPOCH)
-        .ok()?
-        .as_micros() as u64;
+    let timestamp_us = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_micros() as u64;
 
     match eth_type {
         0x0800 => parse_ipv4(packet_data, timestamp_us),

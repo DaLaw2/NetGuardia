@@ -1,6 +1,7 @@
+use chrono::{Duration as ChronoDuration, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 
 /// Shared report data structure used by both HTML email and PDF report.
@@ -62,11 +63,11 @@ pub struct SystemHealthSummary {
 
 impl ReportData {
     /// Build report data from database settings (aggregated by the ML pipeline).
-    pub fn from_database(db: &dyn RepositoryPort) -> Result<Self, Error> {
-        let now = chrono::Local::now();
+    pub fn from_database(db: &dyn SettingRepo) -> Result<Self, Error> {
+        let now = Local::now();
         let period = format!(
             "{} — {}",
-            (now - chrono::Duration::days(7)).format("%Y-%m-%d"),
+            (now - ChronoDuration::days(7)).format("%Y-%m-%d"),
             now.format("%Y-%m-%d")
         );
 

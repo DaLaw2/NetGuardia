@@ -20,9 +20,10 @@ libxdp-sys = { version = "0.2.4", features = ["use_cc_build", "use_precompiled_b
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+serde_yaml_ng = "0.10.0"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs", "signal"] }
 
 # Web framework
 actix = "0.13.5"

@@ -5,10 +5,10 @@ use serde::Deserialize;
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::auth::jwt::JwtService;
 use crate::core::auth::password;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::auth::AuthError;
 
-type Repo = dyn RepositoryPort;
+type Repo = dyn AppRepo;
 
 #[derive(Deserialize)]
 struct LoginRequest {
@@ -116,7 +116,6 @@ async fn login(body: web::Json<LoginRequest>, db: web::Data<Repo>, jwt: web::Dat
     // Permissions come exclusively from groups — no role-based fallback
     let permissions = db.get_user_permissions(id).unwrap_or_default();
 
-    // Derive role from groups for backwards compat in JWT
     let groups = db.get_user_groups(id).unwrap_or_default();
     let role = if groups.iter().any(|(_id, name, _desc, _perms)| name == "Administrator") {
         "admin".to_string()
@@ -257,7 +256,6 @@ async fn list_users(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
                         .iter()
                         .map(|(gid, name)| serde_json::json!({"id": gid, "name": name}))
                         .collect();
-                    // Derive role from groups for backwards compat
                     let role = if user_groups.iter().any(|(_id, name)| name == "Administrator") {
                         "admin"
                     } else {

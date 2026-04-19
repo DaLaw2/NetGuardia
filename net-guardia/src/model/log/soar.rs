@@ -69,8 +69,8 @@ loggable! {
         #[error("TTL sweep: {removed} blocks removed, {skipped} kept (manual ACL conflict)")]
         TtlSweepComplete { removed: u32, skipped: u32 } => tracing::Level::DEBUG,
 
-        #[error("SOAR log action [{level}]: threat from {source_ip} — {attack_type} (confidence: {confidence})")]
-        ActionLog { level: String, source_ip: String, attack_type: String, confidence: String } => tracing::Level::INFO,
+        #[error("SOAR log action [{level}]: threat from {source_ip} — {attack_type} (confidence: {confidence}, ae: {ae_score}, anomaly: {anomaly_score}, c2: {c2_score})")]
+        ActionLog { level: String, source_ip: String, attack_type: String, confidence: String, ae_score: String, anomaly_score: String, c2_score: String } => tracing::Level::INFO,
 
         #[error("SOAR cooldown cleanup: {removed} expired entries removed")]
         CooldownCleanup { removed: u32 } => tracing::Level::DEBUG,
@@ -92,5 +92,8 @@ loggable! {
 
         #[error("Invalid operator '{operator}' for condition type '{condition_type}' on playbook '{name}', condition skipped")]
         InvalidConditionOperator { name: String, condition_type: String, operator: String } => tracing::Level::WARN,
+
+        #[error("Playbook '{name}' uses non-canonical trigger_event '{trigger_event}' — cross-source fusion dedup may silently miss this rule")]
+        NonCanonicalTriggerEvent { name: String, trigger_event: String } => tracing::Level::WARN,
     }
 }

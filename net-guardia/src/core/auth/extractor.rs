@@ -1,9 +1,11 @@
 use std::future::{Ready, ready};
+use std::ops::Deref;
 
 use actix_web::dev::Payload;
-use actix_web::{FromRequest, HttpMessage, HttpRequest};
+use actix_web::error::ErrorUnauthorized;
+use actix_web::{Error as ActixError, FromRequest, HttpMessage, HttpRequest};
 
-use crate::model::auth::Claims;
+use crate::model::identity::auth::Claims;
 
 /// Actix-web extractor that pulls `Claims` from request extensions.
 ///
@@ -19,7 +21,7 @@ use crate::model::auth::Claims;
 /// ```
 pub struct AuthClaims(pub Claims);
 
-impl std::ops::Deref for AuthClaims {
+impl Deref for AuthClaims {
     type Target = Claims;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -27,15 +29,13 @@ impl std::ops::Deref for AuthClaims {
 }
 
 impl FromRequest for AuthClaims {
-    type Error = actix_web::Error;
+    type Error = ActixError;
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         match req.extensions().get::<Claims>().cloned() {
             Some(claims) => ready(Ok(AuthClaims(claims))),
-            None => ready(Err(actix_web::error::ErrorUnauthorized(
-                serde_json::json!({"error": "Unauthorized"}),
-            ))),
+            None => ready(Err(ErrorUnauthorized(serde_json::json!({"error": "Unauthorized"})))),
         }
     }
 }

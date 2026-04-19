@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
@@ -24,10 +25,10 @@ pub struct SecretStore {
 
 impl SecretStore {
     pub fn new(db: Arc<Database>) -> Self {
-        let raw_key = std::env::var("NETGUARDIA_SECRETS_KEY")
+        let raw_key = env::var("NETGUARDIA_SECRETS_KEY")
             .ok()
             .filter(|k| !k.is_empty())
-            .or_else(|| std::env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()));
+            .or_else(|| env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()));
 
         let cipher = raw_key.map(|key| {
             let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), key.as_bytes());
@@ -53,7 +54,7 @@ impl SecretStore {
                 let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
                 let ciphertext = cipher
                     .encrypt(&nonce, plaintext.as_bytes())
-                    .map_err(|e| CryptoError::EncryptionFailed { reason: e.to_string() })?;
+                    .map_err(CryptoError::EncryptionFailed)?;
                 let envelope = serde_json::json!({
                     "v": 1,
                     "alg": "aes-256-gcm",
@@ -76,24 +77,18 @@ impl SecretStore {
     }
 
     fn decrypt(&self, envelope_json: &str) -> Result<String, Error> {
-        let env: serde_json::Value =
-            serde_json::from_str(envelope_json).map_err(|e| CryptoError::InvalidEnvelope { reason: e.to_string() })?;
+        let env: serde_json::Value = serde_json::from_str(envelope_json).map_err(CryptoError::EnvelopeParseFailed)?;
 
         let version = env.get("v").and_then(|v| v.as_u64()).unwrap_or(0);
         if version != 1 {
-            return Err(CryptoError::InvalidEnvelope {
-                reason: format!("unsupported envelope version: {version}"),
-            }
-            .into());
+            Err(CryptoError::UnsupportedEnvelopeVersion(version))?;
         }
 
         let alg = env.get("alg").and_then(|v| v.as_str()).unwrap_or("");
         let ct_b64 = env
             .get("ct")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| CryptoError::InvalidEnvelope {
-                reason: "missing ct field".to_string(),
-            })?;
+            .ok_or_else(|| CryptoError::MissingEnvelopeField("ct"))?;
 
         match alg {
             "none" => {
@@ -101,105 +96,46 @@ impl SecretStore {
                 // Prevents downgrade attack where attacker replaces encrypted envelope
                 // with alg:none + attacker-controlled plaintext.
                 if self.cipher.is_some() {
-                    return Err(CryptoError::InvalidEnvelope {
-                        reason: "alg:none rejected in production mode (encryption key is set)".to_string(),
-                    }
-                    .into());
+                    Err(CryptoError::AlgNoneRejected)?;
                 }
-                let plaintext_bytes = B64
-                    .decode(ct_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
-                String::from_utf8(plaintext_bytes)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() }.into())
+                let plaintext_bytes = B64.decode(ct_b64).map_err(CryptoError::DecryptionFailed)?;
+                Ok(String::from_utf8(plaintext_bytes).map_err(CryptoError::DecryptionFailed)?)
             }
             "aes-256-gcm" => {
                 let cipher = self.cipher.as_ref().ok_or(CryptoError::MasterKeyUnavailable)?;
 
-                let nonce_b64 =
-                    env.get("nonce")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| CryptoError::InvalidEnvelope {
-                            reason: "missing nonce field".to_string(),
-                        })?;
+                let nonce_b64 = env
+                    .get("nonce")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| CryptoError::MissingEnvelopeField("nonce"))?;
 
-                let nonce_bytes = B64
-                    .decode(nonce_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
-                let nonce =
-                    Nonce::from_exact_iter(nonce_bytes.into_iter()).ok_or_else(|| CryptoError::DecryptionFailed {
-                        reason: "invalid nonce length".to_string(),
-                    })?;
+                let nonce_bytes = B64.decode(nonce_b64).map_err(CryptoError::DecryptionFailed)?;
+                let nonce = Nonce::from_exact_iter(nonce_bytes).ok_or(CryptoError::InvalidNonceLength)?;
 
-                let ciphertext = B64
-                    .decode(ct_b64)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
+                let ciphertext = B64.decode(ct_b64).map_err(CryptoError::DecryptionFailed)?;
 
                 let plaintext_bytes = cipher
                     .decrypt(&nonce, ciphertext.as_ref())
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() })?;
+                    .map_err(CryptoError::DecryptionFailed)?;
 
-                String::from_utf8(plaintext_bytes)
-                    .map_err(|e| CryptoError::DecryptionFailed { reason: e.to_string() }.into())
+                Ok(String::from_utf8(plaintext_bytes).map_err(CryptoError::DecryptionFailed)?)
             }
-            other => Err(CryptoError::InvalidEnvelope {
-                reason: format!("unsupported algorithm: {other}"),
-            }
-            .into()),
+            other => Err(CryptoError::UnsupportedAlgorithm(other))?,
+        }
+    }
+}
+
+impl SecretStorePort for SecretStore {
+    fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
+        match self.db.get_app_secret(key)? {
+            Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
+            None => Ok(None),
         }
     }
 
-    /// Idempotent startup migration: moves plaintext secrets from settings/notification_config
-    /// into the encrypted `app_secrets` table.
-    pub fn migrate_plaintext_secrets(&self) -> Result<(), Error> {
-        // Check if migration already done
-        if let Some(v) = self.db.get_setting("secrets_migrated")?
-            && v == "true"
-        {
-            log!(CryptoLog::MigrationSkipped);
-            return Ok(());
-        }
-
-        let mut count = 0usize;
-
-        // 1. Migrate smtp_password
-        if let Some(password) = self.db.get_setting("smtp_password")?
-            && password != "__encrypted__"
-            && !password.is_empty()
-        {
-            self.set_secret("smtp_password", &password)?;
-            self.db.set_setting("smtp_password", "__encrypted__")?;
-            log!(CryptoLog::SecretMigrated("smtp_password".to_string()));
-            count += 1;
-        }
-
-        // 2. Migrate telegram_bot_token from notification_config JSON
-        if let Some(json_str) = self.db.get_notification_config("telegram")?
-            && let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&json_str)
-            && let Some(token) = config.get("bot_token").and_then(|v| v.as_str()).map(|s| s.to_string())
-            && token != "__encrypted__"
-            && !token.is_empty()
-        {
-            self.set_secret("telegram_bot_token", &token)?;
-            config["bot_token"] = serde_json::Value::String("__encrypted__".to_string());
-            self.db.set_notification_config("telegram", &config.to_string())?;
-            log!(CryptoLog::SecretMigrated("telegram_bot_token".to_string()));
-            count += 1;
-        }
-
-        // 3. Migrate jwt_secret
-        if let Some(secret) = self.db.get_setting("jwt_secret")?
-            && secret != "__encrypted__"
-            && !secret.is_empty()
-        {
-            self.set_secret("jwt_secret", &secret)?;
-            self.db.set_setting("jwt_secret", "__encrypted__")?;
-            log!(CryptoLog::SecretMigrated("jwt_secret".to_string()));
-            count += 1;
-        }
-
-        self.db.set_setting("secrets_migrated", "true")?;
-        log!(CryptoLog::MigrationComplete(count));
-        Ok(())
+    fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
+        let envelope = self.encrypt(plaintext)?;
+        self.db.set_app_secret(key, &envelope)
     }
 }
 
@@ -306,19 +242,5 @@ mod tests {
         let store = store_with_cipher();
         let envelope = serde_json::json!({"v": 1, "alg": "chacha20", "ct": "abc"}).to_string();
         assert!(store.decrypt(&envelope).is_err());
-    }
-}
-
-impl SecretStorePort for SecretStore {
-    fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
-        match self.db.get_app_secret(key)? {
-            Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
-        let envelope = self.encrypt(plaintext)?;
-        self.db.set_app_secret(key, &envelope)
     }
 }

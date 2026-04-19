@@ -1,10 +1,11 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
 
-use crate::model::direction::Direction;
-use crate::model::user_packet::UserPacket;
+use crate::model::monitoring::direction::Direction;
+use crate::model::monitoring::user_packet::UserPacket;
 
 pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
@@ -104,7 +105,8 @@ pub struct DetectionResult {
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
-    pub threshold: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
     pub packet_count: u64,
     pub flow_duration_us: u64,
 }
@@ -151,14 +153,16 @@ pub struct AlertMessage {
     pub attack_type: Option<String>,
     pub confidence: f32,
     pub ae_score: f32,
+    pub anomaly_score: f32,
+    pub c2_score: f32,
     pub packet_count: u64,
     pub flow_duration_us: u64,
 }
 
 impl AlertMessage {
     pub fn from_detection_result(result: &DetectionResult) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
@@ -174,6 +178,8 @@ impl AlertMessage {
             attack_type: result.attack_type.clone(),
             confidence: result.confidence,
             ae_score: result.ae_score,
+            anomaly_score: result.anomaly_score,
+            c2_score: result.c2_score,
             packet_count: result.packet_count,
             flow_duration_us: result.flow_duration_us,
         }

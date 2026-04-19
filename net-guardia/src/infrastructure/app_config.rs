@@ -1,14 +1,17 @@
 use crate::adapter::persistence::Database;
-use crate::model::config::{HttpConfig, InferenceConfig as InfConfig, MiscConfig, NetworkConfig, PipelineConfig};
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
+use crate::model::system::config::{
+    HttpConfig, InferenceConfig, MiscConfig, NetworkConfig, PipelineConfig, SuricataConfig,
+};
 
 pub struct AppConfig {
     pub http: HttpConfig,
     pub network: NetworkConfig,
-    pub inference: InfConfig,
+    pub inference: InferenceConfig,
     pub misc: MiscConfig,
     pub pipeline: PipelineConfig,
+    pub suricata: SuricataConfig,
 }
 
 impl AppConfig {
@@ -55,6 +58,18 @@ impl AppConfig {
             ("inference_batch_size", "200".into()),
             ("traffic_logging_mode", "false".into()),
             ("traffic_log_csv_path", "traffic_log.csv".into()),
+            // Flow Trace rotation (defaults match the DEFAULT_* constants
+            // in traffic_logger.rs; DB overrides let admins tune per env).
+            ("flow_trace_max_file_bytes", (500 * 1024 * 1024_u64).to_string()),
+            ("flow_trace_max_file_age_secs", "3600".into()),
+            (
+                "flow_trace_total_budget_bytes",
+                (10 * 1024 * 1024 * 1024_u64).to_string(),
+            ),
+            // Model upload size caps (per-field multipart ceilings).
+            ("model_upload_max_onnx_bytes", (100 * 1024 * 1024_usize).to_string()),
+            ("model_upload_max_manifest_bytes", (64 * 1024_usize).to_string()),
+            ("model_upload_max_scaler_bytes", (64 * 1024_usize).to_string()),
             // Misc
             ("geoip_db_name", "net-guardia/static/geo/dbip-city-lite.mmdb".into()),
             // Pipeline
@@ -66,7 +81,8 @@ impl AppConfig {
             // ML
             ("ml_drift_window_secs", "3600".into()),
             // Telegram
-            ("telegram_max_messages_per_minute", "20".into()),
+            ("telegram_rate_limit_max_messages", "20".into()),
+            ("telegram_rate_limit_window_secs", "60".into()),
             // Directories
             ("report_dir", "/var/lib/netguardia/reports".into()),
             ("log_dir", "logs".into()),
@@ -74,6 +90,13 @@ impl AppConfig {
             ("dns_max_domains_per_request", "1000".into()),
             // HTTPS redirect
             ("force_https", "false".into()),
+            // Suricata bridge
+            ("suricata_enabled", "false".into()),
+            ("suricata_binary_path", "/usr/bin/suricata".into()),
+            ("suricata_config_path", "/etc/netguardia/suricata.yaml".into()),
+            ("suricata_eve_log_path", "/var/log/netguardia/eve.json".into()),
+            ("suricata_auto_restart_on_crash", "true".into()),
+            ("suricata_restart_backoff_secs", "10".into()),
         ];
 
         for (key, value) in defaults {
@@ -109,7 +132,7 @@ impl AppConfig {
                 packet_buffer_size: 2048,
                 buffer_pool_capacity: 1024,
             },
-            inference: InfConfig {
+            inference: InferenceConfig {
                 deep_autoencoder_name: "deep_autoencoder.onnx".into(),
                 classifier_name: "classifier.onnx".into(),
                 models_config_name: "inference_config.json".into(),
@@ -120,6 +143,12 @@ impl AppConfig {
                 inference_batch_size: 200,
                 traffic_logging_mode: false,
                 traffic_log_csv_path: "traffic_log.csv".into(),
+                flow_trace_max_file_bytes: 500 * 1024 * 1024,
+                flow_trace_max_file_age_secs: 3600,
+                flow_trace_total_budget_bytes: 10 * 1024 * 1024 * 1024,
+                model_upload_max_onnx_bytes: 100 * 1024 * 1024,
+                model_upload_max_manifest_bytes: 64 * 1024,
+                model_upload_max_scaler_bytes: 64 * 1024,
             },
             misc: MiscConfig {
                 geoip_db_name: "net-guardia/static/geo/dbip-city-lite.mmdb".into(),
@@ -128,6 +157,14 @@ impl AppConfig {
             pipeline: PipelineConfig {
                 ingress: vec!["access_control".into(), "rate_limit".into(), "service".into()],
                 egress: vec![],
+            },
+            suricata: SuricataConfig {
+                enabled: false,
+                binary_path: "/usr/bin/suricata".into(),
+                config_path: "/etc/netguardia/suricata.yaml".into(),
+                eve_log_path: "/var/log/netguardia/eve.json".into(),
+                auto_restart_on_crash: true,
+                restart_backoff_secs: 10,
             },
         }
     }
@@ -225,6 +262,36 @@ impl AppConfig {
         {
             config.inference.inference_batch_size = n;
         }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_max_file_bytes")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_max_file_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_max_file_age_secs")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_max_file_age_secs = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("flow_trace_total_budget_bytes")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.inference.flow_trace_total_budget_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_onnx_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_onnx_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_manifest_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_manifest_bytes = n;
+        }
+        if let Ok(Some(v)) = db.get_setting("model_upload_max_scaler_bytes")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.inference.model_upload_max_scaler_bytes = n;
+        }
         if let Ok(Some(v)) = db.get_setting("refresh_interval")
             && let Ok(n) = v.parse::<u64>()
         {
@@ -276,6 +343,34 @@ impl AppConfig {
             && !v.is_empty()
         {
             config.misc.geoip_db_name = v;
+        }
+
+        // Suricata bridge
+        if let Ok(Some(v)) = db.get_setting("suricata_enabled") {
+            config.suricata.enabled = v == "true" || v == "1";
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_binary_path")
+            && !v.is_empty()
+        {
+            config.suricata.binary_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_config_path")
+            && !v.is_empty()
+        {
+            config.suricata.config_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_eve_log_path")
+            && !v.is_empty()
+        {
+            config.suricata.eve_log_path = v;
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_auto_restart_on_crash") {
+            config.suricata.auto_restart_on_crash = v == "true" || v == "1";
+        }
+        if let Ok(Some(v)) = db.get_setting("suricata_restart_backoff_secs")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.suricata.restart_backoff_secs = n;
         }
 
         // Pipeline (stored as comma-separated)

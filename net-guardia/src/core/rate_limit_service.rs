@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
-use crate::core::ebpf::rate_limit::RateLimitConfig;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::model::error::Error;
 
 /// Domain service that coordinates rate limit config updates between DB and eBPF.
 pub struct RateLimitService {
-    db: Arc<dyn RepositoryPort>,
-    config: Arc<RateLimitConfig>,
+    db: Arc<dyn AppRepo>,
+    config: Arc<dyn RateLimitPort>,
 }
 
 impl RateLimitService {
-    pub fn new(db: Arc<dyn RepositoryPort>, config: Arc<RateLimitConfig>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, config: Arc<dyn RateLimitPort>) -> Self {
         Self { db, config }
     }
 
-    pub fn config(&self) -> &RateLimitConfig {
-        &self.config
+    pub fn config(&self) -> &dyn RateLimitPort {
+        self.config.as_ref()
     }
 
     pub fn update(&self, settings: &RateLimitSettings) -> Result<(), Error> {

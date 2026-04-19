@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::direction::Direction;
+use crate::model::monitoring::direction::Direction;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowStatsEntry {
@@ -19,8 +19,8 @@ pub struct FlowStatsEntry {
     pub last_seen_us: u64,
 }
 
-// NOTE: From<&FlowData> impl moved to core/infrastructure/statistics.rs
-// to maintain the dependency rule: model/ must not import core/
+// NOTE: From<&FlowData> impl lives in infrastructure/statistics.rs so
+// model/ doesn't need to import core/ (dependency-rule invariant).
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsSummary {

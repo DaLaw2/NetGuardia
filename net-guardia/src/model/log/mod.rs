@@ -7,4 +7,5 @@ pub mod http;
 pub mod misc;
 pub mod ml;
 pub mod soar;
+pub mod suricata;
 pub mod system;

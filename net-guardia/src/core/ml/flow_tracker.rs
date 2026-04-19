@@ -1,15 +1,16 @@
-use std::num::NonZero;
+use std::sync::Arc;
 
 use common::define::tcp_flags::*;
-use lru::LruCache;
+use moka::sync::Cache;
+use parking_lot::Mutex;
 
 use crate::model::config::constants::{
     FLOW_BULK_MIN_BYTES, FLOW_BULK_MIN_PACKETS, FLOW_IDLE_THRESHOLD_US, FLOW_IDLE_TIMEOUT_US,
     FLOW_MAX_PACKETS_PER_DIRECTION, FLOW_MAX_PERIODS, FLOW_TERMINATED_TIMEOUT_US,
 };
-use crate::model::direction::Direction;
-use crate::model::ml_detection::{BulkState, FlowKey, PacketData};
-use crate::model::user_packet::UserPacket;
+use crate::model::detection::ml_detection::{BulkState, FlowKey, PacketData};
+use crate::model::monitoring::direction::Direction;
+use crate::model::monitoring::user_packet::UserPacket;
 
 #[derive(Debug, Clone)]
 pub struct FlowData {
@@ -144,7 +145,7 @@ impl FlowData {
             if self.fwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
                 self.fwd_packets.push(packet_data.clone());
             }
-            self.fwd_total_bytes += packet.payload_length as u64;
+            self.fwd_total_bytes += packet.packet_length as u64;
             self.fwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_fwd == 0 {
                 self.init_win_bytes_fwd = packet.tcp_window_size;
@@ -154,7 +155,7 @@ impl FlowData {
             if self.bwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
                 self.bwd_packets.push(packet_data.clone());
             }
-            self.bwd_total_bytes += packet.payload_length as u64;
+            self.bwd_total_bytes += packet.packet_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
             if self.init_win_bytes_bwd == 0 {
                 self.init_win_bytes_bwd = packet.tcp_window_size;
@@ -205,31 +206,41 @@ impl FlowData {
     }
 }
 
-/// Per-thread flow tracker. No locks — each XSK thread owns one.
-/// RSS guarantees the same flow always goes to the same thread.
-/// Uses LruCache for O(1) eviction instead of O(n) min_by_key scan.
+/// Per-flow handle: an `Arc` so map operations stay copy-cheap, with an inner
+/// `Mutex` because `add_packet` is a read-modify-write that needs exclusive
+/// access. Same-flow packets land on the same XSK queue (symmetric eBPF
+/// hash), so this mutex is effectively single-writer; the inference tick
+/// briefly contends only when it clones the entry for a snapshot.
+type FlowEntry = Arc<Mutex<FlowData>>;
+
+/// Per-queue flow tracker backed by a sharded W-TinyLFU cache (`moka`).
+///
+/// The hot path (`process_packet`) acquires only the per-shard moka lock
+/// and the per-flow entry mutex — never a global tracker lock — so the
+/// inference loop's snapshot pass (`get_uninferred_flows`,
+/// `cleanup_stale_flows`) can run in parallel without stalling AF_XDP rx.
+/// W-TinyLFU's frequency sketch keeps high-rate attack flows resident
+/// even when burst noise floods the cache, which a strict-LRU eviction
+/// policy would mishandle.
 pub struct FlowTracker {
-    active: LruCache<FlowKey, FlowData>,
+    active: Cache<FlowKey, FlowEntry>,
 }
 
 impl FlowTracker {
     pub fn new(max_flows: usize) -> Self {
-        // SAFETY: max(1, max_flows) ensures NonZero is never zero.
-        let cap = NonZero::new(max_flows.max(1)).unwrap_or_else(|| unreachable!());
+        let cap = max_flows.max(1) as u64;
         Self {
-            active: LruCache::new(cap),
+            active: Cache::builder().max_capacity(cap).build(),
         }
     }
 
-    pub fn process_packet(&mut self, mut packet: UserPacket, is_ingress: bool) {
+    pub fn process_packet(&self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
         let reversed_key = packet_key.reverse();
 
-        // Try to match an existing flow first (canonical key already established).
-        // Use peek() to avoid promoting — we'll promote via get_mut() below.
-        let (actual_key, is_forward) = if self.active.peek(&packet_key).is_some() {
+        let (actual_key, is_forward) = if self.active.contains_key(&packet_key) {
             (packet_key, true)
-        } else if self.active.peek(&reversed_key).is_some() {
+        } else if self.active.contains_key(&reversed_key) {
             (reversed_key, false)
         } else {
             // New flow: determine initiator using TCP flags, fall back to is_ingress.
@@ -261,7 +272,6 @@ impl FlowTracker {
 
         packet.is_forward = is_forward;
 
-        // Record which interface the initiator is on for this flow.
         let initiator_direction = if is_forward {
             if is_ingress {
                 Direction::Ingress
@@ -274,62 +284,59 @@ impl FlowTracker {
             Direction::Ingress
         };
 
-        // LruCache::push handles eviction automatically when capacity is exceeded (O(1)).
-        // If the flow already exists, get_mut promotes it to MRU; otherwise push creates it.
-        if let Some(flow) = self.active.get_mut(&actual_key) {
-            flow.add_packet(&packet);
-        } else {
-            let mut flow = FlowData::new(actual_key.clone(), &packet, initiator_direction);
-            flow.add_packet(&packet);
-            self.active.push(actual_key, flow);
-        }
+        let key_for_init = actual_key.clone();
+        let entry = self.active.get_with(actual_key, || {
+            Arc::new(Mutex::new(FlowData::new(key_for_init, &packet, initiator_direction)))
+        });
+        entry.lock().add_packet(&packet);
     }
 
     /// Get all active flows (clone, no drain). Used by WebSocket.
     pub fn get_flows(&self) -> Vec<FlowData> {
-        self.active.iter().map(|(_, flow)| flow.clone()).collect()
+        self.active.iter().map(|(_, entry)| entry.lock().clone()).collect()
     }
 
-    /// Get flows that received new packets since their last inference,
-    /// and mark them as inferred. Used by ML engine.
-    pub fn get_uninferred_flows(&mut self) -> Vec<FlowData> {
+    /// Get flows that received new packets since their last inference, and
+    /// mark them as inferred. Used by ML engine.
+    pub fn get_uninferred_flows(&self) -> Vec<FlowData> {
         let mut result = Vec::new();
-        // iter_mut does NOT promote entries (preserves LRU order)
-        for (_, flow) in self.active.iter_mut() {
+        for (_, entry) in self.active.iter() {
+            let mut flow = entry.lock();
             if flow.last_time_us > flow.last_inferred_us {
-                result.push(flow.clone());
+                let snapshot = flow.clone();
                 flow.last_inferred_us = flow.last_time_us;
+                result.push(snapshot);
             }
         }
         result
     }
 
     pub fn flow_count(&self) -> usize {
-        self.active.len()
+        self.active.entry_count() as usize
     }
 
     /// Remove flows that have been idle too long or are terminated (FIN/RST seen).
     /// `now_us`: current timestamp in microseconds (same scale as packet timestamps).
     /// Returns the number of flows removed.
-    pub fn cleanup_stale_flows(&mut self, now_us: u64) -> usize {
-        // LruCache doesn't have retain(), so collect keys to remove then pop them.
-        let keys_to_remove: Vec<FlowKey> = self
-            .active
-            .iter()
-            .filter(|(_, flow)| {
-                let idle = now_us.saturating_sub(flow.last_time_us);
-                let is_terminated = flow.fin_count > 0 || flow.rst_count > 0;
-                if is_terminated {
-                    idle >= FLOW_TERMINATED_TIMEOUT_US
-                } else {
-                    idle >= FLOW_IDLE_TIMEOUT_US
-                }
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-        let removed = keys_to_remove.len();
+    pub fn cleanup_stale_flows(&self, now_us: u64) -> usize {
+        let mut keys_to_remove = Vec::new();
+        for (key, entry) in self.active.iter() {
+            let flow = entry.lock();
+            let idle = now_us.saturating_sub(flow.last_time_us);
+            let is_terminated = flow.fin_count > 0 || flow.rst_count > 0;
+            let stale = if is_terminated {
+                idle >= FLOW_TERMINATED_TIMEOUT_US
+            } else {
+                idle >= FLOW_IDLE_TIMEOUT_US
+            };
+            if stale {
+                keys_to_remove.push((*key).clone());
+            }
+        }
+        let mut removed = 0;
         for key in keys_to_remove {
-            self.active.pop(&key);
+            self.active.invalidate(&key);
+            removed += 1;
         }
         removed
     }
@@ -357,74 +364,71 @@ mod tests {
         }
     }
 
+    fn sync_count(tracker: &FlowTracker) -> usize {
+        tracker.active.run_pending_tasks();
+        tracker.flow_count()
+    }
+
     #[test]
     fn cleanup_removes_idle_flows() {
-        let mut tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000);
         let base_ts = 1_000_000_000u64; // 1000 seconds
 
-        // Insert a flow with old timestamp
         let pkt = make_packet(base_ts, 0x02); // SYN
         tracker.process_packet(pkt, false);
-        assert_eq!(tracker.flow_count(), 1);
+        assert_eq!(sync_count(&tracker), 1);
 
-        // 130 seconds later — should be cleaned up (idle > 120s)
         let now = base_ts + 130_000_000;
         let removed = tracker.cleanup_stale_flows(now);
         assert_eq!(removed, 1);
-        assert_eq!(tracker.flow_count(), 0);
+        assert_eq!(sync_count(&tracker), 0);
     }
 
     #[test]
     fn cleanup_keeps_active_flows() {
-        let mut tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000);
         let base_ts = 1_000_000_000u64;
 
         let pkt = make_packet(base_ts, 0x02);
         tracker.process_packet(pkt, false);
 
-        // Only 10 seconds later — should NOT be cleaned up
         let now = base_ts + 10_000_000;
         let removed = tracker.cleanup_stale_flows(now);
         assert_eq!(removed, 0);
-        assert_eq!(tracker.flow_count(), 1);
+        assert_eq!(sync_count(&tracker), 1);
     }
 
     #[test]
     fn cleanup_removes_terminated_flows_after_short_idle() {
-        let mut tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000);
         let base_ts = 1_000_000_000u64;
 
-        // SYN packet
         let pkt1 = make_packet(base_ts, 0x02);
         tracker.process_packet(pkt1, false);
 
-        // FIN packet 1 second later
         let pkt2 = make_packet(base_ts + 1_000_000, 0x01); // FIN
         tracker.process_packet(pkt2, false);
 
-        // 6 seconds after FIN — terminated flow should be removed (idle > 5s)
         let now = base_ts + 7_000_000;
         let removed = tracker.cleanup_stale_flows(now);
         assert_eq!(removed, 1);
-        assert_eq!(tracker.flow_count(), 0);
+        assert_eq!(sync_count(&tracker), 0);
     }
 
     #[test]
     fn cleanup_keeps_recently_terminated_flows() {
-        let mut tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000);
         let base_ts = 1_000_000_000u64;
 
         let pkt1 = make_packet(base_ts, 0x02);
         tracker.process_packet(pkt1, false);
 
-        // FIN packet
         let pkt2 = make_packet(base_ts + 1_000_000, 0x01);
         tracker.process_packet(pkt2, false);
 
-        // Only 2 seconds after FIN — should still be around
         let now = base_ts + 3_000_000;
         let removed = tracker.cleanup_stale_flows(now);
         assert_eq!(removed, 0);
-        assert_eq!(tracker.flow_count(), 1);
+        assert_eq!(sync_count(&tracker), 1);
     }
 }

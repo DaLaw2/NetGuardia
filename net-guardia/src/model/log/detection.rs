@@ -9,8 +9,8 @@ loggable! {
         #[error("Detection deduplicated: {source_ip} {attack_type} (within window)")]
         DetectionDeduplicated { source_ip: String, attack_type: String } => tracing::Level::DEBUG,
 
-        #[error("Detection emitted: {source_ip} {attack_type} confidence={confidence:.2} sources={sources_count}")]
-        DetectionEmitted { source_ip: String, attack_type: String, confidence: f32, sources_count: usize } => tracing::Level::DEBUG,
+        #[error("Detection emitted: {source_ip} {attack_type} confidence={confidence:.2} ae={ae_score:.3} anomaly={anomaly_score:.3} c2={c2_score:.3} sources={sources_count}")]
+        DetectionEmitted { source_ip: String, attack_type: String, confidence: f32, ae_score: f32, anomaly_score: f32, c2_score: f32, sources_count: usize } => tracing::Level::DEBUG,
 
         #[error("ML detection bridge started")]
         MlBridgeStarted => tracing::Level::INFO,
@@ -44,5 +44,17 @@ loggable! {
 
         #[error("Correlation cleanup: removed {removed} expired entries")]
         CorrelationCleanup { removed: usize } => tracing::Level::DEBUG,
+
+        #[error("Fusion: emitted {source_ip} {attack_type} fused={fused:.3} sources={count}")]
+        FusionEmitted { source_ip: String, attack_type: String, fused: f32, count: usize } => tracing::Level::DEBUG,
+
+        #[error("Fusion: window evicted under LRU pressure ({key_src} {key_type})")]
+        FusionWindowEvicted { key_src: String, key_type: String } => tracing::Level::WARN,
+
+        #[error("Fusion: failed to publish ThreatDetectedEvent: {err}")]
+        FusionPublishFailed { err: String } => tracing::Level::ERROR,
+
+        #[error("Fusion: failed to publish AuditEvent: {err}")]
+        FusionAuditPublishFailed { err: String } => tracing::Level::ERROR,
     }
 }

@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod aggregator;
 pub mod alert;
 pub mod config_loader;
@@ -6,5 +7,7 @@ pub mod engine;
 pub mod feature_extractor;
 pub mod flow_tracker;
 pub mod inference;
+pub mod manifest;
 pub mod model_loader;
+pub mod model_watcher;
 pub mod traffic_logger;

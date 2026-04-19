@@ -2,7 +2,7 @@ use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::core::auth::extractor::AuthClaims;
-use crate::interface::port::api_key::ApiKeyPort;
+use crate::interface::port::api_key::ApiKeyRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/api-keys")
@@ -11,7 +11,7 @@ pub fn initialize() -> Scope {
         .route("/{id}", web::delete().to(delete_key))
 }
 
-async fn list_keys(_auth: AuthClaims, db: web::Data<dyn ApiKeyPort>) -> HttpResponse {
+async fn list_keys(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>) -> HttpResponse {
     match db.list_api_keys() {
         Ok(keys) => {
             let responses: Vec<serde_json::Value> = keys
@@ -40,7 +40,7 @@ struct GenerateKeyRequest {
 
 async fn generate_key(
     _auth: AuthClaims,
-    db: web::Data<dyn ApiKeyPort>,
+    db: web::Data<dyn ApiKeyRepo>,
     body: web::Json<GenerateKeyRequest>,
 ) -> HttpResponse {
     use rand::Rng;
@@ -52,12 +52,7 @@ async fn generate_key(
         .map(char::from)
         .collect();
 
-    use sha2::{Digest, Sha256};
-    let key_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(raw_key.as_bytes());
-        format!("{:x}", hasher.finalize())
-    };
+    let key_hash = db.hmac_api_key(&raw_key);
 
     let level = body.level.as_deref().unwrap_or("read_only");
     if !matches!(level, "read_only" | "read_write" | "full_access") {
@@ -77,7 +72,7 @@ async fn generate_key(
     }
 }
 
-async fn delete_key(_auth: AuthClaims, db: web::Data<dyn ApiKeyPort>, path: web::Path<i64>) -> HttpResponse {
+async fn delete_key(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>, path: web::Path<i64>) -> HttpResponse {
     let id = path.into_inner();
     match db.delete_api_key(id) {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),

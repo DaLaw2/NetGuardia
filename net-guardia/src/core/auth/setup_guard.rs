@@ -1,7 +1,9 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -26,13 +28,13 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(SetupGuardService {
-            service: std::rc::Rc::new(service),
+            service: Rc::new(service),
         }))
     }
 }
 
 pub struct SetupGuardService<S> {
-    service: std::rc::Rc<S>,
+    service: Rc<S>,
 }
 
 impl<S, B> Service<ServiceRequest> for SetupGuardService<S>
@@ -44,12 +46,12 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let service = std::rc::Rc::clone(&self.service);
+        let service = Rc::clone(&self.service);
 
         Box::pin(async move {
             let path = req.path().to_string();

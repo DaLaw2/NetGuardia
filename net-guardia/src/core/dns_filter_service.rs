@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use crate::core::ebpf::dns_filter::DnsFilter;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::dns_filter_api::DnsFilterPort;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
 /// Domain service that coordinates DNS filter changes between DB and in-memory service.
 /// Write order: eBPF/in-memory first, then DB — if eBPF fails, DB remains clean.
 pub struct DnsFilterService {
-    db: Arc<dyn RepositoryPort>,
-    dns_filter: Arc<DnsFilter>,
+    db: Arc<dyn AppRepo>,
+    dns_filter: Arc<dyn DnsFilterPort>,
 }
 
 impl DnsFilterService {
-    pub fn new(db: Arc<dyn RepositoryPort>, dns_filter: Arc<DnsFilter>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, dns_filter: Arc<dyn DnsFilterPort>) -> Self {
         Self { db, dns_filter }
     }
 
@@ -30,10 +30,10 @@ impl DnsFilterService {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
         if domains.len() > max_domains {
-            return Err(MiscError::ValidationError {
-                message: format!("too many domains (max {})", max_domains),
-            }
-            .into());
+            Err(MiscError::ValidationError(format!(
+                "too many domains (max {})",
+                max_domains
+            )))?;
         }
         // eBPF first
         for domain in domains {

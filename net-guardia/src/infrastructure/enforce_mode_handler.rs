@@ -9,7 +9,7 @@ use crate::interface::communication::command::CommandHandler;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query::QueryHandler;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::Error;
 use crate::model::event::AuditEvent;
 use crate::model::log::system::SystemLog;
@@ -25,14 +25,14 @@ pub fn enforce_mode_to_u8(mode: &str) -> u8 {
 
 /// Handles enforce-mode commands and queries by delegating to the repository.
 pub struct EnforceModeHandler {
-    db: Arc<dyn RepositoryPort>,
+    db: Arc<dyn AppRepo>,
     comm: Arc<CommunicationManager>,
     /// Shared AtomicU8 cache: Monitor=0, MlOnly=1, Enforce=2.
     enforce_cache: Arc<AtomicU8>,
 }
 
 impl EnforceModeHandler {
-    pub fn new(db: Arc<dyn RepositoryPort>, comm: Arc<CommunicationManager>, enforce_cache: Arc<AtomicU8>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, comm: Arc<CommunicationManager>, enforce_cache: Arc<AtomicU8>) -> Self {
         Self {
             db,
             comm,
@@ -82,10 +82,10 @@ mod tests {
     use crate::interface::communication::query_types::GetEnforceModeQuery;
 
     fn test_handler() -> (Arc<EnforceModeHandler>, Arc<CommunicationManager>) {
-        let db = Arc::new(Database::new(":memory:").unwrap()) as Arc<dyn RepositoryPort>;
+        let db = Arc::new(Database::new(":memory:").unwrap()) as Arc<dyn AppRepo>;
         let cache = Arc::new(AtomicU8::new(0));
         let comm = Arc::new(CommunicationManager::new());
-        comm.register_event_type::<crate::model::event::AuditEvent>();
+        comm.register_event_type::<AuditEvent>();
         let handler = Arc::new(EnforceModeHandler::new(db, comm.clone(), cache));
         let _ = comm
             .clone()

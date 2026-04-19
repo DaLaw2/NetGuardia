@@ -38,5 +38,41 @@ loggable! {
 
         #[error("Traffic logger channel disconnected")]
         TrafficLogChannelDisconnected => tracing::Level::WARN,
+
+        #[error("Traffic logger dropped a row (channel full — writer thread falling behind)")]
+        TrafficLogChannelBackpressure => tracing::Level::WARN,
+
+        #[error("Flow Trace recording stopped: {reason}")]
+        FlowTraceStopped { reason: String } => tracing::Level::WARN,
+
+        #[error("ML circuit breaker OPEN: {failures} failures in {window_secs}s, inference disabled until reset")]
+        CircuitBreakerOpen { failures: u32, window_secs: u64 } => tracing::Level::ERROR,
+
+        #[error("ML circuit breaker RESET: inference re-enabled after {cooldown_secs}s cooldown")]
+        CircuitBreakerReset { cooldown_secs: u64 } => tracing::Level::WARN,
+
+        #[error("Loading ONNX model '{name}' (features={features}, batch_size={batch_size})...")]
+        ModelLoading { name: String, features: usize, batch_size: usize } => tracing::Level::INFO,
+
+        #[error("Model '{name}' loaded and optimized in {elapsed_ms}ms")]
+        ModelLoadComplete { name: String, elapsed_ms: u64 } => tracing::Level::INFO,
+
+        #[error("Model watcher started, monitoring models/ for .onnx changes")]
+        ModelWatcherStarted => tracing::Level::INFO,
+
+        #[error("Model reload triggered, loading new ONNX models...")]
+        ModelReloadStarting => tracing::Level::INFO,
+
+        #[error("Model reload successful, inference pipeline updated")]
+        ModelReloadSuccess => tracing::Level::INFO,
+
+        #[error("Model reload failed, keeping current models: {error}")]
+        ModelReloadFailed { error: String } => tracing::Level::ERROR,
+
+        #[error("Model manifest loaded: name='{name}', adapter={adapter}, features={features}, labels={labels}")]
+        ManifestLoaded { name: String, adapter: String, features: usize, labels: usize } => tracing::Level::INFO,
+
+        #[error("ONNX input shape introspected for {model}: declared={declared}, onnx_dim={onnx_dim}, matched={matched}")]
+        OnnxShapeChecked { model: String, declared: usize, onnx_dim: usize, matched: bool } => tracing::Level::DEBUG,
     }
 }

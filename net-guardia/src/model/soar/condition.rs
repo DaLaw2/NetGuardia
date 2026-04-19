@@ -16,6 +16,17 @@ pub enum ConditionType {
     RepeatOffender,
     /// Frequency: N events from same source_ip within window_secs
     Frequency,
+    /// Multi-source agreement: `event.active_source_count >= value`.
+    MultiSourceMin,
+    /// Solo high-confidence escape hatch: exactly one contributing source,
+    /// and that source matches a specific name with confidence ≥ `value2`.
+    /// Lets a single high-confidence signature-class detection block
+    /// without waiting on peer agreement.
+    SingleSourceHigh,
+    /// Fused confidence above threshold — reads `event.fused_confidence`
+    /// rather than the per-event `confidence`, so a single high-confidence
+    /// event doesn't pass a threshold intended for multi-source agreement.
+    FusedConfidenceAbove,
 }
 
 impl fmt::Display for ConditionType {
@@ -26,6 +37,9 @@ impl fmt::Display for ConditionType {
             Self::IpPattern => write!(f, "ip_pattern"),
             Self::RepeatOffender => write!(f, "repeat_offender"),
             Self::Frequency => write!(f, "frequency"),
+            Self::MultiSourceMin => write!(f, "multi_source_min"),
+            Self::SingleSourceHigh => write!(f, "single_source_high"),
+            Self::FusedConfidenceAbove => write!(f, "fused_confidence_above"),
         }
     }
 }
@@ -40,10 +54,10 @@ impl FromStr for ConditionType {
             "ip_pattern" => Ok(Self::IpPattern),
             "repeat_offender" => Ok(Self::RepeatOffender),
             "frequency" => Ok(Self::Frequency),
-            other => Err(SoarError::InvalidCondition {
-                condition_type: other.to_string(),
-                reason: "unknown condition type".to_string(),
-            }),
+            "multi_source_min" => Ok(Self::MultiSourceMin),
+            "single_source_high" => Ok(Self::SingleSourceHigh),
+            "fused_confidence_above" => Ok(Self::FusedConfidenceAbove),
+            other => Err(SoarError::UnknownConditionType(other)),
         }
     }
 }

@@ -74,11 +74,11 @@ impl BotnetDetector {
         };
 
         if let Some(unique_sources) = should_alert {
-            log!(DetectionLog::BotnetDetected {
-                dst_ip: key.clone(),
+            log!(DetectionLog::BotnetDetected(
+                key.clone(),
                 unique_sources,
-                window_secs: BOTNET_WINDOW_SECS,
-            });
+                BOTNET_WINDOW_SECS,
+            ));
 
             // source_ip = the latest attacker; dest_ip = the victim being targeted.
             // SOAR blocks source_ip, so we must NOT put the victim here.
@@ -91,6 +91,9 @@ impl BotnetDetector {
                 protocol: alert.protocol,
                 packet_count: 0,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = detection_tx.try_send(event);
@@ -127,6 +130,8 @@ impl BotnetDetector {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
 
     fn make_alert(src_ip: &str, dst_ip: &str) -> AlertMessage {
@@ -142,6 +147,8 @@ mod tests {
             attack_type: Some("DDoS".to_string()),
             confidence: 0.9,
             ae_score: 0.5,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
             packet_count: 100,
             flow_duration_us: 1_000_000,
         }
@@ -182,7 +189,7 @@ mod tests {
         detector.process(&alert, &tx);
         assert_eq!(detector.state.len(), 1);
 
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
         let removed = detector.cleanup();
         assert_eq!(removed, 1);
         assert_eq!(detector.state.len(), 0);

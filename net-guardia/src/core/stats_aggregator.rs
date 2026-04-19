@@ -1,37 +1,40 @@
 use std::sync::Arc;
 
+use macros::log;
+use serde_json::Value;
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
-use tracing::{error, info};
 
-use crate::interface::port::repository::RepositoryPort;
-use crate::interface::port::stats::StatsPort;
+use crate::interface::port::setting::SettingRepo;
+use crate::interface::port::stats::StatsRepo;
 use crate::model::error::Error;
+use crate::model::log::system::SystemLog;
 
 /// Background service that periodically aggregates statistics from SOAR/ML tables
 /// and writes them to the settings table for the Report engine to consume.
 pub struct StatsAggregator {
-    stats: Arc<dyn StatsPort>,
-    repo: Arc<dyn RepositoryPort>,
+    stats: Arc<dyn StatsRepo>,
+    repo: Arc<dyn SettingRepo>,
 }
 
 impl StatsAggregator {
-    pub fn new(stats: Arc<dyn StatsPort>, repo: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo>) -> Self {
         Self { stats, repo }
     }
 
     /// Spawn a background task that runs aggregation every hour.
-    pub fn start(self) -> tokio::task::JoinHandle<()> {
+    pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
-            info!("Stats aggregator started (1h interval)");
+            log!(SystemLog::StatsAggregatorStarted);
             // Run immediately on startup
             if let Err(e) = self.aggregate() {
-                error!("Initial stats aggregation failed: {}", e);
+                log!(SystemLog::InitialStatsAggregationFailed(e.to_string()));
             }
             let mut interval = time::interval(Duration::from_secs(3600));
             loop {
                 interval.tick().await;
                 if let Err(e) = self.aggregate() {
-                    error!("Stats aggregation failed: {}", e);
+                    log!(SystemLog::StatsAggregationFailed(e.to_string()));
                 }
             }
         })
@@ -62,7 +65,7 @@ impl StatsAggregator {
         let breakdown = self.stats.weekly_threat_breakdown(days)?;
         let breakdown_json: serde_json::Map<String, serde_json::Value> = breakdown
             .into_iter()
-            .map(|(k, v)| (k, serde_json::Value::Number(v.into())))
+            .map(|(k, v)| (k, Value::Number(v.into())))
             .collect();
         self.repo.set_setting(
             "weekly_threat_breakdown",
@@ -133,10 +136,12 @@ impl StatsAggregator {
             self.repo.set_setting("weekly_geo_distribution", "[]")?;
         }
 
-        info!(
-            "Stats aggregated: {} threats, {} blocks, {} unblocks, {} active rules",
-            threats_count, blocks_count, unblocks_count, active_rules
-        );
+        log!(SystemLog::StatsAggregated(
+            threats_count,
+            blocks_count,
+            unblocks_count,
+            active_rules,
+        ));
 
         Ok(())
     }
@@ -158,7 +163,7 @@ mod tests {
         db.insert_soar_execution(1, Some("5.6.7.8"), "brute_force", "[]").ok();
         db.insert_soar_block_rule("1.2.3.4", 1, "2099-01-01 00:00:00").ok();
 
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
         aggregator.aggregate().expect("aggregation should succeed");
 
         // Verify settings were written
@@ -187,7 +192,7 @@ mod tests {
     #[test]
     fn aggregator_handles_empty_db() {
         let db = Arc::new(Database::new(":memory:").expect("test db"));
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsPort>, db.clone() as Arc<dyn RepositoryPort>);
+        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
         aggregator
             .aggregate()
             .expect("aggregation should succeed with empty data");

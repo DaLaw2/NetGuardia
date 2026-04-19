@@ -1,25 +1,36 @@
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use arc_swap::ArcSwap;
 use crossbeam::queue::SegQueue;
 use macros::log;
 use tokio::sync::oneshot;
 
+use crate::core::detection::metrics::FusionMetrics;
+use crate::core::ml::adapter::ModelSourceState;
 use crate::core::ml::alert::MLAlert;
-use crate::core::ml::config_loader::InferenceConfig;
-use crate::core::ml::drift_detector::DriftDetector;
+use crate::core::ml::drift_detector::DriftDetectorHandle;
 use crate::core::ml::engine::Engine;
-use crate::core::ml::model_loader::MLModels;
-use crate::core::ml::traffic_logger::TrafficLogger;
+use crate::core::ml::inference::Inference;
+use crate::core::ml::manifest::ModelManifest;
+use crate::core::ml::model_loader::build_adapter;
+use crate::core::ml::traffic_logger::{RotationPolicy, TrafficLogger};
 use crate::infrastructure::app_config::AppConfig;
+use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
+use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR};
 use crate::model::detection::flow_features::FlowFeatures;
+use crate::model::detection::ml_detection::EngineConfig;
+use crate::model::detection::model_source::ModelInfo;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 use crate::model::error::system::SystemError;
+use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
-use crate::model::ml_detection::EngineConfig;
+use crate::model::system::config::MLInferenceConfig;
+use crate::model::system::health::EbpfHealth;
 
 /// Application-level service orchestrator.
 /// Holds all runtime services (health monitoring, ML inference, flow statistics)
@@ -27,28 +38,77 @@ use crate::model::ml_detection::EngineConfig;
 pub struct AppServices {
     pub health: Arc<SystemHealth>,
     pub ml_alert: Arc<MLAlert>,
-    pub ml_models: Arc<MLModels>,
+    pub ml_inference: Arc<Inference>,
     pub ml_engine: Arc<Engine>,
     pub flow_statistics: Arc<FlowStatistics>,
+    pub fusion_metrics: Arc<FusionMetrics>,
     shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
 impl AppServices {
     pub fn new(
         app_config: Arc<AppConfig>,
-        inference_config: Arc<InferenceConfig>,
-        drift_detector: Arc<parking_lot::Mutex<DriftDetector>>,
+        inference_config: Arc<MLInferenceConfig>,
+        ml_manifest: Option<ModelManifest>,
+        drift_detector: DriftDetectorHandle,
+        ebpf_health: Arc<ArcSwap<EbpfHealth>>,
+        comm: Arc<CommunicationManager>,
     ) -> Result<Self, Error> {
-        let health = SystemHealth::new(app_config.clone())?;
+        let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
 
-        let ml_models = Arc::new(MLModels::load_models(&app_config, &inference_config)?);
+        let batch_size = app_config.inference.inference_batch_size;
+
+        let initial_state = match ml_manifest.as_ref() {
+            Some(manifest) => {
+                let manifest_path = PathBuf::from(MODELS_DIR).join(MANIFEST_FILENAME);
+                match build_adapter(manifest, Some(&manifest_path), &inference_config, batch_size) {
+                    Ok(adapter) => {
+                        let info = ModelInfo::new(
+                            manifest.name.clone(),
+                            manifest.adapter.as_str().to_string(),
+                            manifest.features.len(),
+                        );
+                        log!(MLLog::ModelsLoaded(format!(
+                            "{} ({}) — {} features, {} labels",
+                            manifest.name,
+                            manifest.adapter.as_str(),
+                            manifest.features.len(),
+                            manifest.labels.len()
+                        )));
+                        ModelSourceState::Active { adapter, info }
+                    }
+                    Err(e) => {
+                        log!(MLLog::ModelReloadFailed(e.to_string()));
+                        ModelSourceState::Error {
+                            msg: e.to_string(),
+                            since: SystemTime::now(),
+                            last_attempted_path: Some(manifest_path),
+                        }
+                    }
+                }
+            }
+            None => {
+                log!(MLLog::ModelsLoaded(
+                    "no manifest present — ML source dormant".to_string()
+                ));
+                ModelSourceState::Dormant
+            }
+        };
+
+        let ml_inference = Arc::new(Inference::new(initial_state, inference_config.clone()));
         let ml_alert = Arc::new(MLAlert::new());
 
         let traffic_logger = if app_config.inference.traffic_logging_mode {
             let csv_path = app_config.inference.traffic_log_csv_path.clone();
             let mut header = FlowFeatures::all_feature_names_owned();
             header.push("Label".to_string());
-            let logger = TrafficLogger::new(&csv_path, header)
+            let base_path = PathBuf::from(&csv_path);
+            let policy = RotationPolicy {
+                max_file_bytes: app_config.inference.flow_trace_max_file_bytes,
+                max_file_age: Duration::from_secs(app_config.inference.flow_trace_max_file_age_secs),
+                total_budget_bytes: app_config.inference.flow_trace_total_budget_bytes,
+            };
+            let logger = TrafficLogger::new(&base_path, header, policy, Some(comm.clone()))
                 .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
             log!(SystemLog::TrafficLoggingEnabled(csv_path));
             Some(Arc::new(logger))
@@ -65,8 +125,7 @@ impl AppServices {
         };
 
         let ml_engine = Arc::new(Engine::new(
-            ml_models.clone(),
-            inference_config.clone(),
+            ml_inference.clone(),
             ml_alert.clone(),
             drift_detector,
             engine_config,
@@ -75,13 +134,15 @@ impl AppServices {
         ));
 
         let flow_statistics = Arc::new(FlowStatistics::new(ml_engine.clone()));
+        let fusion_metrics = Arc::new(FusionMetrics::new());
 
         Ok(Self {
             health: Arc::new(health),
             ml_alert,
-            ml_models,
+            ml_inference,
             ml_engine,
             flow_statistics,
+            fusion_metrics,
             shutdowns: SegQueue::new(),
         })
     }

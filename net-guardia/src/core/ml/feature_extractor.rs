@@ -1,9 +1,34 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use common::define::tcp_flags::*;
 
 use super::flow_tracker::FlowData;
-use crate::model::ml_detection::PacketData;
-
 use crate::model::detection::flow_features::FlowFeatures;
+use crate::model::detection::ml_detection::PacketData;
+
+/// Signature of a feature getter — takes precomputed flow statistics and returns
+/// a single f64 feature value. Must be pure (no I/O, no allocation).
+/// Kept module-private because `PrecomputedStats` is an implementation detail.
+type FeatureGetter = fn(&PrecomputedStats) -> f64;
+
+/// Returns true if `name` (canonical or alias) is present in FEATURE_REGISTRY.
+/// Used by ModelManifest validation at load time.
+pub fn feature_is_known(name: &str) -> bool {
+    FEATURE_REGISTRY.contains_key(name)
+}
+
+/// Every name (canonical or alias) the system accepts inside a
+/// `manifest.features` list, sorted alphabetically so the BYO
+/// Quickstart endpoint returns a deterministic ordering. Callers
+/// treat this as an opaque string list; aliases for the same
+/// underlying feature appear next to each other after sort only by
+/// coincidence, not as a structural guarantee.
+pub fn feature_registry_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = FEATURE_REGISTRY.keys().copied().collect();
+    names.sort_unstable();
+    names
+}
 
 impl FlowFeatures {
     pub fn extract(flow: &FlowData, feature_names: &[String]) -> Self {
@@ -120,7 +145,7 @@ struct PrecomputedStats {
     idle_mean: f64,
     idle_std: f64,
 
-    // Phase 2: new features for C2/Cryptomining detection
+    // Phase 2: new features for C2/Bot detection
     fwd_bwd_bytes_ratio: f64,
     fwd_iat_skewness: f64,
 }
@@ -207,7 +232,7 @@ impl PrecomputedStats {
         let (idle_max, idle_min, idle_mean, idle_std) =
             compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
 
-        // Phase 2: new features for C2/Cryptomining detection
+        // Phase 2: new features for C2/Bot detection
         let fwd_bwd_bytes_ratio = safe_div(fwd_total_bytes, fwd_total_bytes + bwd_total_bytes);
         let fwd_iat_skewness = compute_bowley_skewness(&fwd_iats);
 
@@ -286,103 +311,205 @@ impl PrecomputedStats {
     }
 
     fn get(&self, feature_name: &str) -> f64 {
-        let safe_div = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
-
-        match feature_name {
-            "Destination Port" | "Dst Port" | "dst_port" => self.dst_port,
-            "Protocol" | "protocol" => self.protocol,
-            "Flow Duration" | "flow_duration" => self.duration_us,
-            "Total Fwd Packets" | "Tot Fwd Pkts" | "fwd_packets" => self.fwd_count,
-            "Total Backward Packets" | "Tot Bwd Pkts" | "bwd_packets" => self.bwd_count,
-            "Total Length of Fwd Packets" | "TotLen Fwd Pkts" | "fwd_bytes" => self.fwd_total_bytes,
-            "Total Length of Bwd Packets" | "TotLen Bwd Pkts" | "bwd_bytes" => self.bwd_total_bytes,
-            "Fwd Packet Length Max" => self.fwd_len_max,
-            "Fwd Packet Length Min" => self.fwd_len_min,
-            "Fwd Packet Length Mean" | "Fwd Pkt Len Mean" | "fwd_pkt_len_mean" => self.fwd_len_mean,
-            "Fwd Packet Length Std" | "Fwd Pkt Len Std" | "fwd_pkt_len_std" => self.fwd_len_std,
-            "Bwd Packet Length Max" => self.bwd_len_max,
-            "Bwd Packet Length Min" => self.bwd_len_min,
-            "Bwd Packet Length Mean" | "Bwd Pkt Len Mean" | "bwd_pkt_len_mean" => self.bwd_len_mean,
-            "Bwd Packet Length Std" | "Bwd Pkt Len Std" | "bwd_pkt_len_std" => self.bwd_len_std,
-            "Flow Bytes/s" | "Flow Byts/s" | "flow_bytes_per_sec" => safe_div(self.total_bytes, self.duration_s),
-            "Flow Packets/s" | "Flow Pkts/s" | "flow_pkts_per_sec" => safe_div(self.total_count, self.duration_s),
-            "Flow IAT Mean" | "flow_iat_mean" => self.flow_iat_mean,
-            "Flow IAT Std" => self.flow_iat_std,
-            "Flow IAT Max" => self.flow_iat_max,
-            "Flow IAT Min" => self.flow_iat_min,
-            "Fwd IAT Total" => self.fwd_iat_total,
-            "Fwd IAT Mean" | "fwd_iat_mean" => self.fwd_iat_mean,
-            "Fwd IAT Std" => self.fwd_iat_std,
-            "Fwd IAT Max" => self.fwd_iat_max,
-            "Fwd IAT Min" => self.fwd_iat_min,
-            "Bwd IAT Total" => self.bwd_iat_total,
-            "Bwd IAT Mean" | "bwd_iat_mean" => self.bwd_iat_mean,
-            "Bwd IAT Std" => self.bwd_iat_std,
-            "Bwd IAT Max" => self.bwd_iat_max,
-            "Bwd IAT Min" => self.bwd_iat_min,
-            "Fwd PSH Flags" => self.fwd_psh,
-            "Bwd PSH Flags" => self.bwd_psh,
-            "Fwd URG Flags" => self.fwd_urg,
-            "Bwd URG Flags" => self.bwd_urg,
-            "Fwd Header Length" => self.fwd_header_bytes,
-            "Bwd Header Length" => self.bwd_header_bytes,
-            "Fwd Packets/s" => safe_div(self.fwd_count, self.duration_s),
-            "Bwd Packets/s" => safe_div(self.bwd_count, self.duration_s),
-            "Min Packet Length" => self.all_len_min,
-            "Max Packet Length" => self.all_len_max,
-            "Packet Length Mean" | "Pkt Len Mean" | "pkt_len_mean" => self.all_len_mean,
-            "Packet Length Std" | "Pkt Len Std" | "pkt_len_std" => self.all_len_std,
-            "Packet Length Variance" => self.all_len_std * self.all_len_std,
-            "FIN Flag Count" | "FIN Flag Cnt" | "fin_flag_cnt" => self.fin_count,
-            "SYN Flag Count" | "SYN Flag Cnt" | "syn_flag_cnt" => self.syn_count,
-            "RST Flag Count" | "RST Flag Cnt" | "rst_flag_cnt" => self.rst_count,
-            "PSH Flag Count" | "PSH Flag Cnt" | "psh_flag_cnt" => self.psh_count,
-            "ACK Flag Count" | "ACK Flag Cnt" | "ack_flag_cnt" => self.ack_count,
-            "URG Flag Count" => self.urg_count,
-            "CWE Flag Count" => self.cwe_count,
-            "ECE Flag Count" => self.ece_count,
-            "Down/Up Ratio" => safe_div(self.bwd_count, self.fwd_count),
-            "Average Packet Size" => safe_div(self.total_bytes, self.total_count),
-            "Avg Fwd Segment Size" => safe_div(self.fwd_total_bytes, self.fwd_count),
-            "Avg Bwd Segment Size" => safe_div(self.bwd_total_bytes, self.bwd_count),
-            "Fwd Header Length.1" => self.fwd_header_bytes,
-            "Fwd Avg Bytes/Bulk" => self.fwd_avg_bytes_bulk,
-            "Fwd Avg Packets/Bulk" => self.fwd_avg_packets_bulk,
-            "Fwd Avg Bulk Rate" => self.fwd_avg_bulk_rate,
-            "Bwd Avg Bytes/Bulk" => self.bwd_avg_bytes_bulk,
-            "Bwd Avg Packets/Bulk" => self.bwd_avg_packets_bulk,
-            "Bwd Avg Bulk Rate" => self.bwd_avg_bulk_rate,
-            "Subflow Fwd Packets" => self.fwd_count,
-            "Subflow Fwd Bytes" => self.fwd_total_bytes,
-            "Subflow Bwd Packets" => self.bwd_count,
-            "Subflow Bwd Bytes" => self.bwd_total_bytes,
-            "Init_Win_bytes_forward" | "Init Fwd Win Byts" | "fwd_win_bytes" => self.init_win_bytes_fwd,
-            "Init_Win_bytes_backward" | "Init Bwd Win Byts" | "bwd_win_bytes" => self.init_win_bytes_bwd,
-            "act_data_pkt_fwd" | "Fwd Act Data Pkts" | "fwd_act_data_pkts" => self.act_data_pkt_fwd,
-            "min_seg_size_forward" | "Fwd Seg Size Min" | "fwd_seg_size_min" => self.min_seg_size_forward,
-            "Active Mean" => self.active_mean,
-            "Active Std" => self.active_std,
-            "Active Max" => self.active_max,
-            "Active Min" => self.active_min,
-            "Idle Mean" => self.idle_mean,
-            "Idle Std" => self.idle_std,
-            "Idle Max" => self.idle_max,
-            "Idle Min" => self.idle_min,
-
-            // Phase 2: unified names for IAT std (already computed, add aliases)
-            "fwd_iat_std" => self.fwd_iat_std,
-            "bwd_iat_std" => self.bwd_iat_std,
-            "flow_iat_std" => self.flow_iat_std,
-
-            // Phase 2: new features for C2/Cryptomining detection
-            "fwd_bwd_bytes_ratio" => self.fwd_bwd_bytes_ratio,
-            "pkt_len_variance" => self.all_len_std * self.all_len_std,
-            "fwd_iat_skewness" => self.fwd_iat_skewness,
-
-            _ => 0.0,
-        }
+        FEATURE_REGISTRY.get(feature_name).map(|g| g(self)).unwrap_or(0.0)
     }
 }
+
+fn reg_safe_div(a: f64, b: f64) -> f64 {
+    if b > 0.0 { a / b } else { 0.0 }
+}
+
+fn reg_insert(m: &mut HashMap<&'static str, FeatureGetter>, names: &[&'static str], g: FeatureGetter) {
+    for n in names {
+        m.insert(*n, g);
+    }
+}
+
+/// Central name → getter table. Every name the system recognizes for a feature
+/// lives here. Manifest validation refuses any name not present in this map.
+/// Aliases (long-form CICFlowMeter names, short snake_case) map to the same getter.
+static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLock::new(|| {
+    let mut m: HashMap<&'static str, FeatureGetter> = HashMap::new();
+
+    reg_insert(&mut m, &["Destination Port", "Dst Port", "dst_port"], |s| s.dst_port);
+    reg_insert(&mut m, &["Protocol", "protocol"], |s| s.protocol);
+    reg_insert(&mut m, &["Flow Duration", "flow_duration"], |s| s.duration_us);
+
+    reg_insert(
+        &mut m,
+        &[
+            "Total Fwd Packets",
+            "Tot Fwd Pkts",
+            "fwd_packets",
+            "Subflow Fwd Packets",
+        ],
+        |s| s.fwd_count,
+    );
+    reg_insert(
+        &mut m,
+        &[
+            "Total Backward Packets",
+            "Tot Bwd Pkts",
+            "bwd_packets",
+            "Subflow Bwd Packets",
+        ],
+        |s| s.bwd_count,
+    );
+    reg_insert(
+        &mut m,
+        &[
+            "Total Length of Fwd Packets",
+            "TotLen Fwd Pkts",
+            "fwd_bytes",
+            "Subflow Fwd Bytes",
+        ],
+        |s| s.fwd_total_bytes,
+    );
+    reg_insert(
+        &mut m,
+        &[
+            "Total Length of Bwd Packets",
+            "TotLen Bwd Pkts",
+            "bwd_bytes",
+            "Subflow Bwd Bytes",
+        ],
+        |s| s.bwd_total_bytes,
+    );
+
+    reg_insert(&mut m, &["Fwd Packet Length Max"], |s| s.fwd_len_max);
+    reg_insert(&mut m, &["Fwd Packet Length Min"], |s| s.fwd_len_min);
+    reg_insert(
+        &mut m,
+        &["Fwd Packet Length Mean", "Fwd Pkt Len Mean", "fwd_pkt_len_mean"],
+        |s| s.fwd_len_mean,
+    );
+    reg_insert(
+        &mut m,
+        &["Fwd Packet Length Std", "Fwd Pkt Len Std", "fwd_pkt_len_std"],
+        |s| s.fwd_len_std,
+    );
+
+    reg_insert(&mut m, &["Bwd Packet Length Max"], |s| s.bwd_len_max);
+    reg_insert(&mut m, &["Bwd Packet Length Min"], |s| s.bwd_len_min);
+    reg_insert(
+        &mut m,
+        &["Bwd Packet Length Mean", "Bwd Pkt Len Mean", "bwd_pkt_len_mean"],
+        |s| s.bwd_len_mean,
+    );
+    reg_insert(
+        &mut m,
+        &["Bwd Packet Length Std", "Bwd Pkt Len Std", "bwd_pkt_len_std"],
+        |s| s.bwd_len_std,
+    );
+
+    reg_insert(&mut m, &["Flow Bytes/s", "Flow Byts/s", "flow_bytes_per_sec"], |s| {
+        reg_safe_div(s.total_bytes, s.duration_s)
+    });
+    reg_insert(&mut m, &["Flow Packets/s", "Flow Pkts/s", "flow_pkts_per_sec"], |s| {
+        reg_safe_div(s.total_count, s.duration_s)
+    });
+
+    reg_insert(&mut m, &["Flow IAT Mean", "flow_iat_mean"], |s| s.flow_iat_mean);
+    reg_insert(&mut m, &["Flow IAT Std", "flow_iat_std"], |s| s.flow_iat_std);
+    reg_insert(&mut m, &["Flow IAT Max"], |s| s.flow_iat_max);
+    reg_insert(&mut m, &["Flow IAT Min"], |s| s.flow_iat_min);
+
+    reg_insert(&mut m, &["Fwd IAT Total"], |s| s.fwd_iat_total);
+    reg_insert(&mut m, &["Fwd IAT Mean", "fwd_iat_mean"], |s| s.fwd_iat_mean);
+    reg_insert(&mut m, &["Fwd IAT Std", "fwd_iat_std"], |s| s.fwd_iat_std);
+    reg_insert(&mut m, &["Fwd IAT Max"], |s| s.fwd_iat_max);
+    reg_insert(&mut m, &["Fwd IAT Min"], |s| s.fwd_iat_min);
+
+    reg_insert(&mut m, &["Bwd IAT Total"], |s| s.bwd_iat_total);
+    reg_insert(&mut m, &["Bwd IAT Mean", "bwd_iat_mean"], |s| s.bwd_iat_mean);
+    reg_insert(&mut m, &["Bwd IAT Std", "bwd_iat_std"], |s| s.bwd_iat_std);
+    reg_insert(&mut m, &["Bwd IAT Max"], |s| s.bwd_iat_max);
+    reg_insert(&mut m, &["Bwd IAT Min"], |s| s.bwd_iat_min);
+
+    reg_insert(&mut m, &["Fwd PSH Flags"], |s| s.fwd_psh);
+    reg_insert(&mut m, &["Bwd PSH Flags"], |s| s.bwd_psh);
+    reg_insert(&mut m, &["Fwd URG Flags"], |s| s.fwd_urg);
+    reg_insert(&mut m, &["Bwd URG Flags"], |s| s.bwd_urg);
+
+    // "Fwd Header Length" and "Fwd Header Length.1" are legacy CICFlowMeter aliases.
+    reg_insert(&mut m, &["Fwd Header Length", "Fwd Header Length.1"], |s| {
+        s.fwd_header_bytes
+    });
+    reg_insert(&mut m, &["Bwd Header Length"], |s| s.bwd_header_bytes);
+
+    reg_insert(&mut m, &["Fwd Packets/s"], |s| reg_safe_div(s.fwd_count, s.duration_s));
+    reg_insert(&mut m, &["Bwd Packets/s"], |s| reg_safe_div(s.bwd_count, s.duration_s));
+
+    reg_insert(&mut m, &["Min Packet Length"], |s| s.all_len_min);
+    reg_insert(&mut m, &["Max Packet Length"], |s| s.all_len_max);
+    reg_insert(&mut m, &["Packet Length Mean", "Pkt Len Mean", "pkt_len_mean"], |s| {
+        s.all_len_mean
+    });
+    reg_insert(&mut m, &["Packet Length Std", "Pkt Len Std", "pkt_len_std"], |s| {
+        s.all_len_std
+    });
+    reg_insert(&mut m, &["Packet Length Variance", "pkt_len_variance"], |s| {
+        s.all_len_std * s.all_len_std
+    });
+
+    reg_insert(&mut m, &["FIN Flag Count", "FIN Flag Cnt", "fin_flag_cnt"], |s| {
+        s.fin_count
+    });
+    reg_insert(&mut m, &["SYN Flag Count", "SYN Flag Cnt", "syn_flag_cnt"], |s| {
+        s.syn_count
+    });
+    reg_insert(&mut m, &["RST Flag Count", "RST Flag Cnt", "rst_flag_cnt"], |s| {
+        s.rst_count
+    });
+    reg_insert(&mut m, &["PSH Flag Count", "PSH Flag Cnt", "psh_flag_cnt"], |s| {
+        s.psh_count
+    });
+    reg_insert(&mut m, &["ACK Flag Count", "ACK Flag Cnt", "ack_flag_cnt"], |s| {
+        s.ack_count
+    });
+    reg_insert(&mut m, &["URG Flag Count"], |s| s.urg_count);
+    reg_insert(&mut m, &["CWE Flag Count"], |s| s.cwe_count);
+    reg_insert(&mut m, &["ECE Flag Count"], |s| s.ece_count);
+
+    reg_insert(&mut m, &["Down/Up Ratio"], |s| reg_safe_div(s.bwd_count, s.fwd_count));
+    reg_insert(&mut m, &["Average Packet Size"], |s| {
+        reg_safe_div(s.total_bytes, s.total_count)
+    });
+    reg_insert(&mut m, &["Avg Fwd Segment Size"], |s| {
+        reg_safe_div(s.fwd_total_bytes, s.fwd_count)
+    });
+    reg_insert(&mut m, &["Avg Bwd Segment Size"], |s| {
+        reg_safe_div(s.bwd_total_bytes, s.bwd_count)
+    });
+
+    reg_insert(&mut m, &["Fwd Avg Bytes/Bulk"], |s| s.fwd_avg_bytes_bulk);
+    reg_insert(&mut m, &["Fwd Avg Packets/Bulk"], |s| s.fwd_avg_packets_bulk);
+    reg_insert(&mut m, &["Fwd Avg Bulk Rate"], |s| s.fwd_avg_bulk_rate);
+    reg_insert(&mut m, &["Bwd Avg Bytes/Bulk"], |s| s.bwd_avg_bytes_bulk);
+    reg_insert(&mut m, &["Bwd Avg Packets/Bulk"], |s| s.bwd_avg_packets_bulk);
+    reg_insert(&mut m, &["Bwd Avg Bulk Rate"], |s| s.bwd_avg_bulk_rate);
+
+    reg_insert(&mut m, &["fwd_win_bytes"], |s| s.init_win_bytes_fwd);
+    reg_insert(&mut m, &["bwd_win_bytes"], |s| s.init_win_bytes_bwd);
+    reg_insert(&mut m, &["fwd_act_data_pkts"], |s| s.act_data_pkt_fwd);
+    reg_insert(&mut m, &["fwd_seg_size_min"], |s| s.min_seg_size_forward);
+
+    reg_insert(&mut m, &["Active Mean"], |s| s.active_mean);
+    reg_insert(&mut m, &["Active Std"], |s| s.active_std);
+    reg_insert(&mut m, &["Active Max"], |s| s.active_max);
+    reg_insert(&mut m, &["Active Min"], |s| s.active_min);
+    reg_insert(&mut m, &["Idle Mean"], |s| s.idle_mean);
+    reg_insert(&mut m, &["Idle Std"], |s| s.idle_std);
+    reg_insert(&mut m, &["Idle Max"], |s| s.idle_max);
+    reg_insert(&mut m, &["Idle Min"], |s| s.idle_min);
+
+    // Phase 2: C2/Bot-oriented features
+    reg_insert(&mut m, &["fwd_bwd_bytes_ratio"], |s| s.fwd_bwd_bytes_ratio);
+    reg_insert(&mut m, &["fwd_iat_skewness"], |s| s.fwd_iat_skewness);
+    reg_insert(&mut m, &["iat_cv"], |s| reg_safe_div(s.flow_iat_std, s.flow_iat_mean));
+
+    m
+});
 
 fn compute_stats(values: &[f64]) -> (f64, f64, f64, f64) {
     if values.is_empty() {
@@ -464,6 +591,210 @@ mod tests {
         // All identical values → Q1 == Q3 → IQR = 0
         assert_eq!(compute_bowley_skewness(&[5.0, 5.0, 5.0, 5.0]), 0.0);
         assert_eq!(compute_bowley_skewness(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), 0.0);
+    }
+
+    /// Hand-crafted PrecomputedStats with distinctive sentinel values per field.
+    /// Lets us verify registry getter dispatch without constructing a real FlowData.
+    fn sample_stats() -> PrecomputedStats {
+        PrecomputedStats {
+            dst_port: 443.0,
+            protocol: 6.0,
+            duration_us: 1_000_000.0,
+            fwd_count: 10.0,
+            bwd_count: 4.0,
+            total_count: 14.0,
+            fwd_total_bytes: 2000.0,
+            bwd_total_bytes: 800.0,
+            total_bytes: 2800.0,
+            duration_s: 1.0,
+            fwd_len_max: 1500.0,
+            fwd_len_min: 40.0,
+            fwd_len_mean: 200.0,
+            fwd_len_std: 300.0,
+            bwd_len_max: 1200.0,
+            bwd_len_min: 60.0,
+            bwd_len_mean: 200.0,
+            bwd_len_std: 250.0,
+            all_len_max: 1500.0,
+            all_len_min: 40.0,
+            all_len_mean: 200.0,
+            all_len_std: 280.0,
+            flow_iat_max: 50_000.0,
+            flow_iat_min: 100.0,
+            flow_iat_mean: 10_000.0,
+            flow_iat_std: 5_000.0,
+            fwd_iat_total: 90_000.0,
+            fwd_iat_max: 40_000.0,
+            fwd_iat_min: 200.0,
+            fwd_iat_mean: 10_000.0,
+            fwd_iat_std: 6_000.0,
+            bwd_iat_total: 30_000.0,
+            bwd_iat_max: 15_000.0,
+            bwd_iat_min: 300.0,
+            bwd_iat_mean: 7_500.0,
+            bwd_iat_std: 4_000.0,
+            fwd_psh: 2.0,
+            bwd_psh: 1.0,
+            fwd_urg: 0.0,
+            bwd_urg: 0.0,
+            fwd_header_bytes: 200.0,
+            bwd_header_bytes: 80.0,
+            fin_count: 1.0,
+            syn_count: 1.0,
+            rst_count: 0.0,
+            psh_count: 3.0,
+            ack_count: 10.0,
+            urg_count: 0.0,
+            cwe_count: 0.0,
+            ece_count: 0.0,
+            fwd_avg_bytes_bulk: 500.0,
+            fwd_avg_packets_bulk: 5.0,
+            fwd_avg_bulk_rate: 5000.0,
+            bwd_avg_bytes_bulk: 400.0,
+            bwd_avg_packets_bulk: 4.0,
+            bwd_avg_bulk_rate: 4000.0,
+            init_win_bytes_fwd: 65535.0,
+            init_win_bytes_bwd: 65000.0,
+            act_data_pkt_fwd: 8.0,
+            min_seg_size_forward: 40.0,
+            active_max: 1000.0,
+            active_min: 50.0,
+            active_mean: 300.0,
+            active_std: 200.0,
+            idle_max: 500.0,
+            idle_min: 10.0,
+            idle_mean: 100.0,
+            idle_std: 80.0,
+            fwd_bwd_bytes_ratio: 0.71,
+            fwd_iat_skewness: 0.15,
+        }
+    }
+
+    #[test]
+    fn registry_unknown_name_returns_zero() {
+        let s = sample_stats();
+        assert_eq!(s.get("not_a_feature"), 0.0);
+    }
+
+    #[test]
+    fn registry_aliases_resolve_identically() {
+        // Long-form, short-form, and "Subflow" aliases must all map to the same getter.
+        let s = sample_stats();
+        for group in [
+            [
+                "Total Fwd Packets",
+                "Tot Fwd Pkts",
+                "fwd_packets",
+                "Subflow Fwd Packets",
+            ],
+            [
+                "Total Length of Fwd Packets",
+                "TotLen Fwd Pkts",
+                "fwd_bytes",
+                "Subflow Fwd Bytes",
+            ],
+            ["Flow IAT Std", "flow_iat_std", "Flow IAT Std", "Flow IAT Std"], // pad to 4
+            ["Fwd IAT Std", "fwd_iat_std", "Fwd IAT Std", "Fwd IAT Std"],
+            ["Bwd IAT Std", "bwd_iat_std", "Bwd IAT Std", "Bwd IAT Std"],
+            [
+                "Packet Length Variance",
+                "pkt_len_variance",
+                "Packet Length Variance",
+                "Packet Length Variance",
+            ],
+            [
+                "Fwd Header Length",
+                "Fwd Header Length.1",
+                "Fwd Header Length",
+                "Fwd Header Length",
+            ],
+        ] {
+            let expected = s.get(group[0]);
+            for name in &group[1..] {
+                assert_eq!(
+                    s.get(name),
+                    expected,
+                    "alias '{name}' should resolve to same value as '{}'",
+                    group[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn registry_safe_div_returns_zero_on_zero_denominator() {
+        let mut s = sample_stats();
+        s.flow_iat_mean = 0.0;
+        s.flow_iat_std = 500.0;
+        // iat_cv = std / mean, but mean=0 → safe_div → 0.0
+        assert_eq!(s.get("iat_cv"), 0.0);
+        s.duration_s = 0.0;
+        assert_eq!(s.get("flow_bytes_per_sec"), 0.0);
+        assert_eq!(s.get("flow_pkts_per_sec"), 0.0);
+    }
+
+    #[test]
+    fn registry_covers_v10_manifest_features() {
+        // Every feature the shipped v10 manifest references must be registered.
+        // A missing name here means the match → registry refactor dropped a binding.
+        const V10_FEATURES: &[&str] = &[
+            "flow_duration",
+            "fwd_packets",
+            "bwd_packets",
+            "fwd_bytes",
+            "bwd_bytes",
+            "flow_bytes_per_sec",
+            "flow_pkts_per_sec",
+            "fwd_win_bytes",
+            "bwd_win_bytes",
+            "fwd_pkt_len_mean",
+            "bwd_pkt_len_mean",
+            "fwd_iat_mean",
+            "bwd_iat_mean",
+            "flow_iat_mean",
+            "pkt_len_mean",
+            "dst_port",
+            "protocol",
+            "psh_flag_cnt",
+            "ack_flag_cnt",
+            "syn_flag_cnt",
+            "fin_flag_cnt",
+            "rst_flag_cnt",
+            "pkt_len_std",
+            "fwd_pkt_len_std",
+            "bwd_pkt_len_std",
+            "fwd_seg_size_min",
+            "fwd_act_data_pkts",
+            "fwd_iat_std",
+            "bwd_iat_std",
+            "fwd_bwd_bytes_ratio",
+            "iat_cv",
+        ];
+        for f in V10_FEATURES {
+            assert!(feature_is_known(f), "v10 feature '{f}' missing from FEATURE_REGISTRY");
+        }
+    }
+
+    #[test]
+    fn feature_registry_names_returns_sorted_unique_list() {
+        let names = feature_registry_names();
+        assert!(
+            names.len() > 30,
+            "FEATURE_REGISTRY should carry at least the v10 feature set plus aliases"
+        );
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "feature_registry_names must be sorted");
+        let mut dedup = names.clone();
+        dedup.dedup();
+        assert_eq!(
+            names.len(),
+            dedup.len(),
+            "feature_registry_names must have no duplicates"
+        );
+        // Spot-check a canonical + alias pair both surface.
+        assert!(names.contains(&"Flow Duration"));
+        assert!(names.contains(&"flow_duration"));
     }
 
     #[test]

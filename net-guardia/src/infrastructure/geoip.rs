@@ -2,10 +2,8 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lru::LruCache;
 use maxminddb::{MaxMindDbError, Reader, geoip2};
-use std::num::NonZeroUsize;
-use tokio::sync::RwLock;
+use moka::sync::Cache;
 use tokio::task;
 
 use crate::model::monitoring::geolocation::GeoLocation;
@@ -13,7 +11,7 @@ use crate::utils::ip_address;
 
 pub struct GeoIpService {
     reader: Arc<Reader<Vec<u8>>>,
-    cache: Arc<RwLock<LruCache<IpAddr, Option<GeoLocation>>>>,
+    cache: Cache<IpAddr, Option<GeoLocation>>,
 }
 
 impl GeoIpService {
@@ -24,11 +22,11 @@ impl GeoIpService {
 
     pub fn with_cache_size<P: AsRef<Path>>(db_path: P, cache_size: usize) -> Result<Self, MaxMindDbError> {
         let reader = Reader::open_readfile(db_path)?;
-        let cache_capacity = NonZeroUsize::new(cache_size).unwrap_or_else(|| NonZeroUsize::new(10000).unwrap());
+        let capacity = if cache_size == 0 { 10_000 } else { cache_size } as u64;
 
         Ok(Self {
             reader: Arc::new(reader),
-            cache: Arc::new(RwLock::new(LruCache::new(cache_capacity))),
+            cache: Cache::new(capacity),
         })
     }
 
@@ -44,11 +42,8 @@ impl GeoIpService {
             }));
         }
 
-        {
-            let cache = self.cache.read().await;
-            if let Some(cached) = cache.peek(&ip) {
-                return Ok(cached.clone());
-            }
+        if let Some(cached) = self.cache.get(&ip) {
+            return Ok(cached);
         }
 
         let reader = self.reader.clone();
@@ -59,10 +54,7 @@ impl GeoIpService {
                 offset: None,
             })??;
 
-        {
-            let mut cache = self.cache.write().await;
-            cache.put(ip, result.clone());
-        }
+        self.cache.insert(ip, result.clone());
 
         Ok(result)
     }

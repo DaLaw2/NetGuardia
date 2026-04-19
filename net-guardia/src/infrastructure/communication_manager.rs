@@ -1,3 +1,11 @@
+//! Cross-BC in-process event bus (technical service, not a BC).
+//!
+//! Per `docs/strategy/DOMAIN_MAP.md` §2, Communication Bus is a Technical
+//! Service — it has no ubiquitous language, no domain expert, no aggregate.
+//! It stays in `infrastructure/` and never takes a BC folder name. The trait
+//! surface (`Event`, `Command`, `Query`, `EventBroadcaster`, `CommandHandler`)
+//! lives at `interface/communication/` and remains untouched.
+
 use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;
@@ -126,6 +134,21 @@ impl CommunicationManager {
             .ok_or(MiscError::TypeNotRegistered)?;
         broadcaster.broadcast_event(Box::new(event))
     }
+
+    /// Synchronous counterpart for callers that live outside the tokio
+    /// runtime — in particular, the Flow Trace writer thread, which
+    /// runs on a dedicated `std::thread` and can't `.await`. The
+    /// internal broadcast channel is already non-blocking, so the
+    /// `async fn` sibling never actually yields; this variant exposes
+    /// the same work without the ceremony.
+    pub fn publish_event_sync<E: Event + 'static>(&self, event: E) -> Result<(), Error> {
+        let type_id = TypeId::of::<E>();
+        let broadcaster = self
+            .event_broadcasters
+            .get(&type_id)
+            .ok_or(MiscError::TypeNotRegistered)?;
+        broadcaster.broadcast_event(Box::new(event))
+    }
 }
 
 /// Fluent builder for registering a service's command/query/event handlers.
@@ -164,6 +187,8 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::interface::communication::command::Command;
     use crate::interface::communication::event::Event;
@@ -183,7 +208,7 @@ mod tests {
     impl Command for TestCommand {}
 
     struct TestCommandHandler {
-        received: Arc<std::sync::Mutex<Vec<String>>>,
+        received: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -226,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_dispatch() {
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::new(Mutex::new(Vec::new()));
         let handler = Arc::new(TestCommandHandler {
             received: received.clone(),
         });
@@ -286,6 +311,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_event_sync_delivers_to_subscriber() {
+        let comm = CommunicationManager::new();
+        comm.register_event_type::<TestEvent>();
+        let mut rx = comm.subscribe_event::<TestEvent>().unwrap();
+
+        comm.publish_event_sync(TestEvent { message: "sync".into() }).unwrap();
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.message, "sync");
+    }
+
+    #[test]
+    fn publish_event_sync_errors_when_type_unregistered() {
+        let comm = CommunicationManager::new();
+        let result = comm.publish_event_sync(TestEvent {
+            message: "dropped".into(),
+        });
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn test_event_multiple_subscribers() {
         let comm = CommunicationManager::new();
         comm.register_event_type::<TestEvent>();
@@ -305,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_registrar() {
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::new(Mutex::new(Vec::new()));
         let handler = Arc::new(TestCommandHandler {
             received: received.clone(),
         });

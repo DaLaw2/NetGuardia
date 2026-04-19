@@ -4,8 +4,8 @@ use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
 use crate::core::acl_service::AclService;
-use crate::model::direction::FlowDirection;
-use crate::model::list_type::ListType;
+use crate::model::access_control::list_type::ListType;
+use crate::model::monitoring::direction::FlowDirection;
 
 #[derive(Deserialize)]
 struct CountryCodesRequest {
@@ -27,13 +27,13 @@ pub fn initialize() -> Scope {
 
 async fn get_ipv4_list(path: web::Path<(FlowDirection, ListType)>, acl: web::Data<AclService>) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    let list = acl.access_control().get_ipv4_list(direction, list_type).await;
+    let list = acl.access_control().get_ipv4_list(direction, list_type);
     HttpResponse::Ok().json(list)
 }
 
 async fn get_ipv6_list(path: web::Path<(FlowDirection, ListType)>, acl: web::Data<AclService>) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    let list = acl.access_control().get_ipv6_list(direction, list_type).await;
+    let list = acl.access_control().get_ipv6_list(direction, list_type);
     HttpResponse::Ok().json(list)
 }
 
@@ -43,7 +43,7 @@ async fn add_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.add_ipv4(direction, list_type, address.into_inner()).await {
+    match acl.add_ipv4(direction, list_type, address.into_inner()) {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -55,7 +55,7 @@ async fn add_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.add_ipv6(direction, list_type, address.into_inner()).await {
+    match acl.add_ipv6(direction, list_type, address.into_inner()) {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -67,7 +67,7 @@ async fn remove_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.remove_ipv4(direction, list_type, address.into_inner()).await {
+    match acl.remove_ipv4(direction, list_type, address.into_inner()) {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -79,7 +79,7 @@ async fn remove_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.remove_ipv6(direction, list_type, address.into_inner()).await {
+    match acl.remove_ipv6(direction, list_type, address.into_inner()) {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }

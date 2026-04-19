@@ -1,26 +1,37 @@
 use std::sync::Arc;
 
-use crate::interface::port::notification::{AlertNotifier, NotificationConfigPort};
-use crate::interface::port::repository::RepositoryPort;
+use serde_json::Value;
+
+use crate::core::email::scheduler::SmtpClient;
+use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::notification::AlertNotifierFactory;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
 /// Domain service for notification config (Telegram, SMTP).
 /// Coordinates DB persistence and external service testing.
 pub struct NotificationService {
-    notif: Arc<dyn NotificationConfigPort>,
-    repo: Arc<dyn RepositoryPort>,
+    notif: Arc<dyn SettingRepo>,
+    repo: Arc<dyn AppRepo>,
     secrets: Arc<dyn SecretStorePort>,
+    alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
 }
 
 impl NotificationService {
     pub fn new(
-        notif: Arc<dyn NotificationConfigPort>,
-        repo: Arc<dyn RepositoryPort>,
+        notif: Arc<dyn SettingRepo>,
+        repo: Arc<dyn AppRepo>,
         secrets: Arc<dyn SecretStorePort>,
+        alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
     ) -> Self {
-        Self { notif, repo, secrets }
+        Self {
+            notif,
+            repo,
+            secrets,
+            alert_notifier_factory,
+        }
     }
 
     /// Get Telegram config with redacted bot_token.
@@ -39,10 +50,10 @@ impl NotificationService {
                         && t.len() > 8
                     {
                         let redacted = format!("{}...{}", &t[..4], &t[t.len() - 4..]);
-                        config["bot_token_redacted"] = serde_json::Value::String(redacted);
+                        config["bot_token_redacted"] = Value::String(redacted);
                     }
                     config.as_object_mut().map(|obj| obj.remove("bot_token"));
-                    config["configured"] = serde_json::Value::Bool(true);
+                    config["configured"] = Value::Bool(true);
                     Ok(config)
                 }
                 Err(_) => Ok(serde_json::json!({"configured": false})),
@@ -64,33 +75,30 @@ impl NotificationService {
         self.notif.set_notification_config("telegram", &config_json)
     }
 
-    /// Send a test Telegram message using current config.
+    /// Send a test Telegram message using current config. The factory
+    /// constructs a fresh notifier on every call so the test reflects the
+    /// most-recently-saved config (the user typically clicks "test"
+    /// immediately after `set_telegram_config`).
     pub async fn test_telegram(&self) -> Result<(), Error> {
-        let adapter = crate::adapter::telegram::TelegramAdapter::new(
-            self.notif.clone(),
-            self.repo.clone(),
-            Some(self.secrets.clone()),
-        )?;
-        adapter.send_test_message().await
+        let notifier = self.alert_notifier_factory.create()?;
+        notifier.send_test_message().await
     }
 
     /// Send a test email using current SMTP config.
     pub fn test_smtp(&self) -> Result<String, Error> {
-        let smtp_client =
-            crate::core::email::scheduler::SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
-        let smtp = smtp_client.ok_or_else(|| MiscError::ValidationError {
-            message: "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
-                 If smtp_username is not an email address, also set smtp_sender."
-                .into(),
+        let smtp_client = SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
+        let smtp = smtp_client.ok_or_else(|| {
+            MiscError::ValidationError(
+                "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
+                 If smtp_username is not an email address, also set smtp_sender.",
+            )
         })?;
 
         let recipient = self
             .repo
             .get_setting("smtp_recipient")?
             .filter(|r| !r.is_empty())
-            .ok_or_else(|| MiscError::ValidationError {
-                message: "No smtp_recipient configured.".into(),
-            })?;
+            .ok_or_else(|| MiscError::ValidationError("No smtp_recipient configured."))?;
 
         smtp.send(
             &recipient,

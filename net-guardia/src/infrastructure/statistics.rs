@@ -1,10 +1,12 @@
 use std::sync::Arc;
-use std::time;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::ml::engine::Engine;
 use crate::core::ml::flow_tracker::FlowData;
-use crate::model::direction::Direction;
-use crate::model::flow_stats::{FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary};
+use crate::model::monitoring::direction::Direction;
+use crate::model::monitoring::flow_stats::{
+    FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary,
+};
 
 /// Conversion from core::ml::FlowData to model::FlowStatsEntry.
 /// Placed here (core layer) to maintain dependency rule: model/ must not import core/.
@@ -40,15 +42,14 @@ impl FlowStatistics {
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
         let mut entries = Vec::new();
         for tracker in self.engine.trackers() {
-            let t = tracker.lock();
-            entries.extend(t.get_flows().iter().map(FlowStatsEntry::from));
+            entries.extend(tracker.get_flows().iter().map(FlowStatsEntry::from));
         }
         entries
     }
 
     pub fn get_filtered_flows(&self, sub: &FlowSubscription) -> Vec<FlowStatsEntry> {
-        let now_us = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 
@@ -63,7 +64,7 @@ impl FlowStatistics {
             flows.retain(|f| f.last_seen_us >= cutoff);
         }
 
-        flows.sort_by(|a, b| (b.fwd_bytes + b.bwd_bytes).cmp(&(a.fwd_bytes + a.bwd_bytes)));
+        flows.sort_by_key(|f| std::cmp::Reverse(f.fwd_bytes + f.bwd_bytes));
 
         if let Some(n) = sub.top_n {
             flows.truncate(n.min(10000));
@@ -100,8 +101,8 @@ impl FlowStatistics {
             }
         }
 
-        let now_ms = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 

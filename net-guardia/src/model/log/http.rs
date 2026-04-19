@@ -11,5 +11,8 @@ loggable! {
 
         #[error("Setup HTTP server error: {error}")]
         SetupServerError { error: String } => tracing::Level::ERROR,
+
+        #[error("Fusion WebSocket failed to subscribe to ThreatDetectedEvent: {err}")]
+        FusionSubscribeFailed { err: String } => tracing::Level::ERROR,
     }
 }

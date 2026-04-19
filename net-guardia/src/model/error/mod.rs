@@ -9,6 +9,7 @@ pub mod misc;
 pub mod ml;
 pub mod notification;
 pub mod soar;
+pub mod suricata;
 pub mod system;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ use crate::model::error::misc::MiscError;
 use crate::model::error::ml::MLError;
 use crate::model::error::notification::NotificationError;
 use crate::model::error::soar::SoarError;
+use crate::model::error::suricata::SuricataError;
 use crate::model::error::system::SystemError;
 
 #[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
@@ -50,6 +52,8 @@ pub enum Error {
     Notification(NotificationError),
     #[error("{0}")]
     Soar(SoarError),
+    #[error("{0}")]
+    Suricata(SuricataError),
     #[error("{0}")]
     System(SystemError),
 }
@@ -117,6 +121,12 @@ impl From<NotificationError> for Error {
 impl From<SoarError> for Error {
     fn from(error: SoarError) -> Self {
         Self::Soar(error)
+    }
+}
+
+impl From<SuricataError> for Error {
+    fn from(error: SuricataError) -> Self {
+        Self::Suricata(error)
     }
 }
 

@@ -1,14 +1,18 @@
-use actix_web::{HttpResponse, Scope, web};
-use serde::Deserialize;
+use std::fs;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
+use actix_web::{HttpResponse, Scope, web};
 use macros::log;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::adapter::persistence::Database;
 use crate::core::auth::password;
 use crate::core::auth::setup_guard::SetupCompleteFlag;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 
 pub fn initialize() -> Scope {
@@ -27,7 +31,7 @@ async fn setup_status(setup_flag: web::Data<SetupCompleteFlag>) -> HttpResponse 
 
 async fn list_interfaces() -> HttpResponse {
     // List available network interfaces
-    let interfaces: Vec<serde_json::Value> = match std::fs::read_dir("/sys/class/net") {
+    let interfaces: Vec<Value> = match fs::read_dir("/sys/class/net") {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .map(|e| {
@@ -98,7 +102,7 @@ async fn complete_setup(
             }));
         }
         let iface_path = format!("/sys/class/net/{}", iface);
-        if !std::path::Path::new(&iface_path).exists() {
+        if !Path::new(&iface_path).exists() {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": format!("Network interface '{}' not found", iface)
             }));
@@ -172,52 +176,7 @@ async fn complete_setup(
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_valid_interface_names() {
-        assert!(is_valid_interface_name("eth0"));
-        assert!(is_valid_interface_name("ens33"));
-        assert!(is_valid_interface_name("br-lan"));
-        assert!(is_valid_interface_name("wlan0.1"));
-    }
-
-    #[test]
-    fn test_invalid_interface_empty() {
-        assert!(!is_valid_interface_name(""));
-    }
-
-    #[test]
-    fn test_invalid_interface_too_long() {
-        let long = "a".repeat(17);
-        assert!(!is_valid_interface_name(&long));
-        // Exactly 16 should be valid
-        let exact = "a".repeat(16);
-        assert!(is_valid_interface_name(&exact));
-    }
-
-    #[test]
-    fn test_invalid_interface_path_traversal() {
-        assert!(!is_valid_interface_name("../etc"));
-        assert!(!is_valid_interface_name("../../shadow"));
-        assert!(!is_valid_interface_name("/sys/class"));
-    }
-
-    #[test]
-    fn test_invalid_interface_special_chars() {
-        assert!(!is_valid_interface_name("eth0;rm"));
-        assert!(!is_valid_interface_name("lo&&cat"));
-        assert!(!is_valid_interface_name("eth0 space"));
-    }
-}
-
-fn save_config(
-    db: &Database,
-    secrets: &dyn SecretStorePort,
-    req: &SetupRequest,
-) -> Result<(), crate::model::error::Error> {
+fn save_config(db: &Database, secrets: &dyn SecretStorePort, req: &SetupRequest) -> Result<(), Error> {
     // Save network config
     db.set_setting("ingress_interface", &req.ingress_interface)?;
     db.set_setting("egress_interface", &req.egress_interface)?;
@@ -257,4 +216,45 @@ fn save_config(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_interface_names() {
+        assert!(is_valid_interface_name("eth0"));
+        assert!(is_valid_interface_name("ens33"));
+        assert!(is_valid_interface_name("br-lan"));
+        assert!(is_valid_interface_name("wlan0.1"));
+    }
+
+    #[test]
+    fn test_invalid_interface_empty() {
+        assert!(!is_valid_interface_name(""));
+    }
+
+    #[test]
+    fn test_invalid_interface_too_long() {
+        let long = "a".repeat(17);
+        assert!(!is_valid_interface_name(&long));
+        // Exactly 16 should be valid
+        let exact = "a".repeat(16);
+        assert!(is_valid_interface_name(&exact));
+    }
+
+    #[test]
+    fn test_invalid_interface_path_traversal() {
+        assert!(!is_valid_interface_name("../etc"));
+        assert!(!is_valid_interface_name("../../shadow"));
+        assert!(!is_valid_interface_name("/sys/class"));
+    }
+
+    #[test]
+    fn test_invalid_interface_special_chars() {
+        assert!(!is_valid_interface_name("eth0;rm"));
+        assert!(!is_valid_interface_name("lo&&cat"));
+        assert!(!is_valid_interface_name("eth0 space"));
+    }
 }

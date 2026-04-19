@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use macros::log;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::interval;
 
 use crate::core::correlation::botnet::BotnetDetector;
 use crate::core::correlation::lateral::LateralMovementDetector;
@@ -43,15 +45,15 @@ impl CorrelationEngine {
     async fn run(mut self) {
         log!(DetectionLog::CorrelationEngineStarted);
 
-        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut cleanup_interval = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
         loop {
             tokio::select! {
                 result = self.alert_rx.recv() => {
                     match result {
                         Ok(alert) => self.process_alert(&alert),
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -70,7 +72,7 @@ impl CorrelationEngine {
     fn cleanup(&self) {
         let removed = self.botnet.cleanup() + self.scan.cleanup() + self.lateral.cleanup();
         if removed > 0 {
-            log!(DetectionLog::CorrelationCleanup { removed });
+            log!(DetectionLog::CorrelationCleanup(removed));
         }
     }
 }

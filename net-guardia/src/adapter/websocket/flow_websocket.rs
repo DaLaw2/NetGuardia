@@ -1,12 +1,13 @@
 use std::time::Duration;
 
+use actix_web::rt::spawn;
 use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::Message;
 use futures_util::StreamExt;
 use tokio::time::interval;
 
 use crate::infrastructure::statistics::FlowStatistics;
-use crate::model::flow_stats::FlowSubscription;
+use crate::model::monitoring::flow_stats::FlowSubscription;
 
 /// Default subscription: all flows, no filter, 5 second interval
 fn default_subscription() -> FlowSubscription {
@@ -31,7 +32,7 @@ pub async fn flow_stats_ws(
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
-    actix_web::rt::spawn(async move {
+    spawn(async move {
         let mut subscription = default_subscription();
         let mut ticker = interval(Duration::from_secs(subscription.interval_secs.unwrap_or(5)));
 
@@ -66,11 +67,7 @@ pub async fn flow_stats_ws(
                                 }
                             }
                         }
-                        Some(Ok(Message::Ping(bytes))) => {
-                            if session.pong(&bytes).await.is_err() {
-                                break;
-                            }
-                        }
+                        Some(Ok(Message::Ping(bytes))) if session.pong(&bytes).await.is_err() => break,
                         Some(Ok(Message::Close(_))) | None => break,
                         _ => {}
                     }

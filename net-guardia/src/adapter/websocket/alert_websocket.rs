@@ -1,21 +1,23 @@
+use actix_web::rt::spawn;
 use actix_web::{HttpRequest, HttpResponse, Result, web};
 use actix_ws::{Message, MessageStream, Session, handle};
 use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::ml::alert::MLAlert;
+use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
-use crate::model::ml_detection::AlertMessage;
 
 pub async fn websocket_alert(req: HttpRequest, body: web::Payload, ai: web::Data<MLAlert>) -> Result<HttpResponse> {
     let (response, session, msg_stream) = handle(&req, body)?;
 
     let broadcast_rx = ai.subscribe_to_alerts();
 
-    actix_web::rt::spawn(async move {
+    spawn(async move {
         handle_alert_connection(session, msg_stream, broadcast_rx).await;
     });
 
@@ -41,11 +43,11 @@ async fn handle_alert_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    Err(RecvError::Lagged(skipped)) => {
                         log!(HttpLog::WebSocketLagged(skipped));
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Err(RecvError::Closed) => {
                         break;
                     }
                 }

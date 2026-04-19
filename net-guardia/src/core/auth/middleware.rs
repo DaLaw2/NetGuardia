@@ -1,16 +1,18 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+use actix_web::http::Method;
 use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 
 use macros::log;
 
 use crate::core::auth::jwt::JwtService;
-use crate::interface::port::api_key::ApiKeyPort;
-use crate::interface::port::repository::RepositoryPort;
+use crate::interface::port::api_key::ApiKeyRepo;
+use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::auth::AuthError;
 
 pub struct AuthMiddleware;
@@ -37,7 +39,7 @@ pub struct AuthMiddlewareService<S> {
     service: Rc<S>,
 }
 
-fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<String> {
+fn required_permission(path: &str, method: &Method) -> Option<String> {
     let resource = if path == "/api/auth/login" || path == "/api/auth/me" || path == "/api/auth/change-password" {
         return None; // Public auth endpoints: login (no auth), me/change-password (auth-only, no RBAC)
     } else if path.starts_with("/api/auth/") {
@@ -45,8 +47,12 @@ fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<S
         return Some("users:admin".to_string());
     } else if path.starts_with("/api/health/") || path.starts_with("/api/stats/") {
         "dashboard"
-    } else if path.starts_with("/api/ml/") {
+    } else if path.starts_with("/api/ml/") || path.starts_with("/api/byo/") {
         "ai_detection"
+    } else if path.starts_with("/api/fusion/") {
+        "fusion"
+    } else if path.starts_with("/api/flow-trace/") {
+        "flow_trace"
     } else if path.starts_with("/api/acl/geo/") {
         "geo_block"
     } else if path.starts_with("/api/acl/") {
@@ -75,7 +81,7 @@ fn required_permission(path: &str, method: &actix_web::http::Method) -> Option<S
     };
 
     let action = match *method {
-        actix_web::http::Method::GET => "read",
+        Method::GET => "read",
         _ => "write",
     };
 
@@ -91,7 +97,7 @@ where
     type Error = ActixError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(&self, ctx: &mut core::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
@@ -140,19 +146,19 @@ where
             } else if let Some(api_key_header) = req.headers().get("X-API-Key") {
                 // API key auth with rate limiting
                 let api_key = api_key_header.to_str().unwrap_or("");
-                let api_key_port = match req.app_data::<web::Data<dyn ApiKeyPort>>() {
+                let api_key_port = match req.app_data::<web::Data<dyn ApiKeyRepo>>() {
                     Some(d) => d.clone(),
                     None => {
                         let resp = HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "ApiKeyPort not configured"}));
+                            .json(serde_json::json!({"error": "ApiKeyRepo not configured"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 };
-                let repo = match req.app_data::<web::Data<dyn RepositoryPort>>() {
+                let repo = match req.app_data::<web::Data<dyn AppRepo>>() {
                     Some(d) => d.clone(),
                     None => {
                         let resp = HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "RepositoryPort not configured"}));
+                            .json(serde_json::json!({"error": "AppRepo not configured"}));
                         return Ok(req.into_response(resp).map_into_right_body());
                     }
                 };

@@ -1,14 +1,16 @@
+use actix_web::rt::spawn;
 use actix_web::{HttpRequest, HttpResponse, Result, web};
 use actix_ws::{Message, MessageStream, Session, handle};
 use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::infrastructure::health::SystemHealth;
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
-use crate::model::health::SystemHealthMetrics;
 use crate::model::log::http::HttpLog;
+use crate::model::system::health::SystemHealthMetrics;
 
 pub async fn websocket_system_health(
     req: HttpRequest,
@@ -19,7 +21,7 @@ pub async fn websocket_system_health(
 
     let broadcast_rx = health.subscribe_to_metrics();
 
-    actix_web::rt::spawn(async move {
+    spawn(async move {
         handle_health_connection(session, msg_stream, broadcast_rx).await;
     });
 
@@ -45,11 +47,11 @@ async fn handle_health_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    Err(RecvError::Lagged(skipped)) => {
                         log!(HttpLog::WebSocketLagged(skipped));
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Err(RecvError::Closed) => {
                         break;
                     }
                 }

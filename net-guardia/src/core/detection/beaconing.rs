@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use macros::log;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::interval;
 
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::event::{DetectionEvent, DetectionSource};
@@ -61,15 +63,15 @@ impl BeaconingDetector {
     async fn run(mut self) {
         log!(DetectionLog::BeaconingDetectorStarted);
 
-        let mut analysis_interval = tokio::time::interval(Duration::from_secs(ANALYSIS_INTERVAL_SECS));
+        let mut analysis_interval = interval(Duration::from_secs(ANALYSIS_INTERVAL_SECS));
 
         loop {
             tokio::select! {
                 result = self.alert_rx.recv() => {
                     match result {
                         Ok(alert) => self.record_flow(&alert),
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
                     }
                 }
                 _ = analysis_interval.tick() => {
@@ -124,13 +126,13 @@ impl BeaconingDetector {
         // Phase 2: selective write-lock only for entries that need last_alerted update.
         for (key, cv, count) in alerts {
             let (src_ip, dst_ip, dst_port) = &key;
-            log!(DetectionLog::BeaconingDetected {
-                src_ip: src_ip.clone(),
-                dst_ip: dst_ip.clone(),
-                dst_port: *dst_port,
+            log!(DetectionLog::BeaconingDetected(
+                src_ip.clone(),
+                dst_ip.clone(),
+                *dst_port,
                 cv,
                 count,
-            });
+            ));
 
             let event = DetectionEvent {
                 source: DetectionSource::Beaconing,
@@ -141,6 +143,9 @@ impl BeaconingDetector {
                 protocol: 6,
                 packet_count: count as u64,
                 flow_duration_us: 0,
+                ae_score: 0.0,
+                anomaly_score: 0.0,
+                c2_score: 0.0,
             };
 
             let _ = self.detection_tx.try_send(event);
