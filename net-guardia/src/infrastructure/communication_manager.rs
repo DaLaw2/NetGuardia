@@ -16,7 +16,6 @@ use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;
 use crate::interface::communication::query::*;
-use crate::model::config::constants::DEFAULT_EVENT_CHANNEL_CAPACITY;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
@@ -47,12 +46,12 @@ pub struct CommunicationManager {
 }
 
 impl CommunicationManager {
-    pub fn new() -> Self {
+    pub fn new(channel_capacity: usize) -> Self {
         Self {
             command_handlers: DashMap::new(),
             query_handlers: DashMap::new(),
             event_broadcasters: DashMap::new(),
-            channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
+            channel_capacity: channel_capacity.max(1),
         }
     }
 
@@ -259,7 +258,7 @@ mod tests {
             received: received.clone(),
         });
 
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(256));
         comm.register_command_handler::<TestCommand>(handler);
 
         comm.send_command(TestCommand { value: "hello".into() }).await.unwrap();
@@ -271,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_not_found() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         let result = comm.send_command(TestCommand { value: "nope".into() }).await;
         assert!(result.is_err());
     }
@@ -279,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_dispatch() {
         let handler = Arc::new(TestQueryHandler);
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(256));
         comm.register_query_handler::<TestQuery>(handler);
 
         let result = comm.send_query(TestQuery { input: 21 }).await.unwrap();
@@ -288,14 +287,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_not_found() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         let result = comm.send_query(TestQuery { input: 1 }).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_event_pub_sub() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         comm.register_event_type::<TestEvent>();
 
         let mut receiver = comm.subscribe_event::<TestEvent>().unwrap();
@@ -308,14 +307,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_not_registered() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         let result = comm.subscribe_event::<TestEvent>();
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn publish_event_sync_delivers_to_subscriber() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         comm.register_event_type::<TestEvent>();
         let mut rx = comm.subscribe_event::<TestEvent>().unwrap();
 
@@ -327,7 +326,7 @@ mod tests {
 
     #[test]
     fn publish_event_sync_errors_when_type_unregistered() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         let result = comm.publish_event_sync(TestEvent {
             message: "dropped".into(),
         });
@@ -336,7 +335,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_multiple_subscribers() {
-        let comm = CommunicationManager::new();
+        let comm = CommunicationManager::new(256);
         comm.register_event_type::<TestEvent>();
 
         let mut rx1 = comm.subscribe_event::<TestEvent>().unwrap();
@@ -359,7 +358,7 @@ mod tests {
             received: received.clone(),
         });
 
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(256));
         let _comm = comm.clone().with_service(handler).command::<TestCommand>().build();
 
         comm.send_command(TestCommand {

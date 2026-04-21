@@ -14,7 +14,13 @@ pub mod model_upload;
 pub mod notification;
 pub mod rate_limit;
 pub mod report;
+pub mod response;
 pub mod setup;
 pub mod soar;
 pub mod stats;
 pub mod system;
+
+/// Shared audit actor prefix for security-admin triggered events. Stable
+/// wire string — WORM consumers filter on `SecurityAdmin@<username>` so
+/// do not rename without coordinating audit-chain readers.
+pub const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";

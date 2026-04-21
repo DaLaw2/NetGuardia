@@ -9,6 +9,7 @@ pub mod dns_filter_api;
 pub mod dns_query_filter;
 pub mod enforcement;
 pub mod geo_block_api;
+pub mod geo_lookup;
 pub mod identity;
 pub mod notification;
 pub mod packet_sink;

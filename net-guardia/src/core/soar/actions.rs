@@ -29,26 +29,12 @@ use crate::model::event::ThreatDetectedEvent;
 use crate::model::log::soar::SoarLog;
 use crate::model::soar::playbook::{Playbook, PlaybookAction};
 
-/// Default block TTL when a `block_ip` action omits `ttl_secs`.
-const DEFAULT_BLOCK_TTL_SECS: u64 = 1800;
-/// DB-overridable cap on per-block TTL — see setting `soar_max_ttl_secs`.
-const DEFAULT_SOAR_MAX_TTL_SECS: u64 = 86_400;
-/// DB-overridable cap on concurrent SOAR-driven blocks — see setting
-/// `soar_max_auto_block_cap`.
-const DEFAULT_SOAR_MAX_AUTO_BLOCK_CAP: u32 = 100;
-/// Default rate-limit reduction factor when an `adjust_rate_limit` action
-/// omits `factor`. 0.5 = halve the current rate.
-const DEFAULT_RATE_LIMIT_FACTOR: f64 = 0.5;
-/// Default rate-limit TTL when an `adjust_rate_limit` action omits `ttl_secs`.
-const DEFAULT_RATE_LIMIT_TTL_SECS: u64 = 600;
 /// Lower bound on the rate-limit factor — anything below 1% of current
 /// would brick traffic flow.
 const RATE_LIMIT_FACTOR_MIN: f64 = 0.01;
 /// Upper bound on the rate-limit factor — `1.0` is a no-op; values above
 /// would *raise* the limit, which isn't a SOAR mitigation.
 const RATE_LIMIT_FACTOR_MAX: f64 = 1.0;
-/// Default webhook timeout when an action omits `timeout_secs`.
-const DEFAULT_WEBHOOK_TIMEOUT_SECS: u64 = 10;
 /// Fallback port when the webhook URL has no explicit port and no
 /// well-known scheme port.
 const DEFAULT_WEBHOOK_HTTPS_PORT: u16 = 443;
@@ -56,9 +42,6 @@ const DEFAULT_WEBHOOK_HTTPS_PORT: u16 = 443;
 /// `-1` is reserved on the audit / cooldown maps and never assigned to a
 /// real DB playbook row.
 const FALLBACK_PLAYBOOK_ID: i64 = -1;
-/// Cooldown applied to the fallback path so a single noisy IP doesn't
-/// spam the WORM audit chain on every fused detection.
-const FALLBACK_COOLDOWN_SECS: i64 = 300;
 
 impl SoarEngine {
     /// Check if the system is in enforce mode (as opposed to monitor mode).
@@ -167,12 +150,11 @@ impl SoarEngine {
             .params
             .get("ttl_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_BLOCK_TTL_SECS);
+            .unwrap_or_else(|| self.config.load().soar.default_block_ttl_secs);
 
-        // Two settings read together off the tokio worker thread — r2d2's
-        // pool.get() and rusqlite are blocking, so back-to-back calls inside
-        // an async fn can stall the executor under burst load.
-        let (max_ttl, max_cap) = read_block_caps(self.db.clone()).await?;
+        let soar_cfg = self.config.load().soar.clone();
+        let max_ttl = soar_cfg.max_ttl_secs;
+        let max_cap = soar_cfg.max_auto_block_cap;
         if ttl_secs > max_ttl {
             Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
@@ -252,22 +234,23 @@ impl SoarEngine {
     ) -> Result<String, Error> {
         let owner = self.rate_limit.as_ref().ok_or(SoarError::RateLimitUnavailable)?;
 
+        let soar_defaults = self.config.load().soar.clone();
         let factor = action
             .params
             .get("factor")
             .and_then(|v| v.as_f64())
-            .unwrap_or(DEFAULT_RATE_LIMIT_FACTOR);
+            .unwrap_or(soar_defaults.default_rate_limit_factor);
         let ttl_secs = action
             .params
             .get("ttl_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_RATE_LIMIT_TTL_SECS);
+            .unwrap_or(soar_defaults.default_rate_limit_ttl_secs);
 
         if !(RATE_LIMIT_FACTOR_MIN..=RATE_LIMIT_FACTOR_MAX).contains(&factor) {
             Err(SoarError::InvalidRateLimitFactor(factor))?;
         }
 
-        let max_ttl = read_max_ttl(self.db.clone()).await;
+        let max_ttl = self.config.load().soar.max_ttl_secs;
         if ttl_secs > max_ttl {
             Err(SoarError::InvalidTtl(ttl_secs, max_ttl))?;
         }
@@ -282,10 +265,7 @@ impl SoarEngine {
         if let Some(notifier) = &self.alert_notifier {
             let country = if let Some(geoip) = &self.geoip {
                 if let Ok(ip_addr) = event.source_ip.parse::<IpAddr>() {
-                    match geoip.lookup(ip_addr).await {
-                        Ok(Some(loc)) => loc.country,
-                        _ => None,
-                    }
+                    geoip.lookup(ip_addr).await.and_then(|loc| loc.country)
                 } else {
                     None
                 }
@@ -315,7 +295,8 @@ impl SoarEngine {
 
     /// Send email alert.
     async fn action_send_email(&self, event: &ThreatDetectedEvent) -> Result<String, Error> {
-        match SmtpClient::from_soar_port(&*self.db, self.secrets.as_deref())? {
+        let smtp_cfg = self.config.load().notification.smtp.clone();
+        match SmtpClient::from_config(&smtp_cfg, self.secrets.as_deref())? {
             Some(smtp) => {
                 let subject = format!(
                     "[NetGuardia] Threat Alert: {} from {}",
@@ -332,7 +313,8 @@ impl SoarEngine {
                     event.confidence * 100.0,
                     Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
                 );
-                if let Some(recipient) = self.db.get_setting("smtp_recipient")? {
+                if !smtp_cfg.recipient.is_empty() {
+                    let recipient = smtp_cfg.recipient;
                     spawn_blocking(move || smtp.send(&recipient, &subject, &body))
                         .await
                         .map_err(|e| SoarError::ActionFailed("send_email", e))??;
@@ -358,7 +340,7 @@ impl SoarEngine {
             .params
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_WEBHOOK_TIMEOUT_SECS);
+            .unwrap_or_else(|| self.config.load().soar.default_webhook_timeout_secs);
 
         // Parse URL and extract host
         let parsed_url = Url::parse(url_str).map_err(|e| SoarError::ActionFailed("webhook", e))?;
@@ -460,7 +442,12 @@ impl SoarEngine {
         }
 
         // Check cooldown — uses FALLBACK_PLAYBOOK_ID as the synthetic key
-        if self.is_cooldown_active(FALLBACK_PLAYBOOK_ID, &event.source_ip, FALLBACK_COOLDOWN_SECS) {
+        let fallback_cfg = self.config.load().soar.clone();
+        if self.is_cooldown_active(
+            FALLBACK_PLAYBOOK_ID,
+            &event.source_ip,
+            fallback_cfg.fallback_cooldown_secs,
+        ) {
             log!(SoarLog::CooldownActive("fallback".to_string(), event.source_ip.clone()));
             return Ok(());
         }
@@ -469,7 +456,7 @@ impl SoarEngine {
         let fake_action = PlaybookAction {
             action_order: 1,
             action_type: "block_ip".to_string(),
-            params: serde_json::json!({"ttl_secs": DEFAULT_BLOCK_TTL_SECS}),
+            params: serde_json::json!({"ttl_secs": fallback_cfg.default_block_ttl_secs}),
         };
 
         let block_result = self.execute_action(&fake_action, event, FALLBACK_PLAYBOOK_ID).await;
@@ -492,40 +479,6 @@ impl SoarEngine {
         log!(SoarLog::FallbackExecuted(event.source_ip.clone()));
         Ok(())
     }
-}
-
-/// Read both block-related caps in a single offloaded blocking call so the
-/// async caller pays one spawn_blocking hop instead of two.
-async fn read_block_caps(db: Arc<dyn AppRepo>) -> Result<(u64, u32), Error> {
-    spawn_blocking(move || {
-        let max_ttl: u64 = db
-            .get_setting("soar_max_ttl_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_SOAR_MAX_TTL_SECS);
-        let max_cap: u32 = db
-            .get_setting("soar_max_auto_block_cap")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_SOAR_MAX_AUTO_BLOCK_CAP);
-        Ok::<_, Error>((max_ttl, max_cap))
-    })
-    .await
-    .map_err(|e| SoarError::ActionFailed("read_block_caps", e))?
-}
-
-async fn read_max_ttl(db: Arc<dyn AppRepo>) -> u64 {
-    spawn_blocking(move || {
-        db.get_setting("soar_max_ttl_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_SOAR_MAX_TTL_SECS)
-    })
-    .await
-    .unwrap_or(DEFAULT_SOAR_MAX_TTL_SECS)
 }
 
 async fn commit_block_blocking(

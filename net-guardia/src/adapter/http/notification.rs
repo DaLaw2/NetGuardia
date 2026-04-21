@@ -1,6 +1,7 @@
 use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
+use crate::adapter::http::response::{ok_json_or_error, ok_or_error};
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::notification_service::NotificationService;
 
@@ -13,10 +14,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn get_telegram_config(_auth: AuthClaims, svc: web::Data<NotificationService>) -> HttpResponse {
-    match svc.get_telegram_config() {
-        Ok(config) => HttpResponse::Ok().json(config),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(svc.get_telegram_config())
 }
 
 #[derive(Deserialize)]
@@ -30,10 +28,7 @@ async fn set_telegram_config(
     svc: web::Data<NotificationService>,
     body: web::Json<TelegramConfigRequest>,
 ) -> HttpResponse {
-    match svc.set_telegram_config(&body.bot_token, &body.chat_id) {
-        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"saved": true})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(svc.set_telegram_config(&body.bot_token, &body.chat_id))
 }
 
 async fn test_telegram(_auth: AuthClaims, svc: web::Data<NotificationService>) -> HttpResponse {

@@ -8,7 +8,7 @@ use sysinfo::{Components, Networks, System};
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::infrastructure::app_config::AppConfig;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::log::health::Health;
 use crate::model::system::health::{
@@ -33,10 +33,11 @@ pub struct SystemHealth {
 }
 
 impl SystemHealth {
-    pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
+    pub fn new(config: Arc<ArcSwap<AppConfig>>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
         let (broadcast_tx, _) = broadcast::channel(100);
-        let ingress_interface = config.network.ingress_ifname.clone();
-        let egress_interface = config.network.egress_ifname.clone();
+        let cfg = config.load();
+        let ingress_interface = cfg.ebpf.ingress_ifname.clone();
+        let egress_interface = cfg.ebpf.egress_ifname.clone();
 
         // Bootstrap snapshot so readers don't have to handle a "no metrics yet"
         // case before the refresh task fires for the first time. The

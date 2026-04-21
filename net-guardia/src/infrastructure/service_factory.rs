@@ -29,7 +29,6 @@ use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
 use crate::core::soar::engine::SoarEngine;
 use crate::core::soar::scheduler::TtlScheduler;
-use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::ebpf_preflight;
@@ -44,13 +43,16 @@ use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::dns_filter_api::DnsFilterPort;
 use crate::interface::port::geo_block_api::GeoBlockPort;
+use crate::interface::port::geo_lookup::GeoLookup;
 use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory};
 use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::soar::SoarRepo;
 use crate::model::access_control::list_type::ListType;
+use crate::model::config::AppConfig;
 use crate::model::detection::drift::FeatureBaselines;
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
@@ -59,13 +61,12 @@ use crate::model::log::ebpf::EbpfLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
 use crate::model::monitoring::direction::FlowDirection;
-use crate::model::system::config::MLInferenceConfig;
 use crate::model::system::health::EbpfFailStage;
 use crate::model::system::health::EbpfHealth;
 
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
-    pub app_config: Arc<AppConfig>,
+    pub app_config: Arc<ArcSwap<AppConfig>>,
     pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
@@ -82,7 +83,7 @@ pub struct AppState {
     pub notification_service: Arc<NotificationService>,
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
-    pub geoip: Option<Arc<GeoIpService>>,
+    pub geoip: Option<Arc<dyn GeoLookup>>,
     pub drift_detector: DriftDetectorHandle,
     pub ingress_ebpf: Option<Ebpf>,
     pub egress_ebpf: Option<Ebpf>,
@@ -114,8 +115,8 @@ impl ServiceFactory {
     /// Only called when setup is complete — all config values are in DB.
     pub async fn build(db: Arc<Database>) -> Result<AppState, Error> {
         // Ensure DB has all default config keys (INSERT OR IGNORE — never overwrites)
-        AppConfig::seed_defaults(&db)?;
-        let app_config = Arc::new(AppConfig::new(&db)?);
+        AppConfig::seed_defaults(db.as_ref())?;
+        let app_config = Arc::new(ArcSwap::from_pointee(AppConfig::from_settings(db.as_ref())?));
 
         // Prefer `models/manifest.yaml` when present (v12 BYO-model path). The manifest
         // is the user-authored source of truth for features, labels, thresholds, and
@@ -133,7 +134,7 @@ impl ServiceFactory {
             (Arc::new(cfg), Some(manifest))
         } else {
             (
-                Arc::new(MLInferenceConfig::load_file(&app_config.inference.models_config_name)?),
+                Arc::new(MLInferenceConfig::load_file(&app_config.load().ml.models_config_name)?),
                 None,
             )
         };
@@ -172,17 +173,24 @@ impl ServiceFactory {
         let secret_store = Arc::new(SecretStore::new(db.clone()));
         let secret_store_port: Arc<dyn SecretStorePort> = secret_store.clone();
 
-        let jwt_service = Arc::new(JwtService::new(&secret_store_port, app_config.http.jwt_expiry_hours)?);
+        let jwt_service = Arc::new(JwtService::new(
+            &secret_store_port,
+            app_config.load().auth.jwt_expiry_hours,
+        )?);
 
         // Initialize ML drift detector from inference config baselines
         let baselines = FeatureBaselines::from_inference_config(&inference_config);
-        let drift_window_secs: u64 = db
-            .get_setting("ml_drift_window_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600);
-        let drift_detector = DriftDetectorHandle::spawn(baselines, Duration::from_secs(drift_window_secs));
+        let drift_cfg = app_config.load();
+        let drift_window_secs = drift_cfg.ml.drift_window_secs;
+        let drift_max_snapshots = drift_cfg.ml.drift_max_snapshots;
+        let drift_channel_capacity = drift_cfg.ml.drift_channel_capacity;
+        drop(drift_cfg);
+        let drift_detector = DriftDetectorHandle::spawn(
+            baselines,
+            Duration::from_secs(drift_window_secs),
+            drift_max_snapshots,
+            drift_channel_capacity,
+        );
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
@@ -196,7 +204,9 @@ impl ServiceFactory {
         // publish `flow_trace_stopped` audit events the moment it tries
         // to open its first rotated file, and an unregistered channel
         // would silently drop that evidence.
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(
+            app_config.load().observability.default_event_channel_capacity,
+        ));
         comm.register_event_type::<ThreatDetectedEvent>();
         comm.register_event_type::<DriftDetectedEvent>();
         comm.register_event_type::<AuditEvent>();
@@ -233,8 +243,8 @@ impl ServiceFactory {
 
         // Create TelegramAdapter as alert notifier (may fail if not configured yet)
         let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(
-            db.clone() as Arc<dyn SettingRepo>,
-            db.clone() as Arc<dyn AppRepo>,
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            app_config.clone(),
             Some(secret_store_port.clone()),
         ) {
             Ok(adapter) => Some(Arc::new(adapter)),
@@ -245,7 +255,7 @@ impl ServiceFactory {
         };
 
         // Try to initialize GeoIP service
-        let geoip: Option<Arc<GeoIpService>> = match GeoIpService::new(&app_config.misc.geoip_db_name) {
+        let geoip: Option<Arc<dyn GeoLookup>> = match GeoIpService::new(&app_config.load().acl.geoip_db_name) {
             Ok(svc) => {
                 log!(SystemLog::GeoIpInitialized);
                 Some(Arc::new(svc))
@@ -264,6 +274,7 @@ impl ServiceFactory {
         let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
         let soar_engine = Arc::new(SoarEngine::new(
             db.clone(),
+            app_config.clone(),
             access_control_port.clone(),
             alert_notifier.clone(),
             geoip.clone(),
@@ -276,8 +287,11 @@ impl ServiceFactory {
         let ttl_scheduler = TtlScheduler::new(db.clone(), access_control_port.clone(), soar_engine.clone());
 
         // Create Report scheduler
-        let report_scheduler =
-            ReportScheduler::new(db.clone() as Arc<dyn SettingRepo>, Some(secret_store_port.clone()));
+        let report_scheduler = ReportScheduler::new(
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            app_config.clone(),
+            Some(secret_store_port.clone()),
+        );
 
         // Create domain services (Phase 2B) — upcast concrete eBPF services to
         // their port-layer traits so the core services see only abstract ports.
@@ -289,23 +303,29 @@ impl ServiceFactory {
             access_control_admin,
             geo_block_port,
         ));
-        let dns_filter_service = Arc::new(DnsFilterService::new(db.clone() as Arc<dyn AppRepo>, dns_filter_port));
+        let dns_filter_service = Arc::new(DnsFilterService::new(
+            db.clone() as Arc<dyn AppRepo>,
+            dns_filter_port,
+            app_config.clone(),
+        ));
         let rate_limit_service = Arc::new(RateLimitService::new(db.clone() as Arc<dyn AppRepo>, rate_limit_port));
         let playbook_service = Arc::new(PlaybookService::new(
             db.clone(),
             soar_engine.clone(),
             access_control_port,
         ));
-        let config_service =
-            Arc::new(ConfigService::new(db.clone() as Arc<dyn AppRepo>).with_secret_store(secret_store_port.clone()));
+        let config_service = Arc::new(
+            ConfigService::new(db.clone() as Arc<dyn AppRepo>, app_config.clone())
+                .with_secret_store(secret_store_port.clone()),
+        );
         let notifier_factory: Arc<dyn AlertNotifierFactory> = Arc::new(TelegramAdapterFactory::new(
-            db.clone() as Arc<dyn SettingRepo>,
-            db.clone() as Arc<dyn AppRepo>,
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            app_config.clone(),
             Some(secret_store_port.clone()),
         ));
         let notification_service = Arc::new(NotificationService::new(
-            db.clone() as Arc<dyn SettingRepo>,
-            db.clone() as Arc<dyn AppRepo>,
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            app_config.clone(),
             secret_store_port,
             notifier_factory,
         ));
@@ -346,19 +366,20 @@ impl ServiceFactory {
     /// ingress pipeline, write queue counts, and hand out map handles to the
     /// services. Returns the original stage on the first failure so the
     /// classifier can render targeted diagnostics.
-    #[allow(clippy::type_complexity)]
     fn try_build_ebpf(
-        app_config: &Arc<AppConfig>,
+        app_config: &Arc<ArcSwap<AppConfig>>,
     ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (EbpfFailStage, Error)> {
         use crate::model::system::health::EbpfFailStage;
 
         let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
         let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;
 
-        let pipeline = Self::configure_ingress_pipeline(&mut ingress, &app_config.pipeline.ingress)
+        let config = app_config.load();
+        let pipeline = Self::configure_ingress_pipeline(&mut ingress, &config.pipeline.ingress)
             .map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
 
-        let num_queues = app_config.network.combined_queue_count;
+        let num_queues = config.ebpf.combined_queue_count;
+        drop(config);
         Self::write_num_queues(&mut ingress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
         Self::write_num_queues(&mut egress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
 
@@ -554,7 +575,7 @@ impl ServiceFactory {
     }
 
     async fn restore_acl_rules(db: &Database, ebpf_services: &EbpfServices) {
-        if let Ok(rules) = db.load_acl_rules() {
+        if let Ok(rules) = db.list_acl_rules() {
             let mut restored = 0u32;
             for (ip_version, direction, list_type, ip_address, port) in &rules {
                 let dir = match direction.as_str() {

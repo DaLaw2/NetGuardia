@@ -3,6 +3,7 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
+use crate::adapter::http::response::ok_or_error;
 use crate::core::acl_service::AclService;
 use crate::model::access_control::list_type::ListType;
 use crate::model::monitoring::direction::FlowDirection;
@@ -43,10 +44,7 @@ async fn add_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.add_ipv4(direction, list_type, address.into_inner()) {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(acl.add_ipv4(direction, list_type, address.into_inner()))
 }
 
 async fn add_ipv6_list(
@@ -55,10 +53,7 @@ async fn add_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.add_ipv6(direction, list_type, address.into_inner()) {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(acl.add_ipv6(direction, list_type, address.into_inner()))
 }
 
 async fn remove_ipv4_list(
@@ -67,10 +62,7 @@ async fn remove_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.remove_ipv4(direction, list_type, address.into_inner()) {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(acl.remove_ipv4(direction, list_type, address.into_inner()))
 }
 
 async fn remove_ipv6_list(
@@ -79,10 +71,7 @@ async fn remove_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    match acl.remove_ipv6(direction, list_type, address.into_inner()) {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(acl.remove_ipv6(direction, list_type, address.into_inner()))
 }
 
 async fn get_geo_blocked(acl: web::Data<AclService>) -> impl Responder {

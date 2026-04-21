@@ -14,13 +14,13 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::core::soar::frequency::FrequencyTracker;
 use crate::core::soar::rate_limit_owner::RateLimitOwnerHandle;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::infrastructure::geoip::GeoIpService;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::app_repo::AppRepo;
+use crate::interface::port::geo_lookup::GeoLookup;
 use crate::interface::port::notification::AlertNotifier;
 use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::config::constants::MAX_PENDING_UNBLOCK_RETRIES;
+use crate::model::config::AppConfig;
 use crate::model::detection::attack_type::canonical_from_str;
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
@@ -31,15 +31,6 @@ use crate::model::soar::playbook::{Playbook, PlaybookAction};
 
 /// Cooldown key: (playbook_id, source_ip)
 type CooldownKey = (i64, String);
-
-/// Maximum number of `handle_threat_event` futures allowed in flight at the
-/// same time. Replaces the previous unbounded `tokio::spawn`-per-event
-/// pattern, which under fusion-emit bursts could pile up faster than the
-/// executor drains and starve other async work. When all permits are held,
-/// the event loop blocks at `Semaphore::acquire_owned` — backpressure then
-/// surfaces as broadcast `Lagged` (visible in the receiver-lag metric)
-/// rather than as silent task-queue growth.
-const SOAR_HANDLE_CONCURRENCY: usize = 16;
 
 /// SOAR Engine — subscribes to ThreatDetectedEvent and executes matching playbooks.
 ///
@@ -67,7 +58,7 @@ pub struct SoarEngine {
     /// Optional alert notifier (Telegram, etc.).
     pub(super) alert_notifier: Option<Arc<dyn AlertNotifier>>,
     /// Optional GeoIP service for country lookups.
-    pub(super) geoip: Option<Arc<GeoIpService>>,
+    pub(super) geoip: Option<Arc<dyn GeoLookup>>,
     /// Owner-task handle that serializes the rate-limit DB+eBPF
     /// read-modify-write batch. `None` when no `RateLimitPort` was wired
     /// up (eBPF unavailable); SOAR actions that need rate-limit then
@@ -77,32 +68,39 @@ pub struct SoarEngine {
     pub(super) enforce_level_cache: Arc<AtomicU8>,
     /// Secret store for decrypting SMTP passwords etc.
     pub(super) secrets: Option<Arc<dyn SecretStorePort>>,
+    pub(super) config: Arc<ArcSwap<AppConfig>>,
 }
 
 impl SoarEngine {
     pub fn new(
         db: Arc<dyn AppRepo>,
+        config: Arc<ArcSwap<AppConfig>>,
         access_control: Arc<dyn AccessControlPort>,
         alert_notifier: Option<Arc<dyn AlertNotifier>>,
-        geoip: Option<Arc<GeoIpService>>,
+        geoip: Option<Arc<dyn GeoLookup>>,
         rate_limit: Option<Arc<dyn RateLimitPort>>,
         enforce_level_cache: Arc<AtomicU8>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Result<Self, Error> {
-        let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(db.clone(), rl));
+        let soar_cfg = config.load();
+        let rate_limit_channel = soar_cfg.soar.rate_limit_cmd_channel_capacity;
+        let freq_max_keys = soar_cfg.soar.frequency_max_tracked_keys;
+        drop(soar_cfg);
+        let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(db.clone(), rl, rate_limit_channel));
         let engine = Self {
             db,
             access_control,
             playbooks: ArcSwap::from_pointee(Vec::new()),
             admin_whitelist: ArcSwap::from_pointee(HashSet::new()),
             cooldowns: DashMap::new(),
-            frequency_tracker: FrequencyTracker::new(),
+            frequency_tracker: FrequencyTracker::new(freq_max_keys),
             active_block_count: AtomicU32::new(0),
             alert_notifier,
             geoip,
             rate_limit: rate_limit_owner,
             enforce_level_cache,
             secrets,
+            config,
         };
         engine.reload_cache()?;
         Ok(engine)
@@ -111,7 +109,7 @@ impl SoarEngine {
     /// Load playbooks and admin whitelist from DB into memory.
     pub fn reload_cache(&self) -> Result<(), Error> {
         // Load playbooks via single JOIN query (no N+1)
-        let rows = self.db.load_playbooks_with_actions()?;
+        let rows = self.db.list_playbooks_with_actions()?;
         let mut playbooks: Vec<Playbook> = Vec::new();
 
         for (
@@ -164,7 +162,7 @@ impl SoarEngine {
         }
 
         // Load conditions and attach to playbooks
-        let condition_rows = self.db.load_all_playbook_conditions()?;
+        let condition_rows = self.db.list_all_playbook_conditions()?;
         for (_cid, pb_id, ctype_str, operator, value, value2) in condition_rows {
             if let Ok(ctype) = ctype_str.parse::<ConditionType>()
                 && let Some(pb) = playbooks.iter_mut().find(|p| p.id == pb_id)
@@ -218,7 +216,7 @@ impl SoarEngine {
         self.playbooks.store(Arc::new(playbooks));
 
         // Load admin whitelist
-        let whitelist = self.db.load_admin_whitelist()?;
+        let whitelist = self.db.list_admin_whitelist()?;
         let whitelist: HashSet<String> = whitelist.into_iter().collect();
         let whitelist_count = whitelist.len();
         self.admin_whitelist.store(Arc::new(whitelist));
@@ -250,12 +248,13 @@ impl SoarEngine {
 
     async fn event_loop(self: Arc<Self>, mut rx: broadcast::Receiver<ThreatDetectedEvent>) {
         log!(SoarLog::EngineStarted);
-        let semaphore = Arc::new(Semaphore::new(SOAR_HANDLE_CONCURRENCY));
+        let concurrency = self.config.load().soar.handle_concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(concurrency));
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     // Bounded fan-out: hold one permit per in-flight handler.
-                    // When SOAR_HANDLE_CONCURRENCY are already running, this
+                    // When handle_concurrency permits are already held, this
                     // await blocks the recv loop, which is the backpressure
                     // signal — broadcast surfaces it as Lagged on overflow.
                     let permit = match Arc::clone(&semaphore).acquire_owned().await {
@@ -308,7 +307,7 @@ impl SoarEngine {
         // First, retry any pending unblocks from previous orphan failures
         self.retry_pending_unblocks().await;
 
-        let active_blocks = self.db.get_active_soar_blocks()?;
+        let active_blocks = self.db.list_active_soar_blocks()?;
         let count = active_blocks.len();
 
         for (_id, source_ip, _playbook_id, _expires_at) in &active_blocks {
@@ -327,7 +326,7 @@ impl SoarEngine {
 
     /// Retry pending unblocks that failed during previous runs.
     async fn retry_pending_unblocks(&self) {
-        let pending = match self.db.load_pending_unblocks() {
+        let pending = match self.db.list_pending_unblocks() {
             Ok(p) => p,
             Err(e) => {
                 log!(SoarLog::EventHandlingFailed(format!(
@@ -339,7 +338,7 @@ impl SoarEngine {
         };
 
         for (id, source_ip, retry_count) in pending {
-            if retry_count >= MAX_PENDING_UNBLOCK_RETRIES {
+            if retry_count >= self.config.load().soar.max_pending_unblock_retries {
                 log!(SoarLog::EventHandlingFailed(format!(
                     "Giving up on pending unblock for IP {} after {} retries",
                     source_ip, retry_count
@@ -439,7 +438,10 @@ mod tests {
         db.set_setting("enforce_mode", "enforce").ok();
         // enforce=2
         let cache = Arc::new(AtomicU8::new(2));
-        SoarEngine::new(db as Arc<dyn AppRepo>, ac, None, None, None, cache, None)
+        AppConfig::seed_defaults(&*db).expect("seed config defaults");
+        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        let config = Arc::new(ArcSwap::from_pointee(cfg));
+        SoarEngine::new(db as Arc<dyn AppRepo>, config, ac, None, None, None, cache, None)
             .expect("Failed to create SOAR engine")
     }
 
@@ -530,8 +532,20 @@ mod tests {
         db.insert_soar_block_rule("192.168.1.100", 1, &expires).ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
-            .expect("Failed to create engine");
+        AppConfig::seed_defaults(&*db).expect("seed config defaults");
+        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        let config = Arc::new(ArcSwap::from_pointee(cfg));
+        let engine = SoarEngine::new(
+            db as Arc<dyn AppRepo>,
+            config,
+            mock.clone(),
+            None,
+            None,
+            None,
+            cache,
+            None,
+        )
+        .expect("Failed to create engine");
         engine.recover_active_blocks().await.expect("Recovery should succeed");
 
         let blocked = mock.blocked_ips.lock();
@@ -552,8 +566,20 @@ mod tests {
         db.insert_soar_block_rule("10.0.0.1", 1, &expires).ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
-            .expect("Failed to create engine");
+        AppConfig::seed_defaults(&*db).expect("seed config defaults");
+        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        let config = Arc::new(ArcSwap::from_pointee(cfg));
+        let engine = SoarEngine::new(
+            db as Arc<dyn AppRepo>,
+            config,
+            mock.clone(),
+            None,
+            None,
+            None,
+            cache,
+            None,
+        )
+        .expect("Failed to create engine");
 
         // Should not panic — errors are logged, not propagated
         let result = engine.recover_active_blocks().await;
@@ -654,8 +680,20 @@ mod tests {
         db.insert_admin_whitelist("1.2.3.4").ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        let engine = SoarEngine::new(db as Arc<dyn AppRepo>, mock.clone(), None, None, None, cache, None)
-            .expect("Failed to create engine");
+        AppConfig::seed_defaults(&*db).expect("seed config defaults");
+        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        let config = Arc::new(ArcSwap::from_pointee(cfg));
+        let engine = SoarEngine::new(
+            db as Arc<dyn AppRepo>,
+            config,
+            mock.clone(),
+            None,
+            None,
+            None,
+            cache,
+            None,
+        )
+        .expect("Failed to create engine");
 
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
@@ -717,8 +755,20 @@ mod tests {
         db.seed_default_playbooks().ok();
 
         let cache = Arc::new(AtomicU8::new(0));
-        let engine = SoarEngine::new(db.clone() as Arc<dyn AppRepo>, mock, None, None, None, cache, None)
-            .expect("Failed to create engine");
+        AppConfig::seed_defaults(&*db).expect("seed config defaults");
+        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        let config = Arc::new(ArcSwap::from_pointee(cfg));
+        let engine = SoarEngine::new(
+            db.clone() as Arc<dyn AppRepo>,
+            config,
+            mock,
+            None,
+            None,
+            None,
+            cache,
+            None,
+        )
+        .expect("Failed to create engine");
 
         // Should have loaded default playbooks
         let count = engine.playbooks.load().len();

@@ -6,18 +6,10 @@ use dashmap::DashMap;
 use macros::log;
 use tokio::sync::mpsc;
 
+use crate::model::config::correlation::CorrelationDetectorParams;
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::event::{DetectionEvent, DetectionSource};
 use crate::model::log::detection::DetectionLog;
-
-/// Window within which unique internal destinations are counted per source.
-const LATERAL_WINDOW_SECS: u64 = 300; // 5 minutes
-
-/// Minimum unique internal destination IPs to trigger a lateral movement alert.
-const LATERAL_THRESHOLD: usize = 5;
-
-/// Maximum tracked source IPs to bound memory.
-const MAX_TRACKED_SRCS: usize = 10_000;
 
 struct TimedDestSet {
     dests: HashSet<String>,
@@ -29,15 +21,19 @@ pub struct LateralMovementDetector {
     /// src_ip → set of unique internal dst_ips within the time window
     state: DashMap<String, TimedDestSet>,
     window: Duration,
+    window_secs: u64,
     threshold: usize,
+    max_tracked: usize,
 }
 
 impl LateralMovementDetector {
-    pub fn new() -> Self {
+    pub fn new(params: &CorrelationDetectorParams, max_tracked: usize) -> Self {
         Self {
             state: DashMap::new(),
-            window: Duration::from_secs(LATERAL_WINDOW_SECS),
-            threshold: LATERAL_THRESHOLD,
+            window: Duration::from_secs(params.window_secs),
+            window_secs: params.window_secs,
+            threshold: params.threshold,
+            max_tracked,
         }
     }
 
@@ -77,7 +73,7 @@ impl LateralMovementDetector {
             log!(DetectionLog::LateralMovementDetected(
                 key.clone(),
                 unique_dests,
-                LATERAL_WINDOW_SECS,
+                self.window_secs,
             ));
 
             let event = DetectionEvent {
@@ -113,8 +109,8 @@ impl LateralMovementDetector {
         self.state
             .retain(|_, set| now.duration_since(set.window_start) < window);
 
-        if self.state.len() > MAX_TRACKED_SRCS {
-            let excess = self.state.len() - MAX_TRACKED_SRCS;
+        if self.state.len() > self.max_tracked {
+            let excess = self.state.len() - self.max_tracked;
             let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys_to_remove {
                 self.state.remove(&key);
@@ -211,9 +207,16 @@ mod tests {
         }
     }
 
+    fn test_params() -> CorrelationDetectorParams {
+        CorrelationDetectorParams {
+            window_secs: 300,
+            threshold: 5,
+        }
+    }
+
     #[tokio::test]
     async fn lateral_threshold_triggers_for_internal_only() {
-        let detector = LateralMovementDetector::new();
+        let detector = LateralMovementDetector::new(&test_params(), 10_000);
         let (tx, mut rx) = mpsc::channel(64);
 
         // Internal → external should be ignored

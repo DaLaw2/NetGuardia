@@ -56,7 +56,7 @@ impl TtlScheduler {
         // Clean up expired cooldown + frequency tracker entries to prevent unbounded memory growth
         self.soar_engine.cleanup_expired_cooldowns();
 
-        let expired = self.db.get_expired_soar_blocks()?;
+        let expired = self.db.list_expired_soar_blocks()?;
 
         if expired.is_empty() {
             return Ok(());

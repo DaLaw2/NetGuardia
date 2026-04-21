@@ -1,4 +1,3 @@
-use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use actix_web::{HttpResponse, Responder, Scope, web};
@@ -6,15 +5,8 @@ use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
+use crate::adapter::http::response::ok_or_error;
 use crate::core::dns_filter_service::DnsFilterService;
-
-/// Convert a fallible result into an Ok (200) or InternalServerError (500) response.
-fn ok_or_error<T, E: fmt::Display>(result: Result<T, E>) -> HttpResponse {
-    match result {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
-}
 
 pub fn initialize() -> Scope {
     web::scope("/filter")

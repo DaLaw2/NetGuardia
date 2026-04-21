@@ -5,18 +5,10 @@ use dashmap::DashMap;
 use macros::log;
 use tokio::sync::mpsc;
 
+use crate::model::config::correlation::CorrelationDetectorParams;
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::event::{DetectionEvent, DetectionSource};
 use crate::model::log::detection::DetectionLog;
-
-/// Window within which unique destination ports are counted per source.
-const SCAN_WINDOW_SECS: u64 = 120; // 2 minutes
-
-/// Minimum unique destination ports to trigger a scan alert.
-const SCAN_THRESHOLD: usize = 20;
-
-/// Maximum tracked source IPs to bound memory.
-const MAX_TRACKED_SRCS: usize = 10_000;
 
 struct TimedPortSet {
     ports: HashSet<u16>,
@@ -29,15 +21,19 @@ pub struct ScanDetector {
     /// src_ip → set of unique dst_ports within the time window
     state: DashMap<String, TimedPortSet>,
     window: Duration,
+    window_secs: u64,
     threshold: usize,
+    max_tracked: usize,
 }
 
 impl ScanDetector {
-    pub fn new() -> Self {
+    pub fn new(params: &CorrelationDetectorParams, max_tracked: usize) -> Self {
         Self {
             state: DashMap::new(),
-            window: Duration::from_secs(SCAN_WINDOW_SECS),
-            threshold: SCAN_THRESHOLD,
+            window: Duration::from_secs(params.window_secs),
+            window_secs: params.window_secs,
+            threshold: params.threshold,
+            max_tracked,
         }
     }
 
@@ -72,7 +68,7 @@ impl ScanDetector {
         };
 
         if let Some((unique_ports, last_dst_ip)) = should_alert {
-            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, SCAN_WINDOW_SECS,));
+            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, self.window_secs,));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
@@ -107,8 +103,8 @@ impl ScanDetector {
         self.state
             .retain(|_, set| now.duration_since(set.window_start) < window);
 
-        if self.state.len() > MAX_TRACKED_SRCS {
-            let excess = self.state.len() - MAX_TRACKED_SRCS;
+        if self.state.len() > self.max_tracked {
+            let excess = self.state.len() - self.max_tracked;
             let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys_to_remove {
                 self.state.remove(&key);
@@ -122,6 +118,13 @@ impl ScanDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_params() -> CorrelationDetectorParams {
+        CorrelationDetectorParams {
+            window_secs: 120,
+            threshold: 20,
+        }
+    }
 
     fn make_alert(src_ip: &str, dst_port: u16) -> AlertMessage {
         AlertMessage {
@@ -145,7 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_threshold_triggers_alert() {
-        let detector = ScanDetector::new();
+        let detector = ScanDetector::new(&test_params(), 10_000);
         let (tx, mut rx) = mpsc::channel(64);
 
         for port in 0..19 {
@@ -162,7 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_sources_tracked_independently() {
-        let detector = ScanDetector::new();
+        let detector = ScanDetector::new(&test_params(), 10_000);
         let (tx, mut rx) = mpsc::channel(64);
 
         for port in 0..15 {

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::dns_filter_api::DnsFilterPort;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
@@ -10,11 +13,12 @@ use crate::model::error::misc::MiscError;
 pub struct DnsFilterService {
     db: Arc<dyn AppRepo>,
     dns_filter: Arc<dyn DnsFilterPort>,
+    config: Arc<ArcSwap<AppConfig>>,
 }
 
 impl DnsFilterService {
-    pub fn new(db: Arc<dyn AppRepo>, dns_filter: Arc<dyn DnsFilterPort>) -> Self {
-        Self { db, dns_filter }
+    pub fn new(db: Arc<dyn AppRepo>, dns_filter: Arc<dyn DnsFilterPort>, config: Arc<ArcSwap<AppConfig>>) -> Self {
+        Self { db, dns_filter, config }
     }
 
     pub fn list_domains(&self) -> Vec<String> {
@@ -22,13 +26,7 @@ impl DnsFilterService {
     }
 
     pub fn add_domains(&self, domains: &[String]) -> Result<usize, Error> {
-        let max_domains: usize = self
-            .db
-            .get_setting("dns_max_domains_per_request")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+        let max_domains = self.config.load().dns_filter.max_domains_per_request;
         if domains.len() > max_domains {
             Err(MiscError::ValidationError(format!(
                 "too many domains (max {})",

@@ -435,7 +435,7 @@ mod tests {
         acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
         // load_acl_rules is an inherent Database method (not on AclRepo),
         // so go through `&db` directly for this read-back assertion.
-        let rules = db.load_acl_rules().unwrap();
+        let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
 
         let identity: &dyn IdentityRepo = &db;

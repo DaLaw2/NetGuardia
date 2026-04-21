@@ -9,8 +9,8 @@ use ipnetwork::IpNetwork;
 use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
 
-use crate::infrastructure::app_config::AppConfig;
 use crate::interface::port::geo_block_api::GeoBlockPort;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::misc::MiscError;
@@ -29,15 +29,15 @@ pub struct GeoBlock {
 }
 
 impl GeoBlock {
-    pub fn new(ebpf: &mut Ebpf, app_config: &AppConfig) -> Result<Self, Error> {
+    pub fn new(ebpf: &mut Ebpf, app_config: Arc<ArcSwap<AppConfig>>) -> Result<Self, Error> {
         let v4_map = ebpf.take_map("GEO_BLOCK_V4").ok_or(EbpfError::MapNotFound)?;
         let v4_trie = LpmTrie::try_from(v4_map).map_err(EbpfError::MapOperationError)?;
 
         let v6_map = ebpf.take_map("GEO_BLOCK_V6").ok_or(EbpfError::MapNotFound)?;
         let v6_trie = LpmTrie::try_from(v6_map).map_err(EbpfError::MapOperationError)?;
 
-        let db_path = &app_config.misc.geoip_db_name;
-        let reader = Reader::open_readfile(db_path).map_err(|e| MiscError::GeoIPDatabaseError(db_path.clone(), e))?;
+        let db_path = app_config.load().acl.geoip_db_name.clone();
+        let reader = Reader::open_readfile(&db_path).map_err(|e| MiscError::GeoIPDatabaseError(db_path.clone(), e))?;
 
         let index = Self::build_index(&reader)?;
 
@@ -53,8 +53,8 @@ impl GeoBlock {
     /// the GeoIP index so the frontend can list what *would* be enforced;
     /// mutating calls (`block_countries`, `unblock_countries`) return
     /// `EbpfError::NotLoaded`.
-    pub fn unavailable(app_config: &AppConfig) -> Self {
-        let index = Reader::open_readfile(&app_config.misc.geoip_db_name)
+    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
+        let index = Reader::open_readfile(&app_config.load().acl.geoip_db_name)
             .ok()
             .and_then(|reader| Self::build_index(&reader).ok())
             .unwrap_or(GeoIndex {

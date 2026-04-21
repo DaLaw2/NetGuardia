@@ -39,11 +39,11 @@ pub trait IdentityRepo: Send + Sync {
     fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error>;
 
     // --- Membership ---
-    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error>;
+    fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error>;
     fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error>;
-    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error>;
-    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error>;
-    fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error>;
+    fn list_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error>;
+    fn list_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error>;
+    fn list_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error>;
 
     // --- Login Rate Limiting ---
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error>;

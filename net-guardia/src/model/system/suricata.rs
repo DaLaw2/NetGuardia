@@ -20,7 +20,6 @@ pub enum SuricataHealth {
 }
 
 impl SuricataHealth {
-    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         matches!(self, SuricataHealth::Running { .. })
     }

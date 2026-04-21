@@ -10,7 +10,7 @@ use crate::interface::port::app_repo::AppRepo;
 use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::soar::playbook_data::{
-    ActionData, ActiveBlockData, ConditionData, CreatePlaybookInput, ExecutionData, PlaybookData, UpdatePlaybookRow,
+    ActionView, ActiveBlockView, ConditionView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
 };
 
 /// Domain service for SOAR playbook CRUD operations.
@@ -30,9 +30,9 @@ impl PlaybookService {
         }
     }
 
-    pub fn list_playbooks(&self) -> Result<Vec<PlaybookData>, Error> {
-        let rows = self.db.load_playbooks_with_actions()?;
-        let mut result: Vec<PlaybookData> = Vec::new();
+    pub fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
+        let rows = self.db.list_playbooks_with_actions()?;
+        let mut result: Vec<PlaybookView> = Vec::new();
 
         for (
             pb_id,
@@ -54,7 +54,7 @@ impl PlaybookService {
                 if last.id == pb_id {
                     last
                 } else {
-                    result.push(PlaybookData {
+                    result.push(PlaybookView {
                         id: pb_id,
                         name,
                         enabled,
@@ -70,7 +70,7 @@ impl PlaybookService {
                     result.last_mut().unwrap_or_else(|| unreachable!())
                 }
             } else {
-                result.push(PlaybookData {
+                result.push(PlaybookView {
                     id: pb_id,
                     name,
                     enabled,
@@ -90,7 +90,7 @@ impl PlaybookService {
             if let (Some(aid), Some(order), Some(atype), Some(params_str)) =
                 (action_id, action_order, action_type, action_params)
             {
-                pb.actions.push(ActionData {
+                pb.actions.push(ActionView {
                     id: aid,
                     action_order: order,
                     action_type: atype,
@@ -100,10 +100,10 @@ impl PlaybookService {
         }
 
         // Load conditions and attach to playbooks
-        let cond_rows = self.db.load_all_playbook_conditions()?;
-        let mut cond_map: HashMap<i64, Vec<ConditionData>> = HashMap::new();
+        let cond_rows = self.db.list_all_playbook_conditions()?;
+        let mut cond_map: HashMap<i64, Vec<ConditionView>> = HashMap::new();
         for (cid, pb_id, ctype, operator, value, value2) in cond_rows {
-            cond_map.entry(pb_id).or_default().push(ConditionData {
+            cond_map.entry(pb_id).or_default().push(ConditionView {
                 id: cid,
                 condition_type: ctype,
                 operator,
@@ -155,7 +155,7 @@ impl PlaybookService {
     }
 
     pub fn update_playbook(&self, id: i64, input: &CreatePlaybookInput) -> Result<bool, Error> {
-        let row = UpdatePlaybookRow {
+        let row = UpdatePlaybookInput {
             name: input.name.clone(),
             trigger_event: input.trigger_event.clone(),
             condition_threshold: input.condition_threshold,
@@ -206,11 +206,11 @@ impl PlaybookService {
         Ok(deleted)
     }
 
-    pub fn list_active_blocks(&self) -> Result<Vec<ActiveBlockData>, Error> {
-        let blocks = self.db.get_active_soar_blocks()?;
+    pub fn list_active_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
+        let blocks = self.db.list_active_soar_blocks()?;
         Ok(blocks
             .into_iter()
-            .map(|(id, ip, pb_id, expires)| ActiveBlockData {
+            .map(|(id, ip, pb_id, expires)| ActiveBlockView {
                 id,
                 source_ip: ip,
                 playbook_id: pb_id,
@@ -226,7 +226,7 @@ impl PlaybookService {
         // Look up the block to get source_ip
         let block = self
             .db
-            .get_soar_block_by_id(id)?
+            .find_soar_block_by_id(id)?
             .ok_or_else(|| SoarError::UnblockRuleNotFound(id))?;
         let source_ip = &block.1;
 
@@ -244,12 +244,12 @@ impl PlaybookService {
         Ok(())
     }
 
-    pub fn list_executions(&self, limit: i64) -> Result<Vec<ExecutionData>, Error> {
+    pub fn list_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
         let rows = self.db.list_soar_executions(limit)?;
         Ok(rows
             .into_iter()
             .map(
-                |(id, pb_id, source_ip, trigger_event, actions, created_at)| ExecutionData {
+                |(id, pb_id, source_ip, trigger_event, actions, created_at)| ExecutionView {
                     id,
                     playbook_id: pb_id,
                     source_ip,
@@ -262,7 +262,7 @@ impl PlaybookService {
     }
 
     pub fn list_whitelist(&self) -> Result<Vec<String>, Error> {
-        self.db.load_admin_whitelist()
+        self.db.list_admin_whitelist()
     }
 
     pub fn add_whitelist(&self, ip: &str) -> Result<(), Error> {

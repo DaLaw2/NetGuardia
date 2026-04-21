@@ -4,13 +4,22 @@ use common::define::tcp_flags::*;
 use moka::sync::Cache;
 use parking_lot::Mutex;
 
-use crate::model::config::constants::{
-    FLOW_BULK_MIN_BYTES, FLOW_BULK_MIN_PACKETS, FLOW_IDLE_THRESHOLD_US, FLOW_IDLE_TIMEOUT_US,
-    FLOW_MAX_PACKETS_PER_DIRECTION, FLOW_MAX_PERIODS, FLOW_TERMINATED_TIMEOUT_US,
-};
 use crate::model::detection::ml_detection::{BulkState, FlowKey, PacketData};
 use crate::model::monitoring::direction::Direction;
 use crate::model::monitoring::user_packet::UserPacket;
+
+/// Bundle of per-flow tuning parameters. Snapshotted at `FlowTracker::new`
+/// time so the add-packet hot path does not need to re-read config.
+#[derive(Debug, Clone, Copy)]
+pub struct FlowLimits {
+    pub max_packets_per_direction: usize,
+    pub max_periods: usize,
+    pub idle_threshold_us: u64,
+    pub bulk_min_packets: u64,
+    pub bulk_min_bytes: u64,
+    pub idle_timeout_us: u64,
+    pub terminated_timeout_us: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct FlowData {
@@ -88,7 +97,7 @@ impl FlowData {
         }
     }
 
-    pub fn add_packet(&mut self, packet: &UserPacket) {
+    pub fn add_packet(&mut self, packet: &UserPacket, limits: &FlowLimits) {
         let packet_data = PacketData {
             timestamp_us: packet.timestamp_us,
             length: packet.packet_length,
@@ -124,11 +133,11 @@ impl FlowData {
 
         let iat = packet.timestamp_us.saturating_sub(self.last_packet_time);
 
-        if iat > FLOW_IDLE_THRESHOLD_US {
-            if self.idle_periods.len() < FLOW_MAX_PERIODS {
+        if iat > limits.idle_threshold_us {
+            if self.idle_periods.len() < limits.max_periods {
                 self.idle_periods.push(iat);
             }
-        } else if iat > 0 && self.active_periods.len() < FLOW_MAX_PERIODS {
+        } else if iat > 0 && self.active_periods.len() < limits.max_periods {
             self.active_periods.push(iat);
         }
 
@@ -142,7 +151,7 @@ impl FlowData {
         }
 
         if packet.is_forward {
-            if self.fwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
+            if self.fwd_packets.len() < limits.max_packets_per_direction {
                 self.fwd_packets.push(packet_data.clone());
             }
             self.fwd_total_bytes += packet.packet_length as u64;
@@ -150,9 +159,9 @@ impl FlowData {
             if self.init_win_bytes_fwd == 0 {
                 self.init_win_bytes_fwd = packet.tcp_window_size;
             }
-            Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data);
+            Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data, limits);
         } else {
-            if self.bwd_packets.len() < FLOW_MAX_PACKETS_PER_DIRECTION {
+            if self.bwd_packets.len() < limits.max_packets_per_direction {
                 self.bwd_packets.push(packet_data.clone());
             }
             self.bwd_total_bytes += packet.packet_length as u64;
@@ -160,11 +169,11 @@ impl FlowData {
             if self.init_win_bytes_bwd == 0 {
                 self.init_win_bytes_bwd = packet.tcp_window_size;
             }
-            Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data);
+            Self::update_bulk_state(&mut self.bwd_bulk_state, &packet_data, limits);
         }
     }
 
-    fn update_bulk_state(bulk_state: &mut BulkState, packet: &PacketData) {
+    fn update_bulk_state(bulk_state: &mut BulkState, packet: &PacketData, limits: &FlowLimits) {
         if packet.payload_length > 0 {
             if !bulk_state.in_bulk {
                 bulk_state.in_bulk = true;
@@ -179,8 +188,8 @@ impl FlowData {
             }
         } else {
             if bulk_state.in_bulk
-                && bulk_state.last_bulk_packets >= FLOW_BULK_MIN_PACKETS
-                && bulk_state.last_bulk_bytes >= FLOW_BULK_MIN_BYTES
+                && bulk_state.last_bulk_packets >= limits.bulk_min_packets
+                && bulk_state.last_bulk_bytes >= limits.bulk_min_bytes
             {
                 bulk_state.bulk_count += 1;
                 bulk_state.total_bytes += bulk_state.last_bulk_bytes;
@@ -224,13 +233,15 @@ type FlowEntry = Arc<Mutex<FlowData>>;
 /// policy would mishandle.
 pub struct FlowTracker {
     active: Cache<FlowKey, FlowEntry>,
+    limits: FlowLimits,
 }
 
 impl FlowTracker {
-    pub fn new(max_flows: usize) -> Self {
+    pub fn new(max_flows: usize, limits: FlowLimits) -> Self {
         let cap = max_flows.max(1) as u64;
         Self {
             active: Cache::builder().max_capacity(cap).build(),
+            limits,
         }
     }
 
@@ -288,7 +299,7 @@ impl FlowTracker {
         let entry = self.active.get_with(actual_key, || {
             Arc::new(Mutex::new(FlowData::new(key_for_init, &packet, initiator_direction)))
         });
-        entry.lock().add_packet(&packet);
+        entry.lock().add_packet(&packet, &self.limits);
     }
 
     /// Get all active flows (clone, no drain). Used by WebSocket.
@@ -325,9 +336,9 @@ impl FlowTracker {
             let idle = now_us.saturating_sub(flow.last_time_us);
             let is_terminated = flow.fin_count > 0 || flow.rst_count > 0;
             let stale = if is_terminated {
-                idle >= FLOW_TERMINATED_TIMEOUT_US
+                idle >= self.limits.terminated_timeout_us
             } else {
-                idle >= FLOW_IDLE_TIMEOUT_US
+                idle >= self.limits.idle_timeout_us
             };
             if stale {
                 keys_to_remove.push((*key).clone());
@@ -345,6 +356,18 @@ impl FlowTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_limits() -> FlowLimits {
+        FlowLimits {
+            max_packets_per_direction: 1000,
+            max_periods: 1000,
+            idle_threshold_us: 1_000_000,
+            bulk_min_packets: 4,
+            bulk_min_bytes: 1000,
+            idle_timeout_us: 120_000_000,
+            terminated_timeout_us: 5_000_000,
+        }
+    }
 
     fn make_packet(timestamp_us: u64, tcp_flags: u8) -> UserPacket {
         UserPacket {
@@ -371,7 +394,7 @@ mod tests {
 
     #[test]
     fn cleanup_removes_idle_flows() {
-        let tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000, test_limits());
         let base_ts = 1_000_000_000u64; // 1000 seconds
 
         let pkt = make_packet(base_ts, 0x02); // SYN
@@ -386,7 +409,7 @@ mod tests {
 
     #[test]
     fn cleanup_keeps_active_flows() {
-        let tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000, test_limits());
         let base_ts = 1_000_000_000u64;
 
         let pkt = make_packet(base_ts, 0x02);
@@ -400,7 +423,7 @@ mod tests {
 
     #[test]
     fn cleanup_removes_terminated_flows_after_short_idle() {
-        let tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000, test_limits());
         let base_ts = 1_000_000_000u64;
 
         let pkt1 = make_packet(base_ts, 0x02);
@@ -417,7 +440,7 @@ mod tests {
 
     #[test]
     fn cleanup_keeps_recently_terminated_flows() {
-        let tracker = FlowTracker::new(10000);
+        let tracker = FlowTracker::new(10000, test_limits());
         let base_ts = 1_000_000_000u64;
 
         let pkt1 = make_packet(base_ts, 0x02);

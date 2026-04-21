@@ -20,25 +20,24 @@ use super::adapter::MLModelAdapter;
 use super::manifest::{AdapterKind, LabelSpec, ModelManifest};
 use crate::model::config::constants::MODELS_DIR;
 use crate::model::detection::ml_detection::RunnableModel;
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
-use crate::model::system::config::MLInferenceConfig;
-
-/// Wall-clock budget for a single ONNX parse + optimize + runnable chain.
-/// A malformed or maliciously-crafted model can wedge tract's graph solver;
-/// the timeout keeps an admin-triggered upload from blocking the watcher
-/// indefinitely. Five seconds is generous for the models that currently
-/// ship (<10MB) while still bounding pathological inputs.
-const ONNX_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build an `MLModelAdapter` by loading the ONNX file(s) the manifest names,
 /// validating shape against the inference config's feature counts, and
 /// wrapping the underlying `RunnableModel`s in `Arc` for zero-copy swap.
+///
+/// `onnx_load_timeout` caps tract's parse/optimize/runnable chain — a
+/// malformed or maliciously-crafted model can wedge the graph solver, so
+/// this keeps the watcher / upload path bounded. Sourced from
+/// `MlConfig::onnx_load_timeout_secs` at the call site.
 pub fn build_adapter(
     manifest: &ModelManifest,
     manifest_path: Option<&Path>,
     inference_config: &MLInferenceConfig,
     batch_size: usize,
+    onnx_load_timeout: Duration,
 ) -> Result<MLModelAdapter, MLError> {
     let resolve = |rel: &str| -> PathBuf {
         match manifest_path {
@@ -57,7 +56,7 @@ pub fn build_adapter(
             };
             let path = resolve(model_name);
             let n_features = inference_config.num_ae_features();
-            let model = Arc::new(loader(&path, model_name, n_features, batch_size)?);
+            let model = Arc::new(loader(&path, model_name, n_features, batch_size, onnx_load_timeout)?);
             Ok(MLModelAdapter::AutoencoderOnly {
                 model,
                 batch_size,
@@ -73,7 +72,7 @@ pub fn build_adapter(
             };
             let path = resolve(model_name);
             let n_features = inference_config.num_classifier_features();
-            let model = Arc::new(loader(&path, model_name, n_features, batch_size)?);
+            let model = Arc::new(loader(&path, model_name, n_features, batch_size, onnx_load_timeout)?);
             let labels = manifest.labels.clone();
             let normal_idx = find_label_index(&labels, "Normal");
             Ok(MLModelAdapter::ClassifierOnly {
@@ -99,8 +98,14 @@ pub fn build_adapter(
             };
             let n_ae = inference_config.num_ae_features();
             let n_cls = inference_config.num_classifier_features();
-            let ae = Arc::new(loader(&resolve(ae_name), ae_name, n_ae, batch_size)?);
-            let classifier = Arc::new(loader(&resolve(cls_name), cls_name, n_cls, batch_size)?);
+            let ae = Arc::new(loader(&resolve(ae_name), ae_name, n_ae, batch_size, onnx_load_timeout)?);
+            let classifier = Arc::new(loader(
+                &resolve(cls_name),
+                cls_name,
+                n_cls,
+                batch_size,
+                onnx_load_timeout,
+            )?);
             let labels = manifest.labels.clone();
             let normal_idx = find_label_index(&labels, "Normal");
             let c2_idx = find_label_index(&labels, "C2 Communication");
@@ -128,13 +133,19 @@ fn find_label_index(labels: &BTreeMap<String, LabelSpec>, target: &str) -> Optio
         .and_then(|(k, _)| k.parse::<usize>().ok())
 }
 
-fn loader(model_path: &Path, model_name: &str, features: usize, batch_size: usize) -> Result<RunnableModel, MLError> {
+fn loader(
+    model_path: &Path,
+    model_name: &str,
+    features: usize,
+    batch_size: usize,
+    onnx_load_timeout: Duration,
+) -> Result<RunnableModel, MLError> {
     log!(MLLog::ModelLoading(model_name.to_string(), features, batch_size));
 
     let start = Instant::now();
     let path_for_thread = model_path.to_path_buf();
     let name_for_thread = model_name.to_string();
-    let result = load_with_timeout(model_path.to_path_buf(), ONNX_LOAD_TIMEOUT, move || {
+    let result = load_with_timeout(model_path.to_path_buf(), onnx_load_timeout, move || {
         loader_inner(&path_for_thread, &name_for_thread, features, batch_size)
     });
     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -296,7 +307,8 @@ mod tests {
             return;
         }
         let (cfg, manifest) = MLInferenceConfig::from_manifest_with_sidecar(manifest_path).expect("config load");
-        let adapter = build_adapter(&manifest, Some(manifest_path), &cfg, 8).expect("build adapter");
+        let adapter =
+            build_adapter(&manifest, Some(manifest_path), &cfg, 8, Duration::from_secs(5)).expect("build adapter");
         match adapter {
             MLModelAdapter::MultiTask { n_ae, n_cls, .. } => {
                 assert_eq!(n_ae, 31);

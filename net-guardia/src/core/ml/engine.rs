@@ -15,7 +15,7 @@ use tokio::time::interval;
 use super::aggregator::AttackAggregator;
 use super::alert::MLAlert;
 use super::drift_detector::DriftDetectorHandle;
-use super::flow_tracker::{FlowData, FlowTracker};
+use super::flow_tracker::{FlowData, FlowLimits, FlowTracker};
 use super::inference::Inference;
 use super::traffic_logger::TrafficLogger;
 use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
@@ -23,20 +23,6 @@ use crate::model::detection::flow_features::FlowFeatures;
 use crate::model::detection::ml_detection::{EngineConfig, FlowKey, InferenceStats};
 use crate::model::log::ml::MLLog;
 use crate::model::monitoring::user_packet::UserPacket;
-
-/// Divisor applied to "ticks per aggregator window" to derive the fallback
-/// confirmations count: 2 means a default-behaviour detection must fire
-/// across at least half the window's ticks before alerting.
-const DEFAULT_CONFIRMATION_WINDOW_FRACTION: u64 = 2;
-
-/// Hard floor on the per-flow packet count that gates ML inference for any
-/// protocol / port combination that lacks an explicit low-packet override.
-/// Prevents a misconfigured `min_packets` (0..=4) from feeding two-packet
-/// flows into the model where the features carry almost no signal and the
-/// false-alarm rate dominates. Protocols and ports that are meaningful at
-/// very low packet counts (ICMP scans, DNS tunneling, C2 beacons) bypass
-/// this floor through explicit overrides in `effective_min_packets`.
-const ML_MIN_PACKETS_FLOOR: usize = 5;
 
 /// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
 /// land on the same queue, so per-queue trackers correctly see bidirectional flows.
@@ -51,6 +37,7 @@ pub struct Engine {
     drift_detector: DriftDetectorHandle,
     ml_alert: Arc<MLAlert>,
     min_packets: usize,
+    min_packets_floor: usize,
     /// Confirmations count used when the active manifest's label has no
     /// explicit `confirmations` override.
     default_confirmations: usize,
@@ -67,17 +54,19 @@ impl Engine {
         ml_alert: Arc<MLAlert>,
         drift_detector: DriftDetectorHandle,
         engine_config: EngineConfig,
+        flow_limits: FlowLimits,
         traffic_logger: Option<Arc<TrafficLogger>>,
         num_threads: u32,
     ) -> Self {
         let interval_secs = engine_config.inference_interval_secs.max(1);
         let ticks_per_window = engine_config.aggregator_window_secs / interval_secs;
-        let default_confirmations = (ticks_per_window / DEFAULT_CONFIRMATION_WINDOW_FRACTION).max(1) as usize;
+        let default_confirmations =
+            (ticks_per_window / engine_config.confirmation_window_fraction.max(1)).max(1) as usize;
         let aggregator = AttackAggregator::new(engine_config.aggregator_window_secs);
 
         let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
         let trackers: Vec<ThreadTracker> = (0..num_threads)
-            .map(|_| Arc::new(FlowTracker::new(max_flows_per_thread)))
+            .map(|_| Arc::new(FlowTracker::new(max_flows_per_thread, flow_limits)))
             .collect();
 
         Self {
@@ -87,6 +76,7 @@ impl Engine {
             drift_detector,
             ml_alert,
             min_packets: engine_config.min_packets,
+            min_packets_floor: engine_config.min_packets_floor.max(1),
             default_confirmations,
             batch_size: engine_config.batch_size,
             inference_interval_secs: engine_config.inference_interval_secs,
@@ -156,8 +146,8 @@ impl Engine {
     /// threshold. Paths that fall through to `global` are additionally
     /// floored at `ML_MIN_PACKETS_FLOOR` so a misconfigured global setting
     /// can't feed near-empty flows into inference.
-    fn effective_min_packets(flow_key: &FlowKey, global: usize) -> usize {
-        let floored = global.max(ML_MIN_PACKETS_FLOOR);
+    fn effective_min_packets(flow_key: &FlowKey, global: usize, floor: usize) -> usize {
+        let floored = global.max(floor.max(1));
         match flow_key.protocol {
             // ICMP: single-packet SYN scans, ping sweeps.
             1 => 1,
@@ -224,7 +214,7 @@ impl Engine {
             total_count += tracker.flow_count();
             all_flows.extend(tracker.get_uninferred_flows().into_iter().filter(|flow| {
                 let total_packets = flow.packet_count();
-                total_packets >= Self::effective_min_packets(&flow.flow_key, self.min_packets)
+                total_packets >= Self::effective_min_packets(&flow.flow_key, self.min_packets, self.min_packets_floor)
                     && !Self::is_strong_benign(
                         &flow.flow_key,
                         flow.fwd_packets.len(),
@@ -377,56 +367,58 @@ mod tests {
         }
     }
 
+    const TEST_FLOOR: usize = 5;
+
     #[test]
     fn floor_applies_when_global_below_five() {
         // Bulk TCP / UDP with no low-packet override must not drop below 5
         // even if the operator sets a permissive global.
         assert_eq!(
-            Engine::effective_min_packets(&flow_key(6, 443), 2),
-            ML_MIN_PACKETS_FLOOR
+            Engine::effective_min_packets(&flow_key(6, 443), 2, TEST_FLOOR),
+            TEST_FLOOR
         );
         assert_eq!(
-            Engine::effective_min_packets(&flow_key(17, 500), 0),
-            ML_MIN_PACKETS_FLOOR
+            Engine::effective_min_packets(&flow_key(17, 500), 0, TEST_FLOOR),
+            TEST_FLOOR
         );
         // Uncommon protocol (SCTP) also honors the floor.
         assert_eq!(
-            Engine::effective_min_packets(&flow_key(132, 9), 1),
-            ML_MIN_PACKETS_FLOOR
+            Engine::effective_min_packets(&flow_key(132, 9), 1, TEST_FLOOR),
+            TEST_FLOOR
         );
     }
 
     #[test]
     fn floor_respects_higher_global() {
         // A stricter global wins — the floor is a lower bound, not a clamp.
-        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 12), 12);
-        assert_eq!(Engine::effective_min_packets(&flow_key(17, 500), 8), 8);
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 12, TEST_FLOOR), 12);
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 500), 8, TEST_FLOOR), 8);
     }
 
     #[test]
     fn icmp_override_bypasses_floor() {
         // Single-packet ICMP scans must remain visible regardless of the floor.
-        assert_eq!(Engine::effective_min_packets(&flow_key(1, 0), 100), 1);
+        assert_eq!(Engine::effective_min_packets(&flow_key(1, 0), 100, TEST_FLOOR), 1);
     }
 
     #[test]
     fn low_packet_overrides_preserved() {
         // Every explicit low-packet override keeps its tuned value.
-        assert_eq!(Engine::effective_min_packets(&flow_key(17, 53), 100), 1); // UDP DNS
-        assert_eq!(Engine::effective_min_packets(&flow_key(17, 123), 100), 2); // UDP NTP
-        assert_eq!(Engine::effective_min_packets(&flow_key(17, 3333), 100), 2); // UDP C2
-        assert_eq!(Engine::effective_min_packets(&flow_key(17, 45700), 100), 2); // UDP C2
-        assert_eq!(Engine::effective_min_packets(&flow_key(6, 53), 100), 2); // TCP DNS
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 53), 100, TEST_FLOOR), 1); // UDP DNS
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 123), 100, TEST_FLOOR), 2); // UDP NTP
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 3333), 100, TEST_FLOOR), 2); // UDP C2
+        assert_eq!(Engine::effective_min_packets(&flow_key(17, 45700), 100, TEST_FLOOR), 2); // UDP C2
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 53), 100, TEST_FLOOR), 2); // TCP DNS
         for port in [4444u16, 8443, 8080, 1337, 31337] {
-            assert_eq!(Engine::effective_min_packets(&flow_key(6, port), 100), 2);
+            assert_eq!(Engine::effective_min_packets(&flow_key(6, port), 100, TEST_FLOOR), 2);
         }
-        assert_eq!(Engine::effective_min_packets(&flow_key(6, 3333), 100), 2); // TCP C2
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 3333), 100, TEST_FLOOR), 2); // TCP C2
     }
 
     #[test]
     fn exact_floor_value_passes_through() {
         // At the floor boundary, no bump applied.
-        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 5), 5);
+        assert_eq!(Engine::effective_min_packets(&flow_key(6, 443), 5, TEST_FLOOR), 5);
     }
 
     #[test]

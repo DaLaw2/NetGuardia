@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use arc_swap::ArcSwap;
 use macros::log;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
@@ -16,24 +17,21 @@ use tokio::time::sleep;
 use super::adapter::ModelSourceState;
 use super::inference::Inference;
 use super::model_loader::build_adapter;
-use crate::infrastructure::app_config::AppConfig;
+use crate::model::config::AppConfig;
 use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::detection::model_source::ModelInfo;
 use crate::model::error::ml::MLError;
 use crate::model::log::ml::MLLog;
-use crate::model::system::config::MLInferenceConfig;
-
-/// Debounce window: wait for both manifest and ONNX to land before reloading.
-const DEBOUNCE_SECS: u64 = 5;
 
 pub struct ModelWatcher {
     inference: Arc<Inference>,
-    app_config: Arc<AppConfig>,
+    config: Arc<ArcSwap<AppConfig>>,
 }
 
 impl ModelWatcher {
-    pub fn new(inference: Arc<Inference>, app_config: Arc<AppConfig>) -> Self {
-        Self { inference, app_config }
+    pub fn new(inference: Arc<Inference>, config: Arc<ArcSwap<AppConfig>>) -> Self {
+        Self { inference, config }
     }
 
     pub fn start(self) {
@@ -66,14 +64,14 @@ impl ModelWatcher {
             if rx.recv().await.is_none() {
                 break;
             }
-            sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
+            sleep(Duration::from_secs(self.config.load().ml.model_watcher_debounce_secs)).await;
             while rx.try_recv().is_ok() {}
             // `try_reload` loads the manifest + sidecar + ONNX off disk, any
             // of which can block for >10ms on a cold cache — move it off the
             // tokio worker so the rest of the async runtime keeps turning.
             let inference = Arc::clone(&self.inference);
-            let app_config = Arc::clone(&self.app_config);
-            let _ = tokio::task::spawn_blocking(move || try_reload(&inference, &app_config)).await;
+            let config = Arc::clone(&self.config);
+            let _ = tokio::task::spawn_blocking(move || try_reload(&inference, &config)).await;
         }
 
         Ok(())
@@ -107,7 +105,7 @@ impl ModelWatcher {
 /// than crashing. Runs under `spawn_blocking` because manifest + sidecar +
 /// ONNX loads are synchronous disk I/O plus a `tract` graph solve that
 /// routinely takes >10 ms.
-fn try_reload(inference: &Inference, app_config: &AppConfig) {
+fn try_reload(inference: &Inference, config: &ArcSwap<AppConfig>) {
     let manifest_path = PathBuf::from(MODELS_DIR).join(MANIFEST_FILENAME);
 
     // Path 1 — manifest disappeared: transition to Dormant.
@@ -120,22 +118,27 @@ fn try_reload(inference: &Inference, app_config: &AppConfig) {
 
     // Path 2 — manifest present: re-read + rebuild adapter.
     log!(MLLog::ModelReloadStarting);
-    let batch_size = app_config.inference.inference_batch_size;
+    let app_cfg = config.load();
+    let batch_size = app_cfg.ml.inference_batch_size;
+    let onnx_load_timeout = Duration::from_secs(app_cfg.ml.onnx_load_timeout_secs);
+    drop(app_cfg);
     match MLInferenceConfig::from_manifest_with_sidecar(&manifest_path) {
-        Ok((config, manifest)) => match build_adapter(&manifest, Some(&manifest_path), &config, batch_size) {
-            Ok(adapter) => {
-                let info = ModelInfo::new(
-                    manifest.name.clone(),
-                    manifest.adapter.as_str().to_string(),
-                    manifest.features.len(),
-                );
-                inference.swap_state(ModelSourceState::Active { adapter, info });
-                log!(MLLog::ModelReloadSuccess);
+        Ok((config, manifest)) => {
+            match build_adapter(&manifest, Some(&manifest_path), &config, batch_size, onnx_load_timeout) {
+                Ok(adapter) => {
+                    let info = ModelInfo::new(
+                        manifest.name.clone(),
+                        manifest.adapter.as_str().to_string(),
+                        manifest.features.len(),
+                    );
+                    inference.swap_state(ModelSourceState::Active { adapter, info });
+                    log!(MLLog::ModelReloadSuccess);
+                }
+                Err(e) => {
+                    record_error(inference, e.to_string(), Some(manifest_path.clone()));
+                }
             }
-            Err(e) => {
-                record_error(inference, e.to_string(), Some(manifest_path.clone()));
-            }
-        },
+        }
         Err(e) => {
             record_error(inference, e.to_string(), Some(manifest_path.clone()));
         }

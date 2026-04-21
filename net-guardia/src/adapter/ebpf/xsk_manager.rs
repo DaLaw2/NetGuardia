@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
 use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
@@ -18,15 +19,15 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
-use crate::infrastructure::app_config::AppConfig;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
+use crate::model::config::AppConfig;
+use crate::model::config::ebpf::EbpfConfig;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
 use crate::model::log::ebpf::EbpfLog;
 use crate::model::monitoring::direction::Direction;
-use crate::model::system::config::NetworkConfig;
 use crate::utils::packet_parser::parse_packet;
 
 /// Pre-allocated buffer pool to avoid per-packet malloc.
@@ -61,13 +62,17 @@ impl BufferPool {
 }
 
 pub struct XskManager {
-    app_config: Arc<AppConfig>,
+    app_config: Arc<ArcSwap<AppConfig>>,
     xsk_map: Mutex<Option<XskMap<MapData>>>,
     egress_xsk_map: Mutex<Option<XskMap<MapData>>>,
 }
 
 impl XskManager {
-    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<ArcSwap<AppConfig>>,
+        ingress_ebpf: &mut Ebpf,
+        egress_ebpf: &mut Ebpf,
+    ) -> Result<Self, Error> {
         let map = ingress_ebpf
             .take_map("INGRESS_XSKS_MAP")
             .ok_or(EbpfError::MapNotFound)?;
@@ -83,7 +88,7 @@ impl XskManager {
         })
     }
 
-    pub fn unavailable(app_config: Arc<AppConfig>) -> Self {
+    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         Self {
             app_config,
             xsk_map: Mutex::new(None),
@@ -105,7 +110,7 @@ impl XskManager {
             return Ok(());
         }
 
-        let network = self.app_config.network.clone();
+        let network = self.app_config.load().ebpf.clone();
         let combined_queue_count = network.combined_queue_count;
 
         for queue_id in 0..combined_queue_count {
@@ -183,9 +188,8 @@ pub struct XskPair {
 }
 
 impl XskPair {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: NetworkConfig,
+        config: EbpfConfig,
         queue_id: u32,
         rx_ifname: &str,
         _tx_ifname: &str,

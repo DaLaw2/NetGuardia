@@ -10,7 +10,6 @@ use common::model::drop_event::DropEvent as RawDropEvent;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
 use crate::model::monitoring::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
 
 pub struct DropMonitor {
@@ -19,8 +18,8 @@ pub struct DropMonitor {
 }
 
 impl DropMonitor {
-    pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(DROP_CHANNEL_CAPACITY);
+    pub fn new(channel_capacity: usize) -> Self {
+        let (tx, _) = broadcast::channel(channel_capacity.max(1));
         Self {
             broadcast_tx: tx,
             counters: DropCountersAtomic::default(),
@@ -92,12 +91,6 @@ impl DropMonitor {
         };
 
         let _ = self.broadcast_tx.send(msg);
-    }
-}
-
-impl Default for DropMonitor {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -2,16 +2,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use macros::log;
 use reqwest::Client;
 use tokio::time::sleep;
 
-use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory, AlertPayload};
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
-use crate::model::config::constants::TELEGRAM_MAX_RETRIES;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::error::notification::NotificationError;
 use crate::model::log::system::SystemLog;
@@ -19,8 +19,8 @@ use crate::model::log::system::SystemLog;
 /// Telegram Bot API adapter implementing AlertNotifier.
 pub struct TelegramAdapter {
     client: Client,
-    notif: Arc<dyn SettingRepo>,
-    repo: Arc<dyn AppRepo>,
+    notif: Arc<dyn SettingRepo + Send + Sync>,
+    config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
     /// Packed rate-limit state: high 32 bits = window-start unix seconds,
     /// low 32 bits = count consumed in this window. Updated via CAS so the
@@ -30,8 +30,8 @@ pub struct TelegramAdapter {
 
 impl TelegramAdapter {
     pub fn new(
-        notif: Arc<dyn SettingRepo>,
-        repo: Arc<dyn AppRepo>,
+        notif: Arc<dyn SettingRepo + Send + Sync>,
+        config: Arc<ArcSwap<AppConfig>>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Result<Self, Error> {
         let client = Client::builder()
@@ -42,7 +42,7 @@ impl TelegramAdapter {
         Ok(Self {
             client,
             notif,
-            repo,
+            config,
             secrets,
             rate_state: AtomicU64::new(0),
         })
@@ -75,24 +75,13 @@ impl TelegramAdapter {
         }
     }
 
-    /// Read the configured per-window message cap from settings.
     fn rate_limit_max_messages(&self) -> u32 {
-        self.repo
-            .get_setting("telegram_rate_limit_max_messages")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(20)
+        self.config.load().notification.telegram.rate_limit_max_messages
     }
 
-    /// Read the configured window length (seconds) from settings.
+    /// Read the configured window length (seconds) from the live config.
     fn rate_limit_window_secs(&self) -> u32 {
-        self.repo
-            .get_setting("telegram_rate_limit_window_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60)
+        self.config.load().notification.telegram.rate_limit_window_secs
     }
 
     /// Check rate limit. Returns true if send is allowed.
@@ -134,8 +123,9 @@ impl TelegramAdapter {
     /// Send a message via Telegram Bot API with retry on 429.
     async fn send_message(&self, bot_token: &str, chat_id: &str, text: &str) -> Result<(), Error> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+        let max_retries = self.config.load().notification.telegram.max_retries;
 
-        for attempt in 0..=TELEGRAM_MAX_RETRIES {
+        for attempt in 0..=max_retries {
             let resp = self
                 .client
                 .post(&url)
@@ -181,11 +171,11 @@ impl TelegramAdapter {
                     .and_then(|r| r.as_u64())
                     .unwrap_or(5);
 
-                if attempt < TELEGRAM_MAX_RETRIES {
+                if attempt < max_retries {
                     log!(SystemLog::TelegramRateLimitedRetry(
                         retry_after,
                         attempt + 1,
-                        TELEGRAM_MAX_RETRIES,
+                        max_retries,
                     ));
                     sleep(Duration::from_secs(retry_after)).await;
                     continue;
@@ -268,20 +258,24 @@ impl AlertNotifier for TelegramAdapter {
 /// call instantiates a fresh `TelegramAdapter` so the test path observes
 /// whatever config the user just saved.
 pub struct TelegramAdapterFactory {
-    notif: Arc<dyn SettingRepo>,
-    repo: Arc<dyn AppRepo>,
+    notif: Arc<dyn SettingRepo + Send + Sync>,
+    config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
 impl TelegramAdapterFactory {
-    pub fn new(notif: Arc<dyn SettingRepo>, repo: Arc<dyn AppRepo>, secrets: Option<Arc<dyn SecretStorePort>>) -> Self {
-        Self { notif, repo, secrets }
+    pub fn new(
+        notif: Arc<dyn SettingRepo + Send + Sync>,
+        config: Arc<ArcSwap<AppConfig>>,
+        secrets: Option<Arc<dyn SecretStorePort>>,
+    ) -> Self {
+        Self { notif, config, secrets }
     }
 }
 
 impl AlertNotifierFactory for TelegramAdapterFactory {
     fn create(&self) -> Result<Arc<dyn AlertNotifier>, Error> {
-        let adapter = TelegramAdapter::new(self.notif.clone(), self.repo.clone(), self.secrets.clone())?;
+        let adapter = TelegramAdapter::new(self.notif.clone(), self.config.clone(), self.secrets.clone())?;
         Ok(Arc::new(adapter))
     }
 }

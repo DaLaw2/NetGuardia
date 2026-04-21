@@ -2,7 +2,6 @@ use crate::model::error::Error;
 use crate::model::identity::auth::Claims;
 
 /// Type alias for API key list items: (id, name, permission_level, created_at, last_used_at)
-#[allow(clippy::type_complexity)]
 pub type ApiKeyListItem = (i64, String, String, String, Option<String>);
 
 /// Identity BC — API key CRUD + validation (distinct from user login,

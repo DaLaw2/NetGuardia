@@ -1,4 +1,4 @@
-use crate::model::system::config::MLInferenceConfig;
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 
 /// Baselines loaded from the inference config (scaler mean / std).
 /// If inference_config has no scaler data, drift detection is disabled.

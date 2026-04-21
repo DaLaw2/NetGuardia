@@ -5,18 +5,10 @@ use dashmap::DashMap;
 use macros::log;
 use tokio::sync::mpsc;
 
+use crate::model::config::correlation::CorrelationDetectorParams;
 use crate::model::detection::ml_detection::AlertMessage;
 use crate::model::event::{DetectionEvent, DetectionSource};
 use crate::model::log::detection::DetectionLog;
-
-/// Window within which unique sources are counted toward a single destination.
-const BOTNET_WINDOW_SECS: u64 = 300; // 5 minutes
-
-/// Minimum unique source IPs targeting the same destination to trigger a botnet alert.
-const BOTNET_THRESHOLD: usize = 10;
-
-/// Maximum tracked destination IPs to bound memory.
-const MAX_TRACKED_DSTS: usize = 10_000;
 
 struct TimedSourceSet {
     sources: HashSet<String>,
@@ -31,15 +23,19 @@ pub struct BotnetDetector {
     /// dst_ip → set of unique src_ips within the time window
     state: DashMap<String, TimedSourceSet>,
     window: Duration,
+    window_secs: u64,
     threshold: usize,
+    max_tracked: usize,
 }
 
 impl BotnetDetector {
-    pub fn new() -> Self {
+    pub fn new(params: &CorrelationDetectorParams, max_tracked: usize) -> Self {
         Self {
             state: DashMap::new(),
-            window: Duration::from_secs(BOTNET_WINDOW_SECS),
-            threshold: BOTNET_THRESHOLD,
+            window: Duration::from_secs(params.window_secs),
+            window_secs: params.window_secs,
+            threshold: params.threshold,
+            max_tracked,
         }
     }
 
@@ -77,7 +73,7 @@ impl BotnetDetector {
             log!(DetectionLog::BotnetDetected(
                 key.clone(),
                 unique_sources,
-                BOTNET_WINDOW_SECS,
+                self.window_secs,
             ));
 
             // source_ip = the latest attacker; dest_ip = the victim being targeted.
@@ -116,8 +112,8 @@ impl BotnetDetector {
             .retain(|_, set| now.duration_since(set.window_start) < window);
 
         // Enforce max capacity by removing oldest entries if over limit
-        if self.state.len() > MAX_TRACKED_DSTS {
-            let excess = self.state.len() - MAX_TRACKED_DSTS;
+        if self.state.len() > self.max_tracked {
+            let excess = self.state.len() - self.max_tracked;
             let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys_to_remove {
                 self.state.remove(&key);
@@ -154,9 +150,16 @@ mod tests {
         }
     }
 
+    fn test_params() -> CorrelationDetectorParams {
+        CorrelationDetectorParams {
+            window_secs: 300,
+            threshold: 10,
+        }
+    }
+
     #[tokio::test]
     async fn botnet_threshold_triggers_alert() {
-        let detector = BotnetDetector::new();
+        let detector = BotnetDetector::new(&test_params(), 10_000);
         let (tx, mut rx) = mpsc::channel(64);
 
         // Send alerts from 9 different sources (below threshold)
@@ -181,7 +184,9 @@ mod tests {
         let detector = BotnetDetector {
             state: DashMap::new(),
             window: Duration::from_millis(10),
-            threshold: BOTNET_THRESHOLD,
+            window_secs: 0,
+            threshold: 10,
+            max_tracked: 10_000,
         };
         let (tx, _rx) = mpsc::channel(64);
 

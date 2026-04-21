@@ -33,29 +33,29 @@ use crate::core::rate_limit_service::RateLimitService;
 use crate::core::soar::engine::SoarEngine;
 use crate::core::soar::scheduler::TtlScheduler;
 use crate::core::stats_aggregator::StatsAggregator;
-use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::audit_logger::AuditLogger;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::http_server::{self, HttpServerParams};
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::suricata_monitor::SuricataMonitor;
 use crate::interface::port::audit::AuditRepo;
+use crate::interface::port::geo_lookup::GeoLookup;
 use crate::interface::port::packet_sink::PacketSinkFactory;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::stats::StatsRepo;
+use crate::model::config::AppConfig;
 use crate::model::config::constants::{MODELS_DIR, STAGING_SUBDIR};
 use crate::model::detection::ml_detection::AlertMessage;
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::error::Error;
 use crate::model::error::system::SystemError;
 use crate::model::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
 use crate::model::log::detection::DetectionLog;
 use crate::model::log::ml::MLLog;
 use crate::model::log::system::SystemLog;
-use crate::model::system::config::MLInferenceConfig;
 use crate::model::system::health::EbpfHealth;
 use crate::model::system::readiness::ReadinessState;
 
@@ -71,11 +71,11 @@ pub enum ShutdownMode {
 /// and subsequent calls receive `TrySendError::Full` — no lock, no
 /// `Option::take`, no `Mutex`.
 pub struct ShutdownHandle {
-    tx: mpsc::Sender<ShutdownMode>,
+    tx: Sender<ShutdownMode>,
 }
 
 impl ShutdownHandle {
-    fn new(tx: mpsc::Sender<ShutdownMode>) -> Self {
+    fn new(tx: Sender<ShutdownMode>) -> Self {
         Self { tx }
     }
 
@@ -90,7 +90,7 @@ impl ShutdownHandle {
 /// Construction is delegated to `ServiceFactory::build()`.
 /// Setup mode is handled by main.rs — System only runs when setup is complete.
 pub struct System {
-    pub app_config: Arc<AppConfig>,
+    pub app_config: Arc<ArcSwap<AppConfig>>,
     pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
@@ -109,7 +109,7 @@ pub struct System {
     pub notification_service: Arc<NotificationService>,
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
-    pub geoip: Option<Arc<GeoIpService>>,
+    pub geoip: Option<Arc<dyn GeoLookup>>,
     pub drift_detector: DriftDetectorHandle,
     pub shutdown_handle: Option<Arc<ShutdownHandle>>,
     _ingress_program_array: Option<ProgramArray<MapData>>,
@@ -216,7 +216,8 @@ impl System {
         if let Err(e) = ebpf_services.run(sink_factory).await {
             use crate::infrastructure::ebpf_preflight;
             use crate::model::system::health::EbpfFailStage;
-            let iface = self.app_config.network.ingress_ifname.as_str();
+            let cfg = self.app_config.load();
+            let iface = cfg.ebpf.ingress_ifname.as_str();
             let health = ebpf_preflight::classify(EbpfFailStage::AfXdpBind, &e, Some(iface));
             log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
             self.ebpf_health.store(Arc::new(health));
@@ -244,7 +245,7 @@ impl System {
         // Start stats aggregator (writes weekly_* settings for Report engine)
         let stats_aggregator = StatsAggregator::new(
             self.db.clone() as Arc<dyn StatsRepo>,
-            self.db.clone() as Arc<dyn SettingRepo>,
+            self.db.clone() as Arc<dyn SettingRepo + Send + Sync>,
         );
         stats_aggregator.start();
 
@@ -260,6 +261,7 @@ impl System {
         // Start detection orchestrator (dedup + enrichment + source attribution)
         let (detection_tx, detection_rx) = mpsc::channel::<DetectionEvent>(1024);
         let orchestrator = DetectionOrchestrator::new(
+            &self.app_config,
             detection_rx,
             self.comm.clone(),
             self.geoip.clone(),
@@ -274,12 +276,13 @@ impl System {
 
         // Start cross-flow correlation engine (botnet, scan, lateral movement detection)
         let correlation_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
-        let correlation_engine = CorrelationEngine::new(correlation_alert_rx, correlation_detection_tx);
+        let correlation_engine =
+            CorrelationEngine::new(&self.app_config, correlation_alert_rx, correlation_detection_tx);
         correlation_engine.start();
 
         // Start temporal beaconing detector (CV-based C2 periodicity detection)
         let beaconing_alert_rx = self.app_services.ml_alert.subscribe_to_alerts();
-        let beaconing_detector = BeaconingDetector::new(beaconing_alert_rx, beaconing_detection_tx);
+        let beaconing_detector = BeaconingDetector::new(&self.app_config, beaconing_alert_rx, beaconing_detection_tx);
         beaconing_detector.start();
 
         // Bridge ML alerts → DetectionEvent (thin adapter, no enrichment)
@@ -499,8 +502,9 @@ impl System {
     /// If either attach fails, record the reason in `ebpf_health` and
     /// continue — the rest of the system keeps running.
     fn attach_ebpf(&mut self) -> Result<(), Error> {
-        let ingress_ifname = self.app_config.network.ingress_ifname.clone();
-        let egress_ifname = self.app_config.network.egress_ifname.clone();
+        let cfg = self.app_config.load();
+        let ingress_ifname = cfg.ebpf.ingress_ifname.clone();
+        let egress_ifname = cfg.ebpf.egress_ifname.clone();
         ServiceFactory::set_memory_limit()?;
 
         let (ingress, egress) = match (self.ingress_ebpf.as_mut(), self.egress_ebpf.as_mut()) {

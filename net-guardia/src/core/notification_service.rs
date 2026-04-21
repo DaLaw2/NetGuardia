@@ -1,34 +1,35 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use serde_json::Value;
 
 use crate::core::email::scheduler::SmtpClient;
-use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::notification::AlertNotifierFactory;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
 
 /// Domain service for notification config (Telegram, SMTP).
 /// Coordinates DB persistence and external service testing.
 pub struct NotificationService {
-    notif: Arc<dyn SettingRepo>,
-    repo: Arc<dyn AppRepo>,
+    notif: Arc<dyn SettingRepo + Send + Sync>,
+    config: Arc<ArcSwap<AppConfig>>,
     secrets: Arc<dyn SecretStorePort>,
     alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
 }
 
 impl NotificationService {
     pub fn new(
-        notif: Arc<dyn SettingRepo>,
-        repo: Arc<dyn AppRepo>,
+        notif: Arc<dyn SettingRepo + Send + Sync>,
+        config: Arc<ArcSwap<AppConfig>>,
         secrets: Arc<dyn SecretStorePort>,
         alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
     ) -> Self {
         Self {
             notif,
-            repo,
+            config,
             secrets,
             alert_notifier_factory,
         }
@@ -86,19 +87,18 @@ impl NotificationService {
 
     /// Send a test email using current SMTP config.
     pub fn test_smtp(&self) -> Result<String, Error> {
-        let smtp_client = SmtpClient::from_database(self.repo.as_ref(), Some(self.secrets.as_ref()))?;
-        let smtp = smtp_client.ok_or_else(|| {
+        let smtp_cfg = self.config.load().notification.smtp.clone();
+        let smtp = SmtpClient::from_config(&smtp_cfg, Some(self.secrets.as_ref()))?.ok_or_else(|| {
             MiscError::ValidationError(
                 "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
                  If smtp_username is not an email address, also set smtp_sender.",
             )
         })?;
 
-        let recipient = self
-            .repo
-            .get_setting("smtp_recipient")?
-            .filter(|r| !r.is_empty())
-            .ok_or_else(|| MiscError::ValidationError("No smtp_recipient configured."))?;
+        if smtp_cfg.recipient.is_empty() {
+            Err(MiscError::ValidationError("No smtp_recipient configured."))?;
+        }
+        let recipient = smtp_cfg.recipient;
 
         smtp.send(
             &recipient,

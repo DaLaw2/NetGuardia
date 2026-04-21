@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::manifest::{AdapterKind, LabelSpec, ModelManifest};
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::error::ml::MLError;
-use crate::model::system::config::MLInferenceConfig;
 
 impl MLInferenceConfig {
     pub fn load_file(file: &str) -> Result<Self, MLError> {

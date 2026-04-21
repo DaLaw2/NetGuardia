@@ -8,6 +8,7 @@ pub mod xsk_manager;
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, RingBuf};
 use crossbeam::queue::SegQueue;
@@ -22,9 +23,9 @@ use crate::adapter::ebpf::geo_block::GeoBlock;
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::ebpf::rate_limit::RateLimitConfig;
 use crate::adapter::ebpf::xsk_manager::XskManager;
-use crate::infrastructure::app_config::AppConfig;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::interface::port::packet_sink::PacketSinkFactory;
+use crate::model::config::AppConfig;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
 use crate::model::error::system::SystemError;
@@ -42,14 +43,18 @@ pub struct EbpfServices {
 }
 
 impl EbpfServices {
-    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
+    pub fn new(
+        app_config: Arc<ArcSwap<AppConfig>>,
+        ingress_ebpf: &mut Ebpf,
+        egress_ebpf: &mut Ebpf,
+    ) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
         let dns_filter = DnsFilter::new();
-        let geo_block = GeoBlock::new(ingress_ebpf, &app_config)?;
+        let geo_block = GeoBlock::new(ingress_ebpf, app_config.clone())?;
         let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
-        let drop_monitor = Arc::new(DropMonitor::new());
+        let drop_monitor = Arc::new(DropMonitor::new(app_config.load().observability.drop_channel_capacity));
         let drop_ring_buf = {
             let map = ingress_ebpf.take_map("DROP_EVENTS").ok_or(EbpfError::MapNotFound)?;
             RingBuf::try_from(map).map_err(EbpfError::MapOperationError)?
@@ -70,15 +75,15 @@ impl EbpfServices {
     /// Build an EbpfServices with every eBPF-backed subservice in the
     /// "unavailable" state. Used when eBPF failed to load at startup.
     /// Queries return empty results; mutating calls return `EbpfError::NotLoaded`.
-    pub fn unavailable(app_config: Arc<AppConfig>) -> Self {
+    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         Self {
             xsk_manager: Arc::new(XskManager::unavailable(app_config.clone())),
             access_control: Arc::new(AccessControl::unavailable()),
             protocol_filter: Arc::new(ProtocolFilter::unavailable()),
             dns_filter: Arc::new(DnsFilter::new()),
-            geo_block: Arc::new(GeoBlock::unavailable(&app_config)),
+            geo_block: Arc::new(GeoBlock::unavailable(app_config.clone())),
             rate_limit: Arc::new(RateLimitConfig::unavailable()),
-            drop_monitor: Arc::new(DropMonitor::new()),
+            drop_monitor: Arc::new(DropMonitor::new(app_config.load().observability.drop_channel_capacity)),
             drop_ring_buf: Mutex::new(None),
             shutdowns: SegQueue::new(),
         }

@@ -23,25 +23,20 @@ use tract_onnx::prelude::*;
 use super::adapter::{MLModelAdapter, ModelSourceState};
 use super::flow_tracker::FlowData;
 use super::manifest::LabelSpec;
+use crate::model::config::AppConfig;
 use crate::model::detection::flow_features::FlowFeatures;
 use crate::model::detection::ml_detection::{DetectionResult, RunnableModel};
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::detection::model_source::ModelSourceStatus;
 use crate::model::log::ml::MLLog;
-use crate::model::system::config::MLInferenceConfig;
 
 /// (anomaly_scores, per_class_probs, c2_scores) — MultiTask batch output.
 type ClassifierBatchOutput = (Vec<f32>, Vec<Vec<f32>>, Vec<f32>);
 
-/// Consecutive failures to trip the circuit breaker.
-const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
-/// Window in seconds: failures older than this are forgotten.
-const CIRCUIT_BREAKER_WINDOW_SECS: u64 = 60;
-/// Cooldown in seconds before re-enabling inference after circuit break.
-const CIRCUIT_BREAKER_COOLDOWN_SECS: u64 = 120;
-
 pub struct Inference {
     state: ArcSwap<ModelSourceState>,
     pub config: Arc<MLInferenceConfig>,
+    app_config: Arc<ArcSwap<AppConfig>>,
     /// Rolling-window QPS estimate, published in `ModelInfo.qps_recent`.
     /// Stored as u32 (integer QPS) for lock-free update; fractional QPS
     /// information is not useful at the UI grain we're publishing.
@@ -54,10 +49,15 @@ pub struct Inference {
 impl Inference {
     /// Build a new Inference with the given initial state. Use
     /// `ModelSourceState::Dormant` when no model is loaded (Day 1 default).
-    pub fn new(initial_state: ModelSourceState, config: Arc<MLInferenceConfig>) -> Self {
+    pub fn new(
+        initial_state: ModelSourceState,
+        config: Arc<MLInferenceConfig>,
+        app_config: Arc<ArcSwap<AppConfig>>,
+    ) -> Self {
         Self {
             state: ArcSwap::from_pointee(initial_state),
             config,
+            app_config,
             qps_recent: AtomicU32::new(0),
             failure_count: AtomicU32::new(0),
             failure_window_start: AtomicU64::new(0),
@@ -177,7 +177,6 @@ impl Inference {
     /// MultiTask path. Runs the AE batch → computes per-flow MSE → feeds the
     /// classifier over (ae_features ++ ae_score) → fires on anomaly OR
     /// non-Normal classifier agreement OR elevated C2 head.
-    #[allow(clippy::too_many_arguments)]
     fn infer_multitask(
         &self,
         ae: &RunnableModel,
@@ -467,12 +466,13 @@ impl Inference {
         if open_since == 0 {
             return false;
         }
+        let cooldown = self.app_config.load().ml.circuit_breaker_cooldown_secs;
         let elapsed = Self::now_secs().saturating_sub(open_since);
-        if elapsed >= CIRCUIT_BREAKER_COOLDOWN_SECS {
+        if elapsed >= cooldown {
             self.circuit_open_since.store(0, Ordering::Relaxed);
             self.failure_count.store(0, Ordering::Relaxed);
             self.failure_window_start.store(0, Ordering::Relaxed);
-            log!(MLLog::CircuitBreakerReset(CIRCUIT_BREAKER_COOLDOWN_SECS));
+            log!(MLLog::CircuitBreakerReset(cooldown));
             return false;
         }
         true
@@ -481,17 +481,20 @@ impl Inference {
     fn record_failure(&self) {
         let now = Self::now_secs();
         let window_start = self.failure_window_start.load(Ordering::Relaxed);
+        let cfg = self.app_config.load();
+        let window_secs = cfg.ml.circuit_breaker_window_secs;
+        let threshold = cfg.ml.circuit_breaker_threshold;
 
-        if window_start == 0 || now.saturating_sub(window_start) > CIRCUIT_BREAKER_WINDOW_SECS {
+        if window_start == 0 || now.saturating_sub(window_start) > window_secs {
             self.failure_window_start.store(now, Ordering::Relaxed);
             self.failure_count.store(1, Ordering::Relaxed);
             return;
         }
 
         let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count >= CIRCUIT_BREAKER_THRESHOLD {
+        if count >= threshold {
             self.circuit_open_since.store(now, Ordering::Relaxed);
-            log!(MLLog::CircuitBreakerOpen(count, CIRCUIT_BREAKER_WINDOW_SECS));
+            log!(MLLog::CircuitBreakerOpen(count, window_secs));
         }
     }
 }

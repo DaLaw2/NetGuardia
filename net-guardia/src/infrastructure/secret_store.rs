@@ -136,6 +136,10 @@ impl SecretStorePort for SecretStore {
         let envelope = self.encrypt(plaintext)?;
         self.db.set_app_secret(key, &envelope)
     }
+
+    fn encrypt_envelope(&self, plaintext: &str) -> Result<String, Error> {
+        self.encrypt(plaintext)
+    }
 }
 
 #[cfg(test)]

@@ -1,30 +1,23 @@
 //! Centralized constants for the NetGuardia application.
-//! Tunable parameters are grouped by subsystem. Adjust here, not in individual files.
-
-// ── SOAR Engine ────────────────────────────────────────────────────
-pub const MAX_PENDING_UNBLOCK_RETRIES: i64 = 5;
-
-// ── ML Engine ──────────────────────────────────────────────────────
-pub const ML_ALERT_CHANNEL_CAPACITY: usize = 1024;
-pub const FLOW_MAX_PACKETS_PER_DIRECTION: usize = 1000;
-pub const FLOW_MAX_PERIODS: usize = 1000;
-pub const FLOW_IDLE_THRESHOLD_US: u64 = 1_000_000;
-pub const FLOW_BULK_MIN_PACKETS: u64 = 4;
-pub const FLOW_BULK_MIN_BYTES: u64 = 1000;
-pub const FLOW_IDLE_TIMEOUT_US: u64 = 120_000_000;
-pub const FLOW_TERMINATED_TIMEOUT_US: u64 = 5_000_000;
+//!
+//! Only **true constants** live here — values that are either part of a
+//! stable wire/FS contract or derived from an external spec. Anything
+//! runtime-tunable has moved into the corresponding `model/config/*.rs`
+//! subsystem config (Q-10, 2026-04-22).
 
 // ── ML Model Directory ─────────────────────────────────────────────
+/// Directory name (relative to working directory) where promoted models land.
+/// Stable filesystem contract shared with the model watcher and upload path.
 pub const MODELS_DIR: &str = "models";
+/// Filename the model watcher listens for as the "commit marker" of a new
+/// model promotion. Paired with upload's atomic rename order.
 pub const MANIFEST_FILENAME: &str = "manifest.yaml";
+/// Hidden subdirectory inside `MODELS_DIR` used for in-progress uploads.
+/// The watcher filters events inside this path so partial uploads don't
+/// trigger reloads. Stable contract with the multipart upload handler.
 pub const STAGING_SUBDIR: &str = ".staging";
 
-// ── Notification ───────────────────────────────────────────────────
-pub const TELEGRAM_MAX_RETRIES: u32 = 2;
-
 // ── HTTP Server ────────────────────────────────────────────────────
+/// Fallback port used when `http_port` is unset / unparseable. Matches
+/// the `defaults()` of `HttpServerConfig` and the setup-wizard default.
 pub const HTTP_FALLBACK_PORT: u16 = 8080;
-
-// ── Infrastructure ─────────────────────────────────────────────────
-pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
-pub const DROP_CHANNEL_CAPACITY: usize = 100;

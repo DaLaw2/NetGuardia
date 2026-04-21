@@ -30,7 +30,7 @@ static PRESERVED_DIRECTIVES: OnceLock<Vec<String>> = OnceLock::new();
 pub struct Logging;
 
 impl Logging {
-    pub fn initialize() -> Result<(), Error> {
+    pub fn initialize(log_buffer_capacity: usize, log_buffer_max_message_bytes: usize) -> Result<(), Error> {
         let log_directory = "logs";
         fs::create_dir_all(log_directory).map_err(|err| IOError::CreateDirectoryFailed(log_directory, err))?;
 
@@ -92,7 +92,7 @@ impl Logging {
             .with(filter_layer)
             .with(stdout_layer)
             .with(file_layer)
-            .with(LogBufferLayer::new())
+            .with(LogBufferLayer::new(log_buffer_capacity, log_buffer_max_message_bytes))
             .init();
 
         // Store type-erased handle for runtime log level changes

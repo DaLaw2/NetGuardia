@@ -7,19 +7,14 @@
 //! analysts can answer "why was this IP blocked?" without parsing
 //! logs by hand.
 
+use std::sync::Arc;
+
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
+use arc_swap::ArcSwap;
 
 use crate::core::detection::metrics::FusionMetrics;
 use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
-
-/// Maximum audit rows scanned per explain request. Caps DB work in
-/// case the audit chain grows large enough that a naive full-table
-/// scan would be noticeable.
-const FUSION_EXPLAIN_SCAN_LIMIT: i64 = 5_000;
-
-/// Upper cap on entries returned to the client per explain request.
-/// Guards against a UI rendering path that chokes on enormous JSON.
-const FUSION_EXPLAIN_RESPONSE_CAP: usize = 200;
+use crate::model::config::AppConfig;
 
 /// Stable audit action string the fusion engine emits — kept in sync
 /// with `core::detection::orchestrator::FUSION_AUDIT_ACTION`. If that
@@ -44,7 +39,11 @@ async fn get_metrics(metrics: web::Data<FusionMetrics>) -> impl Responder {
 /// Scans the WORM audit chain for `fused_threat_emitted` entries that
 /// match `src_ip`, returning them oldest-first so the UI can render a
 /// chronological "why was this IP blocked" view.
-async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl Responder {
+async fn explain_ip(
+    req: HttpRequest,
+    audit: web::Data<dyn AuditRepo>,
+    app_config: web::Data<Arc<ArcSwap<AppConfig>>>,
+) -> impl Responder {
     let src_ip = match req.match_info().get("src_ip") {
         Some(ip) => ip.to_string(),
         None => {
@@ -54,7 +53,8 @@ async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl R
         }
     };
 
-    let entries = match audit.list_audit_logs_by_action(FUSION_AUDIT_ACTION, FUSION_EXPLAIN_SCAN_LIMIT) {
+    let obs = app_config.load().observability.clone();
+    let entries = match audit.list_audit_logs_by_action(FUSION_AUDIT_ACTION, obs.fusion_explain_scan_limit) {
         Ok(e) => e,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -63,7 +63,7 @@ async fn explain_ip(req: HttpRequest, audit: web::Data<dyn AuditRepo>) -> impl R
         }
     };
 
-    let (matches, truncated) = filter_fusion_evidence_for_ip(&entries, &src_ip, FUSION_EXPLAIN_RESPONSE_CAP);
+    let (matches, truncated) = filter_fusion_evidence_for_ip(&entries, &src_ip, obs.fusion_explain_response_cap);
     HttpResponse::Ok().json(serde_json::json!({
         "src_ip": src_ip,
         "match_count": matches.len(),

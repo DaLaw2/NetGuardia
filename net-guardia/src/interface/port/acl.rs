@@ -32,7 +32,7 @@ pub trait AclRepo: Send + Sync {
     /// explicitly installed.
     fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error>;
 
-    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error>;
+    fn list_admin_whitelist(&self) -> Result<Vec<String>, Error>;
     fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
     fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
 }

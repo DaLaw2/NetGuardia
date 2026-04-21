@@ -20,10 +20,6 @@ use crate::model::error::Error;
 use crate::model::error::soar::SoarError;
 use crate::model::log::soar::SoarLog;
 
-/// Channel depth for the owner-task command queue. SOAR rate-limit operations
-/// are bursty but rare (operator action / playbook trigger), so 64 is plenty.
-const RATE_LIMIT_CMD_CHANNEL_CAPACITY: usize = 64;
-
 /// Settings keys persisted across restarts so the next process can resume the
 /// same TTL window. Stable wire format with the DB.
 const KEY_ORIGINAL: &str = "soar_rate_limit_original";
@@ -58,8 +54,8 @@ impl RateLimitOwnerHandle {
     /// (rusqlite via r2d2 and eBPF map writes) are synchronous I/O — running
     /// them directly inside the async owner loop would block the tokio
     /// worker thread for the entire adjust/restore batch.
-    pub fn spawn(db: Arc<dyn AppRepo>, rate_limit: Arc<dyn RateLimitPort>) -> Self {
-        let (tx, mut rx) = mpsc::channel::<RateLimitCmd>(RATE_LIMIT_CMD_CHANNEL_CAPACITY);
+    pub fn spawn(db: Arc<dyn AppRepo>, rate_limit: Arc<dyn RateLimitPort>, channel_capacity: usize) -> Self {
+        let (tx, mut rx) = mpsc::channel::<RateLimitCmd>(channel_capacity.max(1));
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {

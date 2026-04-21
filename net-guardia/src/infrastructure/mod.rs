@@ -1,4 +1,3 @@
-pub mod app_config;
 pub mod app_services;
 pub mod audit_logger;
 pub mod cli;

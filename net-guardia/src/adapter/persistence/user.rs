@@ -224,7 +224,7 @@ impl Database {
         }
     }
 
-    pub fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+    pub fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT g.id, g.name, g.description, g.permissions FROM user_groups g \
@@ -258,8 +258,8 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
-        let groups = self.get_user_groups(user_id)?;
+    pub fn list_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
+        let groups = self.list_groups_for_user(user_id)?;
         let mut all_perms = HashSet::new();
         for (_id, _name, _desc, perms_json) in groups {
             if let Ok(perms) = serde_json::from_str::<Vec<String>>(&perms_json) {
@@ -279,7 +279,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
+    pub fn list_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT user_id FROM user_group_members WHERE group_id = ?1")?;
         let rows = stmt.query_map(params![group_id], |row| row.get::<_, i64>(0))?;
@@ -290,7 +290,7 @@ impl Database {
         Ok(results)
     }
 
-    pub fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
+    pub fn list_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username FROM users u \
@@ -419,24 +419,24 @@ impl IdentityRepo for Database {
         self.get_user_group(id)
     }
 
-    fn get_user_groups(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
-        self.get_user_groups(user_id)
+    fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+        self.list_groups_for_user(user_id)
     }
 
     fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> {
         self.set_user_groups(user_id, group_ids)
     }
 
-    fn get_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
-        self.get_user_permissions(user_id)
+    fn list_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
+        self.list_user_permissions(user_id)
     }
 
-    fn get_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
-        self.get_group_member_ids(group_id)
+    fn list_group_member_ids(&self, group_id: i64) -> Result<Vec<i64>, Error> {
+        self.list_group_member_ids(group_id)
     }
 
-    fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
-        self.get_group_members(group_id)
+    fn list_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
+        self.list_group_members(group_id)
     }
 
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> {

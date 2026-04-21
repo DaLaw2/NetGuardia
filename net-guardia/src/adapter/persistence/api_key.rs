@@ -106,7 +106,6 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn list_api_keys(&self) -> Result<Vec<(i64, String, String, String, Option<String>)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id, name, permission_level, created_at, last_used_at FROM api_keys")?;

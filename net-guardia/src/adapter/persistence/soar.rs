@@ -3,7 +3,7 @@ use rusqlite::params;
 use super::Database;
 use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarRepo};
 use crate::model::error::Error;
-use crate::model::soar::playbook_data::UpdatePlaybookRow;
+use crate::model::soar::playbook_data::UpdatePlaybookInput;
 
 impl Database {
     pub fn insert_playbook(
@@ -40,8 +40,7 @@ impl Database {
 
     /// Load all playbooks with their actions in a single JOIN query (avoids N+1).
     /// Returns Vec of (playbook fields..., action fields...).
-    #[allow(clippy::type_complexity)]
-    pub fn load_playbooks_with_actions(
+    pub fn list_playbooks_with_actions(
         &self,
     ) -> Result<
         Vec<(
@@ -124,8 +123,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn load_all_playbook_conditions(
+    pub fn list_all_playbook_conditions(
         &self,
     ) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
         let conn = self.conn()?;
@@ -165,7 +163,6 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn list_soar_executions(
         &self,
         limit: i64,
@@ -239,8 +236,8 @@ impl Database {
 }
 
 impl SoarRepo for Database {
-    fn load_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error> {
-        self.load_playbooks_with_actions()
+    fn list_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error> {
+        self.list_playbooks_with_actions()
     }
 
     fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
@@ -255,24 +252,24 @@ impl SoarRepo for Database {
         self.seed_default_playbooks()
     }
 
-    fn load_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
-        self.load_all_playbook_conditions()
+    fn list_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
+        self.list_all_playbook_conditions()
     }
 
     fn count_active_soar_blocks(&self) -> Result<u32, Error> {
         self.count_active_soar_blocks()
     }
 
-    fn get_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
-        self.get_active_soar_blocks()
+    fn list_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
+        self.list_active_soar_blocks()
     }
 
-    fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
-        self.get_soar_block_by_id(id)
+    fn find_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
+        self.find_soar_block_by_id(id)
     }
 
-    fn get_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
-        self.get_expired_soar_blocks()
+    fn list_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+        self.list_expired_soar_blocks()
     }
 
     fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error> {
@@ -283,8 +280,8 @@ impl SoarRepo for Database {
         self.insert_pending_unblock(source_ip)
     }
 
-    fn load_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
-        self.load_pending_unblocks()
+    fn list_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+        self.list_pending_unblocks()
     }
 
     fn delete_pending_unblock(&self, id: i64) -> Result<(), Error> {
@@ -346,7 +343,7 @@ impl SoarRepo for Database {
     fn update_playbook_atomic(
         &self,
         id: i64,
-        row: &UpdatePlaybookRow,
+        row: &UpdatePlaybookInput,
         actions: &[(i64, String, String)],
         conditions: &[(String, String, String, Option<String>)],
     ) -> Result<bool, Error> {
@@ -405,9 +402,9 @@ mod tests {
             .insert_playbook_atomic("atom_pb", "threat", Some(0.8), None, None, 300, &actions, &conditions)
             .unwrap();
         assert!(id > 0);
-        let loaded = db.load_playbooks_with_actions().unwrap();
+        let loaded = db.list_playbooks_with_actions().unwrap();
         assert!(!loaded.is_empty());
-        let cond_rows = db.load_all_playbook_conditions().unwrap();
+        let cond_rows = db.list_all_playbook_conditions().unwrap();
         assert_eq!(cond_rows.len(), 1);
     }
 }

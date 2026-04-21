@@ -2,6 +2,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use lru::LruCache;
 use macros::log;
 use tokio::sync::mpsc;
@@ -10,28 +11,12 @@ use tokio::time::interval;
 use super::fusion_math::{FusionWindowLengths, fused_confidence};
 use super::metrics::FusionMetrics;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::infrastructure::geoip::GeoIpService;
+use crate::interface::port::geo_lookup::GeoLookup;
+use crate::model::config::AppConfig;
 use crate::model::detection::attack_type::translate;
 use crate::model::error::system::SystemError;
 use crate::model::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
 use crate::model::log::detection::DetectionLog;
-
-/// Dedup window: detections for the same `(source_ip, canonical_attack_type)`
-/// within this window are suppressed after initial fusion-window expiry.
-const DEDUP_WINDOW_SECS: u64 = 30;
-
-/// How often to sweep expired dedup entries.
-const CLEANUP_INTERVAL_SECS: u64 = 60;
-
-/// Repeat offender detection: same IP within this duration counts as repeat.
-const REPEAT_OFFENDER_WINDOW_SECS: u64 = 2 * 60 * 60;
-
-/// Maximum dedup entries to prevent unbounded memory growth under sustained attack.
-/// Declared as `NonZero` at compile time so `LruCache::new` never needs a
-/// runtime unwrap — if this ever goes to zero, the const expression fails
-/// to compile, not the running server.
-// SAFETY: NonZero::new on a non-zero literal is infallible; const-evaluated.
-const MAX_DEDUP_ENTRIES: NonZero<usize> = NonZero::new(50_000).unwrap();
 
 /// Actor recorded on every fusion-chain WORM entry. Stable across releases —
 /// downstream audit tooling filters on this string.
@@ -71,14 +56,16 @@ struct DedupEntry {
 pub struct DetectionOrchestrator {
     rx: mpsc::Receiver<DetectionEvent>,
     comm: Arc<CommunicationManager>,
-    geoip: Option<Arc<GeoIpService>>,
+    geoip: Option<Arc<dyn GeoLookup>>,
     metrics: Arc<FusionMetrics>,
     // Enrichment state
-    src_ip_counts: lru::LruCache<String, u32>,
-    repeat_tracker: lru::LruCache<String, Instant>,
+    src_ip_counts: LruCache<String, u32>,
+    repeat_tracker: LruCache<String, Instant>,
     // Dedup state — LRU-bounded to prevent unbounded growth under sustained attack.
     dedup: lru::LruCache<(String, String), DedupEntry>,
     dedup_window: Duration,
+    repeat_offender_window: Duration,
+    cleanup_interval_secs: u64,
     /// Per-source fusion window lengths. Future versions may read overrides
     /// from DB; the defaults live in `FusionWindowLengths::default`.
     fusion_windows: FusionWindowLengths,
@@ -86,22 +73,27 @@ pub struct DetectionOrchestrator {
 
 impl DetectionOrchestrator {
     pub fn new(
+        app_config: &Arc<ArcSwap<AppConfig>>,
         rx: mpsc::Receiver<DetectionEvent>,
         comm: Arc<CommunicationManager>,
-        geoip: Option<Arc<GeoIpService>>,
+        geoip: Option<Arc<dyn GeoLookup>>,
         metrics: Arc<FusionMetrics>,
     ) -> Self {
+        let cfg = app_config.load();
+        let fusion = &cfg.detection.fusion;
+        let max_dedup = NonZero::new(fusion.max_dedup_entries.max(1)).unwrap_or(NonZero::<usize>::MIN);
         Self {
             rx,
             comm,
             geoip,
             metrics,
-            // SAFETY: NonZero::new on non-zero literals; MAX_DEDUP_ENTRIES is
-            // already a NonZero const so no unwrap needed for that one.
+            // SAFETY: NonZero::new on non-zero literals.
             src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
             repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
-            dedup: LruCache::new(MAX_DEDUP_ENTRIES),
-            dedup_window: Duration::from_secs(DEDUP_WINDOW_SECS),
+            dedup: LruCache::new(max_dedup),
+            dedup_window: Duration::from_secs(fusion.dedup_window_secs),
+            repeat_offender_window: Duration::from_secs(fusion.repeat_offender_window_secs),
+            cleanup_interval_secs: cfg.detection.cleanup_interval_secs,
             fusion_windows: FusionWindowLengths::default(),
         }
     }
@@ -113,7 +105,7 @@ impl DetectionOrchestrator {
     async fn run(mut self) {
         log!(DetectionLog::OrchestratorStarted);
 
-        let mut cleanup_interval = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut cleanup_interval = interval(Duration::from_secs(self.cleanup_interval_secs));
 
         loop {
             tokio::select! {
@@ -305,17 +297,15 @@ impl DetectionOrchestrator {
             }
         };
 
-        let repeat_window = Duration::from_secs(REPEAT_OFFENDER_WINDOW_SECS);
         let now = Instant::now();
-        let is_repeat = self
-            .repeat_tracker
-            .get(src_ip)
-            .is_some_and(|last| now.checked_duration_since(*last).unwrap_or(Duration::ZERO) < repeat_window);
+        let is_repeat = self.repeat_tracker.get(src_ip).is_some_and(|last| {
+            now.checked_duration_since(*last).unwrap_or(Duration::ZERO) < self.repeat_offender_window
+        });
         self.repeat_tracker.put(src_ip.clone(), now);
 
         let geoip_country = if let Some(ref svc) = self.geoip {
             if let Ok(ip) = src_ip.parse() {
-                svc.lookup(ip).await.ok().flatten().and_then(|loc| loc.country_code)
+                svc.lookup(ip).await.and_then(|loc| loc.country_code)
             } else {
                 None
             }

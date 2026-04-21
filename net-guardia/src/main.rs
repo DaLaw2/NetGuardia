@@ -40,8 +40,21 @@ async fn main() -> Result<(), Error> {
         return handle_subcommand(&cli);
     }
 
-    Logging::initialize()?;
+    // Open DB before logging so the in-memory log ring buffer can size itself
+    // from the observability config. Any `log!` emitted during DB bring-up
+    // (e.g. `DbEncryptionDisabled`) is silently dropped by tracing because no
+    // subscriber is yet installed — acceptable for a single startup warning.
     let db = Arc::new(Database::new(&cli.db_path)?);
+
+    let log_buffer_capacity: usize = db
+        .get_setting("log_buffer_capacity")?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000);
+    let log_buffer_max_message_bytes: usize = db
+        .get_setting("log_buffer_max_message_bytes")?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8_192);
+    Logging::initialize(log_buffer_capacity, log_buffer_max_message_bytes)?;
     if db.user_count().unwrap_or(0) == 0 {
         let hash = password::hash_password("admin")?;
         let admin_user_id = db.insert_user("admin", &hash, "admin", false)?;

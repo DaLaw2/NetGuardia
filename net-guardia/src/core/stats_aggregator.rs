@@ -14,11 +14,11 @@ use crate::model::log::system::SystemLog;
 /// and writes them to the settings table for the Report engine to consume.
 pub struct StatsAggregator {
     stats: Arc<dyn StatsRepo>,
-    repo: Arc<dyn SettingRepo>,
+    repo: Arc<dyn SettingRepo + Send + Sync>,
 }
 
 impl StatsAggregator {
-    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo>) -> Self {
+    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo + Send + Sync>) -> Self {
         Self { stats, repo }
     }
 
@@ -163,7 +163,10 @@ mod tests {
         db.insert_soar_execution(1, Some("5.6.7.8"), "brute_force", "[]").ok();
         db.insert_soar_block_rule("1.2.3.4", 1, "2099-01-01 00:00:00").ok();
 
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
+        let aggregator = StatsAggregator::new(
+            db.clone() as Arc<dyn StatsRepo>,
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+        );
         aggregator.aggregate().expect("aggregation should succeed");
 
         // Verify settings were written
@@ -192,7 +195,10 @@ mod tests {
     #[test]
     fn aggregator_handles_empty_db() {
         let db = Arc::new(Database::new(":memory:").expect("test db"));
-        let aggregator = StatsAggregator::new(db.clone() as Arc<dyn StatsRepo>, db.clone() as Arc<dyn SettingRepo>);
+        let aggregator = StatsAggregator::new(
+            db.clone() as Arc<dyn StatsRepo>,
+            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+        );
         aggregator
             .aggregate()
             .expect("aggregation should succeed with empty data");

@@ -84,7 +84,7 @@ mod tests {
     fn test_handler() -> (Arc<EnforceModeHandler>, Arc<CommunicationManager>) {
         let db = Arc::new(Database::new(":memory:").unwrap()) as Arc<dyn AppRepo>;
         let cache = Arc::new(AtomicU8::new(0));
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(256));
         comm.register_event_type::<AuditEvent>();
         let handler = Arc::new(EnforceModeHandler::new(db, comm.clone(), cache));
         let _ = comm

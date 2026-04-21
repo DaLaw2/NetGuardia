@@ -2,6 +2,7 @@ use actix_web::{HttpResponse, Responder, Scope, web};
 use macros::log;
 use serde::Deserialize;
 
+use crate::adapter::http::response::ok_or_error;
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::auth::jwt::JwtService;
 use crate::core::auth::password;
@@ -114,9 +115,9 @@ async fn login(body: web::Json<LoginRequest>, db: web::Data<Repo>, jwt: web::Dat
     }
 
     // Permissions come exclusively from groups — no role-based fallback
-    let permissions = db.get_user_permissions(id).unwrap_or_default();
+    let permissions = db.list_user_permissions(id).unwrap_or_default();
 
-    let groups = db.get_user_groups(id).unwrap_or_default();
+    let groups = db.list_groups_for_user(id).unwrap_or_default();
     let role = if groups.iter().any(|(_id, name, _desc, _perms)| name == "Administrator") {
         "admin".to_string()
     } else {
@@ -180,7 +181,7 @@ async fn register(auth: AuthClaims, body: web::Json<RegisterRequest>, db: web::D
 }
 
 async fn me(auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
-    let user_groups = db.get_user_groups(auth.sub).unwrap_or_default();
+    let user_groups = db.list_groups_for_user(auth.sub).unwrap_or_default();
     let group_names: Vec<String> = user_groups
         .iter()
         .map(|(_id, name, _desc, _perms)| name.clone())
@@ -190,7 +191,7 @@ async fn me(auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
     } else {
         "viewer"
     };
-    let permissions = db.get_user_permissions(auth.sub).unwrap_or_default();
+    let permissions = db.list_user_permissions(auth.sub).unwrap_or_default();
     HttpResponse::Ok().json(serde_json::json!({
         "id": auth.sub,
         "username": auth.username,
@@ -379,10 +380,7 @@ async fn reset_password(
         }
     };
 
-    match db.reset_user_password(user_id, &hash) {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"message": "Password reset successfully"})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(db.reset_user_password(user_id, &hash))
 }
 
 // --- User Group Management (users:admin required) ---
@@ -395,7 +393,7 @@ async fn list_groups(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
                 .map(|(id, name, description, permissions, created_at)| {
                     let perms: serde_json::Value = serde_json::from_str(&permissions).unwrap_or(serde_json::json!([]));
                     let members: Vec<serde_json::Value> = db
-                        .get_group_members(id)
+                        .list_group_members(id)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|(uid, username)| serde_json::json!({"id": uid, "username": username}))
@@ -447,7 +445,7 @@ async fn get_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>)
     match db.get_user_group(group_id) {
         Ok(Some((id, name, description, permissions, created_at))) => {
             let perms: serde_json::Value = serde_json::from_str(&permissions).unwrap_or(serde_json::json!([]));
-            let members = db.get_group_member_ids(group_id).unwrap_or_default();
+            let members = db.list_group_member_ids(group_id).unwrap_or_default();
             HttpResponse::Ok().json(serde_json::json!({
                 "id": id,
                 "name": name,

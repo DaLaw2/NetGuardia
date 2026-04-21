@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime};
 
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, Scope, web};
+use arc_swap::ArcSwap;
 use futures_util::TryStreamExt;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -37,11 +38,11 @@ use crate::core::auth::extractor::AuthClaims;
 use crate::core::ml::inference::Inference;
 use crate::core::ml::manifest::{AdapterKind, ModelManifest};
 use crate::core::ml::model_loader::build_adapter;
-use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::model::config::AppConfig;
 use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::event::AuditEvent;
-use crate::model::system::config::MLInferenceConfig;
 
 /// Multipart field names the client must use. Stable wire contract —
 /// the frontend form generator depends on these exact strings.
@@ -67,7 +68,7 @@ const PROMOTE_REQUIRED_PERMISSION: &str = "users:admin";
 /// system-driven entries (actor="system") from human-driven ones
 /// without parsing free-form text. Stable across releases — renaming
 /// breaks downstream audit tooling that filters on this prefix.
-const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
+use crate::adapter::http::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 
 /// Action recorded on the WORM chain when a promote succeeds. Stable
 /// wire string — fusion-explain tooling and future "who swapped the
@@ -136,7 +137,7 @@ pub fn initialize() -> Scope {
 /// pre-swap ML source state. The staging directory is always torn
 /// down on the way out, even on success (post-promote it's empty).
 async fn upload(
-    app_config: web::Data<AppConfig>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
     inference: web::Data<Inference>,
     comm: web::Data<CommunicationManager>,
     promote_lock: web::Data<PromoteGate>,
@@ -153,11 +154,15 @@ async fn upload(
     let staging_id = Uuid::new_v4().to_string();
     let staging_dir = staging_root.join(&staging_id);
 
+    let config = app_config.load();
     let caps = UploadCaps {
-        manifest: app_config.inference.model_upload_max_manifest_bytes,
-        onnx: app_config.inference.model_upload_max_onnx_bytes,
-        scaler: app_config.inference.model_upload_max_scaler_bytes,
+        manifest: config.ml.model_upload_max_manifest_bytes,
+        onnx: config.ml.model_upload_max_onnx_bytes,
+        scaler: config.ml.model_upload_max_scaler_bytes,
     };
+    let batch_size = config.ml.inference_batch_size;
+    let onnx_load_timeout = Duration::from_secs(config.ml.onnx_load_timeout_secs);
+    drop(config);
     let summary = match ingest_multipart(payload, &staging_dir, caps).await {
         Ok(s) => s,
         Err(e) => {
@@ -165,8 +170,6 @@ async fn upload(
             return e.into_response();
         }
     };
-
-    let batch_size = app_config.inference.inference_batch_size;
     let outcome = validate_and_promote(
         &staging_dir,
         &summary,
@@ -175,6 +178,7 @@ async fn upload(
         promote_lock.get_ref(),
         &claims.username,
         batch_size,
+        onnx_load_timeout,
     )
     .await;
 
@@ -522,6 +526,7 @@ async fn validate_and_promote(
     promote_lock: &PromoteGate,
     actor_username: &str,
     batch_size: usize,
+    onnx_load_timeout: Duration,
 ) -> Result<PromoteReport, PromoteError> {
     let staging_manifest = staging_dir.join(MANIFEST_FILENAME);
 
@@ -558,8 +563,14 @@ async fn validate_and_promote(
     // features, tract optimize+runnable under the 5s load budget.
     let (config, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&staging_manifest)
         .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
-    let _adapter = build_adapter(&manifest, Some(&staging_manifest), &config, batch_size)
-        .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
+    let _adapter = build_adapter(
+        &manifest,
+        Some(&staging_manifest),
+        &config,
+        batch_size,
+        onnx_load_timeout,
+    )
+    .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
 
     let manifest_sha256 = sha256_file(&staging_manifest)
         .await

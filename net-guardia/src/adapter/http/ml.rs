@@ -1,5 +1,6 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
+use crate::adapter::http::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::ml::adapter::ModelSourceState;
 use crate::core::ml::engine::Engine;
@@ -12,11 +13,6 @@ use crate::model::event::AuditEvent;
 /// without this, anyone holding `ai_detection:write` could disable the
 /// detector silently while the upload path required `users:admin`.
 const DORMANT_REQUIRED_PERMISSION: &str = "users:admin";
-
-/// Actor prefix recorded on the WORM chain when an admin reverts the ML
-/// source. Matches the prefix used by `model_swap` so downstream filters
-/// see both events in the same admin-action stream.
-const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
 
 /// Action recorded on the WORM chain when the ML source is forced
 /// dormant via this endpoint. Stable wire string — UI/audit tooling

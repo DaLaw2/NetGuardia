@@ -2,10 +2,12 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use maxminddb::{MaxMindDbError, Reader, geoip2};
 use moka::sync::Cache;
 use tokio::task;
 
+use crate::interface::port::geo_lookup::GeoLookup;
 use crate::model::monitoring::geolocation::GeoLocation;
 use crate::utils::ip_address;
 
@@ -28,35 +30,6 @@ impl GeoIpService {
             reader: Arc::new(reader),
             cache: Cache::new(capacity),
         })
-    }
-
-    pub async fn lookup(&self, ip: IpAddr) -> Result<Option<GeoLocation>, MaxMindDbError> {
-        if ip_address::is_private_ip(&ip) {
-            return Ok(Some(GeoLocation {
-                country: Some("Local IP".into()),
-                country_code: Some("Local".into()),
-                city: None,
-                latitude: None,
-                longitude: None,
-                timezone: None,
-            }));
-        }
-
-        if let Some(cached) = self.cache.get(&ip) {
-            return Ok(cached);
-        }
-
-        let reader = self.reader.clone();
-        let result = task::spawn_blocking(move || Self::lookup_from_db_blocking(&reader, ip))
-            .await
-            .map_err(|e| MaxMindDbError::InvalidDatabase {
-                message: format!("Task join error: {}", e),
-                offset: None,
-            })??;
-
-        self.cache.insert(ip, result.clone());
-
-        Ok(result)
     }
 
     fn lookup_from_db_blocking(reader: &Reader<Vec<u8>>, ip: IpAddr) -> Result<Option<GeoLocation>, MaxMindDbError> {
@@ -83,5 +56,34 @@ impl GeoIpService {
                 timezone,
             }
         }))
+    }
+}
+
+#[async_trait]
+impl GeoLookup for GeoIpService {
+    async fn lookup(&self, ip: IpAddr) -> Option<GeoLocation> {
+        if ip_address::is_private_ip(&ip) {
+            return Some(GeoLocation {
+                country: Some("Local IP".into()),
+                country_code: Some("Local".into()),
+                city: None,
+                latitude: None,
+                longitude: None,
+                timezone: None,
+            });
+        }
+
+        if let Some(cached) = self.cache.get(&ip) {
+            return cached;
+        }
+
+        let reader = self.reader.clone();
+        let result = match task::spawn_blocking(move || Self::lookup_from_db_blocking(&reader, ip)).await {
+            Ok(Ok(loc)) => loc,
+            _ => None,
+        };
+
+        self.cache.insert(ip, result.clone());
+        result
     }
 }

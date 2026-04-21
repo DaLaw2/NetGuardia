@@ -1,7 +1,6 @@
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::model::config::constants::ML_ALERT_CHANNEL_CAPACITY;
 use crate::model::detection::ml_detection::{AlertMessage, DetectionResult};
 use crate::model::log::ml::MLLog;
 
@@ -10,8 +9,8 @@ pub struct MLAlert {
 }
 
 impl MLAlert {
-    pub fn new() -> Self {
-        let (broadcast_tx, _) = broadcast::channel(ML_ALERT_CHANNEL_CAPACITY);
+    pub fn new(channel_capacity: usize) -> Self {
+        let (broadcast_tx, _) = broadcast::channel(channel_capacity.max(1));
 
         MLAlert { broadcast_tx }
     }
@@ -27,11 +26,5 @@ impl MLAlert {
                 log!(MLLog::BroadcastAlertFailed(e.to_string()));
             }
         }
-    }
-}
-
-impl Default for MLAlert {
-    fn default() -> Self {
-        Self::new()
     }
 }

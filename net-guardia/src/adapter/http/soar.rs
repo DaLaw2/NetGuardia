@@ -3,6 +3,7 @@ use std::str::FromStr;
 use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
+use crate::adapter::http::response::{ok_json_or_error, ok_or_error};
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::soar::engine::SoarEngine;
@@ -126,18 +127,12 @@ async fn create_playbook(
         .unwrap_or_default()
         .iter()
         .map(|c| {
-            let default_op = match c.condition_type.as_str() {
-                "threshold" | "frequency" => ">=",
-                "source_country" | "ip_pattern" => "in",
-                "repeat_offender" => "==",
-                _ => ">=",
-            };
-            CreateConditionInput {
-                condition_type: c.condition_type.clone(),
-                operator: c.operator.clone().unwrap_or_else(|| default_op.to_string()),
-                value: c.value.clone(),
-                value2: c.value2.clone(),
-            }
+            CreateConditionInput::new(
+                c.condition_type.clone(),
+                c.operator.clone(),
+                c.value.clone(),
+                c.value2.clone(),
+            )
         })
         .collect();
 
@@ -185,18 +180,12 @@ async fn update_playbook(
         .unwrap_or_default()
         .iter()
         .map(|c| {
-            let default_op = match c.condition_type.as_str() {
-                "threshold" | "frequency" => ">=",
-                "source_country" | "ip_pattern" => "in",
-                "repeat_offender" => "==",
-                _ => ">=",
-            };
-            CreateConditionInput {
-                condition_type: c.condition_type.clone(),
-                operator: c.operator.clone().unwrap_or_else(|| default_op.to_string()),
-                value: c.value.clone(),
-                value2: c.value2.clone(),
-            }
+            CreateConditionInput::new(
+                c.condition_type.clone(),
+                c.operator.clone(),
+                c.value.clone(),
+                c.value2.clone(),
+            )
         })
         .collect();
 
@@ -265,10 +254,7 @@ async fn list_active_blocks(_auth: AuthClaims, svc: web::Data<PlaybookService>) 
 }
 
 async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<i64>) -> HttpResponse {
-    match svc.manual_unblock(path.into_inner()).await {
-        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"unblocked": true})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(svc.manual_unblock(path.into_inner()).await)
 }
 
 async fn list_executions(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
@@ -294,10 +280,7 @@ async fn list_executions(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> 
 }
 
 async fn list_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    match svc.list_whitelist() {
-        Ok(ips) => HttpResponse::Ok().json(ips),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(svc.list_whitelist())
 }
 
 #[derive(Deserialize)]
@@ -317,10 +300,7 @@ async fn add_whitelist(
 }
 
 async fn remove_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<String>) -> HttpResponse {
-    match svc.remove_whitelist(&path.into_inner()) {
-        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"removed": true})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(svc.remove_whitelist(&path.into_inner()))
 }
 
 /// Client shape for `POST /api/soar/dry-run`. Only the fields a SOAR

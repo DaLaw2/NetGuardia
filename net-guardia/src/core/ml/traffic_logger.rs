@@ -40,11 +40,6 @@ pub const DEFAULT_MAX_FILE_AGE: Duration = Duration::from_secs(3600);
 /// the oldest files to bring the sum back under the cap.
 pub const DEFAULT_TOTAL_BUDGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
-/// Lossy-drop channel capacity. Inference throughput is spiky; if the
-/// writer falls behind, callers get a `TrySendError::Full` back rather
-/// than blocking the hot path. The lost rows are observable in logs.
-const CHANNEL_CAPACITY: usize = 65_536;
-
 /// Prefix literal baked into every rotated file's name so the HTTP
 /// file-list handler can recognize ours and skip unrelated files.
 pub const FLOW_TRACE_FILE_MARKER: &str = "flow-trace-";
@@ -95,6 +90,7 @@ impl TrafficLogger {
         base_path: &Path,
         header: Vec<String>,
         policy: RotationPolicy,
+        channel_capacity: usize,
         comm: Option<Arc<CommunicationManager>>,
     ) -> Result<Self, io::Error> {
         let directory = base_path
@@ -103,7 +99,7 @@ impl TrafficLogger {
             .unwrap_or_else(|| PathBuf::from("."));
         std_fs::create_dir_all(&directory)?;
 
-        let (sender, receiver) = bounded::<Vec<String>>(CHANNEL_CAPACITY);
+        let (sender, receiver) = bounded::<Vec<String>>(channel_capacity.max(1));
 
         let writer_dir = directory.clone();
         let writer_header = header;
@@ -420,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_audit_reaches_subscriber_when_comm_provided() {
-        let comm = Arc::new(CommunicationManager::new());
+        let comm = Arc::new(CommunicationManager::new(256));
         comm.register_event_type::<AuditEvent>();
         let mut rx = comm.subscribe_event::<AuditEvent>().unwrap();
 

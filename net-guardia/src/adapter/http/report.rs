@@ -1,9 +1,11 @@
 use std::fs;
 
 use actix_web::{HttpResponse, Scope, web};
+use arc_swap::ArcSwap;
 use chrono::Local;
 use tokio::task::spawn_blocking;
 
+use crate::adapter::http::response::ok_json_or_error;
 use crate::adapter::persistence::Database;
 use crate::core::auth::extractor::AuthClaims;
 use crate::core::email::report::generate_weekly_report;
@@ -12,6 +14,9 @@ use crate::core::report::engine;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
+use crate::model::config::AppConfig;
+use crate::model::error::misc::MiscError;
+
 pub fn initialize() -> Scope {
     web::scope("/report")
         .route("/generate", web::post().to(generate_report))
@@ -19,12 +24,12 @@ pub fn initialize() -> Scope {
         .route("/send", web::post().to(send_report))
 }
 
-async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
-    let report_dir = db
-        .get_setting("report_dir")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "/var/lib/netguardia/reports".to_string());
+async fn generate_report(
+    _auth: AuthClaims,
+    db: web::Data<Database>,
+    config: web::Data<ArcSwap<AppConfig>>,
+) -> HttpResponse {
+    let report_dir = config.load().system.report_dir.clone();
     if let Err(e) = fs::create_dir_all(&report_dir) {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("Failed to create report directory: {}", e)
@@ -57,18 +62,21 @@ async fn generate_report(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
 
 async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
     let db_ref = db.get_ref();
-    match engine::generate_report_json(db_ref as &dyn SettingRepo) {
-        Ok(data) => HttpResponse::Ok().json(data),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(engine::generate_report_json(db_ref as &dyn SettingRepo))
 }
 
 /// Manually trigger: generate the weekly report and send it via SMTP now.
-async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::Data<SecretStore>) -> HttpResponse {
+async fn send_report(
+    _auth: AuthClaims,
+    db: web::Data<Database>,
+    config: web::Data<ArcSwap<AppConfig>>,
+    secrets: web::Data<SecretStore>,
+) -> HttpResponse {
     let db_ref = db.get_ref() as &dyn SettingRepo;
     let secrets_ref = secrets.get_ref() as &dyn SecretStorePort;
+    let smtp_cfg = config.load().notification.smtp.clone();
 
-    let smtp = match SmtpClient::from_database(db_ref, Some(secrets_ref)) {
+    let smtp = match SmtpClient::from_config(&smtp_cfg, Some(secrets_ref)) {
         Ok(Some(client)) => client,
         Ok(None) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -84,15 +92,13 @@ async fn send_report(_auth: AuthClaims, db: web::Data<Database>, secrets: web::D
         }
     };
 
-    let recipient = match db_ref.get_setting("smtp_recipient") {
-        Ok(Some(r)) if !r.is_empty() => r,
-        _ => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "success": false,
-                "error": "No smtp_recipient configured."
-            }));
-        }
-    };
+    let recipient = smtp_cfg.recipient;
+    if recipient.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "error": MiscError::ValidationError("No smtp_recipient configured.").to_string()
+        }));
+    }
 
     let html = match generate_weekly_report(db_ref) {
         Ok(h) => h,

@@ -20,17 +20,6 @@ use crate::model::soar::condition::{ConditionType, PlaybookCondition};
 use crate::model::soar::dry_run::{DryRunAction, DryRunConditionResult, DryRunMatch};
 use crate::model::soar::playbook::Playbook;
 
-/// Default frequency-condition window when the playbook omits `value2`.
-const DEFAULT_FREQUENCY_WINDOW_SECS: u64 = 60;
-
-/// Default minimum confidence for `SingleSourceHigh` when the playbook
-/// omits `value2`. Conservative enough that ad-hoc solo playbooks don't
-/// auto-block noisy single-source hits.
-const DEFAULT_SINGLE_SOURCE_HIGH_MIN_CONFIDENCE: f32 = 0.95;
-
-/// Default expiry for cooldown cleanup when no playbook has a cooldown set.
-const DEFAULT_COOLDOWN_EXPIRY_SECS: u64 = 3600;
-
 impl SoarEngine {
     /// Find playbooks matching the event via trigger_event + multi-condition AND logic.
     /// Returns `Arc<Playbook>` so the per-event hot path bumps a refcount
@@ -163,7 +152,7 @@ impl SoarEngine {
                     .value2
                     .as_ref()
                     .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_FREQUENCY_WINDOW_SECS);
+                    .unwrap_or_else(|| self.config.load().soar.default_frequency_window_secs);
                 let count = self
                     .frequency_tracker
                     .record_and_count(pb.id, &event.source_ip, window_secs);
@@ -199,7 +188,7 @@ impl SoarEngine {
                     .value2
                     .as_ref()
                     .and_then(|s| s.parse::<f32>().ok())
-                    .unwrap_or(DEFAULT_SINGLE_SOURCE_HIGH_MIN_CONFIDENCE);
+                    .unwrap_or_else(|| self.config.load().soar.default_single_source_high_min_confidence);
                 // Solo = exactly one contributing source AND it matches the
                 // target source AND confidence clears the escape-hatch bar.
                 let solo_match =
@@ -261,14 +250,15 @@ impl SoarEngine {
     /// Remove expired cooldown entries to prevent unbounded growth.
     /// Called by TTL scheduler every 60 seconds.
     pub fn cleanup_expired_cooldowns(&self) {
+        let default_cooldown_expiry = self.config.load().soar.default_cooldown_expiry_secs;
         let max_cooldown_secs = self
             .playbooks
             .load()
             .iter()
             .map(|p| p.cooldown_secs as u64)
             .max()
-            .unwrap_or(DEFAULT_COOLDOWN_EXPIRY_SECS);
-        let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(DEFAULT_COOLDOWN_EXPIRY_SECS));
+            .unwrap_or(default_cooldown_expiry);
+        let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(default_cooldown_expiry));
         let before = self.cooldowns.len();
         self.cooldowns.retain(|_, instant| instant.elapsed() < expiry);
         let removed = before.saturating_sub(self.cooldowns.len());
@@ -313,10 +303,11 @@ impl SoarEngine {
     /// admin so they don't assume a `would_fire=true` playbook will
     /// definitely fire on the next matching real event.
     pub fn dry_run(&self, event: &ThreatDetectedEvent) -> Vec<DryRunMatch> {
+        let default_min_conf = self.config.load().soar.default_single_source_high_min_confidence;
         self.playbooks
             .load()
             .iter()
-            .map(|pb| simulate_playbook(pb, event))
+            .map(|pb| simulate_playbook(pb, event, default_min_conf))
             .collect()
     }
 
@@ -349,7 +340,7 @@ impl SoarEngine {
 /// condition is evaluated as "passes + flagged for admin review" so
 /// the preview stays conservative rather than a hard no against a
 /// rule that only fails because dry-run has no history to count.
-fn simulate_playbook(pb: &Playbook, event: &ThreatDetectedEvent) -> DryRunMatch {
+fn simulate_playbook(pb: &Playbook, event: &ThreatDetectedEvent, default_single_source_min_conf: f32) -> DryRunMatch {
     let trigger_matches = pb.trigger_event == event.attack_type;
     let mut has_frequency_condition = false;
     let conditions: Vec<DryRunConditionResult> = pb
@@ -359,7 +350,7 @@ fn simulate_playbook(pb: &Playbook, event: &ThreatDetectedEvent) -> DryRunMatch 
             if c.condition_type == ConditionType::Frequency {
                 has_frequency_condition = true;
             }
-            simulate_condition(c, event)
+            simulate_condition(c, event, default_single_source_min_conf)
         })
         .collect();
     let all_conditions_met = conditions.iter().all(|r| r.met);
@@ -392,7 +383,11 @@ fn simulate_playbook(pb: &Playbook, event: &ThreatDetectedEvent) -> DryRunMatch 
 /// logic except `Frequency`, which is reported as "passes-with-note"
 /// because a real evaluation would both need historical events and
 /// record a new one.
-fn simulate_condition(cond: &PlaybookCondition, event: &ThreatDetectedEvent) -> DryRunConditionResult {
+fn simulate_condition(
+    cond: &PlaybookCondition,
+    event: &ThreatDetectedEvent,
+    default_single_source_min_conf: f32,
+) -> DryRunConditionResult {
     let base = |met: bool, note: Option<String>| DryRunConditionResult {
         condition_type: cond.condition_type.to_string(),
         operator: cond.operator.clone(),
@@ -479,7 +474,7 @@ fn simulate_condition(cond: &PlaybookCondition, event: &ThreatDetectedEvent) -> 
                 .value2
                 .as_ref()
                 .and_then(|s| s.parse::<f32>().ok())
-                .unwrap_or(DEFAULT_SINGLE_SOURCE_HIGH_MIN_CONFIDENCE);
+                .unwrap_or(default_single_source_min_conf);
             let solo_match =
                 event.active_source_count == 1 && event.sources.len() == 1 && event.sources[0] == target_source;
             let conf_met = event.confidence >= min_conf;
@@ -556,7 +551,7 @@ mod dry_run_tests {
     fn simulate_playbook_fires_when_trigger_matches_and_no_conditions() {
         let pb = playbook("trivial", "brute_force", vec![]);
         let ev = event("brute_force", 0.9, vec![DetectionSource::ML]);
-        let result = simulate_playbook(&pb, &ev);
+        let result = simulate_playbook(&pb, &ev, 0.95);
         assert!(result.trigger_matches);
         assert!(result.would_fire);
         assert_eq!(result.actions.len(), 1);
@@ -567,7 +562,7 @@ mod dry_run_tests {
     fn simulate_playbook_does_not_fire_on_mismatched_trigger() {
         let pb = playbook("brute-match", "brute_force", vec![]);
         let ev = event("c2_beacon", 0.9, vec![DetectionSource::ML]);
-        let result = simulate_playbook(&pb, &ev);
+        let result = simulate_playbook(&pb, &ev, 0.95);
         assert!(!result.trigger_matches);
         assert!(!result.would_fire);
     }
@@ -577,7 +572,7 @@ mod dry_run_tests {
         let mut pb = playbook("off", "brute_force", vec![]);
         pb.enabled = false;
         let ev = event("brute_force", 0.9, vec![DetectionSource::ML]);
-        let result = simulate_playbook(&pb, &ev);
+        let result = simulate_playbook(&pb, &ev, 0.95);
         assert!(result.trigger_matches);
         assert!(!result.enabled);
         assert!(!result.would_fire);
@@ -592,7 +587,7 @@ mod dry_run_tests {
             value2: Some("60".to_string()),
         };
         let ev = event("brute_force", 0.8, vec![DetectionSource::ML]);
-        let result = simulate_condition(&cond, &ev);
+        let result = simulate_condition(&cond, &ev, 0.95);
         assert!(result.met, "frequency must pass in dry-run");
         assert!(
             result.note.as_deref().unwrap_or("").contains("frequency"),
@@ -615,8 +610,8 @@ mod dry_run_tests {
             value2: None,
         };
         let ev = event("brute_force", 0.9, vec![DetectionSource::ML]);
-        assert!(simulate_condition(&gte, &ev).met);
-        assert!(!simulate_condition(&lte, &ev).met);
+        assert!(simulate_condition(&gte, &ev, 0.95).met);
+        assert!(!simulate_condition(&lte, &ev, 0.95).met);
     }
 
     #[test]
@@ -629,8 +624,8 @@ mod dry_run_tests {
         };
         let ev_two = event("c2_beacon", 0.9, vec![DetectionSource::Suricata, DetectionSource::ML]);
         let ev_one = event("c2_beacon", 0.9, vec![DetectionSource::ML]);
-        assert!(simulate_condition(&cond, &ev_two).met);
-        assert!(!simulate_condition(&cond, &ev_one).met);
+        assert!(simulate_condition(&cond, &ev_two, 0.95).met);
+        assert!(!simulate_condition(&cond, &ev_one, 0.95).met);
     }
 
     #[test]
@@ -645,10 +640,10 @@ mod dry_run_tests {
         let solo_low = event("c2_beacon", 0.90, vec![DetectionSource::Suricata]);
         let multi = event("c2_beacon", 0.96, vec![DetectionSource::Suricata, DetectionSource::ML]);
         let wrong_source = event("c2_beacon", 0.96, vec![DetectionSource::ML]);
-        assert!(simulate_condition(&cond, &solo_high).met);
-        assert!(!simulate_condition(&cond, &solo_low).met);
-        assert!(!simulate_condition(&cond, &multi).met);
-        assert!(!simulate_condition(&cond, &wrong_source).met);
+        assert!(simulate_condition(&cond, &solo_high, 0.95).met);
+        assert!(!simulate_condition(&cond, &solo_low, 0.95).met);
+        assert!(!simulate_condition(&cond, &multi, 0.95).met);
+        assert!(!simulate_condition(&cond, &wrong_source, 0.95).met);
     }
 
     #[test]
@@ -661,7 +656,7 @@ mod dry_run_tests {
         };
         let pb = playbook("brute_force_block", "brute_force", vec![cond]);
         let ev = event("brute_force", 0.9, vec![DetectionSource::ML]);
-        let result = simulate_playbook(&pb, &ev);
+        let result = simulate_playbook(&pb, &ev, 0.95);
         assert!(result.has_frequency_condition);
         assert!(
             result.would_fire,

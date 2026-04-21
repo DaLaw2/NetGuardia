@@ -5,18 +5,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::model::detection::drift::{DriftReport, FeatureBaselines};
 
-/// Maximum number of snapshots to retain, preventing unbounded memory growth.
-const MAX_SNAPSHOTS: usize = 10_000;
-
-/// Channel depth for the owner-task command queue. With a typical inference
-/// batch of 100 flows per second, 1024 gives ~10s of cushion before the
-/// hot path begins shedding samples.
-const DRIFT_CMD_CHANNEL_CAPACITY: usize = 1024;
-
 /// Tracks rolling mean/stddev of normalized input features over a configurable window.
 /// Compares against training-time baselines to detect data drift.
 pub struct DriftDetector {
-    /// Recent feature snapshots within the rolling window, capped at MAX_SNAPSHOTS.
+    /// Recent feature snapshots within the rolling window, capped at `max_snapshots`.
     snapshots: VecDeque<(Instant, Vec<f64>)>,
     /// Number of features expected per snapshot.
     num_features: usize,
@@ -24,18 +16,20 @@ pub struct DriftDetector {
     baselines: Option<FeatureBaselines>,
     /// Rolling window duration (runtime-configurable via DB `ml_drift_window_secs`).
     drift_window: Duration,
+    /// Upper bound on retained snapshots (from `MlConfig::drift_max_snapshots`).
+    max_snapshots: usize,
 }
 
 impl DriftDetector {
-    /// Create a new detector with a configurable drift window duration.
-    /// Default window is 3600s (1 hour) when not specified via DB setting `ml_drift_window_secs`.
-    pub fn new(baselines: Option<FeatureBaselines>, drift_window: Duration) -> Self {
+    /// Create a new detector with a configurable drift window and snapshot cap.
+    pub fn new(baselines: Option<FeatureBaselines>, drift_window: Duration, max_snapshots: usize) -> Self {
         let num_features = baselines.as_ref().map_or(0, |b| b.names.len());
         Self {
             snapshots: VecDeque::new(),
             num_features,
             baselines,
             drift_window,
+            max_snapshots,
         }
     }
 
@@ -45,7 +39,7 @@ impl DriftDetector {
         self.snapshots.push_back((now, features.to_vec()));
         self.evict_stale(now);
         // Cap total snapshots to prevent unbounded memory growth
-        while self.snapshots.len() > MAX_SNAPSHOTS {
+        while self.snapshots.len() > self.max_snapshots {
             self.snapshots.pop_front();
         }
     }
@@ -138,10 +132,15 @@ pub struct DriftDetectorHandle {
 
 impl DriftDetectorHandle {
     /// Spawn the owner task on the current tokio runtime and return a handle.
-    pub fn spawn(baselines: Option<FeatureBaselines>, drift_window: Duration) -> Self {
-        let (tx, mut rx) = mpsc::channel::<DriftCmd>(DRIFT_CMD_CHANNEL_CAPACITY);
+    pub fn spawn(
+        baselines: Option<FeatureBaselines>,
+        drift_window: Duration,
+        max_snapshots: usize,
+        channel_capacity: usize,
+    ) -> Self {
+        let (tx, mut rx) = mpsc::channel::<DriftCmd>(channel_capacity);
         tokio::spawn(async move {
-            let mut detector = DriftDetector::new(baselines, drift_window);
+            let mut detector = DriftDetector::new(baselines, drift_window, max_snapshots);
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     DriftCmd::Update(features) => detector.update(&features),
@@ -186,7 +185,7 @@ mod tests {
     #[test]
     fn no_drift_when_within_threshold() {
         let baselines = make_baselines(3);
-        let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600));
+        let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
         // Values within 3σ of baseline mean 0.0 with std 1.0
         detector.update(&[1.0, -1.0, 2.0]);
         detector.update(&[0.5, -0.5, 1.5]);
@@ -196,7 +195,7 @@ mod tests {
     #[test]
     fn drift_detected_when_exceeds_threshold() {
         let baselines = make_baselines(3);
-        let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600));
+        let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
         // Mean of 5.0 exceeds 3σ from baseline mean 0.0
         detector.update(&[5.0, 0.0, 0.0]);
         detector.update(&[5.0, 0.0, 0.0]);
@@ -207,7 +206,7 @@ mod tests {
 
     #[test]
     fn no_baselines_means_no_drift() {
-        let mut detector = DriftDetector::new(None, Duration::from_secs(3600));
+        let mut detector = DriftDetector::new(None, Duration::from_secs(3600), 10_000);
         detector.update(&[100.0, 200.0]);
         assert!(detector.check_drift().is_none());
     }
@@ -215,7 +214,7 @@ mod tests {
     #[test]
     fn empty_snapshots_no_drift() {
         let baselines = make_baselines(3);
-        let detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600));
+        let detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
         assert!(detector.check_drift().is_none());
     }
 }

@@ -6,6 +6,7 @@ use actix_cors::Cors;
 use actix_web::dev::ServerHandle;
 use actix_web::web::route;
 use actix_web::{App, HttpResponse, HttpServer, web};
+use arc_swap::ArcSwap;
 use macros::log;
 
 use crate::adapter::ebpf::EbpfServices;
@@ -29,7 +30,6 @@ use crate::core::notification_service::NotificationService;
 use crate::core::playbook_service::PlaybookService;
 use crate::core::rate_limit_service::RateLimitService;
 use crate::core::soar::engine::SoarEngine;
-use crate::infrastructure::app_config::AppConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::secret_store::SecretStore;
@@ -38,11 +38,12 @@ use crate::infrastructure::system::ShutdownHandle;
 use crate::interface::port::api_key::ApiKeyRepo;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::audit::AuditRepo;
+use crate::model::config::AppConfig;
 use crate::model::config::constants::HTTP_FALLBACK_PORT;
+use crate::model::detection::ml_inference_config::MLInferenceConfig;
 use crate::model::error::Error;
 use crate::model::error::http::HttpError;
 use crate::model::log::http::HttpLog;
-use crate::model::system::config::MLInferenceConfig;
 use crate::model::system::readiness::ReadinessState;
 
 /// Shared flag: true when all services (eBPF, ML, SOAR) are fully initialized.
@@ -50,7 +51,7 @@ pub type ReadyFlag = Arc<AtomicBool>;
 
 /// Parameters for starting the HTTP server, avoiding `#[cfg]` on function params.
 pub struct HttpServerParams {
-    pub app_config: Arc<AppConfig>,
+    pub app_config: Arc<ArcSwap<AppConfig>>,
     pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
@@ -237,7 +238,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let shutdown_handle = params.shutdown_handle;
     let suricata_manager = params.suricata_manager;
     let soar_engine = params.soar_engine;
-    let port = app_config.http.http_server_bind_port;
+    let port = app_config.load().http_server.port;
 
     // Shared across every actix worker so concurrent model uploads
     // serialize their rename-into-`models/` critical section. Built
@@ -248,7 +249,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     HttpServer::new(move || {
         let app = App::new()
             .wrap(HttpsRedirect)
-            .wrap(cors(app_config.http.cors_allowed_origins.clone()))
+            .wrap(cors(app_config.load().http_server.cors_allowed_origins.clone()))
             .app_data(web::Data::new(force_https.clone()))
             .app_data(web::Data::from(shutdown_handle.clone()))
             .app_data(web::Data::from(app_config.clone()))

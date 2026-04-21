@@ -28,7 +28,7 @@ impl Database {
         Ok(count)
     }
 
-    pub fn get_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    pub fn list_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_ip, playbook_id FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL"
@@ -44,7 +44,7 @@ impl Database {
     }
 
     /// Get a single SOAR block rule by ID, returning (id, source_ip, playbook_id, expires_at).
-    pub fn get_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
+    pub fn find_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
         let conn = self.conn()?;
         let mut stmt =
             conn.prepare("SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE id = ?1")?;
@@ -71,7 +71,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
+    pub fn list_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE unblocked_at IS NULL AND expires_at > datetime('now')"
@@ -100,7 +100,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn load_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    pub fn list_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id, source_ip, retry_count FROM pending_unblock ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
@@ -197,12 +197,12 @@ mod tests {
         assert!(soar_block_id > 0);
 
         // soar_block_rules has the row
-        let active = db.get_active_soar_blocks().unwrap();
+        let active = db.list_active_soar_blocks().unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].1, "10.0.0.99");
 
         // acl_rules has the matching row
-        let rules = db.load_acl_rules().unwrap();
+        let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].3, "10.0.0.99");
     }
@@ -222,8 +222,8 @@ mod tests {
         db.commit_soar_unblock_to_db(soar_block_id, 4, "10.0.0.99").unwrap();
 
         // acl_rules row gone
-        assert!(db.load_acl_rules().unwrap().is_empty());
+        assert!(db.list_acl_rules().unwrap().is_empty());
         // soar_block_rules row no longer in "active" view (unblocked_at is set)
-        assert!(db.get_active_soar_blocks().unwrap().is_empty());
+        assert!(db.list_active_soar_blocks().unwrap().is_empty());
     }
 }

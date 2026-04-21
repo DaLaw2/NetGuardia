@@ -11,14 +11,6 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
-/// Ring-buffer capacity. Tuned for ~30 min of INFO traffic on a small SOC
-/// deployment; DEBUG floods will churn faster.
-const DEFAULT_CAPACITY: usize = 5_000;
-
-/// Per-entry payload cap. Guards against pathological debug logs from
-/// bursting the buffer.
-const MAX_MESSAGE_BYTES: usize = 8_192;
-
 /// Monotonic id allocator. Clients use `since_id` to resume tailing.
 /// u64 never wraps in practice (2^64 events at 1 µs/event ≈ 584 000 years).
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -46,13 +38,16 @@ pub struct LogEntry {
 struct LogRingBuffer {
     entries: Mutex<VecDeque<LogEntry>>,
     capacity: usize,
+    max_message_bytes: usize,
 }
 
 impl LogRingBuffer {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, max_message_bytes: usize) -> Self {
+        let cap = capacity.max(1);
         Self {
-            entries: Mutex::new(VecDeque::with_capacity(capacity)),
-            capacity,
+            entries: Mutex::new(VecDeque::with_capacity(cap)),
+            capacity: cap,
+            max_message_bytes: max_message_bytes.max(64),
         }
     }
 
@@ -139,15 +134,9 @@ fn now_unix_ms() -> u64 {
 pub struct LogBufferLayer;
 
 impl LogBufferLayer {
-    pub fn new() -> Self {
-        let _ = BUFFER.set(LogRingBuffer::new(DEFAULT_CAPACITY));
+    pub fn new(capacity: usize, max_message_bytes: usize) -> Self {
+        let _ = BUFFER.set(LogRingBuffer::new(capacity, max_message_bytes));
         Self
-    }
-}
-
-impl Default for LogBufferLayer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -160,8 +149,8 @@ impl<S: Subscriber> Layer<S> for LogBufferLayer {
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let mut message = visitor.into_message();
-        if message.len() > MAX_MESSAGE_BYTES {
-            message.truncate(MAX_MESSAGE_BYTES);
+        if message.len() > buf.max_message_bytes {
+            message.truncate(buf.max_message_bytes);
             message.push_str("…[truncated]");
         }
         let entry = LogEntry {
@@ -264,7 +253,7 @@ mod tests {
 
     #[test]
     fn ring_buffer_drops_oldest_at_capacity() {
-        let buf = LogRingBuffer::new(3);
+        let buf = LogRingBuffer::new(3, 8192);
         for id in 1..=5 {
             buf.push(make_entry(id, "INFO", "m"));
         }
@@ -277,7 +266,7 @@ mod tests {
 
     #[test]
     fn snapshot_filters_since_id_and_severity() {
-        let buf = LogRingBuffer::new(16);
+        let buf = LogRingBuffer::new(16, 8192);
         buf.push(make_entry(1, "INFO", "first"));
         buf.push(make_entry(2, "DEBUG", "noisy"));
         buf.push(make_entry(3, "ERROR", "boom"));
@@ -290,7 +279,7 @@ mod tests {
 
     #[test]
     fn snapshot_respects_limit() {
-        let buf = LogRingBuffer::new(16);
+        let buf = LogRingBuffer::new(16, 8192);
         for id in 1..=10 {
             buf.push(make_entry(id, "INFO", "m"));
         }

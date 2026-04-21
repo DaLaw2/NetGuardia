@@ -1,6 +1,7 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use common::define::setting::*;
 
+use crate::adapter::http::response::ok_or_error;
 use crate::core::rate_limit_service::RateLimitService;
 use crate::model::system::rate_limit_settings::RateLimitSettings;
 
@@ -21,8 +22,5 @@ async fn get_config(service: web::Data<RateLimitService>) -> impl Responder {
 }
 
 async fn set_config(settings: web::Json<RateLimitSettings>, service: web::Data<RateLimitService>) -> impl Responder {
-    match service.update(&settings.into_inner()) {
-        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"status": "ok"})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(service.update(&settings.into_inner()))
 }

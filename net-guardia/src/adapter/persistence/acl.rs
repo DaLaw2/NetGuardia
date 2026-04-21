@@ -37,7 +37,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn load_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
+    pub fn list_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT ip_version, direction, list_type, ip_address, port FROM acl_rules")?;
         let rows = stmt.query_map([], |row| {
@@ -66,7 +66,7 @@ impl Database {
         Ok(count > 0)
     }
 
-    pub fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
+    pub fn list_admin_whitelist(&self) -> Result<Vec<String>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT ip FROM admin_whitelist")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -117,8 +117,8 @@ impl AclRepo for Database {
         self.has_manual_acl_rule(ip_address)
     }
 
-    fn load_admin_whitelist(&self) -> Result<Vec<String>, Error> {
-        self.load_admin_whitelist()
+    fn list_admin_whitelist(&self) -> Result<Vec<String>, Error> {
+        self.list_admin_whitelist()
     }
 
     fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error> {
@@ -138,7 +138,7 @@ mod tests {
     fn test_acl_crud() {
         let db = test_db();
         db.insert_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
-        let rules = db.load_acl_rules().unwrap();
+        let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(
             rules[0],
@@ -152,7 +152,7 @@ mod tests {
         );
 
         db.delete_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
-        let rules = db.load_acl_rules().unwrap();
+        let rules = db.list_acl_rules().unwrap();
         assert!(rules.is_empty());
     }
 }
