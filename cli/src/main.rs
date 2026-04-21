@@ -24,9 +24,7 @@ enum Commands {
     /// ML engine status
     Ml,
     /// Add IP to source blacklist
-    Block {
-        ip: String,
-    },
+    Block { ip: String },
     /// Remove IP from source blacklist
     Unblock { ip: String },
     /// List ACL rules (source blacklist by default)
@@ -88,7 +86,11 @@ impl ApiClient {
 
         let token_path = dirs_next().join("token");
 
-        Self { client, base_url, token_path }
+        Self {
+            client,
+            base_url,
+            token_path,
+        }
     }
 
     fn load_token(&self) -> Option<String> {
@@ -114,7 +116,13 @@ impl ApiClient {
             return Err("Session expired. Run `ng login` to re-authenticate.".into());
         }
         let text = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
-        serde_json::from_str(&text).map_err(|_| format!("Unexpected response (HTTP {}): {}", status, &text[..text.len().min(200)]))
+        serde_json::from_str(&text).map_err(|_| {
+            format!(
+                "Unexpected response (HTTP {}): {}",
+                status,
+                &text[..text.len().min(200)]
+            )
+        })
     }
 
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
@@ -138,17 +146,35 @@ impl ApiClient {
             }
             return Err(format!("Empty response (HTTP {})", status));
         }
-        serde_json::from_str(&text).map_err(|_| format!("Unexpected response (HTTP {}): {}", status, &text[..text.len().min(200)]))
+        serde_json::from_str(&text).map_err(|_| {
+            format!(
+                "Unexpected response (HTTP {}): {}",
+                status,
+                &text[..text.len().min(200)]
+            )
+        })
     }
 
     async fn login(&self, username: &str, password: &str) -> Result<String, String> {
         let url = format!("{}/api/auth/login", self.base_url);
         let body = serde_json::json!({"username": username, "password": password});
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| format!("Connection error: {}", e))?;
         let data: Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
-        data.get("token").and_then(|t| t.as_str()).map(|s| s.to_string())
-            .ok_or_else(|| data.get("error").and_then(|e| e.as_str()).unwrap_or("Login failed").to_string())
+        data.get("token")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                data.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("Login failed")
+                    .to_string()
+            })
     }
 }
 
@@ -194,25 +220,39 @@ async fn main() {
     let api = ApiClient::new(cli.url);
 
     let result = match cli.command {
-        Commands::Status => {
-            api.get("/api/health/status").await.map(|d| print_json(&d))
-        }
-        Commands::Ml => {
-            api.get("/api/ml/status").await.map(|d| print_json(&d))
-        }
+        Commands::Status => api.get("/api/health/status").await.map(|d| print_json(&d)),
+        Commands::Ml => api.get("/api/ml/status").await.map(|d| print_json(&d)),
         Commands::Block { ip } => {
             let is_v6 = ip.contains(':');
             let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
-            let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
-            api.request(reqwest::Method::PUT, &format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
-                .await.map(|_| println!("Blocked: {}", ip))
+            let addr = if is_v6 {
+                format!("[{}]:0", ip)
+            } else {
+                format!("{}:0", ip)
+            };
+            api.request(
+                reqwest::Method::PUT,
+                &format!("/api/acl/{}/source/blacklist", ip_ver),
+                Some(Value::String(addr)),
+            )
+            .await
+            .map(|_| println!("Blocked: {}", ip))
         }
         Commands::Unblock { ip } => {
             let is_v6 = ip.contains(':');
             let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
-            let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
-            api.request(reqwest::Method::DELETE, &format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
-                .await.map(|_| println!("Unblocked: {}", ip))
+            let addr = if is_v6 {
+                format!("[{}]:0", ip)
+            } else {
+                format!("{}:0", ip)
+            };
+            api.request(
+                reqwest::Method::DELETE,
+                &format!("/api/acl/{}/source/blacklist", ip_ver),
+                Some(Value::String(addr)),
+            )
+            .await
+            .map(|_| println!("Unblocked: {}", ip))
         }
         Commands::Rules { direction, list_type } => {
             // Try both IPv4 and IPv6
@@ -234,18 +274,15 @@ async fn main() {
             // Use /api/report/data for JSON output
             api.get("/api/report/data").await.map(|d| print_json(&d))
         }
-        Commands::Mode { mode } => {
-            match mode {
-                Some(m) => {
-                    let body = serde_json::json!({"mode": m});
-                    api.request(reqwest::Method::PUT, "/api/system/enforce-mode", Some(body))
-                        .await.map(|d| print_json(&d))
-                }
-                None => {
-                    api.get("/api/system/enforce-mode").await.map(|d| print_json(&d))
-                }
+        Commands::Mode { mode } => match mode {
+            Some(m) => {
+                let body = serde_json::json!({"mode": m});
+                api.request(reqwest::Method::PUT, "/api/system/enforce-mode", Some(body))
+                    .await
+                    .map(|d| print_json(&d))
             }
-        }
+            None => api.get("/api/system/enforce-mode").await.map(|d| print_json(&d)),
+        },
         Commands::Login => {
             print!("Username: ");
             std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -266,65 +303,57 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
-        Commands::Blocks => {
-            api.get("/api/soar/blocks").await.map(|d| print_json(&d))
-        }
-        Commands::Playbooks => {
-            api.get("/api/soar/playbooks").await.map(|d| print_json(&d))
-        }
-        Commands::Executions => {
-            api.get("/api/soar/executions").await.map(|d| print_json(&d))
-        }
-        Commands::ApiKey { action } => {
-            match action {
-                ApiKeyAction::Generate { name, level } => {
-                    let body = serde_json::json!({"name": name, "level": level});
-                    api.request(reqwest::Method::POST, "/api/api-keys/generate", Some(body))
-                        .await.map(|data| {
-                            if let Some(key) = data.get("key").and_then(|k| k.as_str()) {
-                                println!("Generated API key: {}", key);
-                                println!("Name: {}, Level: {}", name, level);
-                                println!("Set NETGUARDIA_API_KEY={} in your client config", key);
-                            } else {
-                                print_json(&data);
-                            }
-                        })
-                }
-                ApiKeyAction::List => {
-                    api.get("/api/api-keys").await.map(|data| {
-                        if let Some(keys) = data.as_array() {
-                            if keys.is_empty() {
-                                println!("No API keys found.");
-                            } else {
-                                println!("{:<6} {:<20} {:<15} {:<22} Last Used", "ID", "Name", "Level", "Created");
-                                println!("{}", "-".repeat(80));
-                                for key in keys {
-                                    println!("{:<6} {:<20} {:<15} {:<22} {}",
-                                        key.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-                                        key.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
-                                        key.get("permission_level").and_then(|v| v.as_str()).unwrap_or("-"),
-                                        key.get("created_at").and_then(|v| v.as_str()).unwrap_or("-"),
-                                        key.get("last_used_at").and_then(|v| v.as_str()).unwrap_or("never"),
-                                    );
-                                }
-                            }
+        Commands::Blocks => api.get("/api/soar/blocks").await.map(|d| print_json(&d)),
+        Commands::Playbooks => api.get("/api/soar/playbooks").await.map(|d| print_json(&d)),
+        Commands::Executions => api.get("/api/soar/executions").await.map(|d| print_json(&d)),
+        Commands::ApiKey { action } => match action {
+            ApiKeyAction::Generate { name, level } => {
+                let body = serde_json::json!({"name": name, "level": level});
+                api.request(reqwest::Method::POST, "/api/api-keys/generate", Some(body))
+                    .await
+                    .map(|data| {
+                        if let Some(key) = data.get("key").and_then(|k| k.as_str()) {
+                            println!("Generated API key: {}", key);
+                            println!("Name: {}, Level: {}", name, level);
+                            println!("Set NETGUARDIA_API_KEY={} in your client config", key);
                         } else {
                             print_json(&data);
                         }
                     })
-                }
-                ApiKeyAction::Revoke { id } => {
-                    api.request(reqwest::Method::DELETE, &format!("/api/api-keys/{}", id), None)
-                        .await.map(|data| {
-                            if data.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                println!("Key #{} revoked successfully.", id);
-                            } else {
-                                print_json(&data);
-                            }
-                        })
-                }
             }
-        }
+            ApiKeyAction::List => api.get("/api/api-keys").await.map(|data| {
+                if let Some(keys) = data.as_array() {
+                    if keys.is_empty() {
+                        println!("No API keys found.");
+                    } else {
+                        println!("{:<6} {:<20} {:<15} {:<22} Last Used", "ID", "Name", "Level", "Created");
+                        println!("{}", "-".repeat(80));
+                        for key in keys {
+                            println!(
+                                "{:<6} {:<20} {:<15} {:<22} {}",
+                                key.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                                key.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
+                                key.get("permission_level").and_then(|v| v.as_str()).unwrap_or("-"),
+                                key.get("created_at").and_then(|v| v.as_str()).unwrap_or("-"),
+                                key.get("last_used_at").and_then(|v| v.as_str()).unwrap_or("never"),
+                            );
+                        }
+                    }
+                } else {
+                    print_json(&data);
+                }
+            }),
+            ApiKeyAction::Revoke { id } => api
+                .request(reqwest::Method::DELETE, &format!("/api/api-keys/{}", id), None)
+                .await
+                .map(|data| {
+                    if data.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        println!("Key #{} revoked successfully.", id);
+                    } else {
+                        print_json(&data);
+                    }
+                }),
+        },
     };
 
     if let Err(e) = result {

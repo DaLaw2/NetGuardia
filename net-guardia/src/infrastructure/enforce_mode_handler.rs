@@ -1,7 +1,7 @@
-use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use async_trait::async_trait;
 use macros::log;
 
 use crate::infrastructure::communication_manager::CommunicationManager;

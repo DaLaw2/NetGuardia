@@ -93,11 +93,11 @@ loggable! {
         #[error("Failed to restore ACL rule ({direction} {list_type} {address}:{port}): {error}")]
         AclRuleRestoreFailed { direction: String, list_type: String, address: String, port: u16, error: String } => tracing::Level::WARN,
 
-        #[error("API-triggered shutdown initiated")]
-        ApiShutdown => tracing::Level::INFO,
+        #[error("Triggered shutdown initiated")]
+        Shutdown => tracing::Level::INFO,
 
-        #[error("API-triggered restart initiated — process will exit and systemd will restart")]
-        ApiRestart => tracing::Level::INFO,
+        #[error("Triggered restart initiated — self-reexecuting")]
+        Restart => tracing::Level::INFO,
 
         #[error("ML drift detected: {count} features drifted, max deviation {deviation:.2}σ")]
         DriftDetected { count: usize, deviation: f64 } => tracing::Level::WARN,

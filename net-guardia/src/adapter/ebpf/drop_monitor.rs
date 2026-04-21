@@ -5,11 +5,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
-use tokio::sync::{broadcast, oneshot};
-use tokio::time::interval;
-
 use common::define::drop_reason::*;
 use common::model::drop_event::DropEvent as RawDropEvent;
+use tokio::sync::{broadcast, oneshot};
+use tokio::time::interval;
 
 use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
 use crate::model::monitoring::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};

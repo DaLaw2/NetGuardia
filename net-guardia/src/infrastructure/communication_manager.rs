@@ -6,6 +6,12 @@
 //! surface (`Event`, `Command`, `Query`, `EventBroadcaster`, `CommandHandler`)
 //! lives at `interface/communication/` and remains untouched.
 
+use std::any::{Any, TypeId};
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use tokio::sync::broadcast;
+
 use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;
@@ -13,10 +19,6 @@ use crate::interface::communication::query::*;
 use crate::model::config::constants::DEFAULT_EVENT_CHANNEL_CAPACITY;
 use crate::model::error::Error;
 use crate::model::error::misc::MiscError;
-use dashmap::DashMap;
-use std::any::{Any, TypeId};
-use std::sync::Arc;
-use tokio::sync::broadcast;
 
 /// Inline TypedEventBroadcaster (adapted from MirrorSphere's model).
 pub struct TypedEventBroadcaster<E: Event> {
@@ -189,12 +191,13 @@ impl<S: Send + Sync + 'static> ServiceRegistrar<S> {
 mod tests {
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
+
     use super::*;
     use crate::interface::communication::command::Command;
     use crate::interface::communication::event::Event;
     use crate::interface::communication::message::Message;
     use crate::interface::communication::query::Query;
-    use async_trait::async_trait;
 
     // ── Test Command ─────────────────────────────────────────────────
 

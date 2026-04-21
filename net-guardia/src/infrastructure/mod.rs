@@ -1,6 +1,7 @@
 pub mod app_config;
 pub mod app_services;
 pub mod audit_logger;
+pub mod cli;
 pub mod communication_manager;
 pub mod ebpf_preflight;
 pub mod enforce_mode_handler;

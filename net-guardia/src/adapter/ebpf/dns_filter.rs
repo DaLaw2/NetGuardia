@@ -38,8 +38,6 @@ impl DnsFilter {
             .collect()
     }
 
-    /// Fast-path helper combining `parse_query_name` + `is_blacklisted` — used
-    /// by the AF_XDP RX loop.
     pub fn is_query_blacklisted(&self, raw: &[u8]) -> bool {
         match Self::parse_query_name(raw) {
             Some((name, name_len)) => self.is_blacklisted(&name, name_len),
@@ -47,7 +45,6 @@ impl DnsFilter {
         }
     }
 
-    /// Check if a DNS query name (in wire format) or any of its parent domains is blacklisted.
     pub fn is_blacklisted(&self, name: &DnsName, name_len: usize) -> bool {
         if self.blacklist.is_empty() {
             return false;
@@ -84,8 +81,6 @@ impl DnsFilter {
         false
     }
 
-    /// Parse DNS query name from raw packet bytes.
-    /// Returns the DNS name in wire format and the name length, or None if not a DNS query.
     pub fn parse_query_name(raw: &[u8]) -> Option<(DnsName, usize)> {
         if raw.len() < 14 {
             return None;

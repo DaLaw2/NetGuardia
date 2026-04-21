@@ -6,20 +6,19 @@ use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-
 use aya::Ebpf;
 use aya::maps::{Array, MapData, ProgramArray};
 use aya::programs::{Xdp, XdpFlags};
 use aya_log::EbpfLogger;
 use common::define::pipeline::*;
+use macros::log;
 
-use crate::core::auth::jwt::JwtService;
-
-use crate::adapter::access_control_adapter::EbpfAccessControlAdapter;
+use crate::adapter::access_control::AccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
 use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
 use crate::core::acl_service::AclService;
+use crate::core::auth::jwt::JwtService;
 use crate::core::config_service::ConfigService;
 use crate::core::dns_filter_service::DnsFilterService;
 use crate::core::email::scheduler::ReportScheduler;
@@ -63,7 +62,6 @@ use crate::model::monitoring::direction::FlowDirection;
 use crate::model::system::config::MLInferenceConfig;
 use crate::model::system::health::EbpfFailStage;
 use crate::model::system::health::EbpfHealth;
-use macros::log;
 
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
@@ -260,7 +258,7 @@ impl ServiceFactory {
 
         // Create AccessControlPort adapter for SOAR/TTL (decoupled from eBPF)
         let access_control_port: Arc<dyn AccessControlPort> =
-            Arc::new(EbpfAccessControlAdapter::new(ebpf_services.access_control.clone()));
+            Arc::new(AccessControlAdapter::new(ebpf_services.access_control.clone()));
 
         // Create SOAR engine
         let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();

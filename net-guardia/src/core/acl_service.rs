@@ -1,15 +1,15 @@
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
+use macros::log;
+
 use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::geo_block_api::GeoBlockPort;
-use crate::model::monitoring::direction::FlowDirection;
-use macros::log;
-
 use crate::model::access_control::list_type::ListType;
 use crate::model::error::Error;
 use crate::model::error::ebpf::EbpfError;
+use crate::model::monitoring::direction::FlowDirection;
 
 /// Domain service that coordinates ACL changes between DB persistence and eBPF data plane.
 /// Atomic write: eBPF first, then DB. If DB fails, rollback eBPF.

@@ -40,9 +40,6 @@ impl AccessControl {
         Ok(access_control)
     }
 
-    /// Construct an AccessControl backed by no eBPF maps. Used when eBPF
-    /// failed to load at startup; every mutating call returns `EbpfError::NotLoaded`,
-    /// and list queries return empty maps.
     pub fn unavailable() -> Self {
         Self {
             ipv4_src_whitelist: RwLock::new(MapWrapper::unavailable()),
@@ -149,9 +146,11 @@ impl AccessControlAdminPort for AccessControl {
     fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error> {
         self.add_ipv4_list(direction, list_type, address)
     }
+
     fn add_ipv6_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error> {
         self.add_ipv6_list(direction, list_type, address)
     }
+
     fn remove_ipv4_list(
         &self,
         direction: FlowDirection,
@@ -160,6 +159,7 @@ impl AccessControlAdminPort for AccessControl {
     ) -> Result<(), Error> {
         self.remove_ipv4_list(direction, list_type, address)
     }
+
     fn remove_ipv6_list(
         &self,
         direction: FlowDirection,
@@ -168,9 +168,11 @@ impl AccessControlAdminPort for AccessControl {
     ) -> Result<(), Error> {
         self.remove_ipv6_list(direction, list_type, address)
     }
+
     fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
         self.get_ipv4_list(direction, list_type)
     }
+
     fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
         self.get_ipv6_list(direction, list_type)
     }

@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Expr, Token};
+use syn::{Expr, Token, parse_macro_input};
 
 struct LogInput {
     error: Expr,
@@ -62,5 +62,5 @@ pub fn log_impl(input: TokenStream) -> TokenStream {
             }
         }
     }
-        .into()
+    .into()
 }

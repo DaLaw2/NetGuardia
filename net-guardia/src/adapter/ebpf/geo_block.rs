@@ -211,9 +211,11 @@ impl GeoBlockPort for GeoBlock {
     fn block_countries(&self, codes: &[String]) -> Result<u64, Error> {
         self.block_countries(codes)
     }
+
     fn unblock_countries(&self, codes: &[String]) -> Result<u64, Error> {
         self.unblock_countries(codes)
     }
+
     fn list_blocked(&self) -> Vec<String> {
         self.get_blocked_countries()
     }

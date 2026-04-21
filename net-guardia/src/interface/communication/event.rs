@@ -1,5 +1,6 @@
-use crate::model::error::Error;
 use std::any::Any;
+
+use crate::model::error::Error;
 
 pub trait Event: Send + Clone + 'static {}
 

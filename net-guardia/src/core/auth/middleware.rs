@@ -7,7 +7,6 @@ use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::http::Method;
 use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
-
 use macros::log;
 
 use crate::core::auth::jwt::JwtService;

@@ -1,4 +1,4 @@
-pub mod access_control_adapter;
+pub mod access_control;
 pub mod ebpf;
 pub mod http;
 pub mod persistence;

@@ -54,6 +54,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # HTTP client (Telegram, MCP proxy)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
 # Architecture
 async-trait = "0.1"
 dashmap = "6"

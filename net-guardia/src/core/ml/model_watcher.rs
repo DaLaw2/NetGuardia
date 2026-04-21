@@ -176,9 +176,9 @@ fn path_is_inside_staging(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use notify::event::{CreateKind, ModifyKind};
+
+    use super::*;
 
     #[test]
     fn staging_paths_are_filtered() {

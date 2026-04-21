@@ -5,17 +5,17 @@ mod action;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{Array, PerCpuArray, ProgramArray, RingBuf, XskMap};
-use common::ebpf::symmetric_hash::symmetric_queue_id;
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
-use common::ebpf::parsing;
-use common::define::pipeline::*;
 use common::define::drop_reason::*;
+use common::define::pipeline::*;
+use common::ebpf::parsing;
+use common::ebpf::symmetric_hash::symmetric_queue_id;
 use common::model::drop_event::DropEvent;
 use common::model::parsed_packet::ParsedPacket;
 
-use crate::action::{access_control, rate_limit, protocol_filter};
+use crate::action::{access_control, protocol_filter, rate_limit};
 
 #[map]
 static PROGRAM_ARRAY: ProgramArray = ProgramArray::with_max_entries(MAX_STAGES, 0);
@@ -70,7 +70,9 @@ unsafe fn emit_drop_event(pkt: &ParsedPacket, reason: u8) {
 
 #[inline(always)]
 unsafe fn packet_intake(ctx: &XdpContext) {
-    let Some(ptr) = PARSED_PACKET.get_ptr_mut(0) else { return };
+    let Some(ptr) = PARSED_PACKET.get_ptr_mut(0) else {
+        return;
+    };
     if parsing::parse_packet(ctx.data(), ctx.data_end(), ptr).is_ok() {
         chain_next(ctx, STAGE_ENTRY);
     }
@@ -209,9 +211,7 @@ unsafe fn compute_symmetric_queue_id() -> Option<u32> {
 
 #[xdp]
 pub fn transmission(ctx: XdpContext) -> u32 {
-    let queue_id = unsafe {
-        compute_symmetric_queue_id().unwrap_or((*ctx.ctx).rx_queue_index)
-    };
+    let queue_id = unsafe { compute_symmetric_queue_id().unwrap_or((*ctx.ctx).rx_queue_index) };
     match INGRESS_XSKS_MAP.redirect(queue_id, 0) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,

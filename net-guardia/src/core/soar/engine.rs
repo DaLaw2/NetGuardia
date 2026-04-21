@@ -383,12 +383,14 @@ impl SoarEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use chrono::{Duration as ChronoDuration, Utc};
+    use parking_lot::Mutex;
+
     use super::*;
     use crate::model::error::ebpf::EbpfError;
     use crate::model::event::DetectionSource;
-    use chrono::{Duration as ChronoDuration, Utc};
-    use parking_lot::Mutex;
-    use std::sync::atomic::AtomicBool;
 
     /// Mock AccessControlPort that records calls.
     struct MockAccessControl {

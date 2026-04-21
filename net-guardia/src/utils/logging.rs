@@ -1,17 +1,19 @@
-use std::env;
 use std::fs;
 use std::sync::OnceLock;
+use std::{env, io};
 
 use tracing::Level;
+use tracing::level_filters::LevelFilter;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::Directive;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{Layer, filter, reload};
 
 use crate::core::observability::log_buffer::LogBufferLayer;
+use crate::interface::utils::logging::FilterControl;
 use crate::model::error::Error;
 use crate::model::error::io::IOError;
 
@@ -24,23 +26,6 @@ static FILTER_HANDLE: OnceLock<Box<dyn FilterControl>> = OnceLock::new();
 /// around a new root level; reapplying these keeps any RUST_LOG overrides
 /// the operator configured for specific crates from being silently lost.
 static PRESERVED_DIRECTIVES: OnceLock<Vec<String>> = OnceLock::new();
-
-/// Trait to erase the complex generic type of reload::Handle.
-trait FilterControl: Send + Sync {
-    fn reload_filter(&self, filter: EnvFilter) -> Result<(), String>;
-    fn current_filter(&self) -> String;
-}
-
-impl<L> FilterControl for reload::Handle<EnvFilter, L> {
-    fn reload_filter(&self, filter: EnvFilter) -> Result<(), String> {
-        self.reload(filter).map_err(|e| e.to_string())
-    }
-
-    fn current_filter(&self) -> String {
-        self.with_current(|f| f.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    }
-}
 
 pub struct Logging;
 
@@ -116,7 +101,32 @@ impl Logging {
         Ok(())
     }
 
-    /// Change the global log level at runtime.
+    pub fn initialize_cli() -> Result<(), Error> {
+        let stdout_layer = fmt_layer()
+            .without_time()
+            .with_level(false)
+            .with_target(false)
+            .with_file(false)
+            .with_line_number(false)
+            .with_thread_ids(false)
+            .with_ansi(false)
+            .with_writer(io::stdout)
+            .with_filter(LevelFilter::INFO);
+
+        let stderr_layer = fmt_layer()
+            .without_time()
+            .with_level(false)
+            .with_target(false)
+            .with_writer(io::stderr)
+            .with_filter(filter::filter_fn(|m| m.level() <= &Level::WARN));
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(stderr_layer)
+            .init();
+        Ok(())
+    }
+
     pub fn set_level(level: &str) -> Result<String, String> {
         let handle = FILTER_HANDLE.get().ok_or("Logging not initialized")?;
 
@@ -150,6 +160,17 @@ impl Logging {
             .get()
             .map(|h| extract_main_level(&h.current_filter()))
             .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+impl<L> FilterControl for reload::Handle<EnvFilter, L> {
+    fn reload_filter(&self, filter: EnvFilter) -> Result<(), String> {
+        self.reload(filter).map_err(|e| e.to_string())
+    }
+
+    fn current_filter(&self) -> String {
+        self.with_current(|f| f.to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 }
 

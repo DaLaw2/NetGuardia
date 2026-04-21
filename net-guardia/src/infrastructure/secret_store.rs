@@ -6,9 +6,8 @@ use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use hkdf::Hkdf;
-use sha2::Sha256;
-
 use macros::log;
+use sha2::Sha256;
 
 use crate::adapter::persistence::Database;
 use crate::interface::port::secret_store::SecretStorePort;

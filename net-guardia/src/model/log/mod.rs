@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod cli;
 pub mod crypto;
 pub mod detection;
 pub mod ebpf;

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
+use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
@@ -15,8 +16,6 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
-
-use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
 
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::infrastructure::app_config::AppConfig;

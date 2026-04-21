@@ -9,17 +9,17 @@ use crate::model::error::ebpf::EbpfError;
 use crate::model::monitoring::direction::FlowDirection;
 
 /// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
-pub struct EbpfAccessControlAdapter {
+pub struct AccessControlAdapter {
     access_control: Arc<AccessControl>,
 }
 
-impl EbpfAccessControlAdapter {
+impl AccessControlAdapter {
     pub fn new(access_control: Arc<AccessControl>) -> Self {
         Self { access_control }
     }
 }
 
-impl AccessControlPort for EbpfAccessControlAdapter {
+impl AccessControlPort for AccessControlAdapter {
     fn block_ip(&self, ip: &str) -> Result<(), Error> {
         let addr: IpAddr = ip
             .parse()

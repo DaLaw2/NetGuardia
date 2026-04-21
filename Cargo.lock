@@ -2495,6 +2495,7 @@ dependencies = [
  "base64",
  "cargo_metadata",
  "chrono",
+ "clap",
  "common",
  "crossbeam",
  "dashmap",
