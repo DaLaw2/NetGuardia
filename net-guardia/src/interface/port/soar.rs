@@ -1,5 +1,5 @@
-use crate::model::error::Error;
-use crate::model::soar::playbook_data::UpdatePlaybookInput;
+use crate::domain::common::error::Error;
+use crate::domain::response::playbook_data::UpdatePlaybookInput;
 
 /// Type alias for playbook+action JOIN rows.
 /// (id, name, enabled, trigger_event, threshold, count, window, cooldown, action_id, action_order, action_type, params)

@@ -26,9 +26,9 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::model::config::AppConfig;
-use crate::model::event::{DetectionEvent, DetectionSource};
-use crate::model::log::suricata::SuricataLog;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::log::SuricataLog;
 
 /// IANA protocol numbers for Suricata's `proto` strings.
 const IANA_PROTO_ICMP: u8 = 1;

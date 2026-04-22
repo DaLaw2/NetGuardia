@@ -9,11 +9,11 @@ use ipnetwork::IpNetwork;
 use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
 
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::misc::MiscError;
+use crate::domain::data_plane::error::EbpfError;
 use crate::interface::port::geo_block_api::GeoBlockPort;
-use crate::model::config::AppConfig;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::error::misc::MiscError;
 
 /// Pre-indexed GeoIP prefix table, built once at startup.
 struct GeoIndex {

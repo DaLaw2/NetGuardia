@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Audit log entry returned by `list_audit_logs` and
 /// `verify_audit_log_chain` APIs.

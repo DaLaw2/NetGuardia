@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand};
 use macros::log;
 
 use crate::adapter::persistence::Database;
-use crate::model::error::Error;
-use crate::model::log::cli::CliLog;
+use crate::domain::common::error::Error;
+use crate::domain::common::log::cli::CliLog;
 
 const EXIT_USAGE: i32 = 1;
 const EXIT_OP_FAILED: i32 = 2;

@@ -2,9 +2,9 @@ use aya::Ebpf;
 use aya::maps::{Array, MapData};
 use parking_lot::Mutex;
 
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::error::EbpfError;
 use crate::interface::port::rate_limit_api::RateLimitPort;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
 
 pub struct RateLimitConfig {
     config_map: Mutex<Option<Array<MapData, u64>>>,

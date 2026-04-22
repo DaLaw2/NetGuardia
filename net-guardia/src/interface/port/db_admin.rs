@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Persistence technical service — cross-aggregate atomic business operations
 /// and database-wide administration (migration, encryption, backup).

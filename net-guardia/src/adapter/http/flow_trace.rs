@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use actix_files::NamedFile;
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 
-use crate::core::ml::engine::Engine;
-use crate::core::ml::traffic_logger::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER, list_flow_trace_files};
+use crate::core::inference::engine::Engine;
+use crate::core::inference::traffic_logger::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER, list_flow_trace_files};
 
 pub fn initialize() -> Scope {
     web::scope("/flow-trace")

@@ -17,18 +17,32 @@ use crate::adapter::access_control::AccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::persistence::Database;
 use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
-use crate::core::acl_service::AclService;
-use crate::core::auth::jwt::JwtService;
-use crate::core::config_service::ConfigService;
-use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::drift_detector::DriftDetectorHandle;
-use crate::core::ml::manifest::ModelManifest;
-use crate::core::notification_service::NotificationService;
-use crate::core::playbook_service::PlaybookService;
-use crate::core::rate_limit_service::RateLimitService;
-use crate::core::soar::engine::SoarEngine;
-use crate::core::soar::scheduler::TtlScheduler;
+use crate::core::common::config_service::ConfigService;
+use crate::core::common::notification_service::NotificationService;
+use crate::core::data_plane::acl_service::AclService;
+use crate::core::data_plane::dns_filter_service::DnsFilterService;
+use crate::core::data_plane::rate_limit_service::RateLimitService;
+use crate::core::identity::jwt::JwtService;
+use crate::core::inference::drift_detector::DriftDetectorHandle;
+use crate::core::reporting::email_scheduler::ReportScheduler;
+use crate::core::response::engine::SoarEngine;
+use crate::core::response::playbook_service::PlaybookService;
+use crate::core::response::scheduler::TtlScheduler;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::misc::MiscError;
+use crate::domain::common::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
+use crate::domain::common::log::system::SystemLog;
+use crate::domain::common::system::health::EbpfFailStage;
+use crate::domain::common::system::health::EbpfHealth;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::list_type::ListType;
+use crate::domain::data_plane::log::EbpfLog;
+use crate::domain::detection::drift::FeatureBaselines;
+use crate::domain::detection::log::MLLog;
+use crate::domain::detection::manifest::ModelManifest;
+use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::ebpf_preflight;
@@ -49,20 +63,6 @@ use crate::interface::port::rate_limit_api::RateLimitPort;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::soar::SoarRepo;
-use crate::model::access_control::list_type::ListType;
-use crate::model::config::AppConfig;
-use crate::model::detection::drift::FeatureBaselines;
-use crate::model::detection::ml_inference_config::MLInferenceConfig;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::error::misc::MiscError;
-use crate::model::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
-use crate::model::log::ebpf::EbpfLog;
-use crate::model::log::ml::MLLog;
-use crate::model::log::system::SystemLog;
-use crate::model::monitoring::direction::FlowDirection;
-use crate::model::system::health::EbpfFailStage;
-use crate::model::system::health::EbpfHealth;
 
 /// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
@@ -369,7 +369,7 @@ impl ServiceFactory {
     fn try_build_ebpf(
         app_config: &Arc<ArcSwap<AppConfig>>,
     ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (EbpfFailStage, Error)> {
-        use crate::model::system::health::EbpfFailStage;
+        use crate::domain::common::system::health::EbpfFailStage;
 
         let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
         let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;

@@ -1,1 +1,1 @@
-// Types are available via crate::model::event
+// Types are available via crate::domain::event

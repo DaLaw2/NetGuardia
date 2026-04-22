@@ -12,8 +12,8 @@
 
 use std::fs;
 
-use crate::model::error::Error;
-use crate::model::system::health::{EbpfFailCategory, EbpfFailStage, EbpfHealth};
+use crate::domain::common::error::Error;
+use crate::domain::common::system::health::{EbpfFailCategory, EbpfFailStage, EbpfHealth};
 
 /// Read the running kernel release from `/proc/sys/kernel/osrelease`.
 /// Returns the trimmed value, or `"unknown"` if the file cannot be read.

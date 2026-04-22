@@ -12,10 +12,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, filter, reload};
 
-use crate::core::observability::log_buffer::LogBufferLayer;
+use crate::core::common::observability::log_buffer::LogBufferLayer;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::io::IOError;
 use crate::interface::utils::logging::FilterControl;
-use crate::model::error::Error;
-use crate::model::error::io::IOError;
 
 /// Type-erased reload handle stored as a trait object.
 /// We erase the complex layered type by boxing the modify closure.

@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Port for blocking/unblocking IP addresses in the network data plane.
 /// Adapters: EbpfAccessControlAdapter (wraps eBPF AccessControl)

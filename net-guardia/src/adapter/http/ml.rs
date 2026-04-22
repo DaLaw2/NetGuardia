@@ -1,12 +1,12 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
 use crate::adapter::http::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::ml::adapter::ModelSourceState;
-use crate::core::ml::engine::Engine;
-use crate::core::ml::inference::Inference;
+use crate::core::identity::extractor::AuthClaims;
+use crate::core::inference::engine::Engine;
+use crate::core::inference::inference::Inference;
+use crate::domain::common::event::AuditEvent;
+use crate::domain::detection::model_adapter::ModelSourceState;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::model::event::AuditEvent;
 
 /// Permission required to forcibly revert the active ML source to dormant.
 /// Mirrors the upload handler's gate so swap-out and revert are symmetric:

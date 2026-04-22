@@ -1,7 +1,7 @@
 use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
-use crate::core::auth::extractor::AuthClaims;
+use crate::core::identity::extractor::AuthClaims;
 use crate::interface::port::api_key::ApiKeyRepo;
 
 pub fn initialize() -> Scope {

@@ -2,11 +2,11 @@ use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
 use crate::adapter::ebpf::access_control::AccessControl;
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::list_type::ListType;
 use crate::interface::port::access_control::AccessControlPort;
-use crate::model::access_control::list_type::ListType;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::monitoring::direction::FlowDirection;
 
 /// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
 pub struct AccessControlAdapter {

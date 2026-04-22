@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Data Plane BC — rate-limit, DNS blacklist, geo-block aggregate repository.
 ///

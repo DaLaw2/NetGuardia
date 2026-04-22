@@ -19,15 +19,15 @@ use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, So
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::ebpf::EbpfConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::data_plane::direction::Direction;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::log::EbpfLog;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
-use crate::model::config::AppConfig;
-use crate::model::config::ebpf::EbpfConfig;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::error::system::SystemError;
-use crate::model::log::ebpf::EbpfLog;
-use crate::model::monitoring::direction::Direction;
 use crate::utils::packet_parser::parse_packet;
 
 /// Pre-allocated buffer pool to avoid per-packet malloc.

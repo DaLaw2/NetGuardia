@@ -1,8 +1,8 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::config_service::ConfigService;
+use crate::core::common::config_service::ConfigService;
+use crate::core::identity::extractor::AuthClaims;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;

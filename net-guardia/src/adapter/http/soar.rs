@@ -4,11 +4,11 @@ use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::adapter::http::response::{ok_json_or_error, ok_or_error};
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::playbook_service::PlaybookService;
-use crate::core::soar::engine::SoarEngine;
-use crate::model::event::{DetectionSource, ThreatDetectedEvent};
-use crate::model::soar::playbook_data::{CreateConditionInput, CreatePlaybookInput};
+use crate::core::identity::extractor::AuthClaims;
+use crate::core::response::engine::SoarEngine;
+use crate::core::response::playbook_service::PlaybookService;
+use crate::domain::common::event::{DetectionSource, ThreatDetectedEvent};
+use crate::domain::response::playbook_data::{CreateConditionInput, CreatePlaybookInput};
 
 #[derive(Deserialize)]
 struct CreatePlaybookRequest {

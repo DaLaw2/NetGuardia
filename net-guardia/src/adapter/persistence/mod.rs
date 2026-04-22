@@ -15,9 +15,9 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{self, Connection, params};
 
-use crate::model::error::Error;
-use crate::model::error::database::DatabaseError;
-use crate::model::log::misc::MiscLog;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::database::DatabaseError;
+use crate::domain::common::log::misc::MiscLog;
 
 /// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
 /// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).

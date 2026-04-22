@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Port for plaintext access to sensitive values (e.g. SMTP password, JWT
 /// secret). The adapter (`infrastructure/secret_store.rs`) wraps

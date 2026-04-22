@@ -4,9 +4,9 @@ use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
 use crate::adapter::http::response::ok_or_error;
-use crate::core::acl_service::AclService;
-use crate::model::access_control::list_type::ListType;
-use crate::model::monitoring::direction::FlowDirection;
+use crate::core::data_plane::acl_service::AclService;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::list_type::ListType;
 
 #[derive(Deserialize)]
 struct CountryCodesRequest {

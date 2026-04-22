@@ -3,9 +3,9 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use common::model::ip_address::Port;
 
-use crate::model::access_control::list_type::ListType;
-use crate::model::error::Error;
-use crate::model::monitoring::direction::FlowDirection;
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::list_type::ListType;
 
 /// Admin-level ACL port — add/remove individual IPv4/IPv6 ACL list entries.
 ///

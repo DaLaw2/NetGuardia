@@ -6,8 +6,8 @@
 
 use actix_web::{HttpResponse, Scope, web};
 
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::ml::feature_extractor::feature_registry_names;
+use crate::core::identity::extractor::AuthClaims;
+use crate::domain::detection::feature_extractor::feature_registry_names;
 
 pub fn initialize() -> Scope {
     web::scope("/byo").route("/feature-registry", web::get().to(get_feature_registry))

@@ -4,15 +4,15 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use async_trait::async_trait;
 use macros::log;
 
+use crate::domain::common::error::Error;
+use crate::domain::common::event::AuditEvent;
+use crate::domain::common::log::system::SystemLog;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::communication::command::CommandHandler;
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query::QueryHandler;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::app_repo::AppRepo;
-use crate::model::error::Error;
-use crate::model::event::AuditEvent;
-use crate::model::log::system::SystemLog;
 
 /// Map enforce-mode string to u8: monitor=0, ml_only=1, enforce=2.
 pub fn enforce_mode_to_u8(mode: &str) -> u8 {

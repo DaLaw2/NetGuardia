@@ -8,10 +8,10 @@ use sysinfo::{Components, Networks, System};
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::model::config::AppConfig;
-use crate::model::error::Error;
-use crate::model::log::health::Health;
-use crate::model::system::health::{
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::log::health::Health;
+use crate::domain::common::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, EbpfHealth, LoadAverage, MemoryUsage, NetworkStats,
     SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };

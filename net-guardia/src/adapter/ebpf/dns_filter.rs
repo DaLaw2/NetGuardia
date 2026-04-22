@@ -3,10 +3,10 @@ use core::str;
 use common::model::dns_name::DnsName;
 use dashmap::DashSet;
 
+use crate::domain::common::error::Error;
+use crate::domain::common::error::misc::MiscError;
 use crate::interface::port::dns_filter_api::DnsFilterPort;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
-use crate::model::error::Error;
-use crate::model::error::misc::MiscError;
 
 pub struct DnsFilter {
     blacklist: DashSet<DnsName>,

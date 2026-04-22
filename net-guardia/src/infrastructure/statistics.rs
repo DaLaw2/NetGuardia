@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::core::ml::engine::Engine;
-use crate::core::ml::flow_tracker::FlowData;
-use crate::model::monitoring::direction::Direction;
-use crate::model::monitoring::flow_stats::{
+use crate::core::inference::engine::Engine;
+use crate::domain::data_plane::direction::Direction;
+use crate::domain::data_plane::flow_stats::{
     FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary,
 };
+use crate::domain::detection::flow_tracker::FlowData;
 
 /// Conversion from core::ml::FlowData to model::FlowStatsEntry.
 /// Placed here (core layer) to maintain dependency rule: model/ must not import core/.

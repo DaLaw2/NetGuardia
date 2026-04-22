@@ -3,11 +3,11 @@ use macros::log;
 use serde::Deserialize;
 
 use crate::adapter::http::response::ok_or_error;
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::auth::jwt::JwtService;
-use crate::core::auth::password;
+use crate::core::identity::extractor::AuthClaims;
+use crate::core::identity::jwt::JwtService;
+use crate::domain::identity::error::AuthError;
+use crate::domain::identity::password;
 use crate::interface::port::app_repo::AppRepo;
-use crate::model::error::auth::AuthError;
 
 type Repo = dyn AppRepo;
 

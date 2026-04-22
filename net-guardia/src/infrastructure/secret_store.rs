@@ -10,10 +10,10 @@ use macros::log;
 use sha2::Sha256;
 
 use crate::adapter::persistence::Database;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::crypto::CryptoError;
+use crate::domain::common::log::crypto::CryptoLog;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::error::Error;
-use crate::model::error::crypto::CryptoError;
-use crate::model::log::crypto::CryptoLog;
 
 /// AES-256-GCM envelope encryption for sensitive values stored in `app_secrets`.
 pub struct SecretStore {

@@ -1,9 +1,9 @@
 use rusqlite::params;
 
 use super::Database;
+use crate::domain::common::error::Error;
+use crate::domain::response::playbook_data::UpdatePlaybookInput;
 use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarRepo};
-use crate::model::error::Error;
-use crate::model::soar::playbook_data::UpdatePlaybookInput;
 
 impl Database {
     pub fn insert_playbook(

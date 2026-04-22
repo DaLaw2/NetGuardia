@@ -12,12 +12,12 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
+use crate::domain::common::error::Error;
+use crate::domain::common::error::misc::MiscError;
 use crate::interface::communication::command::*;
 use crate::interface::communication::event::Event;
 use crate::interface::communication::event::EventBroadcaster;
 use crate::interface::communication::query::*;
-use crate::model::error::Error;
-use crate::model::error::misc::MiscError;
 
 /// Inline TypedEventBroadcaster (adapted from MirrorSphere's model).
 pub struct TypedEventBroadcaster<E: Event> {

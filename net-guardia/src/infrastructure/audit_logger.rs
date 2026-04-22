@@ -3,10 +3,10 @@ use std::sync::Arc;
 use macros::log;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::domain::common::event::{AuditEvent, DriftDetectedEvent};
+use crate::domain::common::log::audit::AuditLog;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::audit::AuditRepo;
-use crate::model::event::{AuditEvent, DriftDetectedEvent};
-use crate::model::log::audit::AuditLog;
 
 /// Subscribes to `AuditEvent` and persists each entry to the `audit_log` table.
 /// Falls back to log-only when DB writes fail (never panics).

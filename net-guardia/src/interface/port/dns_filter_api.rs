@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Admin-level DNS filter port — add/remove/list domains on the blacklist.
 /// Used by `DnsFilterService` (HTTP-driven CRUD). Kept separate from

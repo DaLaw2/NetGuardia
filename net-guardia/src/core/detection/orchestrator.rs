@@ -8,15 +8,15 @@ use macros::log;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-use super::fusion_math::{FusionWindowLengths, fused_confidence};
-use super::metrics::FusionMetrics;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::common::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
+use crate::domain::detection::attack_type::translate;
+use crate::domain::detection::fusion_math::{FusionWindowLengths, fused_confidence};
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::metrics::FusionMetrics;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::geo_lookup::GeoLookup;
-use crate::model::config::AppConfig;
-use crate::model::detection::attack_type::translate;
-use crate::model::error::system::SystemError;
-use crate::model::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
-use crate::model::log::detection::DetectionLog;
 
 /// Actor recorded on every fusion-chain WORM entry. Stable across releases —
 /// downstream audit tooling filters on this string.

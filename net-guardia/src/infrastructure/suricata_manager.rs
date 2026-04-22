@@ -21,11 +21,11 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
-use crate::model::config::AppConfig;
-use crate::model::error::Error;
-use crate::model::error::suricata::SuricataError;
-use crate::model::log::suricata::SuricataLog;
-use crate::model::system::suricata::SuricataHealth;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::system::suricata::SuricataHealth;
+use crate::domain::detection::error::SuricataError;
+use crate::domain::detection::log::SuricataLog;
 
 pub struct SuricataManager {
     config: Arc<ArcSwap<AppConfig>>,

@@ -6,11 +6,11 @@ use macros::log;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::domain::common::error::http::HttpError;
+use crate::domain::common::error::misc::MiscError;
+use crate::domain::common::log::http::HttpLog;
+use crate::domain::common::system::health::SystemHealthMetrics;
 use crate::infrastructure::health::SystemHealth;
-use crate::model::error::http::HttpError;
-use crate::model::error::misc::MiscError;
-use crate::model::log::http::HttpLog;
-use crate::model::system::health::SystemHealthMetrics;
 
 pub async fn websocket_system_health(
     req: HttpRequest,

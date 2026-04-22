@@ -8,8 +8,8 @@ use actix_web::{HttpResponse, Scope, web};
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::core::observability::log_buffer::{self, LogEntry};
-use crate::model::config::AppConfig;
+use crate::core::common::observability::log_buffer::{self, LogEntry};
+use crate::domain::common::config::AppConfig;
 
 /// Hardcoded log directory — not configurable via API to prevent directory traversal.
 const LOG_DIR: &str = "logs";

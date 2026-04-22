@@ -1,8 +1,8 @@
 use rusqlite::params;
 
 use super::Database;
+use crate::domain::common::error::Error;
 use crate::interface::port::acl::{AclRepo, AclRuleTuple};
-use crate::model::error::Error;
 
 impl Database {
     pub fn insert_acl_rule(

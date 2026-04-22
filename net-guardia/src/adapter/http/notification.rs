@@ -2,8 +2,8 @@ use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::adapter::http::response::{ok_json_or_error, ok_or_error};
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::notification_service::NotificationService;
+use crate::core::common::notification_service::NotificationService;
+use crate::core::identity::extractor::AuthClaims;
 
 pub fn initialize() -> Scope {
     web::scope("/notifications")

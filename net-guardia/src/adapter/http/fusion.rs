@@ -12,9 +12,9 @@ use std::sync::Arc;
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use arc_swap::ArcSwap;
 
-use crate::core::detection::metrics::FusionMetrics;
+use crate::domain::common::config::AppConfig;
+use crate::domain::detection::metrics::FusionMetrics;
 use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
-use crate::model::config::AppConfig;
 
 /// Stable audit action string the fusion engine emits — kept in sync
 /// with `core::detection::orchestrator::FUSION_AUDIT_ACTION`. If that

@@ -17,22 +17,34 @@ use tokio::time::{interval, sleep};
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::model_upload;
 use crate::adapter::persistence::Database;
-use crate::core::acl_service::AclService;
-use crate::core::auth::jwt::JwtService;
-use crate::core::config_service::ConfigService;
+use crate::core::common::config_service::ConfigService;
+use crate::core::common::notification_service::NotificationService;
 use crate::core::correlation::engine::CorrelationEngine;
+use crate::core::data_plane::acl_service::AclService;
+use crate::core::data_plane::dns_filter_service::DnsFilterService;
+use crate::core::data_plane::rate_limit_service::RateLimitService;
 use crate::core::detection::beaconing::BeaconingDetector;
 use crate::core::detection::orchestrator::DetectionOrchestrator;
-use crate::core::dns_filter_service::DnsFilterService;
-use crate::core::email::scheduler::ReportScheduler;
-use crate::core::ml::drift_detector::DriftDetectorHandle;
-use crate::core::ml::model_watcher::ModelWatcher;
-use crate::core::notification_service::NotificationService;
-use crate::core::playbook_service::PlaybookService;
-use crate::core::rate_limit_service::RateLimitService;
-use crate::core::soar::engine::SoarEngine;
-use crate::core::soar::scheduler::TtlScheduler;
-use crate::core::stats_aggregator::StatsAggregator;
+use crate::core::identity::jwt::JwtService;
+use crate::core::inference::drift_detector::DriftDetectorHandle;
+use crate::core::inference::model_watcher::ModelWatcher;
+use crate::core::reporting::email_scheduler::ReportScheduler;
+use crate::core::reporting::stats_aggregator::StatsAggregator;
+use crate::core::response::engine::SoarEngine;
+use crate::core::response::playbook_service::PlaybookService;
+use crate::core::response::scheduler::TtlScheduler;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::{MODELS_DIR, STAGING_SUBDIR};
+use crate::domain::common::error::Error;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::common::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
+use crate::domain::common::log::system::SystemLog;
+use crate::domain::common::system::health::EbpfHealth;
+use crate::domain::common::system::readiness::ReadinessState;
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::log::MLLog;
+use crate::domain::detection::ml_detection::AlertMessage;
+use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::audit_logger::AuditLogger;
 use crate::infrastructure::communication_manager::CommunicationManager;
@@ -46,18 +58,6 @@ use crate::interface::port::geo_lookup::GeoLookup;
 use crate::interface::port::packet_sink::PacketSinkFactory;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::stats::StatsRepo;
-use crate::model::config::AppConfig;
-use crate::model::config::constants::{MODELS_DIR, STAGING_SUBDIR};
-use crate::model::detection::ml_detection::AlertMessage;
-use crate::model::detection::ml_inference_config::MLInferenceConfig;
-use crate::model::error::Error;
-use crate::model::error::system::SystemError;
-use crate::model::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
-use crate::model::log::detection::DetectionLog;
-use crate::model::log::ml::MLLog;
-use crate::model::log::system::SystemLog;
-use crate::model::system::health::EbpfHealth;
-use crate::model::system::readiness::ReadinessState;
 
 /// API-triggered shutdown mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,8 +191,8 @@ impl System {
         // still run, we just lose the in-kernel log channel.
         if let (Some(ingress), Some(egress)) = (self.ingress_ebpf.as_mut(), self.egress_ebpf.as_mut()) {
             if let Err(e) = ServiceFactory::aya_log_init(ingress, egress) {
+                use crate::domain::common::system::health::EbpfFailStage;
                 use crate::infrastructure::ebpf_preflight;
-                use crate::model::system::health::EbpfFailStage;
                 let health = ebpf_preflight::classify(EbpfFailStage::LoggerInit, &e, None);
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
             }
@@ -214,8 +214,8 @@ impl System {
         // packets, same as a network that is simply quiet.
         let sink_factory: Arc<dyn PacketSinkFactory> = app_services.ml_engine.clone();
         if let Err(e) = ebpf_services.run(sink_factory).await {
+            use crate::domain::common::system::health::EbpfFailStage;
             use crate::infrastructure::ebpf_preflight;
-            use crate::model::system::health::EbpfFailStage;
             let cfg = self.app_config.load();
             let iface = cfg.ebpf.ingress_ifname.as_str();
             let health = ebpf_preflight::classify(EbpfFailStage::AfXdpBind, &e, Some(iface));
@@ -525,8 +525,8 @@ impl System {
                 }
             }
             (ingress_res, egress_res) => {
+                use crate::domain::common::system::health::EbpfFailStage;
                 use crate::infrastructure::ebpf_preflight;
-                use crate::model::system::health::EbpfFailStage;
 
                 let (err, iface) = match (&ingress_res, &egress_res) {
                     (Err(e), _) => (e, ingress_ifname.as_str()),

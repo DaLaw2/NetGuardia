@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::http::response::ok_or_error;
-use crate::core::dns_filter_service::DnsFilterService;
+use crate::core::data_plane::dns_filter_service::DnsFilterService;
 
 pub fn initialize() -> Scope {
     web::scope("/filter")

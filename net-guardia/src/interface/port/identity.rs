@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Type alias for user record tuples: (id, username, password_hash, role, force_password_change)
 pub type UserTuple = (i64, String, String, String, bool);

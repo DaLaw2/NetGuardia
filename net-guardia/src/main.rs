@@ -1,8 +1,8 @@
 mod adapter;
 mod core;
+mod domain;
 mod infrastructure;
 mod interface;
-mod model;
 mod utils;
 
 use std::env;
@@ -14,22 +14,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser;
+use domain::common::error::Error;
+use domain::common::error::system::SystemError;
+use domain::common::log::system::SystemLog;
 use macros::log;
 use sd_notify::NotifyState;
 use tokio::time::sleep;
 use tokio::{signal, time};
 
 use crate::adapter::persistence::Database;
-use crate::core::auth::jwt::JwtService;
-use crate::core::auth::password;
+use crate::core::identity::jwt::JwtService;
+use crate::domain::identity::password;
 use crate::infrastructure::cli::{Cli, handle_subcommand};
 use crate::infrastructure::http_server;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::error::Error;
-use crate::model::error::system::SystemError;
-use crate::model::log::system::SystemLog;
 use crate::utils::logging::Logging;
 
 #[actix_web::main]

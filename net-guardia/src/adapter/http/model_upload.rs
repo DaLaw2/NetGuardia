@@ -34,15 +34,15 @@ use tokio::io::AsyncWriteExt;
 use tokio::task;
 use uuid::Uuid;
 
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::ml::inference::Inference;
-use crate::core::ml::manifest::{AdapterKind, ModelManifest};
-use crate::core::ml::model_loader::build_adapter;
+use crate::core::identity::extractor::AuthClaims;
+use crate::core::inference::inference::Inference;
+use crate::core::inference::model_loader::build_adapter;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::domain::common::event::AuditEvent;
+use crate::domain::detection::manifest::{AdapterKind, ModelManifest};
+use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::model::config::AppConfig;
-use crate::model::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
-use crate::model::detection::ml_inference_config::MLInferenceConfig;
-use crate::model::event::AuditEvent;
 
 /// Multipart field names the client must use. Stable wire contract —
 /// the frontend form generator depends on these exact strings.

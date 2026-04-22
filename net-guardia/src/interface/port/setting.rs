@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 pub trait SettingRepo {
     fn get_setting(&self, key: &str) -> Result<Option<String>, Error>;

@@ -7,15 +7,15 @@ use tokio::task::spawn_blocking;
 
 use crate::adapter::http::response::ok_json_or_error;
 use crate::adapter::persistence::Database;
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::email::report::generate_weekly_report;
-use crate::core::email::scheduler::SmtpClient;
-use crate::core::report::engine;
+use crate::core::identity::extractor::AuthClaims;
+use crate::core::reporting::email_report::generate_weekly_report;
+use crate::core::reporting::email_scheduler::SmtpClient;
+use crate::core::reporting::report_engine;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::misc::MiscError;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
 use crate::interface::port::setting::SettingRepo;
-use crate::model::config::AppConfig;
-use crate::model::error::misc::MiscError;
 
 pub fn initialize() -> Scope {
     web::scope("/report")
@@ -36,7 +36,7 @@ async fn generate_report(
         }));
     }
     let db_ref = db.get_ref();
-    match engine::generate_html_report(db_ref as &dyn SettingRepo, &report_dir) {
+    match report_engine::generate_html_report(db_ref as &dyn SettingRepo, &report_dir) {
         Ok(path) => match fs::read(&path) {
             Ok(content) => HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
@@ -62,7 +62,7 @@ async fn generate_report(
 
 async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
     let db_ref = db.get_ref();
-    ok_json_or_error(engine::generate_report_json(db_ref as &dyn SettingRepo))
+    ok_json_or_error(report_engine::generate_report_json(db_ref as &dyn SettingRepo))
 }
 
 /// Manually trigger: generate the weekly report and send it via SMTP now.

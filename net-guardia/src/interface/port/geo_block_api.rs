@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Data-plane geo-block admin port — block / unblock / list country codes.
 /// Used by `AclService` for the `/api/acl/geo` HTTP routes.

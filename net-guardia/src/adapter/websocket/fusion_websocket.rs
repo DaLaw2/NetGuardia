@@ -22,11 +22,11 @@ use macros::log;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::domain::common::error::http::HttpError;
+use crate::domain::common::error::misc::MiscError;
+use crate::domain::common::event::ThreatDetectedEvent;
+use crate::domain::common::log::http::HttpLog;
 use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::model::error::http::HttpError;
-use crate::model::error::misc::MiscError;
-use crate::model::event::ThreatDetectedEvent;
-use crate::model::log::http::HttpLog;
 
 pub async fn websocket_fusion(
     req: HttpRequest,
@@ -144,7 +144,7 @@ async fn send_event(session: &mut Session, event: &ThreatDetectedEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::event::DetectionSource;
+    use crate::domain::common::event::DetectionSource;
 
     fn sample_event() -> ThreatDetectedEvent {
         ThreatDetectedEvent {

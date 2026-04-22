@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Alert notification data sent by SOAR engine.
 #[derive(Debug, Clone)]

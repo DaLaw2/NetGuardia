@@ -7,10 +7,10 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
-use crate::model::error::http::HttpError;
-use crate::model::error::misc::MiscError;
-use crate::model::log::http::HttpLog;
-use crate::model::monitoring::drop_event::DropEventMessage;
+use crate::domain::common::error::http::HttpError;
+use crate::domain::common::error::misc::MiscError;
+use crate::domain::common::log::http::HttpLog;
+use crate::domain::data_plane::drop_event::DropEventMessage;
 
 pub async fn websocket_drops(
     req: HttpRequest,

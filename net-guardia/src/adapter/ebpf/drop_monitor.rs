@@ -10,7 +10,7 @@ use common::model::drop_event::DropEvent as RawDropEvent;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::model::monitoring::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
+use crate::domain::data_plane::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,

@@ -5,9 +5,9 @@ use rusqlite::{Error as RusqliteError, params};
 use sha2::Sha256;
 
 use super::Database;
+use crate::domain::common::error::Error;
+use crate::domain::identity::auth::Claims;
 use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyRepo};
-use crate::model::error::Error;
-use crate::model::identity::auth::Claims;
 
 type HmacSha256 = Hmac<Sha256>;
 

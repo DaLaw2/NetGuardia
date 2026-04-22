@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::model::monitoring::user_packet::UserPacket;
+use crate::domain::data_plane::user_packet::UserPacket;
 
 /// Data-plane packet sink — receives parsed packets from the AF_XDP RX path.
 ///

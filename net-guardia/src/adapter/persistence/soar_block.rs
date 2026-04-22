@@ -1,8 +1,8 @@
 use rusqlite::params;
 
 use super::Database;
+use crate::domain::common::error::Error;
 use crate::interface::port::db_admin::DbAdminRepo;
-use crate::model::error::Error;
 
 impl Database {
     /// Test-only helper: direct insert of a SOAR block rule row. Production

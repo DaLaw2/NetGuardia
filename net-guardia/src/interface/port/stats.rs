@@ -1,4 +1,4 @@
-use crate::model::error::Error;
+use crate::domain::common::error::Error;
 
 /// Reporting BC (generic) — weekly aggregation queries used by the report
 /// scheduler and dashboard APIs.

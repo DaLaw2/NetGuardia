@@ -7,12 +7,12 @@ use common::model::ip_address::{IPv4, IPv6, Port};
 use common::model::port_rule::PortRule;
 use parking_lot::RwLock;
 
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::ip_address::NativeConvert;
+use crate::domain::data_plane::list_type::ListType;
 use crate::interface::port::access_control_admin::AccessControlAdminPort;
-use crate::model::access_control::ip_address::NativeConvert;
-use crate::model::access_control::list_type::ListType;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::monitoring::direction::FlowDirection;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,

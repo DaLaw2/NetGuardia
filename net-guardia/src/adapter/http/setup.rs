@@ -8,12 +8,12 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::adapter::persistence::Database;
-use crate::core::auth::password;
-use crate::core::auth::setup_guard::SetupCompleteFlag;
+use crate::core::identity::setup_guard::SetupCompleteFlag;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::identity::password;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::model::error::Error;
-use crate::model::error::system::SystemError;
 
 pub fn initialize() -> Scope {
     web::scope("/setup")

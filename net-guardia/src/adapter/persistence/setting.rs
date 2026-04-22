@@ -1,8 +1,8 @@
 use rusqlite::{Error as RusqliteError, Transaction, params};
 
 use super::Database;
+use crate::domain::common::error::Error;
 use crate::interface::port::setting::SettingRepo;
-use crate::model::error::Error;
 
 impl Database {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
@@ -189,9 +189,9 @@ impl SettingRepo for SettingTxView<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::tests::test_db;
+    use crate::domain::common::error::Error;
+    use crate::domain::common::error::misc::MiscError;
     use crate::interface::port::setting::SettingRepo;
-    use crate::model::error::Error;
-    use crate::model::error::misc::MiscError;
 
     #[test]
     fn test_settings_crud() {

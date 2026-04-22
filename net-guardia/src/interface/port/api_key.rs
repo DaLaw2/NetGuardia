@@ -1,5 +1,5 @@
-use crate::model::error::Error;
-use crate::model::identity::auth::Claims;
+use crate::domain::common::error::Error;
+use crate::domain::identity::auth::Claims;
 
 /// Type alias for API key list items: (id, name, permission_level, created_at, last_used_at)
 pub type ApiKeyListItem = (i64, String, String, String, Option<String>);

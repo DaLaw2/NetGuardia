@@ -7,8 +7,8 @@ use maxminddb::{MaxMindDbError, Reader, geoip2};
 use moka::sync::Cache;
 use tokio::task;
 
+use crate::domain::data_plane::geolocation::GeoLocation;
 use crate::interface::port::geo_lookup::GeoLookup;
-use crate::model::monitoring::geolocation::GeoLocation;
 use crate::utils::ip_address;
 
 pub struct GeoIpService {

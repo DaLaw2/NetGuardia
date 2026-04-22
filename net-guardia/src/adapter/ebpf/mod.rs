@@ -23,12 +23,12 @@ use crate::adapter::ebpf::geo_block::GeoBlock;
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::ebpf::rate_limit::RateLimitConfig;
 use crate::adapter::ebpf::xsk_manager::XskManager;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::data_plane::error::EbpfError;
 use crate::interface::port::dns_query_filter::DnsQueryFilter;
 use crate::interface::port::packet_sink::PacketSinkFactory;
-use crate::model::config::AppConfig;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::error::system::SystemError;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,

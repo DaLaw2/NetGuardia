@@ -4,9 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Error as RusqliteError, params};
 
 use super::Database;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::database::DatabaseError;
 use crate::interface::port::identity::{IdentityRepo, UserGroupTuple, UserTuple, UserWithGroups};
-use crate::model::error::Error;
-use crate::model::error::database::DatabaseError;
 
 impl Database {
     pub fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
