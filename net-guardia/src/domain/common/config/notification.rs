@@ -1,95 +1,36 @@
-use super::helpers::{override_parsed, override_string, seed_key};
-use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use macros::config_settings;
 
+#[config_settings(section = "telegram")]
 #[derive(Debug, Clone)]
 pub struct TelegramConfig {
+    #[setting(key = "telegram_rate_limit_max_messages", default = "20")]
     pub rate_limit_max_messages: u32,
+    #[setting(key = "telegram_rate_limit_window_secs", default = "60")]
     pub rate_limit_window_secs: u32,
+    #[setting(key = "telegram_max_retries", default = "2")]
     pub max_retries: u32,
 }
 
-impl TelegramConfig {
-    pub fn defaults() -> Self {
-        Self {
-            rate_limit_max_messages: 20,
-            rate_limit_window_secs: 60,
-            max_retries: 2,
-        }
-    }
-
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
-        let mut cfg = Self::defaults();
-        override_parsed(
-            &mut cfg.rate_limit_max_messages,
-            repo,
-            "telegram_rate_limit_max_messages",
-        )?;
-        override_parsed(&mut cfg.rate_limit_window_secs, repo, "telegram_rate_limit_window_secs")?;
-        override_parsed(&mut cfg.max_retries, repo, "telegram_max_retries")?;
-        Ok(cfg)
-    }
-
-    pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
-        seed_key(repo, "telegram_rate_limit_max_messages", "20")?;
-        seed_key(repo, "telegram_rate_limit_window_secs", "60")?;
-        seed_key(repo, "telegram_max_retries", "2")?;
-        Ok(())
-    }
-}
-
+#[config_settings(section = "smtp")]
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
+    #[setting(key = "smtp_host", default = "")]
     pub host: String,
+    #[setting(key = "smtp_port", default = "587")]
     pub port: u16,
+    #[setting(key = "smtp_username", default = "")]
     pub username: String,
+    #[setting(key = "smtp_sender", default = "")]
     pub sender: String,
+    #[setting(key = "smtp_recipient", default = "")]
     pub recipient: String,
 }
 
-impl SmtpConfig {
-    pub fn defaults() -> Self {
-        Self {
-            host: String::new(),
-            port: 587,
-            username: String::new(),
-            sender: String::new(),
-            recipient: String::new(),
-        }
-    }
-
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
-        let mut cfg = Self::defaults();
-        override_string(&mut cfg.host, repo, "smtp_host")?;
-        override_parsed(&mut cfg.port, repo, "smtp_port")?;
-        override_string(&mut cfg.username, repo, "smtp_username")?;
-        override_string(&mut cfg.sender, repo, "smtp_sender")?;
-        override_string(&mut cfg.recipient, repo, "smtp_recipient")?;
-        Ok(cfg)
-    }
-
-    pub fn seed_defaults(_repo: &dyn SettingRepo) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
+#[config_settings]
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
+    #[setting(flatten)]
     pub telegram: TelegramConfig,
+    #[setting(flatten)]
     pub smtp: SmtpConfig,
-}
-
-impl NotificationConfig {
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
-        Ok(Self {
-            telegram: TelegramConfig::from_settings(repo)?,
-            smtp: SmtpConfig::from_settings(repo)?,
-        })
-    }
-
-    pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
-        TelegramConfig::seed_defaults(repo)?;
-        SmtpConfig::seed_defaults(repo)?;
-        Ok(())
-    }
 }

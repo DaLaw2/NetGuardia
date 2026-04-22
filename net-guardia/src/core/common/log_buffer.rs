@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt::{Arguments, Debug, Write as _};
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,12 +10,6 @@ use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
-
-/// Monotonic id allocator. Clients use `since_id` to resume tailing.
-/// u64 never wraps in practice (2^64 events at 1 µs/event ≈ 584 000 years).
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-static BUFFER: OnceLock<LogRingBuffer> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LogEntry {
@@ -39,6 +33,7 @@ struct LogRingBuffer {
     entries: Mutex<VecDeque<LogEntry>>,
     capacity: usize,
     max_message_bytes: usize,
+    next_id: AtomicU64,
 }
 
 impl LogRingBuffer {
@@ -48,6 +43,7 @@ impl LogRingBuffer {
             entries: Mutex::new(VecDeque::with_capacity(cap)),
             capacity: cap,
             max_message_bytes: max_message_bytes.max(64),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -83,20 +79,14 @@ pub struct Snapshot {
     pub total: usize,
 }
 
-/// Get a snapshot for the `/api/logs/live` endpoint.
-///
-/// `min_severity` follows tracing level numeric ordering (ERROR=1…TRACE=5);
-/// an entry at level L is included when `level_severity(L) <= min_severity`.
-/// Returns an empty snapshot when the buffer has not been installed yet
-/// (tests, dry-runs).
-pub fn snapshot(since_id: u64, min_severity: u8, limit: usize) -> Snapshot {
-    match BUFFER.get() {
-        Some(buf) => buf.snapshot(since_id, min_severity, limit),
-        None => Snapshot {
-            entries: Vec::new(),
-            latest_id: 0,
-            total: 0,
-        },
+/// Handle for reading from the log ring buffer.
+pub struct LogBuffer {
+    inner: Arc<LogRingBuffer>,
+}
+
+impl LogBuffer {
+    pub fn snapshot(&self, since_id: u64, min_severity: u8, limit: usize) -> Snapshot {
+        self.inner.snapshot(since_id, min_severity, limit)
     }
 }
 
@@ -131,36 +121,36 @@ fn now_unix_ms() -> u64 {
 
 /// [`Layer`] that appends each formatted event into the in-memory ring
 /// buffer so the UI can tail logs without round-tripping the filesystem.
-pub struct LogBufferLayer;
+pub struct LogBufferLayer {
+    inner: Arc<LogRingBuffer>,
+}
 
 impl LogBufferLayer {
-    pub fn new(capacity: usize, max_message_bytes: usize) -> Self {
-        let _ = BUFFER.set(LogRingBuffer::new(capacity, max_message_bytes));
-        Self
+    pub fn new(capacity: usize, max_message_bytes: usize) -> (Self, LogBuffer) {
+        let inner = Arc::new(LogRingBuffer::new(capacity, max_message_bytes));
+        let handle = LogBuffer { inner: inner.clone() };
+        (Self { inner }, handle)
     }
 }
 
 impl<S: Subscriber> Layer<S> for LogBufferLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let Some(buf) = BUFFER.get() else {
-            return;
-        };
         let metadata = event.metadata();
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let mut message = visitor.into_message();
-        if message.len() > buf.max_message_bytes {
-            message.truncate(buf.max_message_bytes);
+        if message.len() > self.inner.max_message_bytes {
+            message.truncate(self.inner.max_message_bytes);
             message.push_str("…[truncated]");
         }
         let entry = LogEntry {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: self.inner.next_id.fetch_add(1, Ordering::Relaxed),
             ts_ms: now_unix_ms(),
             level: level_str(metadata.level()),
             target: metadata.target().to_string(),
             message,
         };
-        buf.push(entry);
+        self.inner.push(entry);
     }
 }
 

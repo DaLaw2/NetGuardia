@@ -76,7 +76,7 @@ impl FlowKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PacketData {
     pub timestamp_us: u64,
     pub length: u32,

@@ -7,6 +7,7 @@ pub mod enforce_mode_handler;
 pub mod geoip;
 pub mod health;
 pub mod http_server;
+pub mod logger;
 pub mod secret_store;
 pub mod service_factory;
 pub mod statistics;

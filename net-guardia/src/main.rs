@@ -24,88 +24,76 @@ use tokio::{signal, time};
 
 use crate::adapter::persistence::Database;
 use crate::core::identity::jwt::JwtService;
+use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::identity::password;
 use crate::infrastructure::cli::{Cli, handle_subcommand};
 use crate::infrastructure::http_server;
+use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
 use crate::interface::port::secret_store::SecretStorePort;
-use crate::utils::logging::Logging;
 
-#[actix_web::main]
-async fn main() -> Result<(), Error> {
-    let cli = Cli::parse();
-    if cli.command.is_some() {
-        Logging::initialize_cli()?;
-        return handle_subcommand(&cli);
+fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
+    if database.user_count().unwrap_or(0) != 0 {
+        return Ok(());
     }
-
-    // Open DB before logging so the in-memory log ring buffer can size itself
-    // from the observability config. Any `log!` emitted during DB bring-up
-    // (e.g. `DbEncryptionDisabled`) is silently dropped by tracing because no
-    // subscriber is yet installed — acceptable for a single startup warning.
-    let db = Arc::new(Database::new(&cli.db_path)?);
-
-    let log_buffer_capacity: usize = db
-        .get_setting("log_buffer_capacity")?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5_000);
-    let log_buffer_max_message_bytes: usize = db
-        .get_setting("log_buffer_max_message_bytes")?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8_192);
-    Logging::initialize(log_buffer_capacity, log_buffer_max_message_bytes)?;
-    if db.user_count().unwrap_or(0) == 0 {
-        let hash = password::hash_password("admin")?;
-        let admin_user_id = db.insert_user("admin", &hash, "admin", false)?;
-        if let Ok(groups) = db.list_user_groups()
-            && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator")
-            && let Err(e) = db.set_user_groups(admin_user_id, &[group_id])
-        {
-            log!(SystemError::SetUserGroupsFailed(e));
-        }
-        log!(SystemLog::DefaultAdminCreated);
+    let hash = password::hash_password("admin")?;
+    let admin_user_id = database.insert_user("admin", &hash, "admin", false)?;
+    if let Ok(groups) = database.list_user_groups()
+        && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator")
+        && let Err(err) = database.set_user_groups(admin_user_id, &[group_id])
+    {
+        log!(SystemError::SetUserGroupsFailed(err));
     }
+    log!(SystemLog::DefaultAdminCreated);
+    Ok(())
+}
 
-    let setup_complete = db.get_setting("setup_complete")?.map(|v| v == "true").unwrap_or(false);
-    if !setup_complete {
-        log!(SystemLog::SetupMode);
+fn is_setup_complete(database: &Arc<Database>) -> Result<bool, Error> {
+    Ok(database
+        .get_setting("setup_complete")?
+        .map(|v| v == "true")
+        .unwrap_or(false))
+}
 
-        let secret_store = Arc::new(SecretStore::new(db.clone()));
-        let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
-        let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
-        let setup_flag = Arc::new(AtomicBool::new(false));
+async fn run_setup_wizard(database: &Arc<Database>) -> Result<(), Error> {
+    log!(SystemLog::SetupMode);
 
-        let handle = http_server::start_setup_server(db.clone(), secret_store, jwt_service, setup_flag.clone(), 8080)?;
+    let secret_store = Arc::new(SecretStore::new(database.clone()));
+    let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
+    let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
+    let setup_flag = Arc::new(AtomicBool::new(false));
 
-        let flag = setup_flag.clone();
-        let setup_done = async move {
-            loop {
-                time::sleep(Duration::from_millis(500)).await;
-                if flag.load(Ordering::SeqCst) {
-                    return;
-                }
-            }
-        };
+    let handle =
+        http_server::start_setup_server(database.clone(), secret_store, jwt_service, setup_flag.clone(), 8080)?;
 
-        tokio::select! {
-            _ = setup_done => {
-                log!(SystemLog::SetupCompleted);
-            }
-            _ = signal::ctrl_c() => {
-                log!(SystemLog::ShutdownDuringSetup);
-                handle.stop(true).await;
-                return Ok(());
+    let flag = setup_flag.clone();
+    let setup_done = async move {
+        loop {
+            time::sleep(Duration::from_millis(500)).await;
+            if flag.load(Ordering::SeqCst) {
+                return;
             }
         }
+    };
 
-        handle.stop(true).await;
-        log!(SystemLog::SetupServerStopped);
+    tokio::select! {
+        _ = setup_done => {
+            log!(SystemLog::SetupCompleted);
+        }
+        _ = signal::ctrl_c() => {
+            log!(SystemLog::ShutdownDuringSetup);
+            handle.stop(true).await;
+            return Ok(());
+        }
     }
 
-    let mut system = System::new(db).await?;
-    let mode = system.run().await?;
-    system.terminate().await?;
+    handle.stop(true).await;
+    log!(SystemLog::SetupServerStopped);
+    Ok(())
+}
+
+async fn handle_shutdown(mode: ShutdownMode, system: System) -> Result<(), Error> {
     match mode {
         ShutdownMode::Restart => {
             log!(SystemLog::Restart);
@@ -123,4 +111,30 @@ async fn main() -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[actix_web::main]
+async fn main() -> Result<(), Error> {
+    let cli = Cli::parse();
+    if cli.command.is_some() {
+        Logger::initialize_cli()?;
+        return handle_subcommand(&cli);
+    }
+
+    let database = Arc::new(Database::new(&cli.db_path)?);
+    let obs_config = ObservabilityConfig::from_settings(database.as_ref())?;
+    let (logger, log_buffer) = Logger::initialize(&obs_config)?;
+    let logger = Arc::new(logger);
+    let log_buffer = Arc::new(log_buffer);
+
+    seed_default_admin(&database)?;
+
+    if !is_setup_complete(&database)? {
+        run_setup_wizard(&database).await?;
+    }
+
+    let mut system = System::new(database).await?;
+    let mode = system.run(logger, log_buffer).await?;
+    system.terminate().await?;
+    handle_shutdown(mode, system).await
 }

@@ -1,27 +1,8 @@
-use super::helpers::{override_string_nonempty, seed_key};
-use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use macros::config_settings;
 
+#[config_settings(section = "misc")]
 #[derive(Debug, Clone)]
 pub struct AclConfig {
+    #[setting(key = "geoip_db_name", default = "net-guardia/static/geo/dbip-city-lite.mmdb")]
     pub geoip_db_name: String,
-}
-
-impl AclConfig {
-    pub fn defaults() -> Self {
-        Self {
-            geoip_db_name: "net-guardia/static/geo/dbip-city-lite.mmdb".to_string(),
-        }
-    }
-
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
-        let mut config = Self::defaults();
-        override_string_nonempty(&mut config.geoip_db_name, repo, "geoip_db_name")?;
-        Ok(config)
-    }
-
-    pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
-        seed_key(repo, "geoip_db_name", "net-guardia/static/geo/dbip-city-lite.mmdb")?;
-        Ok(())
-    }
 }

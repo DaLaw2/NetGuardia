@@ -13,14 +13,9 @@ use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use arc_swap::ArcSwap;
 
 use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::FUSION_AUDIT_ACTION;
 use crate::domain::detection::metrics::FusionMetrics;
 use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
-
-/// Stable audit action string the fusion engine emits — kept in sync
-/// with `core::detection::orchestrator::FUSION_AUDIT_ACTION`. If that
-/// constant changes, the explain endpoint silently returns nothing, so
-/// keep this updated at the same time.
-const FUSION_AUDIT_ACTION: &str = "fused_threat_emitted";
 
 pub fn initialize() -> Scope {
     web::scope("/fusion")

@@ -185,6 +185,8 @@ pub struct XskPair {
     drop_monitor: Option<Arc<DropMonitor>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
+    tx_packet_buf: Vec<Vec<u8>>,
+    tx_frame_buf: Vec<FrameDesc>,
 }
 
 impl XskPair {
@@ -256,6 +258,8 @@ impl XskPair {
             drop_monitor,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
+            tx_packet_buf: Vec::with_capacity(64),
+            tx_frame_buf: Vec::with_capacity(64),
         };
 
         Ok(xsk_pair)
@@ -312,13 +316,14 @@ impl XskPair {
                         idle_count = 0;
                     }
 
-                    let sleep_us = match idle_count {
-                        0..=10 => 1,
-                        11..=100 => 10,
-                        _ => 100,
-                    };
-
-                    thread::sleep(Duration::from_micros(sleep_us));
+                    if idle_count > 0 {
+                        let sleep_us = match idle_count {
+                            1..=10 => 1,
+                            11..=100 => 10,
+                            _ => 100,
+                        };
+                        thread::sleep(Duration::from_micros(sleep_us));
+                    }
                 }
 
                 log!(EbpfLog::XSKShutdown);
@@ -421,15 +426,15 @@ impl XskPair {
         buffer_pool: &mut BufferPool,
         comp_descs: &mut [FrameDesc],
     ) -> Result<usize, EbpfError> {
-        let mut packets_to_send = Vec::with_capacity(64);
+        self.tx_packet_buf.clear();
         while let Ok(packet) = forward_rx.try_recv() {
-            packets_to_send.push(packet);
-            if packets_to_send.len() >= 64 {
+            self.tx_packet_buf.push(packet);
+            if self.tx_packet_buf.len() >= 64 {
                 break;
             }
         }
 
-        if packets_to_send.is_empty() {
+        if self.tx_packet_buf.is_empty() {
             return Ok(0);
         }
 
@@ -437,10 +442,10 @@ impl XskPair {
             log!(EbpfLog::CompQueueError(format!("{:?}", e)));
         }
 
-        let total_packets = packets_to_send.len();
+        let total_packets = self.tx_packet_buf.len();
 
         if self.frame_pool.is_empty() {
-            for pkt in packets_to_send {
+            for pkt in self.tx_packet_buf.drain(..) {
                 buffer_pool.put(pkt);
             }
             log!(EbpfLog::FramePoolExhausted(total_packets));
@@ -448,17 +453,19 @@ impl XskPair {
         }
 
         let available = self.frame_pool.len().min(total_packets);
-        let mut frames: Vec<FrameDesc> = self.frame_pool.drain(self.frame_pool.len() - available..).collect();
+        self.tx_frame_buf.clear();
+        self.tx_frame_buf
+            .extend(self.frame_pool.drain(self.frame_pool.len() - available..));
 
-        if frames.is_empty() {
-            for pkt in packets_to_send {
+        if self.tx_frame_buf.is_empty() {
+            for pkt in self.tx_packet_buf.drain(..) {
                 buffer_pool.put(pkt);
             }
             log!(EbpfLog::NoFramesAvailable);
             return Ok(0);
         }
 
-        for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
+        for (frame, packet) in self.tx_frame_buf.iter_mut().zip(self.tx_packet_buf.iter()) {
             unsafe {
                 self.umem
                     .data_mut(frame)
@@ -468,11 +475,11 @@ impl XskPair {
             }
         }
 
-        let nb_submitted = unsafe { self.tx.produce(&frames) };
+        let nb_submitted = unsafe { self.tx.produce(&self.tx_frame_buf) };
 
         // Return unsubmitted frames to pool to prevent frame leak
-        if nb_submitted < frames.len() {
-            for frame in frames[nb_submitted..].iter() {
+        if nb_submitted < self.tx_frame_buf.len() {
+            for frame in self.tx_frame_buf[nb_submitted..].iter() {
                 self.frame_pool.push(*frame);
             }
         }
@@ -494,7 +501,7 @@ impl XskPair {
         }
 
         // Return all buffers to pool
-        for pkt in packets_to_send {
+        for pkt in self.tx_packet_buf.drain(..) {
             buffer_pool.put(pkt);
         }
 

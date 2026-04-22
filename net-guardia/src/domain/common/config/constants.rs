@@ -21,3 +21,12 @@ pub const STAGING_SUBDIR: &str = ".staging";
 /// Fallback port used when `http_port` is unset / unparseable. Matches
 /// the `defaults()` of `HttpServerConfig` and the setup-wizard default.
 pub const HTTP_FALLBACK_PORT: u16 = 8080;
+
+// ── Audit ──────────────────────────────────────────────────────────
+pub const FUSION_AUDIT_ACTOR: &str = "FusionEngine";
+pub const FUSION_AUDIT_ACTION: &str = "fused_threat_emitted";
+pub const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
+
+// ── Flow Trace ─────────────────────────────────────────────────────
+pub const FLOW_TRACE_FILE_MARKER: &str = "flow-trace-";
+pub const FLOW_TRACE_FILE_EXT: &str = ".csv";

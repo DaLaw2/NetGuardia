@@ -19,6 +19,7 @@ use crate::adapter::http::{
 use crate::adapter::persistence::Database;
 use crate::adapter::websocket::routes as ws;
 use crate::core::common::config_service::ConfigService;
+use crate::core::common::log_buffer::LogBuffer;
 use crate::core::common::notification_service::NotificationService;
 use crate::core::data_plane::acl_service::AclService;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
@@ -39,6 +40,7 @@ use crate::domain::common::system::readiness::ReadinessState;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::system::ShutdownHandle;
@@ -70,6 +72,8 @@ pub struct HttpServerParams {
     pub rate_limit_service: Arc<RateLimitService>,
     pub force_https: ForceHttpsFlag,
     pub shutdown_handle: Arc<ShutdownHandle>,
+    pub logger: Arc<Logger>,
+    pub log_buffer: Arc<LogBuffer>,
     pub suricata_manager: Arc<SuricataManager>,
     pub soar_engine: Arc<SoarEngine>,
 }
@@ -236,6 +240,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let rate_limit_service = params.rate_limit_service;
     let force_https = params.force_https;
     let shutdown_handle = params.shutdown_handle;
+    let logger = params.logger;
+    let log_buffer = params.log_buffer;
     let suricata_manager = params.suricata_manager;
     let soar_engine = params.soar_engine;
     let port = app_config.load().http_server.port;
@@ -282,6 +288,8 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(notification_service.clone()))
             .app_data(web::Data::from(playbook_service.clone()))
             .app_data(web::Data::from(rate_limit_service.clone()))
+            .app_data(web::Data::from(logger.clone()))
+            .app_data(web::Data::from(log_buffer.clone()))
             .app_data(web::Data::from(suricata_manager.clone()))
             .app_data(web::Data::from(soar_engine.clone()))
             .app_data(web::Data::from(promote_lock.clone()));

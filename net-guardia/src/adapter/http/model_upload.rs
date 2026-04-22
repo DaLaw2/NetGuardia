@@ -38,7 +38,9 @@ use crate::core::identity::extractor::AuthClaims;
 use crate::core::inference::inference::Inference;
 use crate::core::inference::model_loader::build_adapter;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::domain::common::config::constants::{
+    AUDIT_ACTOR_SECURITY_ADMIN_PREFIX, MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR,
+};
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::manifest::{AdapterKind, ModelManifest};
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
@@ -61,14 +63,6 @@ const ONNX_SNIFF_BYTES: usize = 16;
 /// gate it tighter at the handler layer so only administrators can
 /// swap the ML source.
 const PROMOTE_REQUIRED_PERMISSION: &str = "users:admin";
-
-/// Actor prefix on the WORM `model_swap` audit entry. Administrators
-/// that trigger the upload endpoint land on the chain as
-/// `SecurityAdmin@<username>` so downstream filters can separate
-/// system-driven entries (actor="system") from human-driven ones
-/// without parsing free-form text. Stable across releases — renaming
-/// breaks downstream audit tooling that filters on this prefix.
-use crate::adapter::http::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 
 /// Action recorded on the WORM chain when a promote succeeds. Stable
 /// wire string — fusion-explain tooling and future "who swapped the

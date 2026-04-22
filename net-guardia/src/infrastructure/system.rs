@@ -18,6 +18,7 @@ use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::model_upload;
 use crate::adapter::persistence::Database;
 use crate::core::common::config_service::ConfigService;
+use crate::core::common::log_buffer::LogBuffer;
 use crate::core::common::notification_service::NotificationService;
 use crate::core::correlation::engine::CorrelationEngine;
 use crate::core::data_plane::acl_service::AclService;
@@ -49,6 +50,7 @@ use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::audit_logger::AuditLogger;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::http_server::{self, HttpServerParams};
+use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
@@ -59,17 +61,12 @@ use crate::interface::port::packet_sink::PacketSinkFactory;
 use crate::interface::port::setting::SettingRepo;
 use crate::interface::port::stats::StatsRepo;
 
-/// API-triggered shutdown mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownMode {
     Shutdown,
     Restart,
 }
 
-/// Handle for triggering shutdown from HTTP endpoints. Backed by a
-/// capacity-1 mpsc so the first trigger atomically wins via `try_send`,
-/// and subsequent calls receive `TrySendError::Full` — no lock, no
-/// `Option::take`, no `Mutex`.
 pub struct ShutdownHandle {
     tx: Sender<ShutdownMode>,
 }
@@ -79,22 +76,17 @@ impl ShutdownHandle {
         Self { tx }
     }
 
-    /// Trigger shutdown. Returns false if already triggered or the
-    /// receiver has been dropped.
     pub fn trigger(&self, mode: ShutdownMode) -> bool {
         self.tx.try_send(mode).is_ok()
     }
 }
 
-/// Orchestrates system lifecycle: startup ordering and shutdown.
-/// Construction is delegated to `ServiceFactory::build()`.
-/// Setup mode is handled by main.rs — System only runs when setup is complete.
 pub struct System {
     pub app_config: Arc<ArcSwap<AppConfig>>,
     pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
-    pub db: Arc<Database>,
+    pub database: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
     pub comm: Arc<CommunicationManager>,
@@ -119,15 +111,14 @@ pub struct System {
 }
 
 impl System {
-    /// Build System from DB. Only called after setup is confirmed complete.
-    pub async fn new(db: Arc<Database>) -> Result<Self, Error> {
-        let state = ServiceFactory::build(db).await?;
+    pub async fn new(database: Arc<Database>) -> Result<Self, Error> {
+        let state = ServiceFactory::build(database).await?;
         Ok(System {
             app_config: state.app_config,
             inference_config: state.inference_config,
             ebpf_services: state.ebpf_services,
             app_services: state.app_services,
-            db: state.db,
+            database: state.database,
             secret_store: state.secret_store,
             jwt_service: state.jwt_service,
             comm: state.comm,
@@ -152,9 +143,7 @@ impl System {
         })
     }
 
-    /// Start all services and HTTP server. Setup is already complete at this point.
-    /// Returns the shutdown mode requested (Shutdown or Restart).
-    pub async fn run(&mut self) -> Result<ShutdownMode, Error> {
+    pub async fn run(&mut self, logger: Arc<Logger>, log_buffer: Arc<LogBuffer>) -> Result<ShutdownMode, Error> {
         log!(SystemLog::Initializing);
 
         // Sweep model-upload staging directories left over from failed
@@ -239,13 +228,13 @@ impl System {
         }
 
         // Start audit logger (subscribe to AuditEvent + DriftDetectedEvent, persist to DB)
-        let audit_logger = Arc::new(AuditLogger::new(self.db.clone() as Arc<dyn AuditRepo>));
+        let audit_logger = Arc::new(AuditLogger::new(self.database.clone() as Arc<dyn AuditRepo>));
         audit_logger.start(&self.comm);
 
         // Start stats aggregator (writes weekly_* settings for Report engine)
         let stats_aggregator = StatsAggregator::new(
-            self.db.clone() as Arc<dyn StatsRepo>,
-            self.db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            self.database.clone() as Arc<dyn StatsRepo>,
+            self.database.clone() as Arc<dyn SettingRepo + Send + Sync>,
         );
         stats_aggregator.start();
 
@@ -296,7 +285,7 @@ impl System {
 
         // Initialize force_https flag from DB setting
         let force_https = Arc::new(AtomicBool::new(
-            self.db
+            self.database
                 .get_setting("force_https")
                 .ok()
                 .flatten()
@@ -330,7 +319,7 @@ impl System {
             inference_config: self.inference_config.clone(),
             ebpf_services: self.ebpf_services.clone(),
             app_services: self.app_services.clone(),
-            db: self.db.clone(),
+            db: self.database.clone(),
             secret_store: self.secret_store.clone(),
             jwt_service: self.jwt_service.clone(),
             comm: self.comm.clone(),
@@ -345,6 +334,8 @@ impl System {
             rate_limit_service: self.rate_limit_service.clone(),
             force_https,
             shutdown_handle: shutdown_handle.clone(),
+            logger,
+            log_buffer,
             suricata_manager: self.suricata_manager.clone(),
             soar_engine: self.soar_engine.clone(),
         };
@@ -405,7 +396,6 @@ impl System {
         let ebpf_services = self.ebpf_services.clone();
         let app_services = self.app_services.clone();
         log!(SystemLog::Terminating);
-
         if let Some(tx) = self.suricata_shutdown.take() {
             let _ = tx.send(());
         }
@@ -413,23 +403,6 @@ impl System {
         app_services.terminate();
         log!(SystemLog::TerminateComplete);
         Ok(())
-    }
-
-    /// Normalize ML model attack type names to SOAR playbook event names.
-    fn normalize_attack_type(raw: &str) -> String {
-        match raw {
-            "Brute Force" => "brute_force".to_string(),
-            "C2 Communication" => "c2_communication".to_string(),
-            "DoS/DDoS" => "threat_detected".to_string(),
-            "Exploitation" | "Malware" | "Web Attack" => "threat_detected".to_string(),
-            "Bot" | "DNS Tunneling" => "threat_detected".to_string(),
-            "Reconnaissance" => "port_scan".to_string(),
-            "Normal" => "normal".to_string(),
-            other => {
-                log!(DetectionLog::UnknownMlAttackType(other.to_string()));
-                "threat_detected".to_string()
-            }
-        }
     }
 
     /// Periodically check the drift detector and publish DriftDetectedEvent when drift is found.
@@ -498,6 +471,23 @@ impl System {
         }
     }
 
+    /// Normalize ML model attack type names to SOAR playbook event names.
+    fn normalize_attack_type(raw: &str) -> String {
+        match raw {
+            "Brute Force" => "brute_force".to_string(),
+            "C2 Communication" => "c2_communication".to_string(),
+            "DoS/DDoS" => "threat_detected".to_string(),
+            "Exploitation" | "Malware" | "Web Attack" => "threat_detected".to_string(),
+            "Bot" | "DNS Tunneling" => "threat_detected".to_string(),
+            "Reconnaissance" => "port_scan".to_string(),
+            "Normal" => "normal".to_string(),
+            other => {
+                log!(DetectionLog::UnknownMlAttackType(other.to_string()));
+                "threat_detected".to_string()
+            }
+        }
+    }
+
     /// Attempt to attach the XDP programs to the configured interfaces.
     /// If either attach fails, record the reason in `ebpf_health` and
     /// continue — the rest of the system keeps running.
@@ -517,10 +507,10 @@ impl System {
 
         match (ingress_result, egress_result) {
             (Ok(ingress_mode), Ok(egress_mode)) => {
-                if let Err(e) = self.db.set_setting("xdp_ingress_mode", &ingress_mode) {
+                if let Err(e) = self.database.set_setting("xdp_ingress_mode", &ingress_mode) {
                     log!(SystemError::XdpModeStoreFailed(e));
                 }
-                if let Err(e) = self.db.set_setting("xdp_egress_mode", &egress_mode) {
+                if let Err(e) = self.database.set_setting("xdp_egress_mode", &egress_mode) {
                     log!(SystemError::XdpModeStoreFailed(e));
                 }
             }

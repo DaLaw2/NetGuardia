@@ -22,29 +22,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use macros::log;
 
+use crate::domain::common::config::constants::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER};
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::error::MLError;
 use crate::domain::detection::log::MLLog;
 use crate::infrastructure::communication_manager::CommunicationManager;
 
-/// Default per-file size cap. A single CSV file won't grow past this
-/// before the writer rolls to a fresh one.
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 500 * 1024 * 1024;
-
-/// Default per-file age cap. Forces a roll even if the size cap
-/// hasn't been hit so analysts have bounded-age shards to download.
 pub const DEFAULT_MAX_FILE_AGE: Duration = Duration::from_secs(3600);
-
-/// Default retained-bytes budget across every `flow-trace-*.csv` in
-/// the directory. When the total exceeds this, the writer FIFO-deletes
-/// the oldest files to bring the sum back under the cap.
 pub const DEFAULT_TOTAL_BUDGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-
-/// Prefix literal baked into every rotated file's name so the HTTP
-/// file-list handler can recognize ours and skip unrelated files.
-pub const FLOW_TRACE_FILE_MARKER: &str = "flow-trace-";
-/// Suffix literal appended to every rotated file.
-pub const FLOW_TRACE_FILE_EXT: &str = ".csv";
 
 /// Actor recorded on the WORM `flow_trace_stopped` audit entry. Stable
 /// wire string — auditors filter on it to separate system-internal

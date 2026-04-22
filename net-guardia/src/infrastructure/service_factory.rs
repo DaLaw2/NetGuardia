@@ -70,7 +70,7 @@ pub struct AppState {
     pub inference_config: Arc<MLInferenceConfig>,
     pub ebpf_services: Arc<EbpfServices>,
     pub app_services: Arc<AppServices>,
-    pub db: Arc<Database>,
+    pub database: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
     pub comm: Arc<CommunicationManager>,
@@ -175,7 +175,7 @@ impl ServiceFactory {
 
         let jwt_service = Arc::new(JwtService::new(
             &secret_store_port,
-            app_config.load().auth.jwt_expiry_hours,
+            app_config.load().http_server.jwt_expiry_hours,
         )?);
 
         // Initialize ML drift detector from inference config baselines
@@ -337,7 +337,7 @@ impl ServiceFactory {
             inference_config,
             ebpf_services,
             app_services,
-            db,
+            database: db,
             secret_store,
             jwt_service,
             comm,

@@ -59,7 +59,13 @@ impl Database {
     pub fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error> {
         let conn = self.conn()?;
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM acl_rules WHERE ip_address = ?1 AND list_type = 'blacklist'",
+            "SELECT COUNT(*) FROM acl_rules
+             WHERE ip_address = ?1 AND list_type = 'blacklist'
+               AND NOT EXISTS (
+                   SELECT 1 FROM soar_block_rules
+                   WHERE soar_block_rules.source_ip = acl_rules.ip_address
+                     AND soar_block_rules.unblocked_at IS NULL
+               )",
             params![ip_address],
             |row| row.get(0),
         )?;

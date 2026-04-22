@@ -23,13 +23,6 @@ pub(in crate::domain) fn override_bool(target: &mut bool, repo: &dyn SettingRepo
     Ok(())
 }
 
-pub(in crate::domain) fn override_string(target: &mut String, repo: &dyn SettingRepo, key: &str) -> Result<(), Error> {
-    if let Some(v) = repo.get_setting(key)? {
-        *target = v;
-    }
-    Ok(())
-}
-
 pub(in crate::domain) fn override_string_nonempty(
     target: &mut String,
     repo: &dyn SettingRepo,

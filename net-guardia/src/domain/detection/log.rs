@@ -132,6 +132,9 @@ loggable! {
 
         #[error("Fusion: failed to publish AuditEvent: {err}")]
         FusionAuditPublishFailed { err: String } => tracing::Level::ERROR,
+
+        #[error("Detection event dropped (channel full): {detector} {attack_type} from {source_ip}")]
+        DetectionChannelDrop { detector: String, attack_type: String, source_ip: String } => tracing::Level::WARN,
     }
 }
 

@@ -229,7 +229,7 @@ impl PlaybookMatcher {
         let key = (playbook_id, source_ip.to_string());
         if let Some(last_exec) = self.cooldowns.get(&key) {
             let elapsed = last_exec.elapsed();
-            if elapsed.as_secs() < cooldown_secs as u64 {
+            if elapsed.as_secs() < cooldown_secs.max(0) as u64 {
                 return true;
             }
         }
@@ -247,7 +247,7 @@ impl PlaybookMatcher {
             .playbooks
             .load()
             .iter()
-            .map(|p| p.cooldown_secs as u64)
+            .map(|p| p.cooldown_secs.max(0) as u64)
             .max()
             .unwrap_or(default_cooldown_expiry);
         let expiry = Duration::from_secs(max_cooldown_secs.saturating_mul(2).max(default_cooldown_expiry));

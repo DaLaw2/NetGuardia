@@ -60,7 +60,13 @@ impl BeaconingDetector {
                 }
                 _ = analysis_interval.tick() => {
                     for event in self.state.analyze() {
-                        let _ = self.detection_tx.try_send(event);
+                        if let Err(mpsc::error::TrySendError::Full(d)) = self.detection_tx.try_send(event) {
+                            log!(DetectionLog::DetectionChannelDrop(
+                                format!("{:?}", d.source),
+                                d.attack_type,
+                                d.source_ip,
+                            ));
+                        }
                     }
                     self.state.cleanup();
                 }

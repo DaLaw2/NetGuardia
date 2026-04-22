@@ -12,8 +12,8 @@ use crate::domain::detection::ml_detection::AlertMessage;
 struct TimedSourceSet {
     sources: HashSet<String>,
     window_start: Instant,
-    /// Most recent alert to this destination (used for protocol/confidence in DetectionEvent).
     last_alert: AlertMessage,
+    last_alerted: Option<Instant>,
 }
 
 /// Detects coordinated attacks: multiple source IPs targeting the same destination IP:port.
@@ -47,6 +47,7 @@ impl BotnetDetector {
                 sources: HashSet::new(),
                 window_start: now,
                 last_alert: alert.clone(),
+                last_alerted: None,
             });
 
             let set = entry.value_mut();
@@ -61,6 +62,13 @@ impl BotnetDetector {
             set.last_alert = alert.clone();
 
             if set.sources.len() >= self.threshold {
+                if let Some(last) = set.last_alerted {
+                    if now.duration_since(last) < self.window {
+                        set.sources.clear();
+                        set.window_start = now;
+                        return None;
+                    }
+                }
                 Some(set.sources.len())
             } else {
                 None
@@ -90,10 +98,10 @@ impl BotnetDetector {
                 c2_score: 0.0,
             };
 
-            // Reset after alerting to avoid repeated alerts within same window
             if let Some(mut entry) = self.state.get_mut(&key) {
                 entry.sources.clear();
                 entry.window_start = now;
+                entry.last_alerted = Some(now);
             }
 
             return Some(event);

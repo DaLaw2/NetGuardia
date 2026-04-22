@@ -8,7 +8,7 @@ use actix_web::{HttpResponse, Scope, web};
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::core::common::observability::log_buffer::{self, LogEntry};
+use crate::core::common::log_buffer::{self, LogBuffer, LogEntry};
 use crate::domain::common::config::AppConfig;
 
 /// Hardcoded log directory — not configurable via API to prevent directory traversal.
@@ -49,7 +49,11 @@ struct LiveResponse {
     dropped_oldest: bool,
 }
 
-async fn live_logs(query: web::Query<LiveQuery>, app_config: web::Data<Arc<ArcSwap<AppConfig>>>) -> HttpResponse {
+async fn live_logs(
+    query: web::Query<LiveQuery>,
+    app_config: web::Data<Arc<ArcSwap<AppConfig>>>,
+    buf: web::Data<LogBuffer>,
+) -> HttpResponse {
     let since_id = query.since_id.unwrap_or(0);
     let obs = app_config.load().observability.clone();
     let limit = query
@@ -62,7 +66,7 @@ async fn live_logs(query: web::Query<LiveQuery>, app_config: web::Data<Arc<ArcSw
         .map(|s| log_buffer::level_severity(&s.to_ascii_uppercase()))
         .unwrap_or(log_buffer::level_severity("TRACE"));
 
-    let snap = log_buffer::snapshot(since_id, min_severity, limit);
+    let snap = buf.snapshot(since_id, min_severity, limit);
     // Signal to the UI that it lagged enough for the ring to evict rows
     // between polls. Frontend can warn "older entries dropped" without
     // silently skipping a gap.

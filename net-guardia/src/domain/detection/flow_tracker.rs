@@ -152,7 +152,7 @@ impl FlowData {
 
         if packet.is_forward {
             if self.fwd_packets.len() < limits.max_packets_per_direction {
-                self.fwd_packets.push(packet_data.clone());
+                self.fwd_packets.push(packet_data);
             }
             self.fwd_total_bytes += packet.packet_length as u64;
             self.fwd_header_bytes += packet.header_length as u64;
@@ -162,7 +162,7 @@ impl FlowData {
             Self::update_bulk_state(&mut self.fwd_bulk_state, &packet_data, limits);
         } else {
             if self.bwd_packets.len() < limits.max_packets_per_direction {
-                self.bwd_packets.push(packet_data.clone());
+                self.bwd_packets.push(packet_data);
             }
             self.bwd_total_bytes += packet.packet_length as u64;
             self.bwd_header_bytes += packet.header_length as u64;
@@ -309,12 +309,21 @@ impl FlowTracker {
 
     /// Get flows that received new packets since their last inference, and
     /// mark them as inferred. Used by ML engine.
-    pub fn get_uninferred_flows(&self) -> Vec<FlowData> {
+    pub fn get_uninferred_flows(&self, limit: usize) -> Vec<FlowData> {
         let mut result = Vec::new();
         for (_, entry) in self.active.iter() {
+            if result.len() >= limit {
+                break;
+            }
             let mut flow = entry.lock();
             if flow.last_time_us > flow.last_inferred_us {
-                let snapshot = flow.clone();
+                let snapshot = FlowData {
+                    fwd_packets: std::mem::take(&mut flow.fwd_packets),
+                    bwd_packets: std::mem::take(&mut flow.bwd_packets),
+                    active_periods: std::mem::take(&mut flow.active_periods),
+                    idle_periods: std::mem::take(&mut flow.idle_periods),
+                    ..flow.clone()
+                };
                 flow.last_inferred_us = flow.last_time_us;
                 result.push(snapshot);
             }

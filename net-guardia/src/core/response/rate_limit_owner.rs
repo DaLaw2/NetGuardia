@@ -1,29 +1,20 @@
-//! Owner task that serializes SOAR rate-limit adjustments.
-//!
-//! The "adjust" and "restore" sequences each touch two systems back-to-back
-//! (the `soar_rate_limit_*` settings rows and the eBPF `RATE_LIMIT_CONFIG`
-//! map). The atomicity that the original `TokioMutex<()>` was protecting is
-//! exactly "no other adjust/restore interleaves between the read and the
-//! write" — a SQLite transaction can't cover the eBPF half, so we move the
-//! read-modify-write inside a single tokio task that owns both ports. All
-//! callers dispatch over an mpsc channel and wait on a one-shot reply.
-
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use chrono::{Duration as ChronoDuration, NaiveDateTime, Utc};
+use arc_swap::ArcSwap;
 use macros::log;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::response::error::SoarError;
 use crate::domain::response::log::SoarLog;
-use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::rate_limit_api::RateLimitPort;
 
-/// Settings keys persisted across restarts so the next process can resume the
-/// same TTL window. Stable wire format with the DB.
-const KEY_ORIGINAL: &str = "soar_rate_limit_original";
-const KEY_EXPIRES: &str = "soar_rate_limit_expires";
+struct ActiveAdjustment {
+    original: [u64; 4],
+    expires: Instant,
+}
 
 enum RateLimitCmd {
     Adjust {
@@ -38,25 +29,18 @@ enum RateLimitCmd {
     },
 }
 
-/// Lock-free handle to the rate-limit owner task. Cloning is cheap (just an
-/// `mpsc::Sender`).
 #[derive(Clone)]
 pub struct RateLimitOwnerHandle {
     tx: mpsc::Sender<RateLimitCmd>,
 }
 
 impl RateLimitOwnerHandle {
-    /// Spawn the owner task on the current tokio runtime. The owner holds
-    /// the only mutating references to the DB rate-limit settings and the
-    /// eBPF rate-limit map for the duration of an Adjust / Restore batch.
-    ///
-    /// Each command body runs inside `spawn_blocking` because both halves
-    /// (rusqlite via r2d2 and eBPF map writes) are synchronous I/O — running
-    /// them directly inside the async owner loop would block the tokio
-    /// worker thread for the entire adjust/restore batch.
-    pub fn spawn(db: Arc<dyn AppRepo>, rate_limit: Arc<dyn RateLimitPort>, channel_capacity: usize) -> Self {
+    pub fn spawn(rate_limit: Arc<dyn RateLimitPort>, config: Arc<ArcSwap<AppConfig>>, channel_capacity: usize) -> Self {
         let (tx, mut rx) = mpsc::channel::<RateLimitCmd>(channel_capacity.max(1));
+
         tokio::spawn(async move {
+            let mut state: Option<ActiveAdjustment> = None;
+
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     RateLimitCmd::Adjust {
@@ -66,25 +50,72 @@ impl RateLimitOwnerHandle {
                         attack_type,
                         reply,
                     } => {
-                        let db_c = db.clone();
                         let rl_c = rate_limit.clone();
+                        let cfg = config.load_full();
+                        let current_state = state.is_some();
                         let join = tokio::task::spawn_blocking(move || {
-                            adjust(&db_c, rl_c.as_ref(), factor, ttl_secs, &source_ip, &attack_type)
+                            if current_state {
+                                Ok(None)
+                            } else {
+                                first_adjust(rl_c.as_ref(), &cfg, factor).map(Some)
+                            }
                         })
                         .await;
+
+                        let expires = Instant::now() + Duration::from_secs(ttl_secs);
                         let result = match join {
-                            Ok(r) => r,
+                            Ok(Ok(Some(original))) => {
+                                log!(SoarLog::RateLimitAdjusted(
+                                    format!("{factor}"),
+                                    ttl_secs,
+                                    source_ip.clone(),
+                                    attack_type,
+                                    format_change(&original),
+                                ));
+                                state = Some(ActiveAdjustment {
+                                    original: original.new_snapshot,
+                                    expires,
+                                });
+                                Ok(format!(
+                                    "Rate limits reduced by factor {factor} for {ttl_secs}s (triggered by {source_ip})"
+                                ))
+                            }
+                            Ok(Ok(None)) => {
+                                if let Some(ref mut s) = state {
+                                    s.expires = expires;
+                                }
+                                log!(SoarLog::RateLimitAdjusted(
+                                    format!("{factor}"),
+                                    ttl_secs,
+                                    source_ip.clone(),
+                                    attack_type,
+                                    "TTL extended (rates already reduced)".to_string(),
+                                ));
+                                Ok(format!(
+                                    "Rate limit TTL extended by {ttl_secs}s (triggered by {source_ip})"
+                                ))
+                            }
+                            Ok(Err(e)) => Err(e),
                             Err(e) => Err(SoarError::RateLimitOwnerJoinFailed(e.to_string()).into()),
                         };
                         let _ = reply.send(result);
                     }
                     RateLimitCmd::RestoreIfExpired { reply } => {
-                        let db_c = db.clone();
-                        let rl_c = rate_limit.clone();
-                        let join = tokio::task::spawn_blocking(move || restore_if_expired(&db_c, rl_c.as_ref())).await;
-                        let result = match join {
-                            Ok(r) => r,
-                            Err(e) => Err(SoarError::RateLimitOwnerJoinFailed(e.to_string()).into()),
+                        let result = match &state {
+                            Some(adj) if Instant::now() >= adj.expires => {
+                                let original = adj.original;
+                                let rl_c = rate_limit.clone();
+                                let join = tokio::task::spawn_blocking(move || restore(rl_c.as_ref(), &original)).await;
+                                match join {
+                                    Ok(Ok(())) => {
+                                        state = None;
+                                        Ok(())
+                                    }
+                                    Ok(Err(e)) => Err(e),
+                                    Err(e) => Err(SoarError::RateLimitOwnerJoinFailed(e.to_string()).into()),
+                                }
+                            }
+                            _ => Ok(()),
                         };
                         let _ = reply.send(result);
                     }
@@ -125,118 +156,65 @@ impl RateLimitOwnerHandle {
     }
 }
 
-fn adjust(
-    db: &Arc<dyn AppRepo>,
-    rate_limit: &dyn RateLimitPort,
-    factor: f64,
-    ttl_secs: u64,
-    source_ip: &str,
-    attack_type: &str,
-) -> Result<String, Error> {
-    let current_packet = rate_limit.get_packet_rate().unwrap_or(10000);
-    let current_syn = rate_limit.get_syn_rate().unwrap_or(1000);
-    let current_udp = rate_limit.get_udp_rate().unwrap_or(5000);
-    let current_dns = rate_limit.get_dns_rate().unwrap_or(2000);
-
-    if db.get_setting(KEY_ORIGINAL)?.filter(|s| !s.is_empty()).is_none() {
-        let original = serde_json::json!({
-            "packet_rate": current_packet,
-            "syn_rate": current_syn,
-            "udp_rate": current_udp,
-            "dns_rate": current_dns,
-        });
-        db.set_setting(KEY_ORIGINAL, &original.to_string())?;
-    }
-
-    let expires_at = Utc::now() + ChronoDuration::seconds(ttl_secs as i64);
-    db.set_setting(KEY_EXPIRES, &expires_at.format("%Y-%m-%d %H:%M:%S").to_string())?;
-
-    let new_packet = (current_packet as f64 * factor) as u64;
-    let new_syn = (current_syn as f64 * factor) as u64;
-    let new_udp = (current_udp as f64 * factor) as u64;
-    let new_dns = (current_dns as f64 * factor) as u64;
-
-    rate_limit.set_packet_rate(new_packet.max(1))?;
-    rate_limit.set_syn_rate(new_syn.max(1))?;
-    rate_limit.set_udp_rate(new_udp.max(1))?;
-    rate_limit.set_dns_rate(new_dns.max(1))?;
-
-    log!(SoarLog::RateLimitAdjusted(
-        format!("{}", factor),
-        ttl_secs,
-        source_ip.to_string(),
-        attack_type.to_string(),
-        format!(
-            "packet {}→{}, syn {}→{}, udp {}→{}, dns {}→{}",
-            current_packet,
-            new_packet.max(1),
-            current_syn,
-            new_syn.max(1),
-            current_udp,
-            new_udp.max(1),
-            current_dns,
-            new_dns.max(1),
-        ),
-    ));
-
-    Ok(format!(
-        "Rate limits reduced by factor {} for {}s (triggered by {})",
-        factor, ttl_secs, source_ip
-    ))
+struct AdjustResult {
+    orig: [u64; 4],
+    new_snapshot: [u64; 4],
 }
 
-fn restore_if_expired(db: &Arc<dyn AppRepo>, rate_limit: &dyn RateLimitPort) -> Result<(), Error> {
-    let expires_str = match db.get_setting(KEY_EXPIRES)?.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return Ok(()),
-    };
+fn first_adjust(rate_limit: &dyn RateLimitPort, config: &AppConfig, factor: f64) -> Result<AdjustResult, Error> {
+    let ebpf = &config.ebpf;
+    let orig = [
+        rate_limit.get_packet_rate().unwrap_or(ebpf.default_packet_rate),
+        rate_limit.get_syn_rate().unwrap_or(ebpf.default_syn_rate),
+        rate_limit.get_udp_rate().unwrap_or(ebpf.default_udp_rate),
+        rate_limit.get_dns_rate().unwrap_or(ebpf.default_dns_rate),
+    ];
 
-    let expires = NaiveDateTime::parse_from_str(&expires_str, "%Y-%m-%d %H:%M:%S")
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|_| Utc::now());
+    let new: [u64; 4] = std::array::from_fn(|i| ((orig[i] as f64 * factor) as u64).max(1));
 
-    if Utc::now() < expires {
-        return Ok(());
+    rate_limit.set_packet_rate(new[0])?;
+    rate_limit.set_syn_rate(new[1])?;
+    rate_limit.set_udp_rate(new[2])?;
+    rate_limit.set_dns_rate(new[3])?;
+
+    Ok(AdjustResult {
+        orig,
+        new_snapshot: orig,
+    })
+}
+
+fn restore(rate_limit: &dyn RateLimitPort, original: &[u64; 4]) -> Result<(), Error> {
+    let mut errors = Vec::new();
+    if let Err(e) = rate_limit.set_packet_rate(original[0]) {
+        errors.push(format!("packet_rate: {e}"));
     }
-
-    let original_str = match db.get_setting(KEY_ORIGINAL)?.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => {
-            db.set_setting(KEY_EXPIRES, "")?;
-            return Ok(());
-        }
-    };
-
-    if let Ok(original) = serde_json::from_str::<serde_json::Value>(&original_str) {
-        let mut restore_errors = Vec::new();
-        if let Some(v) = original.get("packet_rate").and_then(|v| v.as_u64())
-            && let Err(e) = rate_limit.set_packet_rate(v)
-        {
-            restore_errors.push(format!("packet_rate: {}", e));
-        }
-        if let Some(v) = original.get("syn_rate").and_then(|v| v.as_u64())
-            && let Err(e) = rate_limit.set_syn_rate(v)
-        {
-            restore_errors.push(format!("syn_rate: {}", e));
-        }
-        if let Some(v) = original.get("udp_rate").and_then(|v| v.as_u64())
-            && let Err(e) = rate_limit.set_udp_rate(v)
-        {
-            restore_errors.push(format!("udp_rate: {}", e));
-        }
-        if let Some(v) = original.get("dns_rate").and_then(|v| v.as_u64())
-            && let Err(e) = rate_limit.set_dns_rate(v)
-        {
-            restore_errors.push(format!("dns_rate: {}", e));
-        }
-        if restore_errors.is_empty() {
-            log!(SoarLog::RateLimitRestored);
-        } else {
-            log!(SoarLog::RateLimitRestoreFailed(restore_errors.join(", ")));
-        }
+    if let Err(e) = rate_limit.set_syn_rate(original[1]) {
+        errors.push(format!("syn_rate: {e}"));
     }
-
-    db.set_setting(KEY_ORIGINAL, "")?;
-    db.set_setting(KEY_EXPIRES, "")?;
+    if let Err(e) = rate_limit.set_udp_rate(original[2]) {
+        errors.push(format!("udp_rate: {e}"));
+    }
+    if let Err(e) = rate_limit.set_dns_rate(original[3]) {
+        errors.push(format!("dns_rate: {e}"));
+    }
+    if errors.is_empty() {
+        log!(SoarLog::RateLimitRestored);
+    } else {
+        log!(SoarLog::RateLimitRestoreFailed(errors.join(", ")));
+    }
     Ok(())
+}
+
+fn format_change(result: &AdjustResult) -> String {
+    format!(
+        "packet {}→{}, syn {}→{}, udp {}→{}, dns {}→{}",
+        result.orig[0],
+        result.new_snapshot[0],
+        result.orig[1],
+        result.new_snapshot[1],
+        result.orig[2],
+        result.new_snapshot[2],
+        result.orig[3],
+        result.new_snapshot[3],
+    )
 }

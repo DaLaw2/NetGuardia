@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::{FUSION_AUDIT_ACTION, FUSION_AUDIT_ACTOR};
 use crate::domain::common::error::system::SystemError;
 use crate::domain::common::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
 use crate::domain::detection::attack_type::translate;
@@ -17,12 +18,6 @@ use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::metrics::FusionMetrics;
 use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::geo_lookup::GeoLookup;
-
-/// Actor recorded on every fusion-chain WORM entry. Stable across releases —
-/// downstream audit tooling filters on this string.
-const FUSION_AUDIT_ACTOR: &str = "FusionEngine";
-/// Action recorded on every fusion-chain WORM entry. Stable across releases.
-const FUSION_AUDIT_ACTION: &str = "fused_threat_emitted";
 
 /// Per-source record within an in-flight dedup entry. Keeps the strongest
 /// confidence per source so multi-hit from one source doesn't inflate the

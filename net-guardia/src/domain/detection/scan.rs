@@ -13,6 +13,7 @@ struct TimedPortSet {
     ports: HashSet<u16>,
     window_start: Instant,
     last_dst_ip: String,
+    last_alerted: Option<Instant>,
 }
 
 /// Detects port scanning: a single source IP probing many destination ports.
@@ -45,6 +46,7 @@ impl ScanDetector {
                 ports: HashSet::new(),
                 window_start: now,
                 last_dst_ip: alert.dst_ip.clone(),
+                last_alerted: None,
             });
 
             let set = entry.value_mut();
@@ -59,6 +61,13 @@ impl ScanDetector {
             set.last_dst_ip = alert.dst_ip.clone();
 
             if set.ports.len() >= self.threshold {
+                if let Some(last) = set.last_alerted {
+                    if now.duration_since(last) < self.window {
+                        set.ports.clear();
+                        set.window_start = now;
+                        return None;
+                    }
+                }
                 Some((set.ports.len(), set.last_dst_ip.clone()))
             } else {
                 None
@@ -82,10 +91,10 @@ impl ScanDetector {
                 c2_score: 0.0,
             };
 
-            // Reset after alerting
             if let Some(mut entry) = self.state.get_mut(&key) {
                 entry.ports.clear();
                 entry.window_start = now;
+                entry.last_alerted = Some(now);
             }
 
             return Some(event);

@@ -212,16 +212,22 @@ impl Engine {
 
         for tracker in &self.trackers {
             total_count += tracker.flow_count();
-            all_flows.extend(tracker.get_uninferred_flows().into_iter().filter(|flow| {
-                let total_packets = flow.packet_count();
-                total_packets >= Self::effective_min_packets(&flow.flow_key, self.min_packets, self.min_packets_floor)
-                    && !Self::is_strong_benign(
-                        &flow.flow_key,
-                        flow.fwd_packets.len(),
-                        flow.bwd_packets.len(),
-                        flow.fwd_total_bytes + flow.bwd_total_bytes,
-                    )
-            }));
+            all_flows.extend(
+                tracker
+                    .get_uninferred_flows(self.batch_size)
+                    .into_iter()
+                    .filter(|flow| {
+                        let total_packets = flow.packet_count();
+                        total_packets
+                            >= Self::effective_min_packets(&flow.flow_key, self.min_packets, self.min_packets_floor)
+                            && !Self::is_strong_benign(
+                                &flow.flow_key,
+                                flow.fwd_packets.len(),
+                                flow.bwd_packets.len(),
+                                flow.fwd_total_bytes + flow.bwd_total_bytes,
+                            )
+                    }),
+            );
         }
 
         log!(MLLog::FlowStats(

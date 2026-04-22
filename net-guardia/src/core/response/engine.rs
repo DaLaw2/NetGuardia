@@ -61,7 +61,7 @@ impl SoarEngine {
         let rate_limit_channel = soar_cfg.soar.rate_limit_cmd_channel_capacity;
         let freq_max_keys = soar_cfg.soar.frequency_max_tracked_keys;
         drop(soar_cfg);
-        let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(db.clone(), rl, rate_limit_channel));
+        let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(rl, config.clone(), rate_limit_channel));
         let matcher = PlaybookMatcher::new(config, freq_max_keys);
         let engine = Self {
             db,

@@ -28,7 +28,7 @@ use tokio::time::sleep;
 
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
-use crate::domain::detection::log::SuricataLog;
+use crate::domain::detection::log::{DetectionLog, SuricataLog};
 
 /// IANA protocol numbers for Suricata's `proto` strings.
 const IANA_PROTO_ICMP: u8 = 1;
@@ -139,7 +139,13 @@ impl SuricataMonitor {
         };
         // mpsc is bounded; if the orchestrator is backed up, drop rather than
         // block the tail (eve.json will fill the disk if we block).
-        let _ = self.detection_tx.try_send(event);
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(d)) = self.detection_tx.try_send(event) {
+            log!(DetectionLog::DetectionChannelDrop(
+                format!("{:?}", d.source),
+                d.attack_type,
+                d.source_ip,
+            ));
+        }
     }
 
     /// Map a Suricata alert JSON object to a DetectionEvent. Returns None if
@@ -184,9 +190,12 @@ impl SuricataMonitor {
             signature,
         ));
 
+        let category = alert.get("category").and_then(|x| x.as_str()).unwrap_or("unknown");
+        let canonical = crate::domain::detection::attack_type::translate(DetectionSource::Suricata, category);
+
         Some(DetectionEvent {
             source: DetectionSource::Suricata,
-            attack_type: "suricata_alert".to_string(),
+            attack_type: canonical.as_str().to_string(),
             confidence,
             source_ip: src_ip,
             dest_ip,

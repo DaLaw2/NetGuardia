@@ -4,12 +4,12 @@ use serde::Deserialize;
 use crate::core::common::config_service::ConfigService;
 use crate::core::identity::extractor::AuthClaims;
 use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::logger::Logger;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
 use crate::interface::communication::command_types::ChangeEnforceModeCommand;
 use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::app_repo::AppRepo;
 use crate::utils::boot_time;
-use crate::utils::logging::Logging;
 
 type Repo = dyn AppRepo;
 
@@ -81,9 +81,9 @@ async fn get_config(svc: web::Data<ConfigService>) -> impl Responder {
     HttpResponse::Ok().json(svc.get_config())
 }
 
-async fn get_log_level() -> impl Responder {
+async fn get_log_level(logging: web::Data<Logger>) -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
-        "level": Logging::current_level(),
+        "level": logging.current_level(),
     }))
 }
 
@@ -92,8 +92,8 @@ struct LogLevelRequest {
     level: String,
 }
 
-async fn set_log_level(body: web::Json<LogLevelRequest>) -> impl Responder {
-    match Logging::set_level(&body.level) {
+async fn set_log_level(body: web::Json<LogLevelRequest>, logging: web::Data<Logger>) -> impl Responder {
+    match logging.set_level(&body.level) {
         Ok(new_level) => HttpResponse::Ok().json(serde_json::json!({
             "level": new_level,
             "message": "Log level updated",

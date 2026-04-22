@@ -74,13 +74,13 @@ impl CorrelationEngine {
 
     fn process_alert(&self, alert: &AlertMessage) {
         if let Some(event) = self.botnet.process(alert) {
-            let _ = self.detection_tx.try_send(event);
+            send_or_log(&self.detection_tx, event);
         }
         if let Some(event) = self.scan.process(alert) {
-            let _ = self.detection_tx.try_send(event);
+            send_or_log(&self.detection_tx, event);
         }
         if let Some(event) = self.lateral.process(alert) {
-            let _ = self.detection_tx.try_send(event);
+            send_or_log(&self.detection_tx, event);
         }
     }
 
@@ -89,5 +89,15 @@ impl CorrelationEngine {
         if removed > 0 {
             log!(DetectionLog::CorrelationCleanup(removed));
         }
+    }
+}
+
+fn send_or_log(tx: &mpsc::Sender<DetectionEvent>, event: DetectionEvent) {
+    if let Err(mpsc::error::TrySendError::Full(dropped)) = tx.try_send(event) {
+        log!(DetectionLog::DetectionChannelDrop(
+            format!("{:?}", dropped.source),
+            dropped.attack_type,
+            dropped.source_ip,
+        ));
     }
 }

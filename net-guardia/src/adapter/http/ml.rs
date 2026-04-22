@@ -1,9 +1,9 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
-use crate::adapter::http::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::core::identity::extractor::AuthClaims;
 use crate::core::inference::engine::Engine;
 use crate::core::inference::inference::Inference;
+use crate::domain::common::config::constants::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::model_adapter::ModelSourceState;
 use crate::infrastructure::communication_manager::CommunicationManager;

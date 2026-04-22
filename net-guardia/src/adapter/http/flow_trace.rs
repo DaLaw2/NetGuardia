@@ -11,7 +11,8 @@ use actix_files::NamedFile;
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 
 use crate::core::inference::engine::Engine;
-use crate::core::inference::traffic_logger::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER, list_flow_trace_files};
+use crate::core::inference::traffic_logger::list_flow_trace_files;
+use crate::domain::common::config::constants::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER};
 
 pub fn initialize() -> Scope {
     web::scope("/flow-trace")

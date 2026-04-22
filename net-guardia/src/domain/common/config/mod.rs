@@ -1,5 +1,4 @@
 pub mod acl;
-pub mod auth;
 pub mod constants;
 pub mod correlation;
 pub mod detection;
@@ -11,12 +10,12 @@ pub mod ml;
 pub mod notification;
 pub mod observability;
 pub mod pipeline;
+pub mod section;
 pub mod soar;
 pub mod suricata;
 pub mod system;
 
 use crate::domain::common::config::acl::AclConfig;
-use crate::domain::common::config::auth::AuthConfig;
 use crate::domain::common::config::correlation::CorrelationConfig;
 use crate::domain::common::config::detection::DetectionConfig;
 use crate::domain::common::config::dns_filter::DnsFilterConfig;
@@ -36,7 +35,6 @@ use crate::interface::port::setting::SettingRepo;
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub acl: AclConfig,
-    pub auth: AuthConfig,
     pub correlation: CorrelationConfig,
     pub detection: DetectionConfig,
     pub dns_filter: DnsFilterConfig,
@@ -55,7 +53,6 @@ impl AppConfig {
     pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
         let cfg = Self {
             acl: AclConfig::from_settings(repo)?,
-            auth: AuthConfig::from_settings(repo)?,
             correlation: CorrelationConfig::from_settings(repo)?,
             detection: DetectionConfig::from_settings(repo)?,
             dns_filter: DnsFilterConfig::from_settings(repo)?,
@@ -75,7 +72,6 @@ impl AppConfig {
 
     pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
         AclConfig::seed_defaults(repo)?;
-        AuthConfig::seed_defaults(repo)?;
         CorrelationConfig::seed_defaults(repo)?;
         DetectionConfig::seed_defaults(repo)?;
         DnsFilterConfig::seed_defaults(repo)?;
@@ -172,7 +168,7 @@ mod tests {
         assert_eq!(cfg.ebpf.egress_ifname, "eth1");
         assert_eq!(cfg.ebpf.combined_queue_count, 1);
         assert_eq!(cfg.ebpf.frame_size, 4096);
-        assert_eq!(cfg.auth.jwt_expiry_hours, 24);
+        assert_eq!(cfg.http_server.jwt_expiry_hours, 24);
     }
 
     #[test]

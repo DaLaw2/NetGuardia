@@ -31,7 +31,7 @@ impl Database {
     pub fn list_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source_ip, playbook_id FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL"
+            "SELECT id, source_ip, playbook_id FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))

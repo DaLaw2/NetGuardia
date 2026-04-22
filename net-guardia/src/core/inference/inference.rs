@@ -235,7 +235,7 @@ impl Inference {
                 }
             });
 
-            match run_classifier_batch(classifier, &cls_input, actual) {
+            match run_classifier_batch(classifier, cls_input, actual) {
                 Ok((anomaly, class_probs, c2)) => {
                     all_anomaly.extend_from_slice(&anomaly);
                     all_class_probs.extend(class_probs);
@@ -295,7 +295,11 @@ impl Inference {
             }
 
             results.push(DetectionResult {
-                flow_key: build_flow_key_label(flow),
+                flow_key: if is_attack {
+                    build_flow_key_label(flow)
+                } else {
+                    String::new()
+                },
                 flow_key_raw: flow.flow_key.clone(),
                 direction: flow.direction,
                 is_attack,
@@ -323,18 +327,17 @@ impl Inference {
         flows: &[FlowData],
     ) -> Vec<DetectionResult> {
         let n = flows.len();
-        let all_features: Vec<Vec<f32>> = flows.iter().map(|f| self.preprocess_ae_features(f)).collect();
         let mut scores = Vec::with_capacity(n);
 
         for chunk_start in (0..n).step_by(batch_size) {
             let chunk_end = (chunk_start + batch_size).min(n);
             let actual = chunk_end - chunk_start;
+            let chunk_features: Vec<Vec<f32>> = flows[chunk_start..chunk_end]
+                .iter()
+                .map(|f| self.preprocess_ae_features(f))
+                .collect();
             let input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_features), |(i, j)| {
-                if i < actual {
-                    all_features[chunk_start + i][j]
-                } else {
-                    0.0
-                }
+                if i < actual { chunk_features[i][j] } else { 0.0 }
             });
             match run_ae_batch(model, &input, actual, n_features) {
                 Ok(s) => scores.extend_from_slice(&s),
@@ -353,7 +356,11 @@ impl Inference {
             .map(|(flow, &score)| {
                 let is_attack = score > thr;
                 DetectionResult {
-                    flow_key: build_flow_key_label(flow),
+                    flow_key: if is_attack {
+                        build_flow_key_label(flow)
+                    } else {
+                        String::new()
+                    },
                     flow_key_raw: flow.flow_key.clone(),
                     direction: flow.direction,
                     is_attack,
@@ -383,21 +390,20 @@ impl Inference {
         flows: &[FlowData],
     ) -> Vec<DetectionResult> {
         let n = flows.len();
-        let all_features: Vec<Vec<f32>> = flows.iter().map(|f| self.preprocess_ae_features(f)).collect();
         let class_min_conf = self.config.class_min_confidence;
         let mut results = Vec::with_capacity(n);
 
         for chunk_start in (0..n).step_by(batch_size) {
             let chunk_end = (chunk_start + batch_size).min(n);
             let actual = chunk_end - chunk_start;
+            let chunk_features: Vec<Vec<f32>> = flows[chunk_start..chunk_end]
+                .iter()
+                .map(|f| self.preprocess_ae_features(f))
+                .collect();
             let input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_features), |(i, j)| {
-                if i < actual {
-                    all_features[chunk_start + i][j]
-                } else {
-                    0.0
-                }
+                if i < actual { chunk_features[i][j] } else { 0.0 }
             });
-            let class_probs = match run_classifier_only_batch(model, &input, actual) {
+            let class_probs = match run_classifier_only_batch(model, input, actual) {
                 Ok(cp) => cp,
                 Err(e) => {
                     log!(MLLog::InferenceFailed("ClassifierOnly".to_string(), e.to_string()));
@@ -419,7 +425,11 @@ impl Inference {
                     "Normal".to_string()
                 };
                 results.push(DetectionResult {
-                    flow_key: build_flow_key_label(flow),
+                    flow_key: if is_attack {
+                        build_flow_key_label(flow)
+                    } else {
+                        String::new()
+                    },
                     flow_key_raw: flow.flow_key.clone(),
                     direction: flow.direction,
                     is_attack,
@@ -548,10 +558,10 @@ fn run_ae_batch(
 /// Run a 3-output multi-task classifier: (anomaly, class_probs, c2_score).
 fn run_classifier_batch(
     model: &RunnableModel,
-    input: &tract_ndarray::Array2<f32>,
+    input: tract_ndarray::Array2<f32>,
     actual: usize,
 ) -> TractResult<ClassifierBatchOutput> {
-    let result = model.run(tvec![input.clone().into_tensor().into()])?;
+    let result = model.run(tvec![input.into_tensor().into()])?;
 
     let anomaly_view = result[0].to_array_view::<f32>()?;
     let anomaly: Vec<f32> = (0..actual)
@@ -576,10 +586,10 @@ fn run_classifier_batch(
 /// Run a single-output classifier (ClassifierOnly adapter).
 fn run_classifier_only_batch(
     model: &RunnableModel,
-    input: &tract_ndarray::Array2<f32>,
+    input: tract_ndarray::Array2<f32>,
     actual: usize,
 ) -> TractResult<Vec<Vec<f32>>> {
-    let result = model.run(tvec![input.clone().into_tensor().into()])?;
+    let result = model.run(tvec![input.into_tensor().into()])?;
     let view = result[0]
         .to_array_view::<f32>()?
         .into_dimensionality::<tract_ndarray::Ix2>()?;

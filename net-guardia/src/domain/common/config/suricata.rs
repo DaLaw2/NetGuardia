@@ -1,75 +1,30 @@
-use super::helpers::{override_bool, override_parsed, override_string_nonempty, seed_key};
-use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use macros::config_settings;
 
+#[config_settings(section = "suricata")]
 #[derive(Debug, Clone)]
 pub struct SuricataConfig {
+    #[setting(key = "suricata_enabled", default = "false")]
     pub enabled: bool,
+    #[setting(key = "suricata_binary_path", default = "/usr/bin/suricata")]
     pub binary_path: String,
+    #[setting(key = "suricata_config_path", default = "/etc/netguardia/suricata.yaml")]
     pub config_path: String,
+    #[setting(key = "suricata_eve_log_path", default = "/var/log/netguardia/eve.json")]
     pub eve_log_path: String,
+    #[setting(key = "suricata_auto_restart_on_crash", default = "true")]
     pub auto_restart_on_crash: bool,
+    #[setting(key = "suricata_restart_backoff_secs", default = "10")]
     pub restart_backoff_secs: u64,
+    #[setting(key = "suricata_poll_interval_ms", default = "200")]
     pub poll_interval_ms: u64,
+    #[setting(key = "suricata_file_wait_interval_secs", default = "1")]
     pub file_wait_interval_secs: u64,
+    #[setting(key = "suricata_confidence_high", default = "0.95")]
     pub confidence_high: f32,
+    #[setting(key = "suricata_confidence_medium", default = "0.80")]
     pub confidence_medium: f32,
+    #[setting(key = "suricata_confidence_low", default = "0.65")]
     pub confidence_low: f32,
+    #[setting(key = "suricata_confidence_info", default = "0.50")]
     pub confidence_info: f32,
-}
-
-impl SuricataConfig {
-    pub fn defaults() -> Self {
-        Self {
-            enabled: false,
-            binary_path: "/usr/bin/suricata".to_string(),
-            config_path: "/etc/netguardia/suricata.yaml".to_string(),
-            eve_log_path: "/var/log/netguardia/eve.json".to_string(),
-            auto_restart_on_crash: true,
-            restart_backoff_secs: 10,
-            poll_interval_ms: 200,
-            file_wait_interval_secs: 1,
-            confidence_high: 0.95,
-            confidence_medium: 0.80,
-            confidence_low: 0.65,
-            confidence_info: 0.50,
-        }
-    }
-
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
-        let mut cfg = Self::defaults();
-        override_bool(&mut cfg.enabled, repo, "suricata_enabled")?;
-        override_string_nonempty(&mut cfg.binary_path, repo, "suricata_binary_path")?;
-        override_string_nonempty(&mut cfg.config_path, repo, "suricata_config_path")?;
-        override_string_nonempty(&mut cfg.eve_log_path, repo, "suricata_eve_log_path")?;
-        override_bool(&mut cfg.auto_restart_on_crash, repo, "suricata_auto_restart_on_crash")?;
-        override_parsed(&mut cfg.restart_backoff_secs, repo, "suricata_restart_backoff_secs")?;
-        override_parsed(&mut cfg.poll_interval_ms, repo, "suricata_poll_interval_ms")?;
-        override_parsed(
-            &mut cfg.file_wait_interval_secs,
-            repo,
-            "suricata_file_wait_interval_secs",
-        )?;
-        override_parsed(&mut cfg.confidence_high, repo, "suricata_confidence_high")?;
-        override_parsed(&mut cfg.confidence_medium, repo, "suricata_confidence_medium")?;
-        override_parsed(&mut cfg.confidence_low, repo, "suricata_confidence_low")?;
-        override_parsed(&mut cfg.confidence_info, repo, "suricata_confidence_info")?;
-        Ok(cfg)
-    }
-
-    pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
-        seed_key(repo, "suricata_enabled", "false")?;
-        seed_key(repo, "suricata_binary_path", "/usr/bin/suricata")?;
-        seed_key(repo, "suricata_config_path", "/etc/netguardia/suricata.yaml")?;
-        seed_key(repo, "suricata_eve_log_path", "/var/log/netguardia/eve.json")?;
-        seed_key(repo, "suricata_auto_restart_on_crash", "true")?;
-        seed_key(repo, "suricata_restart_backoff_secs", "10")?;
-        seed_key(repo, "suricata_poll_interval_ms", "200")?;
-        seed_key(repo, "suricata_file_wait_interval_secs", "1")?;
-        seed_key(repo, "suricata_confidence_high", "0.95")?;
-        seed_key(repo, "suricata_confidence_medium", "0.80")?;
-        seed_key(repo, "suricata_confidence_low", "0.65")?;
-        seed_key(repo, "suricata_confidence_info", "0.50")?;
-        Ok(())
-    }
 }

@@ -1,5 +1,4 @@
 use std::fs;
-use std::sync::OnceLock;
 use std::{env, io};
 
 use tracing::Level;
@@ -12,25 +11,19 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, filter, reload};
 
-use crate::core::common::observability::log_buffer::LogBufferLayer;
+use crate::core::common::log_buffer::{LogBuffer, LogBufferLayer};
+use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::io::IOError;
 use crate::interface::utils::logging::FilterControl;
 
-/// Type-erased reload handle stored as a trait object.
-/// We erase the complex layered type by boxing the modify closure.
-static FILTER_HANDLE: OnceLock<Box<dyn FilterControl>> = OnceLock::new();
+pub struct Logger {
+    filter_handle: Box<dyn FilterControl>,
+    preserved_directives: Vec<String>,
+}
 
-/// Snapshot of the per-target directives (e.g. `maxminddb=warn`) in effect
-/// at `initialize()` time. `set_level` rebuilds the filter from scratch
-/// around a new root level; reapplying these keeps any RUST_LOG overrides
-/// the operator configured for specific crates from being silently lost.
-static PRESERVED_DIRECTIVES: OnceLock<Vec<String>> = OnceLock::new();
-
-pub struct Logging;
-
-impl Logging {
-    pub fn initialize(log_buffer_capacity: usize, log_buffer_max_message_bytes: usize) -> Result<(), Error> {
+impl Logger {
+    pub fn initialize(config: &ObservabilityConfig) -> Result<(Self, LogBuffer), Error> {
         let log_directory = "logs";
         fs::create_dir_all(log_directory).map_err(|err| IOError::CreateDirectoryFailed(log_directory, err))?;
 
@@ -51,18 +44,13 @@ impl Logging {
             .with_ansi(false)
             .with_writer(file_appender);
 
-        let level = env::var("RUST_LOG")
+        let level: Level = config
+            .log_level
+            .parse()
             .ok()
-            .and_then(|s| s.parse::<Level>().ok())
-            .unwrap_or(if cfg!(debug_assertions) {
-                Level::DEBUG
-            } else {
-                Level::INFO
-            });
+            .or_else(|| env::var("RUST_LOG").ok().and_then(|s| s.parse().ok()))
+            .unwrap_or(Level::INFO);
 
-        // Collect per-target directives from RUST_LOG plus our hardcoded
-        // `maxminddb=warn` so `set_level` can reapply them on each rebuild
-        // instead of losing them to `EnvFilter::new(level)`.
         let mut preserved: Vec<String> = env::var("RUST_LOG")
             .ok()
             .map(|raw| {
@@ -75,30 +63,26 @@ impl Logging {
         if !preserved.iter().any(|d| d == "maxminddb=warn") {
             preserved.push("maxminddb=warn".to_string());
         }
-        let _ = PRESERVED_DIRECTIVES.set(preserved);
 
-        let mut filter = EnvFilter::from_default_env().add_directive(level.into());
-        if let Some(directives) = PRESERVED_DIRECTIVES.get() {
-            for d in directives {
-                if let Ok(parsed) = d.parse::<Directive>() {
-                    filter = filter.add_directive(parsed);
-                }
-            }
-        }
-
+        let mut filter = EnvFilter::new(level.to_string());
+        filter = Self::apply_directives(filter, &preserved);
         let (filter_layer, reload_handle) = reload::Layer::new(filter);
+
+        let (log_buffer_layer, log_buffer) =
+            LogBufferLayer::new(config.log_buffer_capacity, config.log_buffer_max_message_bytes);
 
         tracing_subscriber::registry()
             .with(filter_layer)
             .with(stdout_layer)
             .with(file_layer)
-            .with(LogBufferLayer::new(log_buffer_capacity, log_buffer_max_message_bytes))
+            .with(log_buffer_layer)
             .init();
 
-        // Store type-erased handle for runtime log level changes
-        let _ = FILTER_HANDLE.set(Box::new(reload_handle));
-
-        Ok(())
+        let logger = Self {
+            filter_handle: Box::new(reload_handle),
+            preserved_directives: preserved,
+        };
+        Ok((logger, log_buffer))
     }
 
     pub fn initialize_cli() -> Result<(), Error> {
@@ -127,9 +111,20 @@ impl Logging {
         Ok(())
     }
 
-    pub fn set_level(level: &str) -> Result<String, String> {
-        let handle = FILTER_HANDLE.get().ok_or("Logging not initialized")?;
+    fn apply_directives(mut filter: EnvFilter, directives: &[String]) -> EnvFilter {
+        for d in directives {
+            if let Ok(parsed) = d.parse::<Directive>() {
+                filter = filter.add_directive(parsed);
+            }
+        }
+        filter
+    }
 
+    pub fn current_level(&self) -> String {
+        extract_main_level(&self.filter_handle.current_filter())
+    }
+
+    pub fn set_level(&self, level: &str) -> Result<String, String> {
         let parsed_level: Level = level.parse().map_err(|_| {
             format!(
                 "Invalid log level '{}'. Valid levels: trace, debug, info, warn, error",
@@ -137,29 +132,11 @@ impl Logging {
             )
         })?;
 
-        let mut new_filter = EnvFilter::new(parsed_level.to_string());
-        if let Some(directives) = PRESERVED_DIRECTIVES.get() {
-            for d in directives {
-                if let Ok(parsed) = d.parse::<Directive>() {
-                    new_filter = new_filter.add_directive(parsed);
-                }
-            }
-        }
-
-        handle.reload_filter(new_filter)?;
+        let filter = EnvFilter::new(parsed_level.to_string());
+        let filter = Self::apply_directives(filter, &self.preserved_directives);
+        self.filter_handle.reload_filter(filter)?;
 
         Ok(parsed_level.to_string().to_lowercase())
-    }
-
-    /// Get the current global log level as a bare lowercase directive —
-    /// e.g. `"info"`, not the full `"maxminddb=warn,info"` EnvFilter string.
-    /// Per-target overrides (like `maxminddb=warn`) are internal tuning and
-    /// would break the frontend `<select>` that only knows five options.
-    pub fn current_level() -> String {
-        FILTER_HANDLE
-            .get()
-            .map(|h| extract_main_level(&h.current_filter()))
-            .unwrap_or_else(|| "unknown".to_string())
     }
 }
 
@@ -174,9 +151,6 @@ impl<L> FilterControl for reload::Handle<EnvFilter, L> {
     }
 }
 
-/// Strip per-target directives out of an EnvFilter string and return the
-/// bare level directive in lowercase. Falls back to the raw string if no
-/// bare directive is present.
 fn extract_main_level(raw: &str) -> String {
     raw.split(',')
         .map(str::trim)
@@ -198,8 +172,6 @@ mod tests {
 
     #[test]
     fn falls_back_when_no_bare_level() {
-        // Only per-target directives → return lowercased raw so the UI at
-        // least shows *something* rather than silently misleading.
         assert_eq!(extract_main_level("maxminddb=warn"), "maxminddb=warn");
     }
 }

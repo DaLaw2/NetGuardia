@@ -41,10 +41,7 @@ fn validate_ws_token(
         Some(ref t) => jwt
             .validate_token(t)
             .map(|_| ())
-            .map_err(|_| {
-                HttpResponse::Unauthorized()
-                    .json(serde_json::json!({"error": "Invalid or expired token"}))
-            }),
+            .map_err(|_| HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid or expired token"}))),
         None => Err(HttpResponse::Unauthorized()
             .json(serde_json::json!({"error": "Missing authentication: provide Authorization header or token query parameter"}))),
     }

@@ -13,6 +13,7 @@ use crate::domain::detection::ml_detection::AlertMessage;
 struct TimedDestSet {
     dests: HashSet<String>,
     window_start: Instant,
+    last_alerted: Option<Instant>,
 }
 
 /// Detects lateral movement: an internal IP reaching many other internal IPs.
@@ -48,6 +49,7 @@ impl LateralMovementDetector {
             let mut entry = self.state.entry(key.clone()).or_insert_with(|| TimedDestSet {
                 dests: HashSet::new(),
                 window_start: now,
+                last_alerted: None,
             });
 
             let set = entry.value_mut();
@@ -60,6 +62,13 @@ impl LateralMovementDetector {
             set.dests.insert(alert.dst_ip.clone());
 
             if set.dests.len() >= self.threshold {
+                if let Some(last) = set.last_alerted {
+                    if now.duration_since(last) < self.window {
+                        set.dests.clear();
+                        set.window_start = now;
+                        return None;
+                    }
+                }
                 Some(set.dests.len())
             } else {
                 None
@@ -87,10 +96,10 @@ impl LateralMovementDetector {
                 c2_score: 0.0,
             };
 
-            // Reset after alerting
             if let Some(mut entry) = self.state.get_mut(&key) {
                 entry.dests.clear();
                 entry.window_start = now;
+                entry.last_alerted = Some(now);
             }
 
             return Some(event);
