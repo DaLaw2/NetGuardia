@@ -2,6 +2,7 @@ use rusqlite::params;
 
 use super::Database;
 use crate::domain::common::error::Error;
+use crate::domain::response::playbook_data::{ActiveBlockView, PendingUnblock};
 use crate::interface::port::db_admin::DbAdminRepo;
 
 impl Database {
@@ -28,13 +29,18 @@ impl Database {
         Ok(count)
     }
 
-    pub fn list_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    pub fn list_expired_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source_ip, playbook_id FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL",
+            "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok(ActiveBlockView {
+                id: row.get::<_, i64>(0)?,
+                source_ip: row.get::<_, String>(1)?,
+                playbook_id: row.get::<_, i64>(2)?,
+                expires_at: row.get::<_, String>(3)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -43,18 +49,18 @@ impl Database {
         Ok(result)
     }
 
-    /// Get a single SOAR block rule by ID, returning (id, source_ip, playbook_id, expires_at).
-    pub fn find_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
+    /// Get a single SOAR block rule by ID.
+    pub fn find_soar_block_by_id(&self, id: i64) -> Result<Option<ActiveBlockView>, Error> {
         let conn = self.conn()?;
         let mut stmt =
             conn.prepare("SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE id = ?1")?;
         let mut rows = stmt.query_map(params![id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+            Ok(ActiveBlockView {
+                id: row.get::<_, i64>(0)?,
+                source_ip: row.get::<_, String>(1)?,
+                playbook_id: row.get::<_, i64>(2)?,
+                expires_at: row.get::<_, String>(3)?,
+            })
         })?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
@@ -71,18 +77,18 @@ impl Database {
         Ok(())
     }
 
-    pub fn list_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
+    pub fn list_active_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE unblocked_at IS NULL AND expires_at > datetime('now')"
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+            Ok(ActiveBlockView {
+                id: row.get::<_, i64>(0)?,
+                source_ip: row.get::<_, String>(1)?,
+                playbook_id: row.get::<_, i64>(2)?,
+                expires_at: row.get::<_, String>(3)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -100,11 +106,15 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    pub fn list_pending_unblocks(&self) -> Result<Vec<PendingUnblock>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id, source_ip, retry_count FROM pending_unblock ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok(PendingUnblock {
+                id: row.get::<_, i64>(0)?,
+                source_ip: row.get::<_, String>(1)?,
+                retry_count: row.get::<_, i64>(2)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -179,6 +189,7 @@ impl DbAdminRepo for Database {
 mod tests {
     use super::super::tests::test_db;
     use crate::interface::port::db_admin::DbAdminRepo;
+    use crate::interface::port::soar::SoarRepo;
 
     /// Happy path. Verifies `commit_soar_block_to_db` writes both
     /// `soar_block_rules` and `acl_rules` atomically.
@@ -197,9 +208,9 @@ mod tests {
         assert!(soar_block_id > 0);
 
         // soar_block_rules has the row
-        let active = db.list_active_soar_blocks().unwrap();
+        let active = SoarRepo::list_active_soar_blocks(&db).unwrap();
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].1, "10.0.0.99");
+        assert_eq!(active[0].source_ip, "10.0.0.99");
 
         // acl_rules has the matching row
         let rules = db.list_acl_rules().unwrap();
@@ -224,6 +235,6 @@ mod tests {
         // acl_rules row gone
         assert!(db.list_acl_rules().unwrap().is_empty());
         // soar_block_rules row no longer in "active" view (unblocked_at is set)
-        assert!(db.list_active_soar_blocks().unwrap().is_empty());
+        assert!(SoarRepo::list_active_soar_blocks(&db).unwrap().is_empty());
     }
 }

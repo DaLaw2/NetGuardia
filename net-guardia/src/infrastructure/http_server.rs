@@ -49,6 +49,8 @@ use crate::infrastructure::system::ShutdownHandle;
 use crate::interface::port::api_key::ApiKeyRepo;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::audit::AuditRepo;
+use crate::interface::port::drop_stats::DropStatsPort;
+use crate::interface::port::protocol_filter::ProtocolFilterPort;
 
 /// Shared flag: true when all services (eBPF, ML, SOAR) are fully initialized.
 pub type ReadyFlag = Arc<AtomicBool>;
@@ -216,7 +218,7 @@ pub fn start_setup_server(
 /// Run the full HTTP server with all services.
 pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let access_control = params.ebpf_services.access_control.clone();
-    let protocol_filter = params.ebpf_services.protocol_filter.clone();
+    let protocol_filter: Arc<dyn ProtocolFilterPort> = params.ebpf_services.protocol_filter.clone();
     let dns_filter = params.ebpf_services.dns_filter.clone();
     let geo_block = params.ebpf_services.geo_block.clone();
     let rate_limit = params.ebpf_services.rate_limit.clone();
@@ -227,6 +229,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let fusion_metrics = params.app_services.fusion_metrics.clone();
     let flow_statistics = params.app_services.flow_statistics.clone();
     let drop_monitor = params.ebpf_services.drop_monitor.clone();
+    let drop_stats: Arc<dyn DropStatsPort> = drop_monitor.clone();
     let app_config = params.app_config;
     let inference_config = params.inference_config;
     let db = params.db;
@@ -278,6 +281,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(fusion_metrics.clone()))
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
+            .app_data(web::Data::from(drop_stats.clone()))
             .app_data(web::Data::from(db.clone() as Arc<dyn AppRepo>))
             .app_data(web::Data::from(db.clone() as Arc<dyn ApiKeyRepo>))
             .app_data(web::Data::from(db.clone() as Arc<dyn AuditRepo>))

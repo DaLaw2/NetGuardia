@@ -6,6 +6,8 @@ use macros::log;
 
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::correlation_cleanup::capped_cleanup;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
 
@@ -86,7 +88,7 @@ impl BotnetDetector {
             // SOAR blocks source_ip, so we must NOT put the victim here.
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
-                attack_type: "threat_detected".to_string(),
+                attack_type: CanonicalAttackType::BotActivity.as_str().to_string(),
                 confidence: 0.85,
                 source_ip: alert.src_ip.clone(),
                 dest_ip: key.clone(),
@@ -110,25 +112,8 @@ impl BotnetDetector {
         None
     }
 
-    /// Remove expired entries. Returns number of entries removed.
     pub fn cleanup(&self) -> usize {
-        let now = Instant::now();
-        let window = self.window;
-        let before = self.state.len();
-
-        self.state
-            .retain(|_, set| now.duration_since(set.window_start) < window);
-
-        // Enforce max capacity by removing oldest entries if over limit
-        if self.state.len() > self.max_tracked {
-            let excess = self.state.len() - self.max_tracked;
-            let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys_to_remove {
-                self.state.remove(&key);
-            }
-        }
-
-        before.saturating_sub(self.state.len())
+        capped_cleanup(&self.state, self.window, self.max_tracked, |s| s.window_start)
     }
 }
 

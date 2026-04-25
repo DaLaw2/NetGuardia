@@ -307,6 +307,11 @@ impl FlowTracker {
         self.active.iter().map(|(_, entry)| entry.lock().clone()).collect()
     }
 
+    /// Extract scalar stats from all active flows without cloning packet vectors.
+    pub fn get_flow_stats<T>(&self, convert: impl Fn(&FlowData) -> T) -> Vec<T> {
+        self.active.iter().map(|(_, entry)| convert(&entry.lock())).collect()
+    }
+
     /// Get flows that received new packets since their last inference, and
     /// mark them as inferred. Used by ML engine.
     pub fn get_uninferred_flows(&self, limit: usize) -> Vec<FlowData> {

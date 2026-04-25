@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use arc_swap::ArcSwap;
 use macros::log;
-use serde_json::Value;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -77,92 +76,61 @@ impl SoarEngine {
 
     /// Load playbooks and admin whitelist from DB into memory.
     pub fn reload_cache(&self) -> Result<(), Error> {
-        // Load playbooks via single JOIN query (no N+1)
-        let rows = self.db.list_playbooks_with_actions()?;
+        let views = self.db.list_playbooks()?;
         let mut playbooks: Vec<Playbook> = Vec::new();
 
-        for (
-            pb_id,
-            name,
-            enabled,
-            trigger_event,
-            threshold,
-            _count,
-            _window,
-            cooldown,
-            _action_id,
-            action_order,
-            action_type,
-            action_params,
-        ) in rows
-        {
-            // Check if this row belongs to the same playbook as the last one
-            let needs_new = playbooks.last().is_none_or(|last| last.id != pb_id);
-            if needs_new {
-                let _ = threshold; // persisted for schema stability; runtime gating comes from the Condition rows
-                playbooks.push(Playbook {
-                    id: pb_id,
-                    name,
-                    enabled,
-                    trigger_event,
-                    cooldown_secs: cooldown,
-                    actions: Vec::new(),
-                    conditions: Vec::new(),
+        for view in views {
+            let mut actions: Vec<PlaybookAction> = Vec::new();
+            for a in view.actions {
+                actions.push(PlaybookAction {
+                    action_order: a.action_order,
+                    action_type: a.action_type,
+                    params: a.params,
                 });
             }
-            // Safe: we just pushed if empty, and last() was Some otherwise
-            let Some(pb) = playbooks.last_mut() else {
-                continue;
-            };
 
-            if let (Some(order), Some(atype), Some(params_str)) = (action_order, action_type, action_params) {
-                pb.actions.push(PlaybookAction {
-                    action_order: order,
-                    action_type: atype,
-                    params: serde_json::from_str(&params_str).unwrap_or_else(|e| {
-                        log!(SoarLog::PlaybookError(
-                            pb.name.clone(),
-                            format!("Malformed action params JSON: {e}"),
-                        ));
-                        Value::Object(Default::default())
-                    }),
-                });
-            }
-        }
-
-        // Load conditions and attach to playbooks
-        let condition_rows = self.db.list_all_playbook_conditions()?;
-        for (_cid, pb_id, ctype_str, operator, value, value2) in condition_rows {
-            if let Ok(ctype) = ctype_str.parse::<ConditionType>()
-                && let Some(pb) = playbooks.iter_mut().find(|p| p.id == pb_id)
-            {
+            let mut conditions: Vec<PlaybookCondition> = Vec::new();
+            for c in view.conditions {
+                let Ok(ctype) = c.condition_type.parse::<ConditionType>() else {
+                    continue;
+                };
                 // Validate operator at load time to prevent silent fallback to defaults
                 let valid = match ctype {
-                    ConditionType::Threshold => matches!(operator.as_str(), ">=" | "<="),
+                    ConditionType::Threshold => matches!(c.operator.as_str(), ">=" | "<="),
                     ConditionType::SourceCountry | ConditionType::IpPattern => {
-                        matches!(operator.as_str(), "in" | "not_in")
+                        matches!(c.operator.as_str(), "in" | "not_in")
                     }
-                    ConditionType::RepeatOffender => operator == "==",
-                    ConditionType::Frequency => operator == ">=",
-                    ConditionType::MultiSourceMin => operator == ">=",
-                    ConditionType::SingleSourceHigh => operator == ">=",
-                    ConditionType::FusedConfidenceAbove => matches!(operator.as_str(), ">=" | "<="),
+                    ConditionType::RepeatOffender => c.operator == "==",
+                    ConditionType::Frequency => c.operator == ">=",
+                    ConditionType::MultiSourceMin => c.operator == ">=",
+                    ConditionType::SingleSourceHigh => c.operator == ">=",
+                    ConditionType::FusedConfidenceAbove => matches!(c.operator.as_str(), ">=" | "<="),
                 };
                 if !valid {
                     log!(SoarLog::InvalidConditionOperator(
-                        pb.name.clone(),
-                        ctype_str.clone(),
-                        operator.clone(),
+                        view.name.clone(),
+                        c.condition_type.clone(),
+                        c.operator.clone(),
                     ));
                     continue;
                 }
-                pb.conditions.push(PlaybookCondition {
+                conditions.push(PlaybookCondition {
                     condition_type: ctype,
-                    operator,
-                    value,
-                    value2,
+                    operator: c.operator,
+                    value: c.value,
+                    value2: c.value2,
                 });
             }
+
+            playbooks.push(Playbook {
+                id: view.id,
+                name: view.name,
+                enabled: view.enabled,
+                trigger_event: view.trigger_event,
+                cooldown_secs: view.cooldown_secs,
+                actions,
+                conditions,
+            });
         }
 
         // Warn on playbooks whose trigger_event isn't in the canonical
@@ -270,10 +238,10 @@ impl SoarEngine {
         let active_blocks = self.db.list_active_soar_blocks()?;
         let count = active_blocks.len();
 
-        for (_id, source_ip, _playbook_id, _expires_at) in &active_blocks {
+        for block in &active_blocks {
             // Preserve original error-swallowing behavior during recovery
-            if let Err(e) = self.access_control.block_ip(source_ip) {
-                log!(SoarLog::RecoveryFailed(source_ip.clone(), e.to_string()));
+            if let Err(e) = self.access_control.block_ip(&block.source_ip) {
+                log!(SoarLog::RecoveryFailed(block.source_ip.clone(), e.to_string()));
             }
         }
 
@@ -297,32 +265,32 @@ impl SoarEngine {
             }
         };
 
-        for (id, source_ip, retry_count) in pending {
-            if retry_count >= self.matcher.config.load().soar.max_pending_unblock_retries {
+        for pu in pending {
+            if pu.retry_count >= self.matcher.config.load().soar.max_pending_unblock_retries {
                 log!(SoarLog::EventHandlingFailed(format!(
                     "Giving up on pending unblock for IP {} after {} retries",
-                    source_ip, retry_count
+                    pu.source_ip, pu.retry_count
                 )));
                 // Remove from queue to avoid infinite retries
-                let _ = self.db.delete_pending_unblock(id);
+                let _ = self.db.delete_pending_unblock(pu.id);
                 continue;
             }
 
-            match self.access_control.unblock_ip(&source_ip) {
+            match self.access_control.unblock_ip(&pu.source_ip) {
                 Ok(()) => {
-                    let _ = self.db.delete_pending_unblock(id);
+                    let _ = self.db.delete_pending_unblock(pu.id);
                     log!(SoarLog::EventHandlingFailed(format!(
                         "Successfully unblocked orphan IP {} on retry #{}",
-                        source_ip,
-                        retry_count + 1
+                        pu.source_ip,
+                        pu.retry_count + 1
                     )));
                 }
                 Err(e) => {
-                    let _ = self.db.increment_pending_unblock_retry(id);
+                    let _ = self.db.increment_pending_unblock_retry(pu.id);
                     log!(SoarLog::EventHandlingFailed(format!(
                         "Retry #{} failed to unblock orphan IP {}: {}",
-                        retry_count + 1,
-                        source_ip,
+                        pu.retry_count + 1,
+                        pu.source_ip,
                         e
                     )));
                 }

@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 /// Input for updating a playbook row (without actions/conditions).
 pub struct UpdatePlaybookInput {
     pub name: String,
@@ -50,6 +52,7 @@ pub struct CreatePlaybookInput {
 }
 
 /// Persisted condition row for API responses.
+#[derive(Serialize)]
 pub struct ConditionView {
     pub id: i64,
     pub condition_type: String,
@@ -59,6 +62,7 @@ pub struct ConditionView {
 }
 
 /// Flattened playbook representation for API responses.
+#[derive(Serialize)]
 pub struct PlaybookView {
     pub id: i64,
     pub name: String,
@@ -72,6 +76,7 @@ pub struct PlaybookView {
     pub conditions: Vec<ConditionView>,
 }
 
+#[derive(Serialize)]
 pub struct ActionView {
     pub id: i64,
     pub action_order: i64,
@@ -80,6 +85,7 @@ pub struct ActionView {
 }
 
 /// Execution record from soar_executions table.
+#[derive(Serialize)]
 pub struct ExecutionView {
     pub id: i64,
     pub playbook_id: i64,
@@ -90,9 +96,18 @@ pub struct ExecutionView {
 }
 
 /// Active block record from soar_block_rules table.
+#[derive(Serialize)]
 pub struct ActiveBlockView {
     pub id: i64,
     pub source_ip: String,
     pub playbook_id: i64,
     pub expires_at: String,
+}
+
+/// Pending unblock recovery record.
+#[derive(Serialize)]
+pub struct PendingUnblock {
+    pub id: i64,
+    pub source_ip: String,
+    pub retry_count: i64,
 }

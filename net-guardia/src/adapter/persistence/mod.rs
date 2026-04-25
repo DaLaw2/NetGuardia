@@ -18,6 +18,7 @@ use rusqlite::{self, Connection, params};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
 use crate::domain::common::log::misc::MiscLog;
+use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER};
 
 /// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
 /// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).
@@ -139,11 +140,8 @@ impl Database {
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
             .map_err(|_| DatabaseError::DatabaseNotReadable)?;
         // Attach a plaintext destination (empty key = no encryption)
-        conn.execute_batch(&format!(
-            "ATTACH DATABASE '{}' AS plaintext KEY '';",
-            dest_path.replace('\'', "''"),
-        ))
-        .map_err(DatabaseError::QueryFailed)?;
+        conn.execute("ATTACH DATABASE ?1 AS plaintext KEY '';", params![dest_path])
+            .map_err(DatabaseError::QueryFailed)?;
         conn.query_row("SELECT sqlcipher_export('plaintext')", [], |_| Ok(()))
             .map_err(DatabaseError::QueryFailed)?;
         conn.execute_batch("DETACH DATABASE plaintext;")
@@ -158,12 +156,8 @@ impl Database {
         // Verify it's readable as plaintext
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
             .map_err(|_| DatabaseError::SourceDatabaseNotReadable)?;
-        conn.execute_batch(&format!(
-            "ATTACH DATABASE '{}' AS encrypted KEY '{}';",
-            dest_path.replace('\'', "''"),
-            key.replace('\'', "''"),
-        ))
-        .map_err(DatabaseError::QueryFailed)?;
+        conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2;", params![dest_path, key])
+            .map_err(DatabaseError::QueryFailed)?;
         conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))
             .map_err(DatabaseError::QueryFailed)?;
         conn.execute_batch("DETACH DATABASE encrypted;")
@@ -388,15 +382,11 @@ impl Database {
 
             conn_ref.execute(
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
-                params![
-                    "Administrator",
-                    "Full system access with all permissions",
-                    &all_permissions
-                ],
+                params![GROUP_ADMIN, "Full system access with all permissions", &all_permissions],
             )?;
             conn_ref.execute(
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
-                params!["Viewer", "Read-only access to all modules", &viewer_permissions],
+                params![GROUP_VIEWER, "Read-only access to all modules", &viewer_permissions],
             )?;
         }
 

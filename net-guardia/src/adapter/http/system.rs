@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 use crate::core::common::config_service::ConfigService;
 use crate::core::identity::extractor::AuthClaims;
+use crate::domain::common::config::constants::PERMISSION_SYSTEM_ADMIN;
 use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
@@ -135,7 +136,7 @@ async fn update_config(
 }
 
 async fn shutdown(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
-    if !auth.permissions.iter().any(|p| p == "system:admin") {
+    if !auth.permissions.iter().any(|p| p == PERMISSION_SYSTEM_ADMIN) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
     }
     if handle.trigger(ShutdownMode::Shutdown) {
@@ -146,7 +147,7 @@ async fn shutdown(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl R
 }
 
 async fn restart(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
-    if !auth.permissions.iter().any(|p| p == "system:admin") {
+    if !auth.permissions.iter().any(|p| p == PERMISSION_SYSTEM_ADMIN) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
     }
     if handle.trigger(ShutdownMode::Restart) {

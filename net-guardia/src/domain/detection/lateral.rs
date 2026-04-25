@@ -7,6 +7,8 @@ use macros::log;
 
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::correlation_cleanup::capped_cleanup;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
 
@@ -84,7 +86,7 @@ impl LateralMovementDetector {
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
-                attack_type: "threat_detected".to_string(),
+                attack_type: CanonicalAttackType::LateralMovement.as_str().to_string(),
                 confidence: 0.75,
                 source_ip: key.clone(),
                 dest_ip: alert.dst_ip.clone(),
@@ -108,24 +110,8 @@ impl LateralMovementDetector {
         None
     }
 
-    /// Remove expired entries. Returns number of entries removed.
     pub fn cleanup(&self) -> usize {
-        let now = Instant::now();
-        let window = self.window;
-        let before = self.state.len();
-
-        self.state
-            .retain(|_, set| now.duration_since(set.window_start) < window);
-
-        if self.state.len() > self.max_tracked {
-            let excess = self.state.len() - self.max_tracked;
-            let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys_to_remove {
-                self.state.remove(&key);
-            }
-        }
-
-        before.saturating_sub(self.state.len())
+        capped_cleanup(&self.state, self.window, self.max_tracked, |s| s.window_start)
     }
 }
 

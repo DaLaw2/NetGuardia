@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::adapter::http::response::ok_or_error;
 use crate::core::identity::extractor::AuthClaims;
 use crate::core::identity::jwt::JwtService;
+use crate::domain::identity::auth::{DEFAULT_ADMIN_USERNAME, GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
 use crate::domain::identity::error::AuthError;
 use crate::domain::identity::password;
 use crate::interface::port::app_repo::AppRepo;
@@ -118,10 +119,10 @@ async fn login(body: web::Json<LoginRequest>, db: web::Data<Repo>, jwt: web::Dat
     let permissions = db.list_user_permissions(id).unwrap_or_default();
 
     let groups = db.list_groups_for_user(id).unwrap_or_default();
-    let role = if groups.iter().any(|(_id, name, _desc, _perms)| name == "Administrator") {
-        "admin".to_string()
+    let role = if groups.iter().any(|(_id, name, _desc, _perms)| name == GROUP_ADMIN) {
+        ROLE_ADMIN.to_string()
     } else {
-        "viewer".to_string()
+        ROLE_VIEWER.to_string()
     };
 
     match jwt.create_token(id, &username, &role, permissions) {
@@ -146,12 +147,12 @@ async fn register(auth: AuthClaims, body: web::Json<RegisterRequest>, db: web::D
     }
 
     // Validate role
-    if reg.role != "admin" && reg.role != "viewer" {
+    if reg.role != ROLE_ADMIN && reg.role != ROLE_VIEWER {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Role must be 'admin' or 'viewer'"}));
     }
 
     // Only admins can create admin accounts
-    if reg.role == "admin" && auth.role != "admin" {
+    if reg.role == ROLE_ADMIN && auth.role != ROLE_ADMIN {
         return HttpResponse::Forbidden()
             .json(serde_json::json!({"error": "Only administrators can create admin accounts"}));
     }
@@ -166,7 +167,11 @@ async fn register(auth: AuthClaims, body: web::Json<RegisterRequest>, db: web::D
     match db.insert_user(&reg.username, &hash, &reg.role, false) {
         Ok(new_user_id) => {
             // Auto-assign to default group based on role
-            let default_group_name = if reg.role == "admin" { "Administrator" } else { "Viewer" };
+            let default_group_name = if reg.role == ROLE_ADMIN {
+                GROUP_ADMIN
+            } else {
+                GROUP_VIEWER
+            };
             if let Ok(groups) = db.list_user_groups()
                 && let Some((group_id, _, _, _, _)) =
                     groups.into_iter().find(|(_, name, _, _, _)| name == default_group_name)
@@ -186,10 +191,10 @@ async fn me(auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
         .iter()
         .map(|(_id, name, _desc, _perms)| name.clone())
         .collect();
-    let role = if group_names.iter().any(|n| n == "Administrator") {
-        "admin"
+    let role = if group_names.iter().any(|n| n == GROUP_ADMIN) {
+        ROLE_ADMIN
     } else {
-        "viewer"
+        ROLE_VIEWER
     };
     let permissions = db.list_user_permissions(auth.sub).unwrap_or_default();
     HttpResponse::Ok().json(serde_json::json!({
@@ -257,10 +262,10 @@ async fn list_users(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
                         .iter()
                         .map(|(gid, name)| serde_json::json!({"id": gid, "name": name}))
                         .collect();
-                    let role = if user_groups.iter().any(|(_id, name)| name == "Administrator") {
-                        "admin"
+                    let role = if user_groups.iter().any(|(_id, name)| name == GROUP_ADMIN) {
+                        ROLE_ADMIN
                     } else {
-                        "viewer"
+                        ROLE_VIEWER
                     };
                     serde_json::json!({
                         "id": id,
@@ -288,7 +293,7 @@ async fn delete_user(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo
 
     // Protect the built-in admin account
     match db.find_user_by_id(user_id) {
-        Ok(Some((_, ref username, _, _, _))) if username == "admin" => {
+        Ok(Some((_, ref username, _, _, _))) if username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot delete the built-in admin account"}));
         }
@@ -316,7 +321,7 @@ async fn update_role(
     }
 
     let role = match body.get("role").and_then(|v| v.as_str()) {
-        Some(r) if r == "admin" || r == "viewer" => r,
+        Some(r) if r == ROLE_ADMIN || r == ROLE_VIEWER => r,
         _ => {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": "Role must be 'admin' or 'viewer'"}));
         }
@@ -472,7 +477,7 @@ async fn update_group(
     let existing = match db.get_user_group(group_id) {
         Ok(Some(g)) => {
             // Protect built-in groups
-            if g.1 == "Administrator" || g.1 == "Viewer" {
+            if g.1 == GROUP_ADMIN || g.1 == GROUP_VIEWER {
                 return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot modify built-in groups"}));
             }
             g
@@ -508,7 +513,7 @@ async fn delete_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Rep
 
     // Protect built-in groups
     match db.get_user_group(group_id) {
-        Ok(Some(g)) if g.1 == "Administrator" || g.1 == "Viewer" => {
+        Ok(Some(g)) if g.1 == GROUP_ADMIN || g.1 == GROUP_VIEWER => {
             return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot delete built-in groups"}));
         }
         _ => {}
@@ -531,7 +536,7 @@ async fn set_user_groups(
 
     // Protect the default admin account
     match db.find_user_by_id(user_id) {
-        Ok(Some((_, ref username, _, _, _))) if username == "admin" => {
+        Ok(Some((_, ref username, _, _, _))) if username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot modify groups for the built-in admin account"}));
         }

@@ -31,5 +31,8 @@ pub const AUDIT_ACTOR_SECURITY_ADMIN_PREFIX: &str = "SecurityAdmin";
 pub const FLOW_TRACE_FILE_MARKER: &str = "flow-trace-";
 pub const FLOW_TRACE_FILE_EXT: &str = ".csv";
 
+// ── Permissions ───────────────────────────────────────────────────
+pub const PERMISSION_SYSTEM_ADMIN: &str = "system:admin";
+
 // ── Event Channels ────────────────────────────────────────────────
 pub const EVENT_CHANNEL_CAPACITY: usize = 256;

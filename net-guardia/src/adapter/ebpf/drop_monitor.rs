@@ -11,6 +11,7 @@ use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
 use crate::domain::data_plane::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
+use crate::interface::port::drop_stats::DropStatsPort;
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,
@@ -39,9 +40,8 @@ impl DropMonitor {
     /// so no broadcast event is emitted — `/api/stats/drops` stays correct,
     /// `/ws/drops` simply does not surface the individual packet. Parse the
     /// packet upstream if you need a structured event.
-    pub fn record_userspace_drop_count_only(&self, reason: u8) {
-        self.counters.total.fetch_add(1, Ordering::Relaxed);
-        let bucket = match reason {
+    fn bucket_for(&self, reason: u8) -> Option<&std::sync::atomic::AtomicU64> {
+        match reason {
             DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
             DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
             DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
@@ -51,28 +51,22 @@ impl DropMonitor {
             DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
             DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
             _ => None,
-        };
-        if let Some(counter) = bucket {
+        }
+    }
+
+    fn record_drop(&self, reason: u8) {
+        self.counters.total.fetch_add(1, Ordering::Relaxed);
+        if let Some(counter) = self.bucket_for(reason) {
             counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 
+    pub fn record_userspace_drop_count_only(&self, reason: u8) {
+        self.record_drop(reason);
+    }
+
     fn process_event(&self, raw: &RawDropEvent) {
-        self.counters.total.fetch_add(1, Ordering::Relaxed);
-        let bucket = match raw.reason {
-            DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
-            DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
-            DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
-            DROP_REASON_RATE_LIMIT_UDP => Some(&self.counters.rate_limit_udp),
-            DROP_REASON_RATE_LIMIT_DNS => Some(&self.counters.rate_limit_dns),
-            DROP_REASON_PROTOCOL_FILTER => Some(&self.counters.protocol_filter),
-            DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
-            DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
-            _ => None,
-        };
-        if let Some(counter) = bucket {
-            counter.fetch_add(1, Ordering::Relaxed);
-        }
+        self.record_drop(raw.reason);
 
         let reason_str = reason_to_str(raw.reason);
 
@@ -91,6 +85,12 @@ impl DropMonitor {
         };
 
         let _ = self.broadcast_tx.send(msg);
+    }
+}
+
+impl DropStatsPort for DropMonitor {
+    fn get_counters(&self) -> DropCounters {
+        self.counters.snapshot()
     }
 }
 

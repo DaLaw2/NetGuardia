@@ -65,34 +65,34 @@ impl TtlScheduler {
         let mut removed = 0u32;
         let mut skipped = 0u32;
 
-        for (id, source_ip, _playbook_id) in &expired {
+        for block in &expired {
             // Check if a manual ACL rule exists for this IP
-            let has_manual_rule = self.db.has_manual_acl_rule(source_ip)?;
+            let has_manual_rule = self.db.has_manual_acl_rule(&block.source_ip)?;
 
             if has_manual_rule {
                 // Only mark as unblocked in SOAR records, don't remove from eBPF
-                self.db.mark_soar_block_unblocked(*id)?;
+                self.db.mark_soar_block_unblocked(block.id)?;
                 self.soar_engine.decrement_block_count();
                 skipped += 1;
                 log!(SoarLog::WhitelistSkipped(
-                    source_ip.clone(),
+                    block.source_ip.clone(),
                     "TTL expired but manual ACL exists".to_string()
                 ));
                 continue;
             }
 
             // Remove from eBPF ACL via AccessControlPort
-            if let Err(e) = self.access_control.unblock_ip(source_ip) {
+            if let Err(e) = self.access_control.unblock_ip(&block.source_ip) {
                 log!(SoarLog::RecoveryFailed(
-                    source_ip.clone(),
+                    block.source_ip.clone(),
                     format!("unblock failed: {}", e)
                 ));
             }
 
             // Atomically drop acl_rules entry AND mark soar_block_rules
             // unblocked in one transaction.
-            let ip_version = ip_version_from_str(source_ip);
-            self.db.commit_soar_unblock_to_db(*id, ip_version, source_ip)?;
+            let ip_version = ip_version_from_str(&block.source_ip);
+            self.db.commit_soar_unblock_to_db(block.id, ip_version, &block.source_ip)?;
             self.soar_engine.decrement_block_count();
             removed += 1;
         }

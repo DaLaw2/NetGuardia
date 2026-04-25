@@ -1,7 +1,7 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
-use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::infrastructure::statistics::FlowStatistics;
+use crate::interface::port::drop_stats::DropStatsPort;
 
 pub fn initialize() -> Scope {
     web::scope("/stats")
@@ -24,6 +24,6 @@ async fn get_summary(stats: web::Data<FlowStatistics>) -> impl Responder {
     HttpResponse::Ok().json(stats.get_summary())
 }
 
-async fn get_drop_stats(monitor: web::Data<DropMonitor>) -> impl Responder {
+async fn get_drop_stats(monitor: web::Data<dyn DropStatsPort>) -> impl Responder {
     HttpResponse::Ok().json(monitor.get_counters())
 }

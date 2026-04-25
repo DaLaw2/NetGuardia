@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 use crate::domain::common::error::Error;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::ip_address::NativeConvert;
+use crate::interface::port::protocol_filter::ProtocolFilterPort;
 
 pub struct ProtocolFilter {
     ipv4_http_service: RwLock<HttpServiceWrapper<AddrPortV4>>,
@@ -173,6 +174,116 @@ impl ProtocolFilter {
 
     pub fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
         self.ipv6_ssh_black_list.write().remove(ip)
+    }
+}
+
+impl ProtocolFilterPort for ProtocolFilter {
+    fn get_ipv4_http_service(&self) -> HashMap<SocketAddrV4, Vec<HttpMethod>> {
+        self.get_ipv4_http_service()
+    }
+
+    fn get_ipv6_http_service(&self) -> HashMap<SocketAddrV6, Vec<HttpMethod>> {
+        self.get_ipv6_http_service()
+    }
+
+    fn add_ipv4_http_service(&self, addr: SocketAddrV4, m: Vec<HttpMethod>) -> Result<(), Error> {
+        self.add_ipv4_http_service(addr, m)
+    }
+
+    fn add_ipv6_http_service(&self, addr: SocketAddrV6, m: Vec<HttpMethod>) -> Result<(), Error> {
+        self.add_ipv6_http_service(addr, m)
+    }
+
+    fn remove_ipv4_http_service(&self, addr: SocketAddrV4, m: Vec<HttpMethod>) -> Result<(), Error> {
+        self.remove_ipv4_http_service(addr, m)
+    }
+
+    fn remove_ipv6_http_service(&self, addr: SocketAddrV6, m: Vec<HttpMethod>) -> Result<(), Error> {
+        self.remove_ipv6_http_service(addr, m)
+    }
+
+    fn is_ssh_white_list_enable(&self) -> bool {
+        self.is_ssh_white_list_enable()
+    }
+
+    fn enable_ssh_white_list(&self) -> Result<(), Error> {
+        self.enable_ssh_white_list()
+    }
+
+    fn disable_ssh_white_list(&self) -> Result<(), Error> {
+        self.disable_ssh_white_list()
+    }
+
+    fn get_ipv4_ssh_service(&self) -> Vec<SocketAddrV4> {
+        self.get_ipv4_ssh_service()
+    }
+
+    fn get_ipv6_ssh_service(&self) -> Vec<SocketAddrV6> {
+        self.get_ipv6_ssh_service()
+    }
+
+    fn add_ipv4_ssh_service(&self, addr: SocketAddrV4) -> Result<(), Error> {
+        self.add_ipv4_ssh_service(addr)
+    }
+
+    fn add_ipv6_ssh_service(&self, addr: SocketAddrV6) -> Result<(), Error> {
+        self.add_ipv6_ssh_service(addr)
+    }
+
+    fn remove_ipv4_ssh_service(&self, addr: SocketAddrV4) -> Result<(), Error> {
+        self.remove_ipv4_ssh_service(addr)
+    }
+
+    fn remove_ipv6_ssh_service(&self, addr: SocketAddrV6) -> Result<(), Error> {
+        self.remove_ipv6_ssh_service(addr)
+    }
+
+    fn get_ipv4_ssh_white_list(&self) -> Vec<Ipv4Addr> {
+        self.get_ipv4_ssh_white_list()
+    }
+
+    fn get_ipv6_ssh_white_list(&self) -> Vec<Ipv6Addr> {
+        self.get_ipv6_ssh_white_list()
+    }
+
+    fn add_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.add_ipv4_ssh_white_list(ip)
+    }
+
+    fn add_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.add_ipv6_ssh_white_list(ip)
+    }
+
+    fn remove_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.remove_ipv4_ssh_white_list(ip)
+    }
+
+    fn remove_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.remove_ipv6_ssh_white_list(ip)
+    }
+
+    fn get_ipv4_ssh_black_list(&self) -> Vec<Ipv4Addr> {
+        self.get_ipv4_ssh_black_list()
+    }
+
+    fn get_ipv6_ssh_black_list(&self) -> Vec<Ipv6Addr> {
+        self.get_ipv6_ssh_black_list()
+    }
+
+    fn add_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.add_ipv4_ssh_black_list(ip)
+    }
+
+    fn add_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.add_ipv6_ssh_black_list(ip)
+    }
+
+    fn remove_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
+        self.remove_ipv4_ssh_black_list(ip)
+    }
+
+    fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
+        self.remove_ipv6_ssh_black_list(ip)
     }
 }
 

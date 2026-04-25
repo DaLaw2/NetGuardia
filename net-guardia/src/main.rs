@@ -25,6 +25,7 @@ use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
 use crate::domain::common::log::system::SystemLog;
+use crate::domain::identity::auth::{DEFAULT_ADMIN_USERNAME, GROUP_ADMIN, ROLE_ADMIN};
 use crate::domain::identity::password;
 use crate::infrastructure::cli::{Cli, handle_subcommand};
 use crate::infrastructure::http_server;
@@ -37,10 +38,10 @@ fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
     if database.user_count().unwrap_or(0) != 0 {
         return Ok(());
     }
-    let hash = password::hash_password("admin")?;
-    let admin_user_id = database.insert_user("admin", &hash, "admin", false)?;
+    let hash = password::hash_password(DEFAULT_ADMIN_USERNAME)?;
+    let admin_user_id = database.insert_user(DEFAULT_ADMIN_USERNAME, &hash, ROLE_ADMIN, false)?;
     if let Ok(groups) = database.list_user_groups()
-        && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == "Administrator")
+        && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == GROUP_ADMIN)
         && let Err(err) = database.set_user_groups(admin_user_id, &[group_id])
     {
         log!(SystemError::SetUserGroupsFailed(err));

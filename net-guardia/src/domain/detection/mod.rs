@@ -2,6 +2,7 @@ pub mod aggregator;
 pub mod attack_type;
 pub mod beaconing;
 pub mod botnet;
+pub mod correlation_cleanup;
 pub mod drift;
 pub mod drift_detector;
 pub mod error;

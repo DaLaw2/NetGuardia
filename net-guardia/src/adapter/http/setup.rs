@@ -11,6 +11,7 @@ use crate::adapter::persistence::Database;
 use crate::core::identity::setup_guard::SetupCompleteFlag;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
+use crate::domain::identity::auth::DEFAULT_ADMIN_USERNAME;
 use crate::domain::identity::password;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::port::secret_store::SecretStorePort;
@@ -143,7 +144,7 @@ async fn complete_setup(
     match password::hash_password(&body.admin_password) {
         Ok(hash) => {
             // Find admin user and update password
-            if let Ok(Some(user)) = db.find_user("admin") {
+            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME) {
                 if let Err(e) = db.update_user_password(user.0, &hash) {
                     log!(SystemError::SetupPasswordUpdateFailed(e));
                 }

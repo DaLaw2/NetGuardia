@@ -1,9 +1,31 @@
+use std::collections::HashMap;
+
 use rusqlite::params;
+use serde_json::Value;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::domain::response::playbook_data::UpdatePlaybookInput;
-use crate::interface::port::soar::{PlaybookRow, SoarExecutionRow, SoarRepo};
+use crate::domain::response::playbook_data::{
+    ActionView, ActiveBlockView, ConditionView, ExecutionView, PendingUnblock, PlaybookView, UpdatePlaybookInput,
+};
+use crate::interface::port::soar::SoarRepo;
+
+/// Intermediate row from the playbooks LEFT JOIN playbook_actions query.
+/// Private to this module; consumed only by `SoarRepo::list_playbooks`.
+struct PlaybookActionRow {
+    pb_id: i64,
+    name: String,
+    enabled: bool,
+    trigger_event: String,
+    condition_threshold: Option<f64>,
+    condition_count: Option<i64>,
+    condition_window_secs: Option<i64>,
+    cooldown_secs: i64,
+    action_id: Option<i64>,
+    action_order: Option<i64>,
+    action_type: Option<String>,
+    action_params: Option<String>,
+}
 
 impl Database {
     pub fn insert_playbook(
@@ -39,26 +61,7 @@ impl Database {
     }
 
     /// Load all playbooks with their actions in a single JOIN query (avoids N+1).
-    /// Returns Vec of (playbook fields..., action fields...).
-    pub fn list_playbooks_with_actions(
-        &self,
-    ) -> Result<
-        Vec<(
-            i64,
-            String,
-            bool,
-            String,
-            Option<f64>,
-            Option<i64>,
-            Option<i64>,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        )>,
-        Error,
-    > {
+    fn list_playbooks_with_actions(&self) -> Result<Vec<PlaybookActionRow>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT p.id, p.name, p.enabled, p.trigger_event, p.condition_threshold, \
@@ -69,20 +72,20 @@ impl Database {
              ORDER BY p.id, a.action_order",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, bool>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<f64>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, Option<i64>>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-            ))
+            Ok(PlaybookActionRow {
+                pb_id: row.get::<_, i64>(0)?,
+                name: row.get::<_, String>(1)?,
+                enabled: row.get::<_, bool>(2)?,
+                trigger_event: row.get::<_, String>(3)?,
+                condition_threshold: row.get::<_, Option<f64>>(4)?,
+                condition_count: row.get::<_, Option<i64>>(5)?,
+                condition_window_secs: row.get::<_, Option<i64>>(6)?,
+                cooldown_secs: row.get::<_, i64>(7)?,
+                action_id: row.get::<_, Option<i64>>(8)?,
+                action_order: row.get::<_, Option<i64>>(9)?,
+                action_type: row.get::<_, Option<String>>(10)?,
+                action_params: row.get::<_, Option<String>>(11)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -123,9 +126,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_all_playbook_conditions(
-        &self,
-    ) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
+    fn list_all_playbook_conditions(&self) -> Result<Vec<(i64, ConditionView)>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, playbook_id, condition_type, operator, value, value2 \
@@ -133,12 +134,14 @@ impl Database {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                ConditionView {
+                    id: row.get::<_, i64>(0)?,
+                    condition_type: row.get::<_, String>(2)?,
+                    operator: row.get::<_, String>(3)?,
+                    value: row.get::<_, String>(4)?,
+                    value2: row.get::<_, Option<String>>(5)?,
+                },
             ))
         })?;
         let mut result = Vec::new();
@@ -163,23 +166,21 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_soar_executions(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<(i64, i64, Option<String>, String, String, String)>, Error> {
+    pub fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, playbook_id, source_ip, trigger_event, actions_executed, executed_at FROM soar_executions ORDER BY executed_at DESC LIMIT ?1"
         )?;
         let rows = stmt.query_map(params![limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
+            let actions_str: String = row.get(4)?;
+            Ok(ExecutionView {
+                id: row.get::<_, i64>(0)?,
+                playbook_id: row.get::<_, i64>(1)?,
+                source_ip: row.get::<_, Option<String>>(2)?,
+                trigger_event: row.get::<_, String>(3)?,
+                actions_executed: serde_json::from_str(&actions_str).unwrap_or(Value::Null),
+                created_at: row.get::<_, String>(5)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -236,8 +237,72 @@ impl Database {
 }
 
 impl SoarRepo for Database {
-    fn list_playbooks_with_actions(&self) -> Result<Vec<PlaybookRow>, Error> {
-        self.list_playbooks_with_actions()
+    fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
+        let rows = self.list_playbooks_with_actions()?;
+        let mut result: Vec<PlaybookView> = Vec::new();
+
+        for row in rows {
+            let pb = if let Some(last) = result.last_mut() {
+                if last.id == row.pb_id {
+                    last
+                } else {
+                    result.push(PlaybookView {
+                        id: row.pb_id,
+                        name: row.name,
+                        enabled: row.enabled,
+                        trigger_event: row.trigger_event,
+                        condition_threshold: row.condition_threshold,
+                        condition_count: row.condition_count,
+                        condition_window_secs: row.condition_window_secs,
+                        cooldown_secs: row.cooldown_secs,
+                        actions: Vec::new(),
+                        conditions: Vec::new(),
+                    });
+                    // SAFETY: just pushed above, Vec cannot be empty
+                    result.last_mut().unwrap_or_else(|| unreachable!())
+                }
+            } else {
+                result.push(PlaybookView {
+                    id: row.pb_id,
+                    name: row.name,
+                    enabled: row.enabled,
+                    trigger_event: row.trigger_event,
+                    condition_threshold: row.condition_threshold,
+                    condition_count: row.condition_count,
+                    condition_window_secs: row.condition_window_secs,
+                    cooldown_secs: row.cooldown_secs,
+                    actions: Vec::new(),
+                    conditions: Vec::new(),
+                });
+                // SAFETY: just pushed above, Vec cannot be empty
+                result.last_mut().unwrap_or_else(|| unreachable!())
+            };
+
+            if let (Some(aid), Some(order), Some(atype), Some(params_str)) =
+                (row.action_id, row.action_order, row.action_type, row.action_params)
+            {
+                pb.actions.push(ActionView {
+                    id: aid,
+                    action_order: order,
+                    action_type: atype,
+                    params: serde_json::from_str(&params_str).unwrap_or(Value::Null),
+                });
+            }
+        }
+
+        // Load conditions and attach to playbooks
+        let cond_rows = self.list_all_playbook_conditions()?;
+        let mut cond_map: HashMap<i64, Vec<ConditionView>> = HashMap::new();
+        for (pb_id, cond) in cond_rows {
+            cond_map.entry(pb_id).or_default().push(cond);
+        }
+        for pb in &mut result {
+            if let Some(conds) = cond_map.remove(&pb.id) {
+                pb.conditions = conds;
+            }
+        }
+
+        Ok(result)
     }
 
     fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
@@ -252,23 +317,19 @@ impl SoarRepo for Database {
         self.seed_default_playbooks()
     }
 
-    fn list_all_playbook_conditions(&self) -> Result<Vec<(i64, i64, String, String, String, Option<String>)>, Error> {
-        self.list_all_playbook_conditions()
-    }
-
     fn count_active_soar_blocks(&self) -> Result<u32, Error> {
         self.count_active_soar_blocks()
     }
 
-    fn list_active_soar_blocks(&self) -> Result<Vec<(i64, String, i64, String)>, Error> {
+    fn list_active_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
         self.list_active_soar_blocks()
     }
 
-    fn find_soar_block_by_id(&self, id: i64) -> Result<Option<(i64, String, i64, String)>, Error> {
+    fn find_soar_block_by_id(&self, id: i64) -> Result<Option<ActiveBlockView>, Error> {
         self.find_soar_block_by_id(id)
     }
 
-    fn list_expired_soar_blocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    fn list_expired_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
         self.list_expired_soar_blocks()
     }
 
@@ -280,7 +341,7 @@ impl SoarRepo for Database {
         self.insert_pending_unblock(source_ip)
     }
 
-    fn list_pending_unblocks(&self) -> Result<Vec<(i64, String, i64)>, Error> {
+    fn list_pending_unblocks(&self) -> Result<Vec<PendingUnblock>, Error> {
         self.list_pending_unblocks()
     }
 
@@ -302,7 +363,7 @@ impl SoarRepo for Database {
         self.insert_soar_execution(playbook_id, source_ip, trigger_event, actions_json)
     }
 
-    fn list_soar_executions(&self, limit: i64) -> Result<Vec<SoarExecutionRow>, Error> {
+    fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
         self.list_soar_executions(limit)
     }
 
@@ -402,9 +463,8 @@ mod tests {
             .insert_playbook_atomic("atom_pb", "threat", Some(0.8), None, None, 300, &actions, &conditions)
             .unwrap();
         assert!(id > 0);
-        let loaded = db.list_playbooks_with_actions().unwrap();
+        let loaded = db.list_playbooks().unwrap();
         assert!(!loaded.is_empty());
-        let cond_rows = db.list_all_playbook_conditions().unwrap();
-        assert_eq!(cond_rows.len(), 1);
+        assert_eq!(loaded[0].conditions.len(), 1);
     }
 }

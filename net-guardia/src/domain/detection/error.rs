@@ -53,15 +53,7 @@ traceable! {
         #[error("Failed to spawn Suricata subprocess")]
         SpawnFailed => tracing::Level::ERROR,
 
-        #[no_source]
-        #[error("Suricata subprocess exited: {reason}")]
-        SubprocessExited { reason: String } => tracing::Level::WARN,
-
         #[error("Failed to open eve.json stream at '{path}'")]
         EveOpenFailed { path: String } => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Failed to parse eve.json line: {reason}")]
-        EveParseFailed { reason: String } => tracing::Level::WARN,
     }
 }

@@ -1,12 +1,14 @@
 use std::str::FromStr;
 
 use actix_web::{HttpResponse, Scope, web};
+use arc_swap::ArcSwap;
 use serde::Deserialize;
 
 use crate::adapter::http::response::{ok_json_or_error, ok_or_error};
 use crate::core::identity::extractor::AuthClaims;
 use crate::core::response::engine::SoarEngine;
 use crate::core::response::playbook_service::PlaybookService;
+use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::{DetectionSource, ThreatDetectedEvent};
 use crate::domain::response::playbook_data::{CreateConditionInput, CreatePlaybookInput};
 
@@ -36,6 +38,47 @@ struct CreateConditionRequest {
     value2: Option<String>,
 }
 
+fn map_request_to_input(body: &CreatePlaybookRequest, fallback_cooldown: i64) -> CreatePlaybookInput {
+    let actions = body
+        .actions
+        .iter()
+        .map(|a| {
+            let params_str = a
+                .params
+                .as_ref()
+                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()))
+                .unwrap_or_else(|| "{}".into());
+            (a.action_type.clone(), params_str)
+        })
+        .collect();
+
+    let conditions = body
+        .conditions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|c| {
+            CreateConditionInput::new(
+                c.condition_type.clone(),
+                c.operator.clone(),
+                c.value.clone(),
+                c.value2.clone(),
+            )
+        })
+        .collect();
+
+    CreatePlaybookInput {
+        name: body.name.clone(),
+        trigger_event: body.trigger_event.clone(),
+        condition_threshold: body.condition_threshold,
+        condition_count: body.condition_count,
+        condition_window_secs: body.condition_window_secs,
+        cooldown_secs: body.cooldown_secs.unwrap_or(fallback_cooldown),
+        actions,
+        conditions,
+    }
+}
+
 pub fn initialize() -> Scope {
     web::scope("/soar")
         .route("/playbooks", web::get().to(list_playbooks))
@@ -53,100 +96,16 @@ pub fn initialize() -> Scope {
 }
 
 async fn list_playbooks(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    match svc.list_playbooks() {
-        Ok(playbooks) => {
-            let responses: Vec<serde_json::Value> = playbooks
-                .into_iter()
-                .map(|pb| {
-                    let actions: Vec<serde_json::Value> = pb
-                        .actions
-                        .into_iter()
-                        .map(|a| {
-                            serde_json::json!({
-                                "id": a.id,
-                                "action_order": a.action_order,
-                                "action_type": a.action_type,
-                                "params": a.params,
-                            })
-                        })
-                        .collect();
-                    let conditions: Vec<serde_json::Value> = pb
-                        .conditions
-                        .into_iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "id": c.id,
-                                "condition_type": c.condition_type,
-                                "operator": c.operator,
-                                "value": c.value,
-                                "value2": c.value2,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "id": pb.id,
-                        "name": pb.name,
-                        "enabled": pb.enabled,
-                        "trigger_event": pb.trigger_event,
-                        "condition_threshold": pb.condition_threshold,
-                        "condition_count": pb.condition_count,
-                        "condition_window_secs": pb.condition_window_secs,
-                        "cooldown_secs": pb.cooldown_secs,
-                        "actions": actions,
-                        "conditions": conditions,
-                    })
-                })
-                .collect();
-            HttpResponse::Ok().json(responses)
-        }
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(svc.list_playbooks())
 }
 
 async fn create_playbook(
     _auth: AuthClaims,
     svc: web::Data<PlaybookService>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
     body: web::Json<CreatePlaybookRequest>,
 ) -> HttpResponse {
-    let actions: Vec<(String, String)> = body
-        .actions
-        .iter()
-        .map(|a| {
-            let params_str = a
-                .params
-                .as_ref()
-                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()))
-                .unwrap_or_else(|| "{}".into());
-            (a.action_type.clone(), params_str)
-        })
-        .collect();
-
-    let conditions: Vec<CreateConditionInput> = body
-        .conditions
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|c| {
-            CreateConditionInput::new(
-                c.condition_type.clone(),
-                c.operator.clone(),
-                c.value.clone(),
-                c.value2.clone(),
-            )
-        })
-        .collect();
-
-    let input = CreatePlaybookInput {
-        name: body.name.clone(),
-        trigger_event: body.trigger_event.clone(),
-        condition_threshold: body.condition_threshold,
-        condition_count: body.condition_count,
-        condition_window_secs: body.condition_window_secs,
-        cooldown_secs: body.cooldown_secs.unwrap_or(300),
-        actions,
-        conditions,
-    };
-
+    let input = map_request_to_input(&body, app_config.load().soar.fallback_cooldown_secs);
     match svc.create_playbook(&input) {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({"id": id})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -156,50 +115,12 @@ async fn create_playbook(
 async fn update_playbook(
     _auth: AuthClaims,
     svc: web::Data<PlaybookService>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
     path: web::Path<i64>,
     body: web::Json<CreatePlaybookRequest>,
 ) -> HttpResponse {
     let id = path.into_inner();
-
-    let actions: Vec<(String, String)> = body
-        .actions
-        .iter()
-        .map(|a| {
-            let params_str = a
-                .params
-                .as_ref()
-                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()))
-                .unwrap_or_else(|| "{}".into());
-            (a.action_type.clone(), params_str)
-        })
-        .collect();
-
-    let conditions: Vec<CreateConditionInput> = body
-        .conditions
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|c| {
-            CreateConditionInput::new(
-                c.condition_type.clone(),
-                c.operator.clone(),
-                c.value.clone(),
-                c.value2.clone(),
-            )
-        })
-        .collect();
-
-    let input = CreatePlaybookInput {
-        name: body.name.clone(),
-        trigger_event: body.trigger_event.clone(),
-        condition_threshold: body.condition_threshold,
-        condition_count: body.condition_count,
-        condition_window_secs: body.condition_window_secs,
-        cooldown_secs: body.cooldown_secs.unwrap_or(300),
-        actions,
-        conditions,
-    };
-
+    let input = map_request_to_input(&body, app_config.load().soar.fallback_cooldown_secs);
     match svc.update_playbook(id, &input) {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"updated": true})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Playbook not found"})),
@@ -234,23 +155,7 @@ async fn delete_playbook(_auth: AuthClaims, svc: web::Data<PlaybookService>, pat
 }
 
 async fn list_active_blocks(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    match svc.list_active_blocks() {
-        Ok(blocks) => {
-            let responses: Vec<serde_json::Value> = blocks
-                .into_iter()
-                .map(|b| {
-                    serde_json::json!({
-                        "id": b.id,
-                        "source_ip": b.source_ip,
-                        "playbook_id": b.playbook_id,
-                        "expires_at": b.expires_at,
-                    })
-                })
-                .collect();
-            HttpResponse::Ok().json(responses)
-        }
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(svc.list_active_blocks())
 }
 
 async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<i64>) -> HttpResponse {
@@ -258,25 +163,7 @@ async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path
 }
 
 async fn list_executions(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    match svc.list_executions(100) {
-        Ok(executions) => {
-            let responses: Vec<serde_json::Value> = executions
-                .into_iter()
-                .map(|ex| {
-                    serde_json::json!({
-                        "id": ex.id,
-                        "playbook_id": ex.playbook_id,
-                        "source_ip": ex.source_ip,
-                        "trigger_event": ex.trigger_event,
-                        "actions_executed": ex.actions_executed,
-                        "created_at": ex.created_at,
-                    })
-                })
-                .collect();
-            HttpResponse::Ok().json(responses)
-        }
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_json_or_error(svc.list_executions(100))
 }
 
 async fn list_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {

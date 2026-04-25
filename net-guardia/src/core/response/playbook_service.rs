@@ -1,14 +1,11 @@
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-
-use serde_json::Value;
 
 use crate::core::response::engine::SoarEngine;
 use crate::domain::common::error::Error;
 use crate::domain::response::error::SoarError;
 use crate::domain::response::playbook_data::{
-    ActionView, ActiveBlockView, ConditionView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
+    ActiveBlockView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
 };
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::app_repo::AppRepo;
@@ -31,93 +28,7 @@ impl PlaybookService {
     }
 
     pub fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
-        let rows = self.db.list_playbooks_with_actions()?;
-        let mut result: Vec<PlaybookView> = Vec::new();
-
-        for (
-            pb_id,
-            name,
-            enabled,
-            trigger_event,
-            threshold,
-            count,
-            window,
-            cooldown,
-            action_id,
-            action_order,
-            action_type,
-            action_params,
-        ) in rows
-        {
-            // Find or create the playbook entry
-            let pb = if let Some(last) = result.last_mut() {
-                if last.id == pb_id {
-                    last
-                } else {
-                    result.push(PlaybookView {
-                        id: pb_id,
-                        name,
-                        enabled,
-                        trigger_event,
-                        condition_threshold: threshold,
-                        condition_count: count,
-                        condition_window_secs: window,
-                        cooldown_secs: cooldown,
-                        actions: Vec::new(),
-                        conditions: Vec::new(),
-                    });
-                    // SAFETY: just pushed above, Vec cannot be empty
-                    result.last_mut().unwrap_or_else(|| unreachable!())
-                }
-            } else {
-                result.push(PlaybookView {
-                    id: pb_id,
-                    name,
-                    enabled,
-                    trigger_event,
-                    condition_threshold: threshold,
-                    condition_count: count,
-                    condition_window_secs: window,
-                    cooldown_secs: cooldown,
-                    actions: Vec::new(),
-                    conditions: Vec::new(),
-                });
-                // SAFETY: just pushed above, Vec cannot be empty
-                result.last_mut().unwrap_or_else(|| unreachable!())
-            };
-
-            // Append action if present (LEFT JOIN may yield NULLs)
-            if let (Some(aid), Some(order), Some(atype), Some(params_str)) =
-                (action_id, action_order, action_type, action_params)
-            {
-                pb.actions.push(ActionView {
-                    id: aid,
-                    action_order: order,
-                    action_type: atype,
-                    params: serde_json::from_str(&params_str).unwrap_or(Value::Null),
-                });
-            }
-        }
-
-        // Load conditions and attach to playbooks
-        let cond_rows = self.db.list_all_playbook_conditions()?;
-        let mut cond_map: HashMap<i64, Vec<ConditionView>> = HashMap::new();
-        for (cid, pb_id, ctype, operator, value, value2) in cond_rows {
-            cond_map.entry(pb_id).or_default().push(ConditionView {
-                id: cid,
-                condition_type: ctype,
-                operator,
-                value,
-                value2,
-            });
-        }
-        for pb in &mut result {
-            if let Some(conds) = cond_map.remove(&pb.id) {
-                pb.conditions = conds;
-            }
-        }
-
-        Ok(result)
+        self.db.list_playbooks()
     }
 
     pub fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
@@ -207,16 +118,7 @@ impl PlaybookService {
     }
 
     pub fn list_active_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
-        let blocks = self.db.list_active_soar_blocks()?;
-        Ok(blocks
-            .into_iter()
-            .map(|(id, ip, pb_id, expires)| ActiveBlockView {
-                id,
-                source_ip: ip,
-                playbook_id: pb_id,
-                expires_at: expires,
-            })
-            .collect())
+        self.db.list_active_soar_blocks()
     }
 
     /// Manually unblock an IP: remove from eBPF, atomically clear both DB
@@ -228,7 +130,7 @@ impl PlaybookService {
             .db
             .find_soar_block_by_id(id)?
             .ok_or_else(|| SoarError::UnblockRuleNotFound(id))?;
-        let source_ip = &block.1;
+        let source_ip = &block.source_ip;
 
         // Remove from eBPF ACL
         self.access_control.unblock_ip(source_ip)?;
@@ -245,20 +147,7 @@ impl PlaybookService {
     }
 
     pub fn list_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
-        let rows = self.db.list_soar_executions(limit)?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(id, pb_id, source_ip, trigger_event, actions, created_at)| ExecutionView {
-                    id,
-                    playbook_id: pb_id,
-                    source_ip,
-                    trigger_event,
-                    actions_executed: serde_json::from_str(&actions).unwrap_or(Value::Null),
-                    created_at,
-                },
-            )
-            .collect())
+        self.db.list_soar_executions(limit)
     }
 
     pub fn list_whitelist(&self) -> Result<Vec<String>, Error> {
