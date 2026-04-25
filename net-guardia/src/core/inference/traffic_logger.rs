@@ -6,7 +6,7 @@
 //!
 //! On FIFO failure (permissions, I/O error) the writer shuts down
 //! cleanly, leaves inference untouched, logs through `MLLog`, and
-//! (when a `CommunicationManager` is wired in) also publishes a WORM
+//! (when an `audit_tx` sender is wired in) also publishes a WORM
 //! `AuditEvent` so the chain records an auditor-visible reason the
 //! recording stopped, not just a tracing line that may be lost.
 //! Callers see the channel disconnect and stop sending rows.
@@ -21,12 +21,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use macros::log;
+use tokio::sync::broadcast;
 
 use crate::domain::common::config::constants::{FLOW_TRACE_FILE_EXT, FLOW_TRACE_FILE_MARKER};
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::error::MLError;
 use crate::domain::detection::log::MLLog;
-use crate::infrastructure::communication_manager::CommunicationManager;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 500 * 1024 * 1024;
 pub const DEFAULT_MAX_FILE_AGE: Duration = Duration::from_secs(3600);
@@ -69,7 +69,7 @@ pub struct TrafficLogger {
 impl TrafficLogger {
     /// Build a rotating writer rooted at `base_path`'s parent. Any
     /// existing `flow-trace-*.csv` in that directory participates in
-    /// the FIFO budget. `comm` is optional so tests (and paths where
+    /// the FIFO budget. `audit_tx` is optional so tests (and paths where
     /// the bus isn't wired yet) can exercise the rotation logic without
     /// the event-bus dependency; production code always passes `Some`.
     pub fn new(
@@ -77,7 +77,7 @@ impl TrafficLogger {
         header: Vec<String>,
         policy: RotationPolicy,
         channel_capacity: usize,
-        comm: Option<Arc<CommunicationManager>>,
+        audit_tx: Option<broadcast::Sender<AuditEvent>>,
     ) -> Result<Self, io::Error> {
         let directory = base_path
             .parent()
@@ -93,7 +93,7 @@ impl TrafficLogger {
         thread::Builder::new()
             .name("traffic-logger".to_string())
             .spawn(move || {
-                writer_loop(receiver, writer_dir, writer_header, writer_policy, comm);
+                writer_loop(receiver, writer_dir, writer_header, writer_policy, audit_tx);
             })?;
 
         Ok(Self {
@@ -188,14 +188,14 @@ fn writer_loop(
     directory: PathBuf,
     header: Vec<String>,
     policy: RotationPolicy,
-    comm: Option<Arc<CommunicationManager>>,
+    audit_tx: Option<broadcast::Sender<AuditEvent>>,
 ) {
     let mut active = match open_new_file(&directory, &header) {
         Ok(a) => a,
         Err(e) => {
             let reason = e.to_string();
             log!(MLLog::FlowTraceStopped(reason.clone()));
-            emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
+            emit_flow_trace_stop_audit(audit_tx.as_ref(), &reason, &directory);
             return;
         }
     };
@@ -213,7 +213,7 @@ fn writer_loop(
                 // see the disconnect and stop trying.
                 let reason = format!("FIFO sweep failed: {e}");
                 log!(MLLog::FlowTraceStopped(reason.clone()));
-                emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
+                emit_flow_trace_stop_audit(audit_tx.as_ref(), &reason, &directory);
                 return;
             }
             active = match open_new_file(&directory, &header) {
@@ -221,7 +221,7 @@ fn writer_loop(
                 Err(e) => {
                     let reason = format!("rotate failed: {e}");
                     log!(MLLog::FlowTraceStopped(reason.clone()));
-                    emit_flow_trace_stop_audit(comm.as_ref(), &reason, &directory);
+                    emit_flow_trace_stop_audit(audit_tx.as_ref(), &reason, &directory);
                     return;
                 }
             };
@@ -242,14 +242,14 @@ fn writer_loop(
 
 /// Publish a WORM `flow_trace_stopped` audit entry so an auditor can
 /// later see why Flow Trace recording went dormant without grepping
-/// process logs. A `None` bus (tests, or pre-wiring paths) is a
+/// process logs. A `None` sender (tests, or pre-wiring paths) is a
 /// deliberate no-op — the sibling `MLLog::FlowTraceStopped` tracing
 /// line still fires in both cases.
 ///
 /// Extracted as a free function so tests can cover the emit path
 /// without driving a full writer-loop + failing-disk fixture.
-fn emit_flow_trace_stop_audit(comm: Option<&Arc<CommunicationManager>>, reason: &str, directory: &Path) {
-    let Some(c) = comm else {
+fn emit_flow_trace_stop_audit(audit_tx: Option<&broadcast::Sender<AuditEvent>>, reason: &str, directory: &Path) {
+    let Some(tx) = audit_tx else {
         return;
     };
     let detail = serde_json::json!({
@@ -257,7 +257,7 @@ fn emit_flow_trace_stop_audit(comm: Option<&Arc<CommunicationManager>>, reason: 
         "directory": directory.display().to_string(),
     })
     .to_string();
-    let _ = c.publish_event_sync(AuditEvent {
+    let _ = tx.send(AuditEvent {
         actor: AUDIT_ACTOR_SYSTEM.to_string(),
         action: AUDIT_ACTION_FLOW_TRACE_STOPPED.to_string(),
         detail,
@@ -401,13 +401,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_audit_reaches_subscriber_when_comm_provided() {
-        let comm = Arc::new(CommunicationManager::new(256));
-        comm.register_event_type::<AuditEvent>();
-        let mut rx = comm.subscribe_event::<AuditEvent>().unwrap();
+    async fn stop_audit_reaches_subscriber_when_sender_provided() {
+        let (tx, mut rx) = broadcast::channel::<AuditEvent>(256);
 
         let dir = scratch_dir("audit-emit");
-        emit_flow_trace_stop_audit(Some(&comm), "FIFO sweep failed: perm denied", &dir);
+        emit_flow_trace_stop_audit(Some(&tx), "FIFO sweep failed: perm denied", &dir);
 
         let event = rx.recv().await.expect("audit event must be delivered");
         assert_eq!(event.actor, "system");
@@ -419,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_audit_noop_when_comm_absent() {
+    fn stop_audit_noop_when_sender_absent() {
         // Passing None is the explicit test-mode path — must not panic.
         emit_flow_trace_stop_audit(None, "any reason", Path::new("/tmp/anywhere"));
     }

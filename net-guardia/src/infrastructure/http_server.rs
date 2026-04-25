@@ -8,6 +8,7 @@ use actix_web::web::route;
 use actix_web::{App, HttpResponse, HttpServer, web};
 use arc_swap::ArcSwap;
 use macros::log;
+use tokio::sync::broadcast;
 
 use crate::adapter::ebpf::EbpfServices;
 use crate::adapter::http::model_upload::PromoteGate;
@@ -35,11 +36,12 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::HTTP_FALLBACK_PORT;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::http::HttpError;
+use crate::domain::common::event::{AuditEvent, ThreatDetectedEvent};
 use crate::domain::common::log::http::HttpLog;
 use crate::domain::common::system::readiness::ReadinessState;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
-use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
@@ -60,7 +62,9 @@ pub struct HttpServerParams {
     pub db: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
-    pub comm: Arc<CommunicationManager>,
+    pub threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    pub audit_tx: broadcast::Sender<AuditEvent>,
+    pub enforce_handler: Arc<EnforceModeHandler>,
     pub setup_complete: SetupCompleteFlag,
     pub ready: ReadyFlag,
     pub readiness_state: Arc<ReadinessState>,
@@ -228,7 +232,9 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let db = params.db;
     let secret_store = params.secret_store;
     let jwt_service = params.jwt_service;
-    let comm = params.comm;
+    let threat_tx = params.threat_tx;
+    let audit_tx = params.audit_tx;
+    let enforce_handler = params.enforce_handler;
     let setup_complete = params.setup_complete;
     let ready = params.ready;
     let readiness_state = params.readiness_state;
@@ -278,7 +284,9 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(db.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
-            .app_data(web::Data::from(comm.clone()))
+            .app_data(web::Data::new(threat_tx.clone()))
+            .app_data(web::Data::new(audit_tx.clone()))
+            .app_data(web::Data::from(enforce_handler.clone()))
             .app_data(web::Data::new(setup_complete.clone()))
             .app_data(web::Data::new(ready.clone()))
             .app_data(web::Data::from(readiness_state.clone()))

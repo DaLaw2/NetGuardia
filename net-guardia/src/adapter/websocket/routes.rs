@@ -1,11 +1,12 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
+use tokio::sync::broadcast;
 
 use super::{alert_websocket, drop_websocket, flow_websocket, fusion_websocket, health_websocket};
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::core::identity::jwt::JwtService;
 use crate::core::inference::alert::MLAlert;
-use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::domain::common::event::ThreatDetectedEvent;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
 
@@ -86,14 +87,14 @@ async fn alerts_ws(
 async fn fusion_ws(
     req: HttpRequest,
     stream: web::Payload,
-    comm: web::Data<CommunicationManager>,
+    threat_tx: web::Data<broadcast::Sender<ThreatDetectedEvent>>,
     query: web::Query<WsQuery>,
     jwt: web::Data<JwtService>,
 ) -> impl Responder {
     if let Err(resp) = validate_ws_token(&req, &query, &jwt) {
         return resp;
     }
-    match fusion_websocket::websocket_fusion(req, stream, comm).await {
+    match fusion_websocket::websocket_fusion(req, stream, threat_tx).await {
         Ok(response) => response,
         Err(err) => {
             HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("WebSocket error: {}", err)}))

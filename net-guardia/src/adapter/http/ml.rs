@@ -1,4 +1,5 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
+use tokio::sync::broadcast;
 
 use crate::core::identity::extractor::AuthClaims;
 use crate::core::inference::engine::Engine;
@@ -6,7 +7,6 @@ use crate::core::inference::inference::Inference;
 use crate::domain::common::config::constants::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::model_adapter::ModelSourceState;
-use crate::infrastructure::communication_manager::CommunicationManager;
 
 /// Permission required to forcibly revert the active ML source to dormant.
 /// Mirrors the upload handler's gate so swap-out and revert are symmetric:
@@ -65,7 +65,7 @@ async fn get_current_model(inference: web::Data<Inference>) -> impl Responder {
 /// the upload path's `model_swap` so both swap-in and revert are auditable.
 async fn delete_current_model(
     inference: web::Data<Inference>,
-    comm: web::Data<CommunicationManager>,
+    audit_tx: web::Data<broadcast::Sender<AuditEvent>>,
     claims: AuthClaims,
 ) -> impl Responder {
     if !claims.permissions.iter().any(|p| p == DORMANT_REQUIRED_PERMISSION) {
@@ -87,13 +87,11 @@ async fn delete_current_model(
         "before": serde_json::to_value(&before_status).unwrap_or(serde_json::Value::Null),
     })
     .to_string();
-    let _ = comm
-        .publish_event(AuditEvent {
-            actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{}", claims.username),
-            action: AUDIT_ACTION_MODEL_DORMANT.to_string(),
-            detail: audit_detail,
-        })
-        .await;
+    let _ = audit_tx.send(AuditEvent {
+        actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{}", claims.username),
+        action: AUDIT_ACTION_MODEL_DORMANT.to_string(),
+        detail: audit_detail,
+    });
 
     HttpResponse::Ok().json(serde_json::json!({
         "already_dormant": false,

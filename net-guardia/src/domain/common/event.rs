@@ -52,7 +52,7 @@ impl FromStr for DetectionSource {
 // -- Detection Event (internal pipeline) --------------------------------------
 
 /// Raw detection from any source. Sent via mpsc channel to DetectionOrchestrator.
-/// Not published through CommunicationManager — this is a private internal pipeline.
+/// Not published through broadcast — this is a private internal pipeline.
 #[derive(Debug, Clone)]
 pub struct DetectionEvent {
     pub source: DetectionSource,

@@ -5,18 +5,17 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use lru::LruCache;
 use macros::log;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{FUSION_AUDIT_ACTION, FUSION_AUDIT_ACTOR};
-use crate::domain::common::error::system::SystemError;
 use crate::domain::common::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
 use crate::domain::detection::attack_type::translate;
 use crate::domain::detection::fusion_math::{FusionWindowLengths, fused_confidence};
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::metrics::FusionMetrics;
-use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::geo_lookup::GeoLookup;
 
 /// Per-source record within an in-flight dedup entry. Keeps the strongest
@@ -50,7 +49,8 @@ struct DedupEntry {
 /// re-emit with the combined confidence `1 − ∏(1 − c_i)`.
 pub struct DetectionOrchestrator {
     rx: mpsc::Receiver<DetectionEvent>,
-    comm: Arc<CommunicationManager>,
+    threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    audit_tx: broadcast::Sender<AuditEvent>,
     geoip: Option<Arc<dyn GeoLookup>>,
     metrics: Arc<FusionMetrics>,
     // Enrichment state
@@ -70,7 +70,8 @@ impl DetectionOrchestrator {
     pub fn new(
         app_config: &Arc<ArcSwap<AppConfig>>,
         rx: mpsc::Receiver<DetectionEvent>,
-        comm: Arc<CommunicationManager>,
+        threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+        audit_tx: broadcast::Sender<AuditEvent>,
         geoip: Option<Arc<dyn GeoLookup>>,
         metrics: Arc<FusionMetrics>,
     ) -> Self {
@@ -79,7 +80,8 @@ impl DetectionOrchestrator {
         let max_dedup = NonZero::new(fusion.max_dedup_entries.max(1)).unwrap_or(NonZero::<usize>::MIN);
         Self {
             rx,
-            comm,
+            threat_tx,
+            audit_tx,
             geoip,
             metrics,
             // SAFETY: NonZero::new on non-zero literals.
@@ -251,9 +253,7 @@ impl DetectionOrchestrator {
         self.publish_fusion_audit(trigger_event, fused, &per_source_samples)
             .await;
 
-        if let Err(e) = self.comm.publish_event(threat_event).await {
-            log!(SystemError::MlSoarBridgeFailed(e));
-        }
+        let _ = self.threat_tx.send(threat_event);
     }
 
     /// Emit a WORM AuditEvent so the eventual "why was this IP blocked?"
@@ -267,9 +267,7 @@ impl DetectionOrchestrator {
             detail: build_fusion_audit_detail(&trigger_event.source_ip, &trigger_event.attack_type, fused, per_source),
         };
 
-        if let Err(e) = self.comm.publish_event(audit).await {
-            log!(DetectionLog::FusionAuditPublishFailed(e.to_string()));
-        }
+        let _ = self.audit_tx.send(audit);
     }
 
     async fn enrich(&mut self, event: &DetectionEvent) -> ThreatDetectedEvent {
@@ -358,7 +356,7 @@ impl DetectionOrchestrator {
 
 /// Serialize the WORM audit evidence payload for a fused threat emission.
 /// Extracted as a free function so tests can cover schema shape without a
-/// live CommunicationManager harness.
+/// live broadcast harness.
 fn build_fusion_audit_detail(src_ip: &str, attack_type: &str, fused: f32, per_source: &[SourceSample]) -> String {
     let per_source_json: Vec<serde_json::Value> = per_source
         .iter()
@@ -381,8 +379,7 @@ fn build_fusion_audit_detail(src_ip: &str, attack_type: &str, fused: f32, per_so
 
 #[cfg(test)]
 mod tests {
-    //! Orchestrator integration tests require an in-memory CommunicationManager
-    //! harness. Until then, the fusion math lives in `fusion_math::tests`,
+    //! Orchestrator unit tests. The fusion math lives in `fusion_math::tests`,
     //! canonical translation in `model::detection::attack_type::tests`, and
     //! the audit evidence schema is covered below.
 

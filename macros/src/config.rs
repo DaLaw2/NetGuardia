@@ -26,7 +26,9 @@ impl Parse for StructAttr {
                 input.parse::<Token![,]>()?;
             }
         }
-        Ok(Self { default_section: section })
+        Ok(Self {
+            default_section: section,
+        })
     }
 }
 
@@ -71,10 +73,7 @@ struct MappedParent {
 
 // ── Parsing ────────────────────────────────────────────────────────
 
-fn parse_struct_mapped_settings(
-    input: &mut ItemStruct,
-    default_section: &Option<String>,
-) -> Vec<MappedSetting> {
+fn parse_struct_mapped_settings(input: &mut ItemStruct, default_section: &Option<String>) -> Vec<MappedSetting> {
     let mut mapped = Vec::new();
     input.attrs.retain(|attr| {
         if !attr.path().is_ident("setting") {
@@ -131,14 +130,8 @@ fn parse_struct_mapped_settings(
     mapped
 }
 
-fn parse_field(
-    field: &mut syn::Field,
-    default_section: &Option<String>,
-) -> Option<ConfigField> {
-    let idx = field
-        .attrs
-        .iter()
-        .position(|a| a.path().is_ident("setting"))?;
+fn parse_field(field: &mut syn::Field, default_section: &Option<String>) -> Option<ConfigField> {
+    let idx = field.attrs.iter().position(|a| a.path().is_ident("setting"))?;
     let attr = field.attrs.remove(idx);
 
     let mut is_flatten = false;
@@ -434,15 +427,11 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
     let struct_attr = syn::parse_macro_input!(attr as StructAttr);
     let mut input = syn::parse_macro_input!(item as ItemStruct);
 
-    let mapped_settings =
-        parse_struct_mapped_settings(&mut input, &struct_attr.default_section);
+    let mapped_settings = parse_struct_mapped_settings(&mut input, &struct_attr.default_section);
 
     let mut mapped_groups: BTreeMap<String, Vec<MappedSetting>> = BTreeMap::new();
     for ms in mapped_settings {
-        mapped_groups
-            .entry(ms.parent.clone())
-            .or_default()
-            .push(ms);
+        mapped_groups.entry(ms.parent.clone()).or_default().push(ms);
     }
 
     let fields = match &mut input.fields {
@@ -452,11 +441,7 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
 
     let mut config_fields = Vec::new();
     for field in &mut fields.named {
-        let field_name = field
-            .ident
-            .as_ref()
-            .expect("named field")
-            .to_string();
+        let field_name = field.ident.as_ref().expect("named field").to_string();
 
         if let Some(settings) = mapped_groups.remove(&field_name) {
             config_fields.push(ConfigField::MappedParent(MappedParent {

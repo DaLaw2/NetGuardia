@@ -1,8 +1,8 @@
 //! WebSocket bridge for post-fusion threat events.
 //!
-//! `/ws/fusion` subscribes to the `ThreatDetectedEvent` broadcast that the
-//! `DetectionOrchestrator` already publishes through `CommunicationManager`
-//! (the same stream SOAR consumes). Each event is wrapped with a server-side
+//! `/ws/fusion` subscribes to the `ThreatDetectedEvent` broadcast channel
+//! that the `DetectionOrchestrator` publishes to (the same stream SOAR
+//! consumes). Each event is wrapped with a server-side
 //! `ts` (unix seconds) so the dashboard can render relative timestamps
 //! without doing the conversion itself.
 //!
@@ -26,24 +26,15 @@ use crate::domain::common::error::http::HttpError;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::event::ThreatDetectedEvent;
 use crate::domain::common::log::http::HttpLog;
-use crate::infrastructure::communication_manager::CommunicationManager;
 
 pub async fn websocket_fusion(
     req: HttpRequest,
     body: web::Payload,
-    comm: web::Data<CommunicationManager>,
+    threat_tx: web::Data<broadcast::Sender<ThreatDetectedEvent>>,
 ) -> Result<HttpResponse> {
     let (response, session, msg_stream) = handle(&req, body)?;
 
-    let broadcast_rx = match comm.subscribe_event::<ThreatDetectedEvent>() {
-        Ok(rx) => rx,
-        Err(e) => {
-            log!(HttpLog::FusionSubscribeFailed(e.to_string()));
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "fusion event channel not registered",
-            })));
-        }
-    };
+    let broadcast_rx = threat_tx.subscribe();
 
     spawn(async move {
         handle_fusion_connection(session, msg_stream, broadcast_rx).await;

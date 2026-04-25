@@ -15,11 +15,9 @@ use crate::domain::common::error::Error;
 use crate::domain::common::event::ThreatDetectedEvent;
 use crate::domain::detection::attack_type::canonical_from_str;
 use crate::domain::response::condition::{ConditionType, PlaybookCondition};
-use crate::domain::response::error::SoarError;
 use crate::domain::response::log::SoarLog;
 use crate::domain::response::matcher::PlaybookMatcher;
 use crate::domain::response::playbook::{Playbook, PlaybookAction};
-use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::app_repo::AppRepo;
 use crate::interface::port::geo_lookup::GeoLookup;
@@ -202,19 +200,10 @@ impl SoarEngine {
     }
 
     /// Subscribe to ThreatDetectedEvent and start processing.
-    /// Returns an error if subscription fails — caller must handle this as a critical failure.
-    pub fn start(self: Arc<Self>, comm: Arc<CommunicationManager>) -> Result<(), Error> {
-        let rx = comm.subscribe_event::<ThreatDetectedEvent>().map_err(|e| {
-            log!(SoarLog::EventHandlingFailed(format!(
-                "CRITICAL: SOAR engine failed to subscribe — automated threat response is DISABLED: {}",
-                e
-            )));
-            SoarError::ActionFailed("subscribe", e)
-        })?;
+    pub fn start(self: Arc<Self>, threat_rx: broadcast::Receiver<ThreatDetectedEvent>) {
         tokio::spawn(async move {
-            Self::event_loop(self, rx).await;
+            Self::event_loop(self, threat_rx).await;
         });
-        Ok(())
     }
 
     async fn event_loop(self: Arc<Self>, mut rx: broadcast::Receiver<ThreatDetectedEvent>) {

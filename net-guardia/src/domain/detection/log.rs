@@ -127,12 +127,6 @@ loggable! {
         #[error("Fusion: window evicted under LRU pressure ({key_src} {key_type})")]
         FusionWindowEvicted { key_src: String, key_type: String } => tracing::Level::WARN,
 
-        #[error("Fusion: failed to publish ThreatDetectedEvent: {err}")]
-        FusionPublishFailed { err: String } => tracing::Level::ERROR,
-
-        #[error("Fusion: failed to publish AuditEvent: {err}")]
-        FusionAuditPublishFailed { err: String } => tracing::Level::ERROR,
-
         #[error("Detection event dropped (channel full): {detector} {attack_type} from {source_ip}")]
         DetectionChannelDrop { detector: String, attack_type: String, source_ip: String } => tracing::Level::WARN,
     }

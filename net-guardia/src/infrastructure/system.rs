@@ -9,7 +9,7 @@ use aya::maps::{MapData, ProgramArray};
 use macros::log;
 use sd_notify::NotifyState;
 use tokio::signal::ctrl_c;
-use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::broadcast::{self, Receiver, error::RecvError};
 use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::oneshot;
 use tokio::time::{interval, sleep};
@@ -38,7 +38,8 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{MODELS_DIR, STAGING_SUBDIR};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
-use crate::domain::common::event::{DetectionEvent, DetectionSource, DriftDetectedEvent};
+use crate::domain::common::event::AuditEvent;
+use crate::domain::common::event::{DetectionEvent, DetectionSource, DriftDetectedEvent, ThreatDetectedEvent};
 use crate::domain::common::log::system::SystemLog;
 use crate::domain::common::system::health::EbpfHealth;
 use crate::domain::common::system::readiness::ReadinessState;
@@ -48,7 +49,7 @@ use crate::domain::detection::ml_detection::AlertMessage;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::audit_logger::AuditLogger;
-use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::http_server::{self, HttpServerParams};
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
@@ -89,7 +90,10 @@ pub struct System {
     pub database: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
-    pub comm: Arc<CommunicationManager>,
+    pub threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    pub audit_tx: broadcast::Sender<AuditEvent>,
+    pub drift_tx: broadcast::Sender<DriftDetectedEvent>,
+    pub enforce_handler: Arc<EnforceModeHandler>,
     pub soar_engine: Arc<SoarEngine>,
     pub ttl_scheduler: Option<TtlScheduler>,
     pub report_scheduler: Option<ReportScheduler>,
@@ -121,7 +125,10 @@ impl System {
             database: state.database,
             secret_store: state.secret_store,
             jwt_service: state.jwt_service,
-            comm: state.comm,
+            threat_tx: state.threat_tx,
+            audit_tx: state.audit_tx,
+            drift_tx: state.drift_tx,
+            enforce_handler: state.enforce_handler,
             soar_engine: state.soar_engine,
             ttl_scheduler: Some(state.ttl_scheduler),
             report_scheduler: Some(state.report_scheduler),
@@ -215,7 +222,7 @@ impl System {
 
         // Start SOAR engine
         self.soar_engine.recover_active_blocks().await?;
-        self.soar_engine.clone().start(self.comm.clone())?;
+        self.soar_engine.clone().start(self.threat_tx.subscribe());
 
         // Start TTL scheduler
         if let Some(ttl) = self.ttl_scheduler.take() {
@@ -229,7 +236,7 @@ impl System {
 
         // Start audit logger (subscribe to AuditEvent + DriftDetectedEvent, persist to DB)
         let audit_logger = Arc::new(AuditLogger::new(self.database.clone() as Arc<dyn AuditRepo>));
-        audit_logger.start(&self.comm);
+        audit_logger.start(self.audit_tx.subscribe(), self.drift_tx.subscribe());
 
         // Start stats aggregator (writes weekly_* settings for Report engine)
         let stats_aggregator = StatsAggregator::new(
@@ -241,9 +248,9 @@ impl System {
         // Start drift detection background task
         {
             let drift_detector = self.drift_detector.clone();
-            let comm_drift = self.comm.clone();
+            let drift_tx = self.drift_tx.clone();
             tokio::spawn(async move {
-                Self::run_drift_monitor(drift_detector, comm_drift).await;
+                Self::run_drift_monitor(drift_detector, drift_tx).await;
             });
         }
 
@@ -252,7 +259,8 @@ impl System {
         let orchestrator = DetectionOrchestrator::new(
             &self.app_config,
             detection_rx,
-            self.comm.clone(),
+            self.threat_tx.clone(),
+            self.audit_tx.clone(),
             self.geoip.clone(),
             self.app_services.fusion_metrics.clone(),
         );
@@ -322,7 +330,9 @@ impl System {
             db: self.database.clone(),
             secret_store: self.secret_store.clone(),
             jwt_service: self.jwt_service.clone(),
-            comm: self.comm.clone(),
+            threat_tx: self.threat_tx.clone(),
+            audit_tx: self.audit_tx.clone(),
+            enforce_handler: self.enforce_handler.clone(),
             setup_complete: setup_flag,
             ready: ready_flag,
             readiness_state,
@@ -406,7 +416,7 @@ impl System {
     }
 
     /// Periodically check the drift detector and publish DriftDetectedEvent when drift is found.
-    async fn run_drift_monitor(drift_detector: DriftDetectorHandle, comm: Arc<CommunicationManager>) {
+    async fn run_drift_monitor(drift_detector: DriftDetectorHandle, drift_tx: broadcast::Sender<DriftDetectedEvent>) {
         let mut interval = interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -420,7 +430,7 @@ impl System {
                     drifted_features: report.drifted_features,
                     max_deviation: report.max_deviation,
                 };
-                if let Err(e) = comm.publish_event(event).await {
+                if let Err(e) = drift_tx.send(event) {
                     log!(SystemError::DriftEventPublishFailed(e));
                 }
             }

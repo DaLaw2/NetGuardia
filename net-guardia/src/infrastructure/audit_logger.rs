@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use macros::log;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent};
 use crate::domain::common::log::audit::AuditLog;
-use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::interface::port::audit::AuditRepo;
 
 /// Subscribes to `AuditEvent` and persists each entry to the `audit_log` table.
@@ -19,12 +19,16 @@ impl AuditLogger {
         Self { db }
     }
 
-    /// Subscribe to AuditEvent and DriftDetectedEvent on the communication manager
-    /// and start background tasks that persist events to DB + structured logs.
-    pub fn start(self: Arc<Self>, comm: &CommunicationManager) {
-        // Subscribe to AuditEvent
-        if let Ok(mut rx) = comm.subscribe_event::<AuditEvent>() {
+    /// Start background tasks that persist audit and drift events to DB + structured logs.
+    pub fn start(
+        self: Arc<Self>,
+        audit_rx: broadcast::Receiver<AuditEvent>,
+        drift_rx: broadcast::Receiver<DriftDetectedEvent>,
+    ) {
+        // Drain AuditEvent receiver
+        {
             let this = self.clone();
+            let mut rx = audit_rx;
             tokio::spawn(async move {
                 loop {
                     match rx.recv().await {
@@ -41,13 +45,12 @@ impl AuditLogger {
                     }
                 }
             });
-        } else {
-            log!(AuditLog::AuditSubscribeFailed);
         }
 
-        // Subscribe to DriftDetectedEvent — log as audit trail entry
-        if let Ok(mut rx) = comm.subscribe_event::<DriftDetectedEvent>() {
+        // Drain DriftDetectedEvent receiver — log as audit trail entry
+        {
             let this = self;
+            let mut rx = drift_rx;
             tokio::spawn(async move {
                 loop {
                     match rx.recv().await {
@@ -64,8 +67,6 @@ impl AuditLogger {
                     }
                 }
             });
-        } else {
-            log!(AuditLog::AuditSubscribeFailed);
         }
     }
 

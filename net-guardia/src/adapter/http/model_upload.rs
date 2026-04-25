@@ -31,6 +31,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast;
 use tokio::task;
 use uuid::Uuid;
 
@@ -44,7 +45,6 @@ use crate::domain::common::config::constants::{
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::manifest::{AdapterKind, ModelManifest};
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::infrastructure::communication_manager::CommunicationManager;
 
 /// Multipart field names the client must use. Stable wire contract —
 /// the frontend form generator depends on these exact strings.
@@ -133,7 +133,7 @@ pub fn initialize() -> Scope {
 async fn upload(
     app_config: web::Data<ArcSwap<AppConfig>>,
     inference: web::Data<Inference>,
-    comm: web::Data<CommunicationManager>,
+    audit_tx: web::Data<broadcast::Sender<AuditEvent>>,
     promote_lock: web::Data<PromoteGate>,
     claims: AuthClaims,
     payload: Multipart,
@@ -168,7 +168,7 @@ async fn upload(
         &staging_dir,
         &summary,
         inference.get_ref(),
-        comm.get_ref(),
+        audit_tx.get_ref(),
         promote_lock.get_ref(),
         &claims.username,
         batch_size,
@@ -516,7 +516,7 @@ async fn validate_and_promote(
     staging_dir: &Path,
     summary: &UploadSummary,
     inference: &Inference,
-    comm: &CommunicationManager,
+    audit_tx: &broadcast::Sender<AuditEvent>,
     promote_lock: &PromoteGate,
     actor_username: &str,
     batch_size: usize,
@@ -605,13 +605,11 @@ async fn validate_and_promote(
         "before": serde_json::to_value(&before_status).unwrap_or(JsonValue::Null),
     })
     .to_string();
-    let _ = comm
-        .publish_event(AuditEvent {
-            actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{actor_username}"),
-            action: AUDIT_ACTION_MODEL_SWAP.to_string(),
-            detail: audit_detail,
-        })
-        .await;
+    let _ = audit_tx.send(AuditEvent {
+        actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{actor_username}"),
+        action: AUDIT_ACTION_MODEL_SWAP.to_string(),
+        detail: audit_detail,
+    });
 
     Ok(PromoteReport {
         manifest_name: manifest.name,

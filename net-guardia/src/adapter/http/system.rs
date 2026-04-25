@@ -3,11 +3,9 @@ use serde::Deserialize;
 
 use crate::core::common::config_service::ConfigService;
 use crate::core::identity::extractor::AuthClaims;
-use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
-use crate::interface::communication::command_types::ChangeEnforceModeCommand;
-use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::app_repo::AppRepo;
 use crate::utils::boot_time;
 
@@ -36,8 +34,8 @@ async fn get_boot_time() -> impl Responder {
     HttpResponse::Ok().json(boot_time::boot_time())
 }
 
-async fn get_enforce_mode(comm: web::Data<CommunicationManager>) -> impl Responder {
-    match comm.send_query(GetEnforceModeQuery).await {
+async fn get_enforce_mode(handler: web::Data<EnforceModeHandler>) -> impl Responder {
+    match handler.get_mode() {
         Ok(mode) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -45,7 +43,7 @@ async fn get_enforce_mode(comm: web::Data<CommunicationManager>) -> impl Respond
 
 async fn set_enforce_mode(
     body: web::Json<EnforceModeRequest>,
-    comm: web::Data<CommunicationManager>,
+    handler: web::Data<EnforceModeHandler>,
 ) -> impl Responder {
     let mode = &body.mode;
     if mode != "monitor" && mode != "ml_only" && mode != "enforce" {
@@ -53,7 +51,7 @@ async fn set_enforce_mode(
             .json(serde_json::json!({"error": "Mode must be 'monitor', 'ml_only', or 'enforce'"}));
     }
 
-    match comm.send_command(ChangeEnforceModeCommand { mode: mode.clone() }).await {
+    match handler.change_mode(mode.clone()) {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }

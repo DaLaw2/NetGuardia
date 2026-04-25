@@ -20,8 +20,5 @@ loggable! {
 
         #[error("AuditLogger: event channel closed")]
         AuditChannelClosed => tracing::Level::INFO,
-
-        #[error("AuditLogger: failed to subscribe to events")]
-        AuditSubscribeFailed => tracing::Level::WARN,
     }
 }

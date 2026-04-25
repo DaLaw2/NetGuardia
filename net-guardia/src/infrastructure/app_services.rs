@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 use arc_swap::ArcSwap;
 use crossbeam::queue::SegQueue;
 use macros::log;
+use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 use crate::core::inference::alert::MLAlert;
@@ -18,6 +19,7 @@ use crate::domain::common::config::constants::{MANIFEST_FILENAME, MODELS_DIR};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::error::system::SystemError;
+use crate::domain::common::event::AuditEvent;
 use crate::domain::common::log::system::SystemLog;
 use crate::domain::common::system::health::EbpfHealth;
 use crate::domain::detection::flow_features::FlowFeatures;
@@ -29,7 +31,6 @@ use crate::domain::detection::ml_detection::EngineConfig;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::domain::detection::model_adapter::ModelSourceState;
 use crate::domain::detection::model_source::ModelInfo;
-use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::statistics::FlowStatistics;
 
@@ -53,7 +54,7 @@ impl AppServices {
         ml_manifest: Option<ModelManifest>,
         drift_detector: DriftDetectorHandle,
         ebpf_health: Arc<ArcSwap<EbpfHealth>>,
-        comm: Arc<CommunicationManager>,
+        audit_tx: broadcast::Sender<AuditEvent>,
     ) -> Result<Self, Error> {
         let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
 
@@ -126,7 +127,7 @@ impl AppServices {
                 header,
                 policy,
                 config.ml.traffic_logger_channel_capacity,
-                Some(comm.clone()),
+                Some(audit_tx.clone()),
             )
             .map_err(|e| MiscError::TrafficLogCreateError(csv_path.clone(), e.to_string()))?;
             log!(SystemLog::TrafficLoggingEnabled(csv_path));

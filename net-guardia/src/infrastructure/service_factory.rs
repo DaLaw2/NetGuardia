@@ -12,6 +12,7 @@ use aya::programs::{Xdp, XdpFlags};
 use aya_log::EbpfLogger;
 use common::define::pipeline::*;
 use macros::log;
+use tokio::sync::broadcast;
 
 use crate::adapter::access_control::AccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
@@ -29,6 +30,7 @@ use crate::core::response::engine::SoarEngine;
 use crate::core::response::playbook_service::PlaybookService;
 use crate::core::response::scheduler::TtlScheduler;
 use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::EVENT_CHANNEL_CAPACITY;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
@@ -44,14 +46,11 @@ use crate::domain::detection::log::MLLog;
 use crate::domain::detection::manifest::ModelManifest;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::app_services::AppServices;
-use crate::infrastructure::communication_manager::CommunicationManager;
 use crate::infrastructure::ebpf_preflight;
 use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
-use crate::interface::communication::command_types::ChangeEnforceModeCommand;
-use crate::interface::communication::query_types::GetEnforceModeQuery;
 use crate::interface::port::access_control::AccessControlPort;
 use crate::interface::port::access_control_admin::AccessControlAdminPort;
 use crate::interface::port::app_repo::AppRepo;
@@ -73,7 +72,10 @@ pub struct AppState {
     pub database: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
     pub jwt_service: Arc<JwtService>,
-    pub comm: Arc<CommunicationManager>,
+    pub threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    pub audit_tx: broadcast::Sender<AuditEvent>,
+    pub drift_tx: broadcast::Sender<DriftDetectedEvent>,
+    pub enforce_handler: Arc<EnforceModeHandler>,
     pub soar_engine: Arc<SoarEngine>,
     pub ttl_scheduler: TtlScheduler,
     pub report_scheduler: ReportScheduler,
@@ -199,17 +201,13 @@ impl ServiceFactory {
             enforce_mode_to_u8(&mode_str)
         }));
 
-        // CommunicationManager and its event channels must exist before
-        // AppServices spins up the TrafficLogger: the writer thread can
-        // publish `flow_trace_stopped` audit events the moment it tries
-        // to open its first rotated file, and an unregistered channel
-        // would silently drop that evidence.
-        let comm = Arc::new(CommunicationManager::new(
-            app_config.load().observability.default_event_channel_capacity,
-        ));
-        comm.register_event_type::<ThreatDetectedEvent>();
-        comm.register_event_type::<DriftDetectedEvent>();
-        comm.register_event_type::<AuditEvent>();
+        // Named broadcast channels replace the old TypeId-based CommunicationManager.
+        // They must exist before AppServices spins up the TrafficLogger: the writer
+        // thread can publish `flow_trace_stopped` audit events the moment it tries
+        // to open its first rotated file.
+        let (threat_tx, _) = broadcast::channel::<ThreatDetectedEvent>(EVENT_CHANNEL_CAPACITY);
+        let (audit_tx, _) = broadcast::channel::<AuditEvent>(EVENT_CHANNEL_CAPACITY);
+        let (drift_tx, _) = broadcast::channel::<DriftDetectedEvent>(EVENT_CHANNEL_CAPACITY);
 
         let app_services = Arc::new(AppServices::new(
             app_config.clone(),
@@ -217,20 +215,14 @@ impl ServiceFactory {
             ml_manifest.clone(),
             drift_detector.clone(),
             ebpf_health.clone(),
-            comm.clone(),
+            audit_tx.clone(),
         )?);
 
         let enforce_handler = Arc::new(EnforceModeHandler::new(
             db.clone() as Arc<dyn AppRepo>,
-            comm.clone(),
+            audit_tx.clone(),
             enforce_level_cache.clone(),
         ));
-        let _ = comm
-            .clone()
-            .with_service(enforce_handler)
-            .command::<ChangeEnforceModeCommand>()
-            .query::<GetEnforceModeQuery>()
-            .build();
 
         // Seed default SOAR playbooks if empty
         (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;
@@ -340,7 +332,10 @@ impl ServiceFactory {
             database: db,
             secret_store,
             jwt_service,
-            comm,
+            threat_tx,
+            audit_tx,
+            drift_tx,
+            enforce_handler,
             soar_engine,
             ttl_scheduler,
             report_scheduler,
