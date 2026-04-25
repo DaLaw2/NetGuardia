@@ -1,6 +1,6 @@
 use crate::domain::common::error::Error;
 use crate::domain::response::playbook_data::{
-    ActiveBlockView, ExecutionView, PendingUnblock, PlaybookView, UpdatePlaybookInput,
+    ActiveBlockView, CreatePlaybookInput, ExecutionView, PendingUnblock, PlaybookView, UpdatePlaybookInput,
 };
 
 /// Threat Response BC — SOAR aggregate repository.
@@ -50,12 +50,7 @@ pub trait SoarRepo: Send + Sync {
     /// `conditions` tuples: `(condition_type, operator, value, value2)`.
     fn insert_playbook_atomic(
         &self,
-        name: &str,
-        trigger_event: &str,
-        threshold: Option<f64>,
-        count: Option<i64>,
-        window: Option<i64>,
-        cooldown: i64,
+        input: &CreatePlaybookInput,
         actions: &[(i64, String, String)],
         conditions: &[(String, String, String, Option<String>)],
     ) -> Result<i64, Error>;

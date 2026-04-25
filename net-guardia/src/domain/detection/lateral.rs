@@ -64,12 +64,12 @@ impl LateralMovementDetector {
             set.dests.insert(alert.dst_ip.clone());
 
             if set.dests.len() >= self.threshold {
-                if let Some(last) = set.last_alerted {
-                    if now.duration_since(last) < self.window {
-                        set.dests.clear();
-                        set.window_start = now;
-                        return None;
-                    }
+                if let Some(last) = set.last_alerted
+                    && now.duration_since(last) < self.window
+                {
+                    set.dests.clear();
+                    set.window_start = now;
+                    return None;
                 }
                 Some(set.dests.len())
             } else {

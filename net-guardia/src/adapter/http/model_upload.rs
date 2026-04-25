@@ -36,8 +36,8 @@ use tokio::task;
 use uuid::Uuid;
 
 use crate::core::identity::extractor::AuthClaims;
-use crate::core::inference::inference::Inference;
 use crate::core::inference::model_loader::build_adapter;
+use crate::core::inference::runner::Inference;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{
     AUDIT_ACTOR_SECURITY_ADMIN_PREFIX, MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR,
@@ -164,16 +164,16 @@ async fn upload(
             return e.into_response();
         }
     };
-    let outcome = validate_and_promote(
-        &staging_dir,
-        &summary,
-        inference.get_ref(),
-        audit_tx.get_ref(),
-        promote_lock.get_ref(),
-        &claims.username,
+    let outcome = validate_and_promote(&PromoteContext {
+        staging_dir: &staging_dir,
+        summary: &summary,
+        inference: inference.get_ref(),
+        audit_tx: audit_tx.get_ref(),
+        promote_lock: promote_lock.get_ref(),
+        actor_username: &claims.username,
         batch_size,
         onnx_load_timeout,
-    )
+    })
     .await;
 
     // Always sweep staging — successful promote renames the files out,
@@ -512,16 +512,26 @@ pub fn looks_like_onnx(first_chunk: &[u8]) -> bool {
 ///    logged but does not roll back the rename; the chain prefers a
 ///    missing audit entry to a rolled-back promote that a downstream
 ///    subscriber may already have reacted to.
-async fn validate_and_promote(
-    staging_dir: &Path,
-    summary: &UploadSummary,
-    inference: &Inference,
-    audit_tx: &broadcast::Sender<AuditEvent>,
-    promote_lock: &PromoteGate,
-    actor_username: &str,
+struct PromoteContext<'a> {
+    staging_dir: &'a Path,
+    summary: &'a UploadSummary,
+    inference: &'a Inference,
+    audit_tx: &'a broadcast::Sender<AuditEvent>,
+    promote_lock: &'a PromoteGate,
+    actor_username: &'a str,
     batch_size: usize,
     onnx_load_timeout: Duration,
-) -> Result<PromoteReport, PromoteError> {
+}
+
+async fn validate_and_promote(ctx: &PromoteContext<'_>) -> Result<PromoteReport, PromoteError> {
+    let staging_dir = ctx.staging_dir;
+    let summary = ctx.summary;
+    let inference = ctx.inference;
+    let audit_tx = ctx.audit_tx;
+    let promote_lock = ctx.promote_lock;
+    let actor_username = ctx.actor_username;
+    let batch_size = ctx.batch_size;
+    let onnx_load_timeout = ctx.onnx_load_timeout;
     let staging_manifest = staging_dir.join(MANIFEST_FILENAME);
 
     // Structural manifest validation. The full `build_adapter` pipeline

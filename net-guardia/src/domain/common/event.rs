@@ -3,8 +3,6 @@ use std::str::FromStr;
 
 use serde::Serialize;
 
-use crate::interface::communication::event::Event;
-
 // -- Detection Source ---------------------------------------------------------
 
 /// Identifies which detection subsystem produced a detection.
@@ -113,16 +111,12 @@ pub struct ThreatDetectedEvent {
     pub c2_score: f32,
 }
 
-impl Event for ThreatDetectedEvent {}
-
 /// Fired when the ML drift detector finds feature drift beyond 3 sigma.
 #[derive(Debug, Clone)]
 pub struct DriftDetectedEvent {
     pub drifted_features: Vec<String>,
     pub max_deviation: f64,
 }
-
-impl Event for DriftDetectedEvent {}
 
 // -- Audit Events -------------------------------------------------------------
 
@@ -137,5 +131,3 @@ pub struct AuditEvent {
     /// JSON string with action-specific details
     pub detail: String,
 }
-
-impl Event for AuditEvent {}

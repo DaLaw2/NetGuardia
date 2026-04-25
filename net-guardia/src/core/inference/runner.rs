@@ -139,26 +139,7 @@ impl Inference {
     /// Dispatch on adapter variant.
     fn infer_batch_inner(&self, adapter: &MLModelAdapter, flows: &[FlowData]) -> Vec<DetectionResult> {
         match adapter {
-            MLModelAdapter::MultiTask {
-                ae,
-                classifier,
-                batch_size,
-                n_ae,
-                n_cls,
-                labels,
-                normal_idx,
-                c2_idx,
-            } => self.infer_multitask(
-                ae,
-                classifier,
-                *batch_size,
-                *n_ae,
-                *n_cls,
-                labels,
-                *normal_idx,
-                *c2_idx,
-                flows,
-            ),
+            MLModelAdapter::MultiTask { .. } => self.infer_multitask(adapter, flows),
             MLModelAdapter::AutoencoderOnly {
                 model,
                 batch_size,
@@ -177,18 +158,22 @@ impl Inference {
     /// MultiTask path. Runs the AE batch → computes per-flow MSE → feeds the
     /// classifier over (ae_features ++ ae_score) → fires on anomaly OR
     /// non-Normal classifier agreement OR elevated C2 head.
-    fn infer_multitask(
-        &self,
-        ae: &RunnableModel,
-        classifier: &RunnableModel,
-        batch_size: usize,
-        n_ae: usize,
-        n_cls: usize,
-        labels: &BTreeMap<String, LabelSpec>,
-        normal_idx: Option<usize>,
-        c2_idx: Option<usize>,
-        flows: &[FlowData],
-    ) -> Vec<DetectionResult> {
+    fn infer_multitask(&self, adapter: &MLModelAdapter, flows: &[FlowData]) -> Vec<DetectionResult> {
+        let MLModelAdapter::MultiTask {
+            ae,
+            classifier,
+            batch_size,
+            n_ae,
+            n_cls,
+            labels,
+            normal_idx,
+            c2_idx,
+        } = adapter
+        else {
+            unreachable!()
+        };
+        let (batch_size, n_ae, n_cls) = (*batch_size, *n_ae, *n_cls);
+        let (normal_idx, c2_idx) = (*normal_idx, *c2_idx);
         let n = flows.len();
 
         let all_ae_features: Vec<Vec<f32>> = flows.iter().map(|f| self.preprocess_ae_features(f)).collect();

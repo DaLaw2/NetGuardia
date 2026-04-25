@@ -14,6 +14,7 @@ use crate::domain::common::error::Error;
 use crate::domain::common::error::crypto::CryptoError;
 use crate::domain::common::log::crypto::CryptoLog;
 use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::port::setting::SettingRepo;
 
 /// AES-256-GCM envelope encryption for sensitive values stored in `app_secrets`.
 pub struct SecretStore {
@@ -126,7 +127,8 @@ impl SecretStore {
 
 impl SecretStorePort for SecretStore {
     fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
-        match self.db.get_app_secret(key)? {
+        let repo: &dyn SettingRepo = self.db.as_ref();
+        match repo.get_app_secret(key)? {
             Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
             None => Ok(None),
         }
@@ -134,7 +136,8 @@ impl SecretStorePort for SecretStore {
 
     fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
         let envelope = self.encrypt(plaintext)?;
-        self.db.set_app_secret(key, &envelope)
+        let repo: &dyn SettingRepo = self.db.as_ref();
+        repo.set_app_secret(key, &envelope)
     }
 
     fn encrypt_envelope(&self, plaintext: &str) -> Result<String, Error> {

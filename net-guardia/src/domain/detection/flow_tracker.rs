@@ -302,11 +302,6 @@ impl FlowTracker {
         entry.lock().add_packet(&packet, &self.limits);
     }
 
-    /// Get all active flows (clone, no drain). Used by WebSocket.
-    pub fn get_flows(&self) -> Vec<FlowData> {
-        self.active.iter().map(|(_, entry)| entry.lock().clone()).collect()
-    }
-
     /// Extract scalar stats from all active flows without cloning packet vectors.
     pub fn get_flow_stats<T>(&self, convert: impl Fn(&FlowData) -> T) -> Vec<T> {
         self.active.iter().map(|(_, entry)| convert(&entry.lock())).collect()

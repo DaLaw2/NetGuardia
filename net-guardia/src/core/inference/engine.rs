@@ -14,7 +14,7 @@ use tokio::time::interval;
 
 use super::alert::MLAlert;
 use super::drift_detector::DriftDetectorHandle;
-use super::inference::Inference;
+use super::runner::Inference;
 use super::traffic_logger::TrafficLogger;
 use crate::domain::data_plane::user_packet::UserPacket;
 use crate::domain::detection::aggregator::AttackAggregator;

@@ -92,7 +92,8 @@ impl TtlScheduler {
             // Atomically drop acl_rules entry AND mark soar_block_rules
             // unblocked in one transaction.
             let ip_version = ip_version_from_str(&block.source_ip);
-            self.db.commit_soar_unblock_to_db(block.id, ip_version, &block.source_ip)?;
+            self.db
+                .commit_soar_unblock_to_db(block.id, ip_version, &block.source_ip)?;
             self.soar_engine.decrement_block_count();
             removed += 1;
         }

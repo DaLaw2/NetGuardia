@@ -5,8 +5,8 @@ use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
 use crate::adapter::http::response::ok_or_error;
-use crate::interface::port::protocol_filter::ProtocolFilterPort;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
+use crate::interface::port::protocol_filter::ProtocolFilterPort;
 
 pub fn initialize() -> Scope {
     web::scope("/filter")
@@ -152,11 +152,17 @@ async fn get_ipv6_ssh_service(service: web::Data<dyn ProtocolFilterPort>) -> imp
     HttpResponse::Ok().json(service.get_ipv6_ssh_service())
 }
 
-async fn add_ipv4_ssh_service(ip_addr: web::Json<SocketAddrV4>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv4_ssh_service(
+    ip_addr: web::Json<SocketAddrV4>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv4_ssh_service(ip_addr.into_inner()))
 }
 
-async fn add_ipv6_ssh_service(ip_addr: web::Json<SocketAddrV6>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv6_ssh_service(
+    ip_addr: web::Json<SocketAddrV6>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv6_ssh_service(ip_addr.into_inner()))
 }
 
@@ -196,11 +202,17 @@ async fn get_ipv6_ssh_white_list(service: web::Data<dyn ProtocolFilterPort>) -> 
     HttpResponse::Ok().json(service.get_ipv6_ssh_white_list())
 }
 
-async fn add_ipv4_ssh_white_list(ip_addr: web::Json<Ipv4Addr>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv4_ssh_white_list(
+    ip_addr: web::Json<Ipv4Addr>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv4_ssh_white_list(ip_addr.into_inner()))
 }
 
-async fn add_ipv6_ssh_white_list(ip_addr: web::Json<Ipv6Addr>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv6_ssh_white_list(
+    ip_addr: web::Json<Ipv6Addr>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv6_ssh_white_list(ip_addr.into_inner()))
 }
 
@@ -228,11 +240,17 @@ async fn get_ipv6_ssh_black_list(service: web::Data<dyn ProtocolFilterPort>) -> 
     HttpResponse::Ok().json(service.get_ipv6_ssh_black_list())
 }
 
-async fn add_ipv4_ssh_black_list(ip_addr: web::Json<Ipv4Addr>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv4_ssh_black_list(
+    ip_addr: web::Json<Ipv4Addr>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv4_ssh_black_list(ip_addr.into_inner()))
 }
 
-async fn add_ipv6_ssh_black_list(ip_addr: web::Json<Ipv6Addr>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+async fn add_ipv6_ssh_black_list(
+    ip_addr: web::Json<Ipv6Addr>,
+    service: web::Data<dyn ProtocolFilterPort>,
+) -> impl Responder {
     ok_or_error(service.add_ipv6_ssh_black_list(ip_addr.into_inner()))
 }
 

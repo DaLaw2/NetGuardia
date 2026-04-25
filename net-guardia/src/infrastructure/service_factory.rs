@@ -26,7 +26,7 @@ use crate::core::data_plane::rate_limit_service::RateLimitService;
 use crate::core::identity::jwt::JwtService;
 use crate::core::inference::drift_detector::DriftDetectorHandle;
 use crate::core::reporting::email_scheduler::ReportScheduler;
-use crate::core::response::engine::SoarEngine;
+use crate::core::response::engine::{SoarEngine, SoarEngineDeps};
 use crate::core::response::playbook_service::PlaybookService;
 use crate::core::response::scheduler::TtlScheduler;
 use crate::domain::common::config::AppConfig;
@@ -109,6 +109,13 @@ fn stage_registry() -> HashMap<&'static str, (&'static str, u32)> {
     ])
 }
 
+struct EbpfBuild {
+    ingress: Ebpf,
+    egress: Ebpf,
+    program_array: ProgramArray<MapData>,
+    services: EbpfServices,
+}
+
 /// Factory responsible for creating and wiring all application services.
 pub struct ServiceFactory;
 
@@ -153,7 +160,12 @@ impl ServiceFactory {
         // the reason.
         let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) = match Self::try_build_ebpf(&app_config)
         {
-            Ok((ingress, egress, pa, services)) => (Some(ingress), Some(egress), Some(pa), Arc::new(services)),
+            Ok(build) => (
+                Some(build.ingress),
+                Some(build.egress),
+                Some(build.program_array),
+                Arc::new(build.services),
+            ),
             Err((stage, err)) => {
                 let health = ebpf_preflight::classify(stage, &err, None);
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
@@ -264,16 +276,16 @@ impl ServiceFactory {
 
         // Create SOAR engine
         let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
-        let soar_engine = Arc::new(SoarEngine::new(
-            db.clone(),
-            app_config.clone(),
-            access_control_port.clone(),
-            alert_notifier.clone(),
-            geoip.clone(),
-            Some(rate_limit_port.clone()),
+        let soar_engine = Arc::new(SoarEngine::new(SoarEngineDeps {
+            db: db.clone(),
+            config: app_config.clone(),
+            access_control: access_control_port.clone(),
+            alert_notifier: alert_notifier.clone(),
+            geoip: geoip.clone(),
+            rate_limit: Some(rate_limit_port.clone()),
             enforce_level_cache,
-            Some(secret_store_port.clone()),
-        )?);
+            secrets: Some(secret_store_port.clone()),
+        })?);
 
         // Create TTL scheduler
         let ttl_scheduler = TtlScheduler::new(db.clone(), access_control_port.clone(), soar_engine.clone());
@@ -361,11 +373,7 @@ impl ServiceFactory {
     /// ingress pipeline, write queue counts, and hand out map handles to the
     /// services. Returns the original stage on the first failure so the
     /// classifier can render targeted diagnostics.
-    fn try_build_ebpf(
-        app_config: &Arc<ArcSwap<AppConfig>>,
-    ) -> Result<(Ebpf, Ebpf, ProgramArray<MapData>, EbpfServices), (EbpfFailStage, Error)> {
-        use crate::domain::common::system::health::EbpfFailStage;
-
+    fn try_build_ebpf(app_config: &Arc<ArcSwap<AppConfig>>) -> Result<EbpfBuild, (EbpfFailStage, Error)> {
         let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
         let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;
 
@@ -381,7 +389,12 @@ impl ServiceFactory {
         let services = EbpfServices::new(app_config.clone(), &mut ingress, &mut egress)
             .map_err(|e| (EbpfFailStage::MapsBind, e))?;
 
-        Ok((ingress, egress, pipeline, services))
+        Ok(EbpfBuild {
+            ingress,
+            egress,
+            program_array: pipeline,
+            services,
+        })
     }
 
     fn load_ebpf(name: &str) -> Result<Ebpf, Error> {

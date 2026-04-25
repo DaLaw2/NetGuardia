@@ -3,7 +3,7 @@ use tokio::sync::broadcast;
 
 use crate::core::identity::extractor::AuthClaims;
 use crate::core::inference::engine::Engine;
-use crate::core::inference::inference::Inference;
+use crate::core::inference::runner::Inference;
 use crate::domain::common::config::constants::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::detection::model_adapter::ModelSourceState;

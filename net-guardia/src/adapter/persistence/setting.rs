@@ -26,7 +26,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_app_secret(&self, key: &str) -> Result<Option<String>, Error> {
+    fn get_app_secret(&self, key: &str) -> Result<Option<String>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row("SELECT value FROM app_secrets WHERE key = ?1", params![key], |row| {
             row.get(0)
@@ -38,7 +38,7 @@ impl Database {
         }
     }
 
-    pub fn set_app_secret(&self, key: &str, value: &str) -> Result<(), Error> {
+    fn set_app_secret(&self, key: &str, value: &str) -> Result<(), Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?1, ?2)",

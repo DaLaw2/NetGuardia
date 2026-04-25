@@ -64,12 +64,12 @@ impl BotnetDetector {
             set.last_alert = alert.clone();
 
             if set.sources.len() >= self.threshold {
-                if let Some(last) = set.last_alerted {
-                    if now.duration_since(last) < self.window {
-                        set.sources.clear();
-                        set.window_start = now;
-                        return None;
-                    }
+                if let Some(last) = set.last_alerted
+                    && now.duration_since(last) < self.window
+                {
+                    set.sources.clear();
+                    set.window_start = now;
+                    return None;
                 }
                 Some(set.sources.len())
             } else {

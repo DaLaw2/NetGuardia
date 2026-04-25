@@ -31,10 +31,6 @@ impl DropMonitor {
         self.broadcast_tx.subscribe()
     }
 
-    pub fn get_counters(&self) -> DropCounters {
-        self.counters.snapshot()
-    }
-
     /// Record a userspace drop decision (XSK worker's DNS filter) by the
     /// per-reason counter. Callers at this layer haven't parsed src/dst yet,
     /// so no broadcast event is emitted — `/api/stats/drops` stays correct,

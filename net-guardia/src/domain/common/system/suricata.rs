@@ -18,9 +18,3 @@ pub enum SuricataHealth {
         reason: String,
     },
 }
-
-impl SuricataHealth {
-    pub fn is_running(&self) -> bool {
-        matches!(self, SuricataHealth::Running { .. })
-    }
-}

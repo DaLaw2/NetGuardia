@@ -43,17 +43,29 @@ pub struct SoarEngine {
     pub(super) secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
+pub struct SoarEngineDeps {
+    pub db: Arc<dyn AppRepo>,
+    pub config: Arc<ArcSwap<AppConfig>>,
+    pub access_control: Arc<dyn AccessControlPort>,
+    pub alert_notifier: Option<Arc<dyn AlertNotifier>>,
+    pub geoip: Option<Arc<dyn GeoLookup>>,
+    pub rate_limit: Option<Arc<dyn RateLimitPort>>,
+    pub enforce_level_cache: Arc<AtomicU8>,
+    pub secrets: Option<Arc<dyn SecretStorePort>>,
+}
+
 impl SoarEngine {
-    pub fn new(
-        db: Arc<dyn AppRepo>,
-        config: Arc<ArcSwap<AppConfig>>,
-        access_control: Arc<dyn AccessControlPort>,
-        alert_notifier: Option<Arc<dyn AlertNotifier>>,
-        geoip: Option<Arc<dyn GeoLookup>>,
-        rate_limit: Option<Arc<dyn RateLimitPort>>,
-        enforce_level_cache: Arc<AtomicU8>,
-        secrets: Option<Arc<dyn SecretStorePort>>,
-    ) -> Result<Self, Error> {
+    pub fn new(deps: SoarEngineDeps) -> Result<Self, Error> {
+        let SoarEngineDeps {
+            db,
+            config,
+            access_control,
+            alert_notifier,
+            geoip,
+            rate_limit,
+            enforce_level_cache,
+            secrets,
+        } = deps;
         let soar_cfg = config.load();
         let rate_limit_channel = soar_cfg.soar.rate_limit_cmd_channel_capacity;
         let freq_max_keys = soar_cfg.soar.frequency_max_tracked_keys;
@@ -398,8 +410,17 @@ mod tests {
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
-        SoarEngine::new(db as Arc<dyn AppRepo>, config, ac, None, None, None, cache, None)
-            .expect("Failed to create SOAR engine")
+        SoarEngine::new(SoarEngineDeps {
+            db: db as Arc<dyn AppRepo>,
+            config,
+            access_control: ac,
+            alert_notifier: None,
+            geoip: None,
+            rate_limit: None,
+            enforce_level_cache: cache,
+            secrets: None,
+        })
+        .expect("Failed to create SOAR engine")
     }
 
     #[tokio::test]
@@ -492,16 +513,16 @@ mod tests {
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
-        let engine = SoarEngine::new(
-            db as Arc<dyn AppRepo>,
+        let engine = SoarEngine::new(SoarEngineDeps {
+            db: db as Arc<dyn AppRepo>,
             config,
-            mock.clone(),
-            None,
-            None,
-            None,
-            cache,
-            None,
-        )
+            access_control: mock.clone(),
+            alert_notifier: None,
+            geoip: None,
+            rate_limit: None,
+            enforce_level_cache: cache,
+            secrets: None,
+        })
         .expect("Failed to create engine");
         engine.recover_active_blocks().await.expect("Recovery should succeed");
 
@@ -526,16 +547,16 @@ mod tests {
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
-        let engine = SoarEngine::new(
-            db as Arc<dyn AppRepo>,
+        let engine = SoarEngine::new(SoarEngineDeps {
+            db: db as Arc<dyn AppRepo>,
             config,
-            mock.clone(),
-            None,
-            None,
-            None,
-            cache,
-            None,
-        )
+            access_control: mock.clone(),
+            alert_notifier: None,
+            geoip: None,
+            rate_limit: None,
+            enforce_level_cache: cache,
+            secrets: None,
+        })
         .expect("Failed to create engine");
 
         // Should not panic — errors are logged, not propagated
@@ -640,16 +661,16 @@ mod tests {
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
-        let engine = SoarEngine::new(
-            db as Arc<dyn AppRepo>,
+        let engine = SoarEngine::new(SoarEngineDeps {
+            db: db as Arc<dyn AppRepo>,
             config,
-            mock.clone(),
-            None,
-            None,
-            None,
-            cache,
-            None,
-        )
+            access_control: mock.clone(),
+            alert_notifier: None,
+            geoip: None,
+            rate_limit: None,
+            enforce_level_cache: cache,
+            secrets: None,
+        })
         .expect("Failed to create engine");
 
         let event = ThreatDetectedEvent {
@@ -715,16 +736,16 @@ mod tests {
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
-        let engine = SoarEngine::new(
-            db.clone() as Arc<dyn AppRepo>,
+        let engine = SoarEngine::new(SoarEngineDeps {
+            db: db.clone() as Arc<dyn AppRepo>,
             config,
-            mock,
-            None,
-            None,
-            None,
-            cache,
-            None,
-        )
+            access_control: mock,
+            alert_notifier: None,
+            geoip: None,
+            rate_limit: None,
+            enforce_level_cache: cache,
+            secrets: None,
+        })
         .expect("Failed to create engine");
 
         // Should have loaded default playbooks

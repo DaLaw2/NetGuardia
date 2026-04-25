@@ -6,7 +6,8 @@ use serde_json::Value;
 use super::Database;
 use crate::domain::common::error::Error;
 use crate::domain::response::playbook_data::{
-    ActionView, ActiveBlockView, ConditionView, ExecutionView, PendingUnblock, PlaybookView, UpdatePlaybookInput,
+    ActionView, ActiveBlockView, ConditionView, CreatePlaybookInput, ExecutionView, PendingUnblock, PlaybookView,
+    UpdatePlaybookInput,
 };
 use crate::interface::port::soar::SoarRepo;
 
@@ -369,12 +370,7 @@ impl SoarRepo for Database {
 
     fn insert_playbook_atomic(
         &self,
-        name: &str,
-        trigger_event: &str,
-        threshold: Option<f64>,
-        count: Option<i64>,
-        window: Option<i64>,
-        cooldown: i64,
+        input: &CreatePlaybookInput,
         actions: &[(i64, String, String)],
         conditions: &[(String, String, String, Option<String>)],
     ) -> Result<i64, Error> {
@@ -382,7 +378,7 @@ impl SoarRepo for Database {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![name, trigger_event, threshold, count, window, cooldown],
+            params![input.name, input.trigger_event, input.condition_threshold, input.condition_count, input.condition_window_secs, input.cooldown_secs],
         )?;
         let playbook_id = tx.last_insert_rowid();
         for (action_order, action_type, params_json) in actions {
@@ -457,11 +453,21 @@ mod tests {
         use crate::interface::port::soar::SoarRepo;
 
         let db = test_db();
+        use crate::domain::response::playbook_data::CreatePlaybookInput;
+
+        let input = CreatePlaybookInput {
+            name: "atom_pb".to_string(),
+            trigger_event: "threat".to_string(),
+            condition_threshold: Some(0.8),
+            condition_count: None,
+            condition_window_secs: None,
+            cooldown_secs: 300,
+            actions: vec![("block_ip".to_string(), "{}".to_string())],
+            conditions: vec![],
+        };
         let actions = vec![(1i64, "block_ip".to_string(), "{}".to_string())];
         let conditions = vec![("threshold".to_string(), ">=".to_string(), "0.8".to_string(), None)];
-        let id = db
-            .insert_playbook_atomic("atom_pb", "threat", Some(0.8), None, None, 300, &actions, &conditions)
-            .unwrap();
+        let id = db.insert_playbook_atomic(&input, &actions, &conditions).unwrap();
         assert!(id > 0);
         let loaded = db.list_playbooks().unwrap();
         assert!(!loaded.is_empty());

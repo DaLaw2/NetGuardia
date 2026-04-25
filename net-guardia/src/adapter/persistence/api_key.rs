@@ -106,7 +106,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_api_keys(&self) -> Result<Vec<(i64, String, String, String, Option<String>)>, Error> {
+    pub fn list_api_keys(&self) -> Result<Vec<ApiKeyListItem>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id, name, permission_level, created_at, last_used_at FROM api_keys")?;
         let rows = stmt.query_map([], |row| {

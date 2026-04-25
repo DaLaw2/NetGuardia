@@ -51,16 +51,7 @@ impl PlaybookService {
                 )
             })
             .collect();
-        let playbook_id = self.db.insert_playbook_atomic(
-            &input.name,
-            &input.trigger_event,
-            input.condition_threshold,
-            input.condition_count,
-            input.condition_window_secs,
-            input.cooldown_secs,
-            &actions,
-            &conditions,
-        )?;
+        let playbook_id = self.db.insert_playbook_atomic(input, &actions, &conditions)?;
         self.soar_engine.reload_cache()?;
         Ok(playbook_id)
     }

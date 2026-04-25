@@ -14,8 +14,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use super::inference::Inference;
 use super::model_loader::build_adapter;
+use super::runner::Inference;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
 use crate::domain::detection::error::MLError;

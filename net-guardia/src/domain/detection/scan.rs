@@ -62,12 +62,12 @@ impl ScanDetector {
             set.last_dst_ip = alert.dst_ip.clone();
 
             if set.ports.len() >= self.threshold {
-                if let Some(last) = set.last_alerted {
-                    if now.duration_since(last) < self.window {
-                        set.ports.clear();
-                        set.window_start = now;
-                        return None;
-                    }
+                if let Some(last) = set.last_alerted
+                    && now.duration_since(last) < self.window
+                {
+                    set.ports.clear();
+                    set.window_start = now;
+                    return None;
                 }
                 Some((set.ports.len(), set.last_dst_ip.clone()))
             } else {
