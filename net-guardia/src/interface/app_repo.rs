@@ -1,12 +1,12 @@
-use super::acl::AclRepo;
-use super::api_key::ApiKeyRepo;
-use super::audit::AuditRepo;
-use super::db_admin::DbAdminRepo;
-use super::enforcement::EnforcementRepo;
-use super::identity::IdentityRepo;
-use super::setting::SettingRepo;
-use super::soar::SoarRepo;
-use super::stats::StatsRepo;
+use crate::interface::acl::AclRepo;
+use crate::interface::api_key::ApiKeyRepo;
+use crate::interface::audit::AuditRepo;
+use crate::interface::db_admin::DbAdminRepo;
+use crate::interface::enforcement::EnforcementRepo;
+use crate::interface::identity::IdentityRepo;
+use crate::interface::setting::SettingRepo;
+use crate::interface::soar::SoarRepo;
+use crate::interface::stats::StatsRepo;
 
 /// Composition-root supertrait bundling every aggregate Repo trait +
 /// `DbAdminRepo`.

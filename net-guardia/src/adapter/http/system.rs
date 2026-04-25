@@ -1,13 +1,13 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::core::common::config_service::ConfigService;
-use crate::core::identity::extractor::AuthClaims;
+use crate::core::common::enforce_mode_handler::EnforceModeHandler;
 use crate::domain::common::config::constants::PERMISSION_SYSTEM_ADMIN;
-use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
-use crate::interface::port::app_repo::AppRepo;
+use crate::interface::app_repo::AppRepo;
 use crate::utils::boot_time;
 
 type Repo = dyn AppRepo;

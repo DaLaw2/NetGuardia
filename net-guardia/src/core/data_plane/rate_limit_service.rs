@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::common::error::Error;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::rate_limit_api::RateLimitPort;
+use crate::domain::common::system::rate_limit_settings::RateLimitSettings;
+use crate::interface::app_repo::AppRepo;
+use crate::interface::rate_limit_api::RateLimitPort;
 
 /// Domain service that coordinates rate limit config updates between DB and eBPF.
 pub struct RateLimitService {
@@ -43,5 +44,3 @@ impl RateLimitService {
         Ok(())
     }
 }
-
-use crate::domain::common::system::rate_limit_settings::RateLimitSettings;

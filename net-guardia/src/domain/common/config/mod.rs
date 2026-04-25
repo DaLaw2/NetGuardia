@@ -4,6 +4,7 @@ pub mod correlation;
 pub mod detection;
 pub mod dns_filter;
 pub mod ebpf;
+pub mod health;
 mod helpers;
 pub mod http_server;
 pub mod ml;
@@ -20,6 +21,7 @@ use crate::domain::common::config::correlation::CorrelationConfig;
 use crate::domain::common::config::detection::DetectionConfig;
 use crate::domain::common::config::dns_filter::DnsFilterConfig;
 use crate::domain::common::config::ebpf::EbpfConfig;
+use crate::domain::common::config::health::HealthConfig;
 use crate::domain::common::config::http_server::HttpServerConfig;
 use crate::domain::common::config::ml::MlConfig;
 use crate::domain::common::config::notification::NotificationConfig;
@@ -30,7 +32,7 @@ use crate::domain::common::config::suricata::SuricataConfig;
 use crate::domain::common::config::system::SystemConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::setting::SettingRepo;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -39,6 +41,7 @@ pub struct AppConfig {
     pub detection: DetectionConfig,
     pub dns_filter: DnsFilterConfig,
     pub ebpf: EbpfConfig,
+    pub health: HealthConfig,
     pub http_server: HttpServerConfig,
     pub ml: MlConfig,
     pub notification: NotificationConfig,
@@ -57,6 +60,7 @@ impl AppConfig {
             detection: DetectionConfig::from_settings(repo)?,
             dns_filter: DnsFilterConfig::from_settings(repo)?,
             ebpf: EbpfConfig::from_settings(repo)?,
+            health: HealthConfig::from_settings(repo)?,
             http_server: HttpServerConfig::from_settings(repo)?,
             ml: MlConfig::from_settings(repo)?,
             notification: NotificationConfig::from_settings(repo)?,
@@ -76,6 +80,7 @@ impl AppConfig {
         DetectionConfig::seed_defaults(repo)?;
         DnsFilterConfig::seed_defaults(repo)?;
         EbpfConfig::seed_defaults(repo)?;
+        HealthConfig::seed_defaults(repo)?;
         HttpServerConfig::seed_defaults(repo)?;
         MlConfig::seed_defaults(repo)?;
         NotificationConfig::seed_defaults(repo)?;

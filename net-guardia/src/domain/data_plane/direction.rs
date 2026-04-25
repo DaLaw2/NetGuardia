@@ -24,3 +24,12 @@ pub enum FlowDirection {
     Source,
     Destination,
 }
+
+impl FlowDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Destination => "destination",
+        }
+    }
+}

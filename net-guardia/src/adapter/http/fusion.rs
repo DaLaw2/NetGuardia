@@ -7,15 +7,14 @@
 //! analysts can answer "why was this IP blocked?" without parsing
 //! logs by hand.
 
-use std::sync::Arc;
-
 use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
 use arc_swap::ArcSwap;
 
+use crate::core::detection::metrics::FusionMetrics;
+use crate::domain::common::audit::AuditLogEntry;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::FUSION_AUDIT_ACTION;
-use crate::domain::detection::metrics::FusionMetrics;
-use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
+use crate::interface::audit::AuditRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/fusion")
@@ -37,7 +36,7 @@ async fn get_metrics(metrics: web::Data<FusionMetrics>) -> impl Responder {
 async fn explain_ip(
     req: HttpRequest,
     audit: web::Data<dyn AuditRepo>,
-    app_config: web::Data<Arc<ArcSwap<AppConfig>>>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
 ) -> impl Responder {
     let src_ip = match req.match_info().get("src_ip") {
         Some(ip) => ip.to_string(),

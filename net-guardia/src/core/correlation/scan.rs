@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use macros::log;
 
+use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
-use crate::domain::detection::correlation_cleanup::capped_cleanup;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
 

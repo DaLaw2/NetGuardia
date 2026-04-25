@@ -2,7 +2,7 @@ use rusqlite::params;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::interface::port::stats::StatsRepo;
+use crate::interface::stats::StatsRepo;
 
 impl Database {
     /// Count SOAR executions in the last N days.

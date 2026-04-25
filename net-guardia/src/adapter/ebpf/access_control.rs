@@ -12,7 +12,7 @@ use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::ip_address::NativeConvert;
 use crate::domain::data_plane::list_type::ListType;
-use crate::interface::port::access_control_admin::AccessControlAdminPort;
+use crate::interface::access_control_admin::AccessControlAdminPort;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,

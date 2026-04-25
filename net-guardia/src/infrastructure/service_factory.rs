@@ -16,21 +16,23 @@ use tokio::sync::broadcast;
 
 use crate::adapter::access_control::AccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
+use crate::adapter::http::middleware::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
 use crate::core::common::config_service::ConfigService;
+use crate::core::common::enforce_mode_handler::EnforceModeHandler;
 use crate::core::common::notification_service::NotificationService;
+use crate::core::common::statistics::FlowStatistics;
 use crate::core::data_plane::acl_service::AclService;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
 use crate::core::data_plane::rate_limit_service::RateLimitService;
-use crate::core::identity::jwt::JwtService;
 use crate::core::inference::drift_detector::DriftDetectorHandle;
 use crate::core::reporting::email_scheduler::ReportScheduler;
 use crate::core::response::engine::{SoarEngine, SoarEngineDeps};
 use crate::core::response::playbook_service::PlaybookService;
 use crate::core::response::scheduler::TtlScheduler;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::EVENT_CHANNEL_CAPACITY;
+use crate::domain::common::config::constants::{EVENT_CHANNEL_CAPACITY, enforce_mode_to_u8};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
@@ -45,59 +47,59 @@ use crate::domain::detection::drift::FeatureBaselines;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::manifest::ModelManifest;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::infrastructure::app_services::AppServices;
 use crate::infrastructure::ebpf_preflight;
-use crate::infrastructure::enforce_mode_handler::EnforceModeHandler;
 use crate::infrastructure::geoip::GeoIpService;
+use crate::infrastructure::health::SystemHealth;
+use crate::infrastructure::inference_runtime::InferenceRuntime;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
-use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::access_control_admin::AccessControlAdminPort;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::dns_filter_api::DnsFilterPort;
-use crate::interface::port::geo_block_api::GeoBlockPort;
-use crate::interface::port::geo_lookup::GeoLookup;
-use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory};
-use crate::interface::port::rate_limit_api::RateLimitPort;
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::setting::SettingRepo;
-use crate::interface::port::soar::SoarRepo;
+use crate::interface::access_control::AccessControlPort;
+use crate::interface::access_control_admin::AccessControlAdminPort;
+use crate::interface::app_repo::AppRepo;
+use crate::interface::dns_filter_api::DnsFilterPort;
+use crate::interface::geo_block_api::GeoBlockPort;
+use crate::interface::geo_lookup::GeoLookup;
+use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
+use crate::interface::rate_limit_api::RateLimitPort;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::setting::SettingRepo;
+use crate::interface::soar::SoarRepo;
 
-/// Holds all Arc-wrapped services that make up the running application.
 pub struct AppState {
     pub app_config: Arc<ArcSwap<AppConfig>>,
     pub inference_config: Arc<MLInferenceConfig>,
-    pub ebpf_services: Arc<EbpfServices>,
-    pub app_services: Arc<AppServices>,
+
     pub database: Arc<Database>,
     pub secret_store: Arc<SecretStore>,
+
+    pub ebpf_services: Arc<EbpfServices>,
+    pub ingress_ebpf: Option<Ebpf>,
+    pub egress_ebpf: Option<Ebpf>,
+    pub _ingress_program_array: Option<ProgramArray<MapData>>,
+    pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
+    pub inference_runtime: Arc<InferenceRuntime>,
+    pub health: Arc<SystemHealth>,
+    pub flow_statistics: Arc<FlowStatistics>,
+    pub drift_detector: DriftDetectorHandle,
+
     pub jwt_service: Arc<JwtService>,
-    pub threat_tx: broadcast::Sender<ThreatDetectedEvent>,
-    pub audit_tx: broadcast::Sender<AuditEvent>,
-    pub drift_tx: broadcast::Sender<DriftDetectedEvent>,
     pub enforce_handler: Arc<EnforceModeHandler>,
-    pub soar_engine: Arc<SoarEngine>,
-    pub ttl_scheduler: TtlScheduler,
-    pub report_scheduler: ReportScheduler,
+
     pub acl_service: Arc<AclService>,
     pub config_service: Arc<ConfigService>,
     pub dns_filter_service: Arc<DnsFilterService>,
     pub notification_service: Arc<NotificationService>,
     pub playbook_service: Arc<PlaybookService>,
     pub rate_limit_service: Arc<RateLimitService>,
+    pub soar_engine: Arc<SoarEngine>,
+    pub ttl_scheduler: TtlScheduler,
+    pub report_scheduler: ReportScheduler,
     pub geoip: Option<Arc<dyn GeoLookup>>,
-    pub drift_detector: DriftDetectorHandle,
-    pub ingress_ebpf: Option<Ebpf>,
-    pub egress_ebpf: Option<Ebpf>,
-    /// Held to keep the eBPF program array map FD alive. `None` when eBPF
-    /// failed to load.
-    pub _ingress_program_array: Option<ProgramArray<MapData>>,
-    /// Shared eBPF health state. Populated to `Healthy` on successful bring-up,
-    /// or to `Unavailable { stage, category, reason }` when any stage fails.
-    /// Read by `SystemHealth` for the metrics broadcast and by HTTP handlers
-    /// that render runtime status to the frontend.
-    pub ebpf_health: Arc<ArcSwap<EbpfHealth>>,
     pub suricata_manager: Arc<SuricataManager>,
+
+    pub threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    pub audit_tx: broadcast::Sender<AuditEvent>,
+    pub drift_tx: broadcast::Sender<DriftDetectedEvent>,
 }
 
 /// Maps stage name (from config.toml) to (function_name, stage_id).
@@ -208,27 +210,29 @@ impl ServiceFactory {
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
-            use crate::infrastructure::enforce_mode_handler::enforce_mode_to_u8;
             let mode_str = db.get_setting("enforce_mode")?.unwrap_or_default();
             enforce_mode_to_u8(&mode_str)
         }));
 
         // Named broadcast channels replace the old TypeId-based CommunicationManager.
-        // They must exist before AppServices spins up the TrafficLogger: the writer
+        // They must exist before InferenceRuntime spins up the TrafficLogger: the writer
         // thread can publish `flow_trace_stopped` audit events the moment it tries
         // to open its first rotated file.
         let (threat_tx, _) = broadcast::channel::<ThreatDetectedEvent>(EVENT_CHANNEL_CAPACITY);
         let (audit_tx, _) = broadcast::channel::<AuditEvent>(EVENT_CHANNEL_CAPACITY);
         let (drift_tx, _) = broadcast::channel::<DriftDetectedEvent>(EVENT_CHANNEL_CAPACITY);
 
-        let app_services = Arc::new(AppServices::new(
+        let health = Arc::new(SystemHealth::new(app_config.clone(), ebpf_health.clone())?);
+
+        let inference_runtime = Arc::new(InferenceRuntime::new(
             app_config.clone(),
             inference_config.clone(),
             ml_manifest.clone(),
             drift_detector.clone(),
-            ebpf_health.clone(),
             audit_tx.clone(),
         )?);
+
+        let flow_statistics = Arc::new(FlowStatistics::new(inference_runtime.ml_engine.clone()));
 
         let enforce_handler = Arc::new(EnforceModeHandler::new(
             db.clone() as Arc<dyn AppRepo>,
@@ -339,31 +343,38 @@ impl ServiceFactory {
         Ok(AppState {
             app_config,
             inference_config,
-            ebpf_services,
-            app_services,
+
             database: db,
             secret_store,
+
+            ebpf_services,
+            ingress_ebpf,
+            egress_ebpf,
+            _ingress_program_array: ingress_program_array,
+            ebpf_health,
+            inference_runtime,
+            health,
+            flow_statistics,
+            drift_detector,
+
             jwt_service,
-            threat_tx,
-            audit_tx,
-            drift_tx,
             enforce_handler,
-            soar_engine,
-            ttl_scheduler,
-            report_scheduler,
+
             acl_service,
             config_service,
             dns_filter_service,
             notification_service,
             playbook_service,
             rate_limit_service,
+            soar_engine,
+            ttl_scheduler,
+            report_scheduler,
             geoip,
-            drift_detector,
-            ingress_ebpf,
-            egress_ebpf,
-            _ingress_program_array: ingress_program_array,
-            ebpf_health,
             suricata_manager,
+
+            threat_tx,
+            audit_tx,
+            drift_tx,
         })
     }
 
@@ -585,8 +596,8 @@ impl ServiceFactory {
     async fn restore_acl_rules(db: &Database, ebpf_services: &EbpfServices) {
         if let Ok(rules) = db.list_acl_rules() {
             let mut restored = 0u32;
-            for (ip_version, direction, list_type, ip_address, port) in &rules {
-                let dir = match direction.as_str() {
+            for rule in &rules {
+                let dir = match rule.direction.as_str() {
                     "source" => FlowDirection::Source,
                     "destination" => FlowDirection::Destination,
                     other => {
@@ -594,7 +605,7 @@ impl ServiceFactory {
                         continue;
                     }
                 };
-                let lt = match list_type.as_str() {
+                let lt = match rule.list_type.as_str() {
                     "whitelist" => ListType::White,
                     "blacklist" => ListType::Black,
                     other => {
@@ -602,38 +613,40 @@ impl ServiceFactory {
                         continue;
                     }
                 };
-                let result = match ip_version {
-                    4 => match ip_address.parse::<Ipv4Addr>() {
-                        Ok(addr) => ebpf_services
-                            .access_control
-                            .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, *port)),
-                        Err(e) => {
-                            log!(SystemLog::AclIpv4ParseFailed(ip_address.clone(), e.to_string()));
-                            continue;
-                        }
-                    },
-                    6 => match ip_address.parse::<Ipv6Addr>() {
+                let result = match rule.ip_version {
+                    4 => match rule.ip_address.parse::<Ipv4Addr>() {
                         Ok(addr) => {
                             ebpf_services
                                 .access_control
-                                .add_ipv6_list(dir, lt, SocketAddrV6::new(addr, *port, 0, 0))
+                                .add_ipv4_list(dir, lt, SocketAddrV4::new(addr, rule.port))
                         }
                         Err(e) => {
-                            log!(SystemLog::AclIpv6ParseFailed(ip_address.clone(), e.to_string()));
+                            log!(SystemLog::AclIpv4ParseFailed(rule.ip_address.clone(), e.to_string()));
+                            continue;
+                        }
+                    },
+                    6 => match rule.ip_address.parse::<Ipv6Addr>() {
+                        Ok(addr) => ebpf_services.access_control.add_ipv6_list(
+                            dir,
+                            lt,
+                            SocketAddrV6::new(addr, rule.port, 0, 0),
+                        ),
+                        Err(e) => {
+                            log!(SystemLog::AclIpv6ParseFailed(rule.ip_address.clone(), e.to_string()));
                             continue;
                         }
                     },
                     other => {
-                        log!(SystemLog::AclUnknownIpVersion(*other));
+                        log!(SystemLog::AclUnknownIpVersion(other));
                         continue;
                     }
                 };
                 if let Err(e) = result {
                     log!(SystemLog::AclRuleRestoreFailed(
-                        direction.clone(),
-                        list_type.clone(),
-                        ip_address.clone(),
-                        *port,
+                        rule.direction.clone(),
+                        rule.list_type.clone(),
+                        rule.ip_address.clone(),
+                        rule.port,
                         e.to_string()
                     ));
                 } else {

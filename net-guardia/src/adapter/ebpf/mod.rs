@@ -1,5 +1,4 @@
 pub mod access_control;
-pub mod dns_filter;
 pub mod drop_monitor;
 pub mod geo_block;
 pub mod protocol_filter;
@@ -17,18 +16,18 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use crate::adapter::ebpf::access_control::AccessControl;
-use crate::adapter::ebpf::dns_filter::DnsFilter;
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
 use crate::adapter::ebpf::geo_block::GeoBlock;
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::ebpf::rate_limit::RateLimitConfig;
 use crate::adapter::ebpf::xsk_manager::XskManager;
+use crate::core::data_plane::dns_filter::DnsFilter;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
 use crate::domain::data_plane::error::EbpfError;
-use crate::interface::port::dns_query_filter::DnsQueryFilter;
-use crate::interface::port::packet_sink::PacketSinkFactory;
+use crate::interface::dns_query_filter::DnsQueryFilter;
+use crate::interface::packet_sink::PacketSinkFactory;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,

@@ -5,9 +5,10 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 
 use super::Database;
+use crate::domain::common::audit::AuditLogEntry;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
-use crate::interface::port::audit::{AuditLogEntry, AuditRepo};
+use crate::interface::audit::AuditRepo;
 
 /// Compute the row hash for an audit_log entry.
 /// Formula: sha256_hex(ts || 0x00 || actor || 0x00 || action || 0x00 || detail || 0x00 || prev_hash)

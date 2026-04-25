@@ -5,8 +5,8 @@ use arc_swap::ArcSwap;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::dns_filter_api::DnsFilterPort;
+use crate::interface::app_repo::AppRepo;
+use crate::interface::dns_filter_api::DnsFilterPort;
 
 /// Domain service that coordinates DNS filter changes between DB and in-memory service.
 /// Write order: eBPF/in-memory first, then DB — if eBPF fails, DB remains clean.

@@ -2,8 +2,7 @@ use std::future::{Future, Ready, ready};
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
@@ -11,8 +10,7 @@ use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::http::header;
 use actix_web::{Error as ActixError, HttpResponse, web};
 
-/// Shared flag: when true, non-HTTPS requests are redirected.
-pub type ForceHttpsFlag = Arc<AtomicBool>;
+use crate::infrastructure::http_server::ForceHttpsFlag;
 
 /// Validate that the host is safe to use in a redirect Location header.
 /// Only allows: private IPs (RFC 1918), loopback, .local hostnames, and bare hostnames
@@ -100,7 +98,7 @@ where
             // Check if force_https is enabled
             let force = req
                 .app_data::<web::Data<ForceHttpsFlag>>()
-                .map(|flag| flag.load(Ordering::Relaxed))
+                .map(|flag| flag.0.load(Ordering::Relaxed))
                 .unwrap_or(false);
 
             if !force {

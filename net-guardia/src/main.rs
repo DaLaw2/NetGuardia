@@ -13,14 +13,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use adapter::http::middleware::jwt::JwtService;
 use clap::Parser;
+use interface::secret_store::SecretStorePort;
 use macros::log;
 use sd_notify::NotifyState;
 use tokio::time::sleep;
 use tokio::{signal, time};
 
 use crate::adapter::persistence::Database;
-use crate::core::identity::jwt::JwtService;
 use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
@@ -32,7 +33,6 @@ use crate::infrastructure::http_server;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
-use crate::interface::port::secret_store::SecretStorePort;
 
 fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
     if database.user_count().unwrap_or(0) != 0 {
@@ -41,8 +41,8 @@ fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
     let hash = password::hash_password(DEFAULT_ADMIN_USERNAME)?;
     let admin_user_id = database.insert_user(DEFAULT_ADMIN_USERNAME, &hash, ROLE_ADMIN, false)?;
     if let Ok(groups) = database.list_user_groups()
-        && let Some((group_id, _, _, _, _)) = groups.into_iter().find(|(_, name, _, _, _)| name == GROUP_ADMIN)
-        && let Err(err) = database.set_user_groups(admin_user_id, &[group_id])
+        && let Some(g) = groups.into_iter().find(|g| g.name == GROUP_ADMIN)
+        && let Err(err) = database.set_user_groups(admin_user_id, &[g.id])
     {
         log!(SystemError::SetUserGroupsFailed(err));
     }
@@ -64,9 +64,10 @@ async fn run_setup_wizard(database: &Arc<Database>) -> Result<(), Error> {
     let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
     let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
     let setup_flag = Arc::new(AtomicBool::new(false));
+    let setup_complete_flag = http_server::SetupCompleteFlag(setup_flag.clone());
 
     let handle =
-        http_server::start_setup_server(database.clone(), secret_store, jwt_service, setup_flag.clone(), 8080)?;
+        http_server::start_setup_server(database.clone(), secret_store, jwt_service, setup_complete_flag, 8080)?;
 
     let flag = setup_flag.clone();
     let setup_done = async move {

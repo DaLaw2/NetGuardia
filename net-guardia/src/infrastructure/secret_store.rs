@@ -13,18 +13,16 @@ use crate::adapter::persistence::Database;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::crypto::CryptoError;
 use crate::domain::common::log::crypto::CryptoLog;
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::setting::SettingRepo;
 
-/// AES-256-GCM envelope encryption for sensitive values stored in `app_secrets`.
 pub struct SecretStore {
-    db: Arc<Database>,
-    /// `None` means dev mode — secrets are base64-encoded but not encrypted.
+    database: Arc<Database>,
     cipher: Option<Aes256Gcm>,
 }
 
 impl SecretStore {
-    pub fn new(db: Arc<Database>) -> Self {
+    pub fn new(database: Arc<Database>) -> Self {
         let raw_key = env::var("NETGUARDIA_SECRETS_KEY")
             .ok()
             .filter(|k| !k.is_empty())
@@ -45,7 +43,7 @@ impl SecretStore {
             log!(CryptoLog::EnvelopeDisabled);
         }
 
-        Self { db, cipher }
+        Self { database, cipher }
     }
 
     fn encrypt(&self, plaintext: &str) -> Result<String, Error> {
@@ -64,7 +62,6 @@ impl SecretStore {
                 Ok(envelope.to_string())
             }
             None => {
-                // Dev mode: no encryption, just base64
                 let envelope = serde_json::json!({
                     "v": 1,
                     "alg": "none",
@@ -92,9 +89,6 @@ impl SecretStore {
 
         match alg {
             "none" => {
-                // Reject alg:none when encryption is enabled (production mode).
-                // Prevents downgrade attack where attacker replaces encrypted envelope
-                // with alg:none + attacker-controlled plaintext.
                 if self.cipher.is_some() {
                     Err(CryptoError::AlgNoneRejected)?;
                 }
@@ -127,7 +121,7 @@ impl SecretStore {
 
 impl SecretStorePort for SecretStore {
     fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
-        let repo: &dyn SettingRepo = self.db.as_ref();
+        let repo: &dyn SettingRepo = self.database.as_ref();
         match repo.get_app_secret(key)? {
             Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
             None => Ok(None),
@@ -136,7 +130,7 @@ impl SecretStorePort for SecretStore {
 
     fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
         let envelope = self.encrypt(plaintext)?;
-        let repo: &dyn SettingRepo = self.db.as_ref();
+        let repo: &dyn SettingRepo = self.database.as_ref();
         repo.set_app_secret(key, &envelope)
     }
 
@@ -149,22 +143,20 @@ impl SecretStorePort for SecretStore {
 mod tests {
     use super::*;
 
-    /// Create a SecretStore with encryption enabled (production mode).
     fn store_with_cipher() -> SecretStore {
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), b"test-key-for-unit-tests");
         let mut okm = [0u8; 32];
         hk.expand(b"netguardia-envelope-v1", &mut okm).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&okm).unwrap();
         SecretStore {
-            db: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").unwrap()),
             cipher: Some(cipher),
         }
     }
 
-    /// Create a SecretStore without encryption (dev mode).
     fn store_without_cipher() -> SecretStore {
         SecretStore {
-            db: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").unwrap()),
             cipher: None,
         }
     }
@@ -194,13 +186,12 @@ mod tests {
         let store1 = store_with_cipher();
         let encrypted = store1.encrypt("secret-value").unwrap();
 
-        // Create a store with a different key
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), b"different-key");
         let mut okm = [0u8; 32];
         hk.expand(b"netguardia-envelope-v1", &mut okm).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&okm).unwrap();
         let store2 = SecretStore {
-            db: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").unwrap()),
             cipher: Some(cipher),
         };
 

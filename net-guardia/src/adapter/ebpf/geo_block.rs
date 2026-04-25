@@ -13,7 +13,7 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::data_plane::error::EbpfError;
-use crate::interface::port::geo_block_api::GeoBlockPort;
+use crate::interface::geo_block_api::GeoBlockPort;
 
 /// Pre-indexed GeoIP prefix table, built once at startup.
 struct GeoIndex {

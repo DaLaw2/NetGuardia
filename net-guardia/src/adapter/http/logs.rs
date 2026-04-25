@@ -1,15 +1,14 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use actix_web::{HttpResponse, Scope, web};
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::core::common::log_buffer::{self, LogBuffer, LogEntry};
 use crate::domain::common::config::AppConfig;
+use crate::infrastructure::log_buffer::{self, LogBuffer, LogEntry};
 
 /// Hardcoded log directory — not configurable via API to prevent directory traversal.
 const LOG_DIR: &str = "logs";
@@ -51,7 +50,7 @@ struct LiveResponse {
 
 async fn live_logs(
     query: web::Query<LiveQuery>,
-    app_config: web::Data<Arc<ArcSwap<AppConfig>>>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
     buf: web::Data<LogBuffer>,
 ) -> HttpResponse {
     let since_id = query.since_id.unwrap_or(0);
@@ -117,7 +116,7 @@ async fn list_logs() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({ "files": entries }))
 }
 
-async fn download_log(path: web::Path<String>, app_config: web::Data<Arc<ArcSwap<AppConfig>>>) -> HttpResponse {
+async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
     let max_download_size = app_config.load().observability.log_max_download_size;
     let filename = path.into_inner();
 

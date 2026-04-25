@@ -4,19 +4,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use macros::log;
 use tokio::sync::broadcast;
 
+use crate::domain::common::config::constants::enforce_mode_to_u8;
 use crate::domain::common::error::Error;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::common::log::system::SystemLog;
-use crate::interface::port::app_repo::AppRepo;
-
-/// Map enforce-mode string to u8: monitor=0, ml_only=1, enforce=2.
-pub fn enforce_mode_to_u8(mode: &str) -> u8 {
-    match mode {
-        "enforce" => 2,
-        "ml_only" => 1,
-        _ => 0, // "monitor" or unknown → safest default
-    }
-}
+use crate::interface::app_repo::AppRepo;
 
 /// Handles enforce-mode commands and queries by delegating to the repository.
 pub struct EnforceModeHandler {

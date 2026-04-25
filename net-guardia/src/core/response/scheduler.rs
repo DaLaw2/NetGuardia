@@ -5,11 +5,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
 use crate::core::response::engine::SoarEngine;
-use crate::core::response::playbook_service::ip_version_from_str;
 use crate::domain::common::error::Error;
 use crate::domain::response::log::SoarLog;
-use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::app_repo::AppRepo;
+use crate::interface::access_control::AccessControlPort;
+use crate::interface::app_repo::AppRepo;
+use crate::utils::ip_address::ip_version_from_str;
 
 /// TTL expiry scheduler: runs every 60 seconds, removes expired auto-block rules.
 /// Before removing from eBPF, checks if a manual ACL rule exists for the same IP.

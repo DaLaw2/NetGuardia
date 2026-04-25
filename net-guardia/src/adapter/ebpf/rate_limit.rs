@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 
 use crate::domain::common::error::Error;
 use crate::domain::data_plane::error::EbpfError;
-use crate::interface::port::rate_limit_api::RateLimitPort;
+use crate::interface::rate_limit_api::RateLimitPort;
 
 pub struct RateLimitConfig {
     config_map: Mutex<Option<Array<MapData, u64>>>,

@@ -12,9 +12,10 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::notification::NotificationError;
 use crate::domain::common::log::system::SystemLog;
-use crate::interface::port::notification::{AlertNotifier, AlertNotifierFactory, AlertPayload};
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::setting::SettingRepo;
+use crate::domain::common::notification::AlertPayload;
+use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::setting::SettingRepo;
 
 /// Telegram Bot API adapter implementing AlertNotifier.
 pub struct TelegramAdapter {

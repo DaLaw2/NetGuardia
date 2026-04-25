@@ -20,14 +20,14 @@ use arc_swap::ArcSwap;
 use macros::log;
 use tract_onnx::prelude::*;
 
+use crate::core::inference::model_adapter::{MLModelAdapter, ModelSourceState, RunnableModel};
 use crate::domain::common::config::AppConfig;
 use crate::domain::detection::flow_features::FlowFeatures;
 use crate::domain::detection::flow_tracker::FlowData;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::manifest::LabelSpec;
-use crate::domain::detection::ml_detection::{DetectionResult, RunnableModel};
+use crate::domain::detection::ml_detection::DetectionResult;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::domain::detection::model_adapter::{MLModelAdapter, ModelSourceState};
 use crate::domain::detection::model_source::ModelSourceStatus;
 
 /// (anomaly_scores, per_class_probs, c2_scores) — MultiTask batch output.
@@ -80,7 +80,7 @@ impl Inference {
 
     /// Current state snapshot for wire broadcast. Merges the in-memory
     /// `qps_recent` atomic into the Active info so the UI sees live QPS.
-    pub fn current_status(&self) -> ModelSourceStatus {
+    pub fn model_source_status(&self) -> ModelSourceStatus {
         let guard = self.state.load();
         let mut status = guard.to_status();
         if let ModelSourceStatus::Active { ref mut info } = status {

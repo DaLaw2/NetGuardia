@@ -18,7 +18,19 @@ use rusqlite::{self, Connection, params};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
 use crate::domain::common::log::misc::MiscLog;
-use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER};
+
+impl From<rusqlite::Error> for DatabaseError {
+    fn from(e: rusqlite::Error) -> Self {
+        DatabaseError::QueryFailed(e)
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Database(DatabaseError::from(e))
+    }
+}
+use crate::domain::identity::auth::{ADMIN_PERMISSIONS, GROUP_ADMIN, GROUP_VIEWER, VIEWER_PERMISSIONS};
 
 /// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
 /// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).
@@ -334,51 +346,8 @@ impl Database {
         // Seed default user groups on first install (empty table)
         let group_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
         if group_count == 0 {
-            let all_permissions = serde_json::json!([
-                "dashboard:read",
-                "statistics:read",
-                "traffic_map:read",
-                "drops:read",
-                "ai_detection:read",
-                "ai_detection:write",
-                "access_control:read",
-                "access_control:write",
-                "geo_block:read",
-                "geo_block:write",
-                "dns_filter:read",
-                "dns_filter:write",
-                "rate_limit:read",
-                "rate_limit:write",
-                "protocol_filter:read",
-                "protocol_filter:write",
-                "system:read",
-                "system:write",
-                "system:admin",
-                "users:read",
-                "users:write",
-                "users:admin",
-                "fusion:read",
-                "fusion:write",
-                "flow_trace:read",
-                "flow_trace:write"
-            ])
-            .to_string();
-            let viewer_permissions = serde_json::json!([
-                "dashboard:read",
-                "statistics:read",
-                "traffic_map:read",
-                "drops:read",
-                "ai_detection:read",
-                "access_control:read",
-                "geo_block:read",
-                "dns_filter:read",
-                "rate_limit:read",
-                "protocol_filter:read",
-                "system:read",
-                "fusion:read",
-                "flow_trace:read"
-            ])
-            .to_string();
+            let all_permissions = serde_json::to_string(&ADMIN_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+            let viewer_permissions = serde_json::to_string(&VIEWER_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
 
             conn_ref.execute(
                 "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
@@ -397,9 +366,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::port::acl::AclRepo;
-    use crate::interface::port::identity::IdentityRepo;
-    use crate::interface::port::setting::SettingRepo;
+    use crate::interface::acl::AclRepo;
+    use crate::interface::identity::IdentityRepo;
+    use crate::interface::setting::SettingRepo;
 
     pub(super) fn test_db() -> Database {
         Database::new(":memory:").expect("Failed to create test database")

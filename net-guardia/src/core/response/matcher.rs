@@ -9,11 +9,11 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use macros::log;
 
+use crate::core::response::frequency::FrequencyTracker;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::{DetectionSource, ThreatDetectedEvent};
 use crate::domain::response::condition::{ConditionType, PlaybookCondition};
 use crate::domain::response::dry_run::{DryRunAction, DryRunConditionResult, DryRunMatch};
-use crate::domain::response::frequency::FrequencyTracker;
 use crate::domain::response::log::SoarLog;
 use crate::domain::response::playbook::Playbook;
 
@@ -287,20 +287,6 @@ impl PlaybookMatcher {
             .iter()
             .map(|pb| simulate_playbook(pb, event, default_min_conf))
             .collect()
-    }
-}
-
-pub fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-        }
     }
 }
 

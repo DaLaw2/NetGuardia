@@ -9,10 +9,10 @@ use actix_web::http::Method;
 use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 use macros::log;
 
-use crate::core::identity::jwt::JwtService;
+use crate::adapter::http::middleware::jwt::JwtService;
 use crate::domain::identity::error::AuthError;
-use crate::interface::port::api_key::ApiKeyRepo;
-use crate::interface::port::app_repo::AppRepo;
+use crate::interface::api_key::ApiKeyRepo;
+use crate::interface::app_repo::AppRepo;
 
 pub struct AuthMiddleware;
 
@@ -40,9 +40,8 @@ pub struct AuthMiddlewareService<S> {
 
 fn required_permission(path: &str, method: &Method) -> Option<String> {
     let resource = if path == "/api/auth/login" || path == "/api/auth/me" || path == "/api/auth/change-password" {
-        return None; // Public auth endpoints: login (no auth), me/change-password (auth-only, no RBAC)
+        return None;
     } else if path.starts_with("/api/auth/") {
-        // User/group management requires users:admin
         return Some("users:admin".to_string());
     } else if path.starts_with("/api/health/") || path.starts_with("/api/stats/") {
         "dashboard"
@@ -65,7 +64,6 @@ fn required_permission(path: &str, method: &Method) -> Option<String> {
     } else if path.starts_with("/api/system/") {
         "system"
     } else if path.contains("/soar/blocks/") && path.ends_with("/unblock") {
-        // manual_unblock needs access_control:write (always POST)
         return Some("access_control:write".to_string());
     } else if path.starts_with("/api/soar/")
         || path.starts_with("/api/notifications/")

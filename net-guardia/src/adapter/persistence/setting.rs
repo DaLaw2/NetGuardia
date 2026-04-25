@@ -2,7 +2,7 @@ use rusqlite::{Error as RusqliteError, Transaction, params};
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::setting::SettingRepo;
 
 impl Database {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
@@ -191,7 +191,7 @@ mod tests {
     use super::super::tests::test_db;
     use crate::domain::common::error::Error;
     use crate::domain::common::error::misc::MiscError;
-    use crate::interface::port::setting::SettingRepo;
+    use crate::interface::setting::SettingRepo;
 
     #[test]
     fn test_settings_crud() {

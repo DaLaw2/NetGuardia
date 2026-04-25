@@ -3,13 +3,13 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde_json::Value;
 
-use crate::core::reporting::email_scheduler::SmtpClient;
+use crate::adapter::notification::smtp::SmtpClient;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
-use crate::interface::port::notification::AlertNotifierFactory;
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::notification::AlertNotifierFactory;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::setting::SettingRepo;
 
 /// Domain service for notification config (Telegram, SMTP).
 /// Coordinates DB persistence and external service testing.

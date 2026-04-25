@@ -8,9 +8,12 @@ use macros::log;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
+use crate::core::detection::metrics::FusionMetrics;
 use crate::core::inference::alert::MLAlert;
 use crate::core::inference::drift_detector::DriftDetectorHandle;
 use crate::core::inference::engine::Engine;
+use crate::core::inference::engine::EngineConfig;
+use crate::core::inference::model_adapter::ModelSourceState;
 use crate::core::inference::model_loader::build_adapter;
 use crate::core::inference::runner::Inference;
 use crate::core::inference::traffic_logger::{RotationPolicy, TrafficLogger};
@@ -21,43 +24,29 @@ use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::error::system::SystemError;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::common::log::system::SystemLog;
-use crate::domain::common::system::health::EbpfHealth;
 use crate::domain::detection::flow_features::FlowFeatures;
 use crate::domain::detection::flow_tracker::FlowLimits;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::manifest::ModelManifest;
-use crate::domain::detection::metrics::FusionMetrics;
-use crate::domain::detection::ml_detection::EngineConfig;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::domain::detection::model_adapter::ModelSourceState;
 use crate::domain::detection::model_source::ModelInfo;
-use crate::infrastructure::health::SystemHealth;
-use crate::infrastructure::statistics::FlowStatistics;
 
-/// Application-level service orchestrator.
-/// Holds all runtime services (health monitoring, ML inference, flow statistics)
-/// and manages their lifecycle (start/shutdown).
-pub struct AppServices {
-    pub health: Arc<SystemHealth>,
+pub struct InferenceRuntime {
     pub ml_alert: Arc<MLAlert>,
     pub ml_inference: Arc<Inference>,
     pub ml_engine: Arc<Engine>,
-    pub flow_statistics: Arc<FlowStatistics>,
     pub fusion_metrics: Arc<FusionMetrics>,
     shutdowns: SegQueue<oneshot::Sender<()>>,
 }
 
-impl AppServices {
+impl InferenceRuntime {
     pub fn new(
         app_config: Arc<ArcSwap<AppConfig>>,
         inference_config: Arc<MLInferenceConfig>,
         ml_manifest: Option<ModelManifest>,
         drift_detector: DriftDetectorHandle,
-        ebpf_health: Arc<ArcSwap<EbpfHealth>>,
         audit_tx: broadcast::Sender<AuditEvent>,
     ) -> Result<Self, Error> {
-        let health = SystemHealth::new(app_config.clone(), ebpf_health)?;
-
         let config = app_config.load();
         let batch_size = config.ml.inference_batch_size;
         let onnx_load_timeout = Duration::from_secs(config.ml.onnx_load_timeout_secs);
@@ -166,26 +155,19 @@ impl AppServices {
             config.ebpf.combined_queue_count,
         ));
 
-        let flow_statistics = Arc::new(FlowStatistics::new(ml_engine.clone()));
         let fusion_metrics = Arc::new(FusionMetrics::new());
 
         Ok(Self {
-            health: Arc::new(health),
             ml_alert,
             ml_inference,
             ml_engine,
-            flow_statistics,
             fusion_metrics,
             shutdowns: SegQueue::new(),
         })
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        let health = self.health.clone();
         let ml_engine = self.ml_engine.clone();
-
-        let health_shutdown = health.run(Duration::from_secs(3)).await;
-        self.shutdowns.push(health_shutdown);
 
         let ml_shutdown = ml_engine.run().await;
         self.shutdowns.push(ml_shutdown);

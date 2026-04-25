@@ -1,7 +1,6 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-/// Per-subsystem readiness state exposed by `/health/ready`.
 pub struct ReadinessState {
     pub db_connected: AtomicBool,
     pub ml_model_loaded: AtomicBool,

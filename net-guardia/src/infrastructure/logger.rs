@@ -11,11 +11,14 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, filter, reload};
 
-use crate::core::common::log_buffer::{LogBuffer, LogBufferLayer};
 use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::io::IOError;
-use crate::interface::utils::logging::FilterControl;
+use crate::infrastructure::log_buffer::{LogBuffer, LogBufferLayer};
+pub trait FilterControl: Send + Sync {
+    fn reload_filter(&self, filter: EnvFilter) -> Result<(), String>;
+    fn current_filter(&self) -> String;
+}
 
 pub struct Logger {
     filter_handle: Box<dyn FilterControl>,

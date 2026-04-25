@@ -1,17 +1,14 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error as ActixError, HttpResponse, web};
 
-/// Shared flag indicating whether setup has completed.
-/// When false, only setup wizard routes are allowed; all others get 503.
-pub type SetupCompleteFlag = Arc<AtomicBool>;
+use crate::infrastructure::http_server::SetupCompleteFlag;
 
 pub struct SetupGuard;
 
@@ -59,8 +56,8 @@ where
             // Check setup_complete flag from app data
             let setup_complete = req
                 .app_data::<web::Data<SetupCompleteFlag>>()
-                .map(|flag| flag.load(Ordering::SeqCst))
-                .unwrap_or(true); // Default to true if flag not found
+                .map(|flag| flag.0.load(Ordering::SeqCst))
+                .unwrap_or(true);
 
             if setup_complete {
                 // Normal mode: pass through, but block setup mutation endpoints.

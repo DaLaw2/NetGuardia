@@ -1,16 +1,16 @@
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use macros::log;
 
+use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
 use crate::domain::detection::attack_type::CanonicalAttackType;
-use crate::domain::detection::correlation_cleanup::capped_cleanup;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
+use crate::utils::ip_address::is_internal_ip;
 
 struct TimedDestSet {
     dests: HashSet<String>,
@@ -115,39 +115,10 @@ impl LateralMovementDetector {
     }
 }
 
-/// Check if an IP address string represents a private/internal address.
-/// RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-/// RFC 4193: fc00::/7 (IPv6 unique local)
-pub fn is_internal_ip(ip_str: &str) -> bool {
-    let Ok(ip) = ip_str.parse::<IpAddr>() else {
-        return false;
-    };
-
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            // 10.0.0.0/8
-            octets[0] == 10
-            // 172.16.0.0/12
-            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-            // 192.168.0.0/16
-            || (octets[0] == 192 && octets[1] == 168)
-            // 127.0.0.0/8 (loopback)
-            || octets[0] == 127
-        }
-        IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            // fc00::/7
-            (segments[0] & 0xfe00) == 0xfc00
-            // ::1 (loopback)
-            || v6.is_loopback()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::ip_address::is_internal_ip;
 
     #[test]
     fn test_internal_ip_detection() {

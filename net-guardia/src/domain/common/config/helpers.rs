@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::setting::SettingRepo;
 
 pub(in crate::domain) fn override_parsed<T: FromStr>(
     target: &mut T,

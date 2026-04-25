@@ -5,17 +5,17 @@ use arc_swap::ArcSwap;
 use chrono::Local;
 use tokio::task::spawn_blocking;
 
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::adapter::http::response::ok_json_or_error;
+use crate::adapter::notification::smtp::SmtpClient;
 use crate::adapter::persistence::Database;
-use crate::core::identity::extractor::AuthClaims;
 use crate::core::reporting::email_report::generate_weekly_report;
-use crate::core::reporting::email_scheduler::SmtpClient;
 use crate::core::reporting::report_engine;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::misc::MiscError;
 use crate::infrastructure::secret_store::SecretStore;
-use crate::interface::port::secret_store::SecretStorePort;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::setting::SettingRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/report")

@@ -26,8 +26,8 @@ use crate::domain::common::error::system::SystemError;
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::log::EbpfLog;
-use crate::interface::port::dns_query_filter::DnsQueryFilter;
-use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
+use crate::interface::dns_query_filter::DnsQueryFilter;
+use crate::interface::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::utils::packet_parser::parse_packet;
 
 /// Pre-allocated buffer pool to avoid per-packet malloc.

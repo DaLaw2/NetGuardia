@@ -7,19 +7,19 @@ use tokio::time::{self, Duration};
 
 use crate::domain::common::error::Error;
 use crate::domain::common::log::system::SystemLog;
-use crate::interface::port::setting::SettingRepo;
-use crate::interface::port::stats::StatsRepo;
+use crate::infrastructure::health::SystemHealth;
+use crate::interface::setting::SettingRepo;
+use crate::interface::stats::StatsRepo;
 
-/// Background service that periodically aggregates statistics from SOAR/ML tables
-/// and writes them to the settings table for the Report engine to consume.
 pub struct StatsAggregator {
     stats: Arc<dyn StatsRepo>,
     repo: Arc<dyn SettingRepo + Send + Sync>,
+    health: Arc<SystemHealth>,
 }
 
 impl StatsAggregator {
-    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo + Send + Sync>) -> Self {
-        Self { stats, repo }
+    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo + Send + Sync>, health: Arc<SystemHealth>) -> Self {
+        Self { stats, repo, health }
     }
 
     /// Spawn a background task that runs aggregation every hour.
@@ -93,34 +93,23 @@ impl StatsAggregator {
         let active_rules = self.stats.count_acl_rules()?;
         self.repo.set_setting("active_rules_count", &active_rules.to_string())?;
 
-        // System health snapshot using sysinfo
         {
-            use sysinfo::System;
-            let mut sys = System::new();
-            sys.refresh_cpu_all();
-            sys.refresh_memory();
-            let cpu_usage = sys.global_cpu_usage() as f64;
-            let mem_total = sys.total_memory();
-            let mem_used = sys.used_memory();
-            let mem_percent = if mem_total > 0 {
-                (mem_used as f64 / mem_total as f64) * 100.0
-            } else {
-                0.0
-            };
+            let metrics = self.health.get_current_metrics();
+            let cpu_usage = metrics.cpu_details.cpu_usage as f64;
+            let mem_percent = metrics.memory_usage.usage_percent as f64;
 
             let health_json = serde_json::json!({
                 "avg_cpu_percent": cpu_usage,
                 "avg_memory_percent": mem_percent,
                 "disk_usage_percent": 0.0,
-                "ebpf_status": "running",
+                "ebpf_status": format!("{:?}", metrics.ebpf),
             });
             self.repo.set_setting(
                 "weekly_system_health",
                 &serde_json::to_string(&health_json).unwrap_or_else(|_| "{}".to_string()),
             )?;
 
-            // System uptime
-            let uptime_secs = System::uptime();
+            let uptime_secs = metrics.uptime_seconds;
             let week_secs = (days as u64) * 86400;
             let uptime_percent = if uptime_secs >= week_secs {
                 100.0
@@ -151,6 +140,15 @@ impl StatsAggregator {
 mod tests {
     use super::*;
     use crate::adapter::persistence::Database;
+    use crate::domain::common::config::AppConfig;
+    use crate::domain::common::system::health::EbpfHealth;
+
+    fn test_health(db: &Arc<Database>) -> Arc<SystemHealth> {
+        use arc_swap::ArcSwap;
+        let config = Arc::new(ArcSwap::from_pointee(AppConfig::from_settings(db.as_ref()).unwrap()));
+        let ebpf_health = Arc::new(ArcSwap::from_pointee(EbpfHealth::Healthy));
+        Arc::new(SystemHealth::new(config, ebpf_health).unwrap())
+    }
 
     #[test]
     fn aggregator_writes_weekly_stats() {
@@ -163,13 +161,14 @@ mod tests {
         db.insert_soar_execution(1, Some("5.6.7.8"), "brute_force", "[]").ok();
         db.insert_soar_block_rule("1.2.3.4", 1, "2099-01-01 00:00:00").ok();
 
+        let health = test_health(&db);
         let aggregator = StatsAggregator::new(
             db.clone() as Arc<dyn StatsRepo>,
             db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            health,
         );
         aggregator.aggregate().expect("aggregation should succeed");
 
-        // Verify settings were written
         let threats = db.get_setting("weekly_threats_count").unwrap().unwrap();
         assert_eq!(threats, "2");
 
@@ -187,17 +186,19 @@ mod tests {
         let uptime = db.get_setting("system_uptime_percent").unwrap().unwrap();
         assert!(!uptime.is_empty());
 
-        let health = db.get_setting("weekly_system_health").unwrap().unwrap();
-        let health_val: serde_json::Value = serde_json::from_str(&health).unwrap();
-        assert!(health_val["ebpf_status"].as_str() == Some("running"));
+        let sys_health = db.get_setting("weekly_system_health").unwrap().unwrap();
+        let health_val: serde_json::Value = serde_json::from_str(&sys_health).unwrap();
+        assert!(health_val["avg_cpu_percent"].as_f64().is_some());
     }
 
     #[test]
     fn aggregator_handles_empty_db() {
         let db = Arc::new(Database::new(":memory:").expect("test db"));
+        let health = test_health(&db);
         let aggregator = StatsAggregator::new(
             db.clone() as Arc<dyn StatsRepo>,
             db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            health,
         );
         aggregator
             .aggregate()

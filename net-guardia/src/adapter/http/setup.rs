@@ -8,13 +8,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::adapter::persistence::Database;
-use crate::core::identity::setup_guard::SetupCompleteFlag;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
 use crate::domain::identity::auth::DEFAULT_ADMIN_USERNAME;
 use crate::domain::identity::password;
+use crate::infrastructure::http_server::SetupCompleteFlag;
 use crate::infrastructure::secret_store::SecretStore;
-use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::secret_store::SecretStorePort;
 
 pub fn initialize() -> Scope {
     web::scope("/setup")
@@ -24,7 +24,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn setup_status(setup_flag: web::Data<SetupCompleteFlag>) -> HttpResponse {
-    let complete = setup_flag.load(Ordering::SeqCst);
+    let complete = setup_flag.0.load(Ordering::SeqCst);
     HttpResponse::Ok().json(serde_json::json!({
         "setup_complete": complete,
     }))
@@ -88,8 +88,7 @@ async fn complete_setup(
     setup_flag: web::Data<SetupCompleteFlag>,
     body: web::Json<SetupRequest>,
 ) -> HttpResponse {
-    // Check if already completed (concurrent access protection)
-    if setup_flag.load(Ordering::SeqCst) {
+    if setup_flag.0.load(Ordering::SeqCst) {
         return HttpResponse::Conflict().json(serde_json::json!({
             "error": "Setup already completed"
         }));
@@ -145,11 +144,11 @@ async fn complete_setup(
         Ok(hash) => {
             // Find admin user and update password
             if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME) {
-                if let Err(e) = db.update_user_password(user.0, &hash) {
+                if let Err(e) = db.update_user_password(user.id, &hash) {
                     log!(SystemError::SetupPasswordUpdateFailed(e));
                 }
                 // Clear force_password_change since setup wizard set the password
-                if let Err(e) = db.reset_user_password(user.0, &hash) {
+                if let Err(e) = db.reset_user_password(user.id, &hash) {
                     log!(SystemError::SetupPasswordUpdateFailed(e));
                 }
             }
@@ -165,7 +164,7 @@ async fn complete_setup(
     if let Err(e) = db.set_setting("setup_complete", "true") {
         log!(SystemError::SetupCompleteFlagFailed(e));
     }
-    setup_flag.store(true, Ordering::SeqCst);
+    setup_flag.0.store(true, Ordering::SeqCst);
 
     // System::run() polls the setup_complete flag and will automatically
     // start eBPF, ML, and SOAR services once this flag becomes true.

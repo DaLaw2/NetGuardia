@@ -7,9 +7,9 @@ use crate::domain::common::error::Error;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::list_type::ListType;
-use crate::interface::port::access_control_admin::AccessControlAdminPort;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::geo_block_api::GeoBlockPort;
+use crate::interface::access_control_admin::AccessControlAdminPort;
+use crate::interface::app_repo::AppRepo;
+use crate::interface::geo_block_api::GeoBlockPort;
 
 /// Domain service that coordinates ACL changes between DB persistence and eBPF data plane.
 /// Atomic write: eBPF first, then DB. If DB fails, rollback eBPF.
@@ -36,8 +36,8 @@ impl AclService {
         self.access_control.add_ipv4_list(direction, list_type, address)?;
         if let Err(e) = self.db.insert_acl_rule(
             4,
-            direction_str(direction),
-            list_type_str(list_type),
+            direction.as_str(),
+            list_type.as_str(),
             &address.ip().to_string(),
             address.port(),
         ) {
@@ -53,8 +53,8 @@ impl AclService {
         self.access_control.add_ipv6_list(direction, list_type, address)?;
         if let Err(e) = self.db.insert_acl_rule(
             6,
-            direction_str(direction),
-            list_type_str(list_type),
+            direction.as_str(),
+            list_type.as_str(),
             &address.ip().to_string(),
             address.port(),
         ) {
@@ -75,8 +75,8 @@ impl AclService {
         self.access_control.remove_ipv4_list(direction, list_type, address)?;
         if let Err(e) = self.db.delete_acl_rule(
             4,
-            direction_str(direction),
-            list_type_str(list_type),
+            direction.as_str(),
+            list_type.as_str(),
             &address.ip().to_string(),
             address.port(),
         ) {
@@ -97,8 +97,8 @@ impl AclService {
         self.access_control.remove_ipv6_list(direction, list_type, address)?;
         if let Err(e) = self.db.delete_acl_rule(
             6,
-            direction_str(direction),
-            list_type_str(list_type),
+            direction.as_str(),
+            list_type.as_str(),
             &address.ip().to_string(),
             address.port(),
         ) {
@@ -134,19 +134,5 @@ impl AclService {
 
     pub fn access_control(&self) -> &dyn AccessControlAdminPort {
         self.access_control.as_ref()
-    }
-}
-
-fn direction_str(d: FlowDirection) -> &'static str {
-    match d {
-        FlowDirection::Source => "source",
-        FlowDirection::Destination => "destination",
-    }
-}
-
-fn list_type_str(l: ListType) -> &'static str {
-    match l {
-        ListType::White => "whitelist",
-        ListType::Black => "blacklist",
     }
 }

@@ -2,22 +2,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
 
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::user_packet::UserPacket;
-
-pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
-
-pub struct EngineConfig {
-    pub max_flows: usize,
-    pub min_packets: usize,
-    pub min_packets_floor: usize,
-    pub batch_size: usize,
-    pub inference_interval_secs: u64,
-    pub aggregator_window_secs: u64,
-    pub confirmation_window_fraction: u64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipParams {

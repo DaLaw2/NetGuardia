@@ -6,22 +6,23 @@ use rusqlite::{Error as RusqliteError, params};
 use super::Database;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
-use crate::interface::port::identity::{IdentityRepo, UserGroupTuple, UserTuple, UserWithGroups};
+use crate::domain::identity::auth::{LOGIN_LOCKOUT_SECS, LOGIN_MAX_FAILURES};
+use crate::domain::identity::user::{UserGroupMembership, UserGroupView, UserView, UserWithGroupsView};
+use crate::interface::identity::IdentityRepo;
 
 impl Database {
-    pub fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
+    pub fn find_user(&self, username: &str) -> Result<Option<UserView>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
-            "SELECT id, username, password_hash, role, force_password_change FROM users WHERE username = ?1",
+            "SELECT id, username, password_hash, force_password_change FROM users WHERE username = ?1",
             params![username],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get::<_, i64>(4)? != 0,
-                ))
+                Ok(UserView {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    password_hash: row.get(2)?,
+                    force_password_change: row.get::<_, i64>(3)? != 0,
+                })
             },
         );
         match result {
@@ -67,10 +68,10 @@ impl Database {
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
     }
 
-    pub fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
+    pub fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.role, u.force_password_change, u.created_at, \
+            "SELECT u.id, u.username, u.force_password_change, u.created_at, \
                     g.id, g.name \
              FROM users u \
              LEFT JOIN user_group_members m ON u.id = m.user_id \
@@ -81,25 +82,33 @@ impl Database {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)? != 0,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?;
 
-        let mut user_map: HashMap<i64, UserWithGroups> = HashMap::new();
+        let mut user_map: HashMap<i64, UserWithGroupsView> = HashMap::new();
         let mut order: Vec<i64> = Vec::new();
 
         for row in rows {
-            let (id, username, role, force_pw, created_at, group_id, group_name) = row?;
+            let (id, username, force_pw, created_at, group_id, group_name) = row?;
             let entry = user_map.entry(id).or_insert_with(|| {
                 order.push(id);
-                (id, username, role, force_pw, created_at, Vec::new())
+                UserWithGroupsView {
+                    id,
+                    username,
+                    force_password_change: force_pw,
+                    created_at,
+                    groups: Vec::new(),
+                }
             });
             if let (Some(gid), Some(gname)) = (group_id, group_name) {
-                entry.5.push((gid, gname));
+                entry.groups.push(UserGroupMembership {
+                    group_id: gid,
+                    group_name: gname,
+                });
             }
         }
 
@@ -128,19 +137,18 @@ impl Database {
         Ok(())
     }
 
-    pub fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
+    pub fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserView>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
-            "SELECT id, username, password_hash, role, force_password_change FROM users WHERE id = ?1",
+            "SELECT id, username, password_hash, force_password_change FROM users WHERE id = ?1",
             params![user_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get::<_, i64>(4)? != 0,
-                ))
+                Ok(UserView {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    password_hash: row.get(2)?,
+                    force_password_change: row.get::<_, i64>(3)? != 0,
+                })
             },
         );
         match result {
@@ -150,18 +158,18 @@ impl Database {
         }
     }
 
-    pub fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error> {
+    pub fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
         let conn = self.conn()?;
         let mut stmt =
             conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
+            Ok(UserGroupView {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                permissions: row.get(3)?,
+                created_at: row.get(4)?,
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -202,19 +210,19 @@ impl Database {
         Ok(affected > 0)
     }
 
-    pub fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error> {
+    pub fn get_user_group(&self, id: i64) -> Result<Option<UserGroupView>, Error> {
         let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT id, name, description, permissions, created_at FROM user_groups WHERE id = ?1",
             params![id],
             |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
+                Ok(UserGroupView {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    permissions: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
             },
         );
         match result {
@@ -315,12 +323,12 @@ impl Database {
 
         self.set_setting(&key_count, &count.to_string())?;
 
-        if count >= 5 {
+        if count >= LOGIN_MAX_FAILURES {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs();
-            let locked_until = now + 900; // 15 minutes
+            let locked_until = now + LOGIN_LOCKOUT_SECS;
             self.set_setting(&key_locked, &locked_until.to_string())?;
             Ok((count, Some(locked_until)))
         } else {
@@ -361,11 +369,11 @@ impl Database {
 }
 
 impl IdentityRepo for Database {
-    fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error> {
+    fn find_user(&self, username: &str) -> Result<Option<UserView>, Error> {
         self.find_user(username)
     }
 
-    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error> {
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserView>, Error> {
         self.find_user_by_id(user_id)
     }
 
@@ -383,7 +391,7 @@ impl IdentityRepo for Database {
         self.update_user_password(user_id, password_hash)
     }
 
-    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error> {
+    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error> {
         self.list_users_with_groups()
     }
 
@@ -399,7 +407,7 @@ impl IdentityRepo for Database {
         self.reset_user_password(user_id, password_hash)
     }
 
-    fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error> {
+    fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
         self.list_user_groups()
     }
 
@@ -415,7 +423,7 @@ impl IdentityRepo for Database {
         self.delete_user_group(id)
     }
 
-    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error> {
+    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupView>, Error> {
         self.get_user_group(id)
     }
 
@@ -465,11 +473,10 @@ mod tests {
         assert_eq!(db.user_count().unwrap(), 1);
 
         let user = db.find_user("admin").unwrap().unwrap();
-        assert_eq!(user.0, 1); // id
-        assert_eq!(user.1, "admin"); // username
-        assert_eq!(user.2, "hash123"); // password_hash
-        assert_eq!(user.3, "admin"); // role
-        assert!(user.4); // force_password_change
+        assert_eq!(user.id, 1);
+        assert_eq!(user.username, "admin");
+        assert_eq!(user.password_hash, "hash123");
+        assert!(user.force_password_change);
     }
 
     #[test]
@@ -486,13 +493,13 @@ mod tests {
         db.insert_user("admin", "old_hash", "admin", true).unwrap();
 
         let user = db.find_user("admin").unwrap().unwrap();
-        assert!(user.4); // force_password_change = true
+        assert!(user.force_password_change);
 
-        db.update_user_password(user.0, "new_hash").unwrap();
+        db.update_user_password(user.id, "new_hash").unwrap();
 
         let user = db.find_user("admin").unwrap().unwrap();
-        assert!(!user.4); // force_password_change = false
-        assert_eq!(user.2, "new_hash");
+        assert!(!user.force_password_change);
+        assert_eq!(user.password_hash, "new_hash");
     }
 
     #[test]

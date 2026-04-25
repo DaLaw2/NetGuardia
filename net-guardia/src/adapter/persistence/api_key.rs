@@ -6,8 +6,9 @@ use sha2::Sha256;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::domain::identity::auth::Claims;
-use crate::interface::port::api_key::{ApiKeyListItem, ApiKeyRepo};
+use crate::domain::identity::auth::{API_KEY_READ_ONLY_PERMISSIONS, API_KEY_READ_WRITE_PERMISSIONS, Claims};
+use crate::domain::identity::user::ApiKeyView;
+use crate::interface::api_key::ApiKeyRepo;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -55,34 +56,11 @@ impl Database {
                 );
 
                 // Build permissions based on permission level
-                let permissions = match level.as_str() {
-                    "read_write" | "full_access" => vec![
-                        "dashboard:read".into(),
-                        "statistics:read".into(),
-                        "ai_detection:read".into(),
-                        "ai_detection:write".into(),
-                        "access_control:read".into(),
-                        "access_control:write".into(),
-                        "geo_block:read".into(),
-                        "geo_block:write".into(),
-                        "dns_filter:read".into(),
-                        "dns_filter:write".into(),
-                        "rate_limit:read".into(),
-                        "rate_limit:write".into(),
-                        "system:read".into(),
-                        "system:write".into(),
-                    ],
-                    _ => vec![
-                        "dashboard:read".into(),
-                        "statistics:read".into(),
-                        "ai_detection:read".into(),
-                        "access_control:read".into(),
-                        "geo_block:read".into(),
-                        "dns_filter:read".into(),
-                        "rate_limit:read".into(),
-                        "system:read".into(),
-                    ],
+                let source = match level.as_str() {
+                    "read_write" | "full_access" => API_KEY_READ_WRITE_PERMISSIONS,
+                    _ => API_KEY_READ_ONLY_PERMISSIONS,
                 };
+                let permissions: Vec<String> = source.iter().map(|s| (*s).to_string()).collect();
 
                 Ok(Some(Claims {
                     sub: -id, // negative ID to distinguish from user IDs
@@ -106,17 +84,17 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_api_keys(&self) -> Result<Vec<ApiKeyListItem>, Error> {
+    pub fn list_api_keys(&self) -> Result<Vec<ApiKeyView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id, name, permission_level, created_at, last_used_at FROM api_keys")?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
+            Ok(ApiKeyView {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                permission_level: row.get(2)?,
+                created_at: row.get(3)?,
+                last_used_at: row.get(4)?,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -145,7 +123,7 @@ impl ApiKeyRepo for Database {
         self.insert_api_key(key_hash, name, permission_level)
     }
 
-    fn list_api_keys(&self) -> Result<Vec<ApiKeyListItem>, Error> {
+    fn list_api_keys(&self) -> Result<Vec<ApiKeyView>, Error> {
         self.list_api_keys()
     }
 

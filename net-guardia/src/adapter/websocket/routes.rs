@@ -4,11 +4,11 @@ use tokio::sync::broadcast;
 
 use super::{alert_websocket, drop_websocket, flow_websocket, fusion_websocket, health_websocket};
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
-use crate::core::identity::jwt::JwtService;
+use crate::adapter::http::middleware::jwt::JwtService;
+use crate::core::common::statistics::FlowStatistics;
 use crate::core::inference::alert::MLAlert;
 use crate::domain::common::event::ThreatDetectedEvent;
 use crate::infrastructure::health::SystemHealth;
-use crate::infrastructure::statistics::FlowStatistics;
 
 #[derive(Deserialize)]
 struct WsQuery {

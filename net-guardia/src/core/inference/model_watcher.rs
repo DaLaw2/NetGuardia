@@ -16,12 +16,12 @@ use tokio::time::sleep;
 
 use super::model_loader::build_adapter;
 use super::runner::Inference;
+use crate::core::inference::model_adapter::ModelSourceState;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
 use crate::domain::detection::error::MLError;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::domain::detection::model_adapter::ModelSourceState;
 use crate::domain::detection::model_source::ModelInfo;
 
 pub struct ModelWatcher {

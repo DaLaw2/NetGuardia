@@ -1,10 +1,10 @@
 use actix_web::{HttpResponse, Scope, web};
 
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::adapter::persistence::Database;
-use crate::core::identity::extractor::AuthClaims;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
-use crate::interface::port::audit::AuditRepo;
+use crate::interface::audit::AuditRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/audit")

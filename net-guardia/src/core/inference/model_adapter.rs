@@ -10,9 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use super::manifest::LabelSpec;
-use crate::domain::detection::ml_detection::RunnableModel;
+use tract_onnx::prelude::{Graph, SimplePlan, TypedFact, TypedOp};
+
+use crate::domain::detection::manifest::LabelSpec;
 use crate::domain::detection::model_source::{ModelInfo, ModelSourceStatus};
+
+pub type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 /// Compile-time sanity: `RunnableModel` must be `Send + Sync` because we
 /// stuff it inside an `ArcSwap`. If a future `tract-onnx` upgrade silently

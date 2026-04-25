@@ -497,7 +497,7 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
             }
 
             pub fn from_settings(
-                repo: &dyn crate::interface::port::setting::SettingRepo,
+                repo: &dyn crate::interface::setting::SettingRepo,
             ) -> Result<Self, crate::domain::common::error::Error> {
                 let mut cfg = Self::defaults();
                 #(#override_calls)*
@@ -505,7 +505,7 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
             }
 
             pub fn seed_defaults(
-                repo: &dyn crate::interface::port::setting::SettingRepo,
+                repo: &dyn crate::interface::setting::SettingRepo,
             ) -> Result<(), crate::domain::common::error::Error> {
                 #(#seed_calls)*
                 Ok(())

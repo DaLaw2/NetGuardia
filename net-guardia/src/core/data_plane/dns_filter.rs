@@ -5,8 +5,8 @@ use dashmap::DashSet;
 
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
-use crate::interface::port::dns_filter_api::DnsFilterPort;
-use crate::interface::port::dns_query_filter::DnsQueryFilter;
+use crate::interface::dns_filter_api::DnsFilterPort;
+use crate::interface::dns_query_filter::DnsQueryFilter;
 
 pub struct DnsFilter {
     blacklist: DashSet<DnsName>,

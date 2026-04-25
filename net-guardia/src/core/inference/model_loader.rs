@@ -16,13 +16,13 @@ use tract_onnx::prelude::*;
 use tract_onnx::tract_hir::infer::Factoid;
 use tract_onnx::tract_hir::internal::DimLike;
 
+use crate::core::inference::model_adapter::MLModelAdapter;
+use crate::core::inference::model_adapter::RunnableModel;
 use crate::domain::common::config::constants::MODELS_DIR;
 use crate::domain::detection::error::MLError;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::manifest::{AdapterKind, LabelSpec, ModelManifest};
-use crate::domain::detection::ml_detection::RunnableModel;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
-use crate::domain::detection::model_adapter::MLModelAdapter;
 
 /// Build an `MLModelAdapter` by loading the ONNX file(s) the manifest names,
 /// validating shape against the inference config's feature counts, and

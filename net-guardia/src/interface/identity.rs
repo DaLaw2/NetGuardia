@@ -1,13 +1,5 @@
 use crate::domain::common::error::Error;
-
-/// Type alias for user record tuples: (id, username, password_hash, role, force_password_change)
-pub type UserTuple = (i64, String, String, String, bool);
-
-/// Type alias for user-with-groups: (id, username, role, force_password_change, created_at, groups: Vec<(group_id, group_name)>)
-pub type UserWithGroups = (i64, String, String, bool, String, Vec<(i64, String)>);
-
-/// Type alias for user group tuples: (id, name, description, permissions, created_at)
-pub type UserGroupTuple = (i64, String, String, String, String);
+use crate::domain::identity::user::{UserGroupView, UserView, UserWithGroupsView};
 
 /// Identity BC (generic) — users, groups, membership, and login rate-limit counter.
 ///
@@ -16,8 +8,8 @@ pub type UserGroupTuple = (i64, String, String, String, String);
 /// and are enforced together at login time.
 pub trait IdentityRepo: Send + Sync {
     // --- Users ---
-    fn find_user(&self, username: &str) -> Result<Option<UserTuple>, Error>;
-    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserTuple>, Error>;
+    fn find_user(&self, username: &str) -> Result<Option<UserView>, Error>;
+    fn find_user_by_id(&self, user_id: i64) -> Result<Option<UserView>, Error>;
     fn insert_user(
         &self,
         username: &str,
@@ -26,17 +18,17 @@ pub trait IdentityRepo: Send + Sync {
         force_password_change: bool,
     ) -> Result<i64, Error>;
     fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
-    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroups>, Error>;
+    fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error>;
     fn delete_user(&self, user_id: i64) -> Result<bool, Error>;
     fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error>;
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error>;
 
     // --- User Groups ---
-    fn list_user_groups(&self) -> Result<Vec<UserGroupTuple>, Error>;
+    fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error>;
     fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error>;
     fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error>;
     fn delete_user_group(&self, id: i64) -> Result<bool, Error>;
-    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupTuple>, Error>;
+    fn get_user_group(&self, id: i64) -> Result<Option<UserGroupView>, Error>;
 
     // --- Membership ---
     fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error>;

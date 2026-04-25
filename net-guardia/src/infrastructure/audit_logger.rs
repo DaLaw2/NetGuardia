@@ -6,7 +6,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent};
 use crate::domain::common::log::audit::AuditLog;
-use crate::interface::port::audit::AuditRepo;
+use crate::interface::audit::AuditRepo;
 
 /// Subscribes to `AuditEvent` and persists each entry to the `audit_log` table.
 /// Falls back to log-only when DB writes fail (never panics).

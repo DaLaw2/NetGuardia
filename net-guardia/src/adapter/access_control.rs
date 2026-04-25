@@ -6,7 +6,7 @@ use crate::domain::common::error::Error;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::list_type::ListType;
-use crate::interface::port::access_control::AccessControlPort;
+use crate::interface::access_control::AccessControlPort;
 
 /// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
 pub struct AccessControlAdapter {

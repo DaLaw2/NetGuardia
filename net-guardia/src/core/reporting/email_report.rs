@@ -1,7 +1,7 @@
 use chrono::Local;
 
 use crate::domain::common::error::Error;
-use crate::interface::port::setting::SettingRepo;
+use crate::interface::setting::SettingRepo;
 
 /// Generate an HTML weekly report email body.
 ///

@@ -3,7 +3,7 @@ use rusqlite::params;
 use super::Database;
 use crate::domain::common::error::Error;
 use crate::domain::response::playbook_data::{ActiveBlockView, PendingUnblock};
-use crate::interface::port::db_admin::DbAdminRepo;
+use crate::interface::db_admin::DbAdminRepo;
 
 impl Database {
     /// Test-only helper: direct insert of a SOAR block rule row. Production
@@ -188,8 +188,8 @@ impl DbAdminRepo for Database {
 #[cfg(test)]
 mod tests {
     use super::super::tests::test_db;
-    use crate::interface::port::db_admin::DbAdminRepo;
-    use crate::interface::port::soar::SoarRepo;
+    use crate::interface::db_admin::DbAdminRepo;
+    use crate::interface::soar::SoarRepo;
 
     /// Happy path. Verifies `commit_soar_block_to_db` writes both
     /// `soar_block_rules` and `acl_rules` atomically.

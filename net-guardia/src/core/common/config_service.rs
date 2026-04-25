@@ -6,8 +6,8 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::section::ConfigSection;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::app_repo::AppRepo;
+use crate::interface::secret_store::SecretStorePort;
 
 const SECRET_KEYS: &[&str] = &["smtp_password"];
 

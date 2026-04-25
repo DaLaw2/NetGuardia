@@ -9,7 +9,7 @@ use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::response::error::SoarError;
 use crate::domain::response::log::SoarLog;
-use crate::interface::port::rate_limit_api::RateLimitPort;
+use crate::interface::rate_limit_api::RateLimitPort;
 
 struct ActiveAdjustment {
     original: [u64; 4],

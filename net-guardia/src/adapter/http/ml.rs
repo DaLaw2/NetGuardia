@@ -1,12 +1,12 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use tokio::sync::broadcast;
 
-use crate::core::identity::extractor::AuthClaims;
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::core::inference::engine::Engine;
+use crate::core::inference::model_adapter::ModelSourceState;
 use crate::core::inference::runner::Inference;
 use crate::domain::common::config::constants::AUDIT_ACTOR_SECURITY_ADMIN_PREFIX;
 use crate::domain::common::event::AuditEvent;
-use crate::domain::detection::model_adapter::ModelSourceState;
 
 /// Permission required to forcibly revert the active ML source to dormant.
 /// Mirrors the upload handler's gate so swap-out and revert are symmetric:
@@ -44,7 +44,7 @@ async fn get_status(engine: web::Data<Engine>) -> impl Responder {
 /// `GET /api/ml/models/current` — wire-format snapshot of the ML source
 /// state the dashboard's ML Status panel renders.
 async fn get_current_model(inference: web::Data<Inference>) -> impl Responder {
-    let status = inference.current_status();
+    let status = inference.model_source_status();
     let label = if status.is_active() {
         "active"
     } else if status.is_dormant() {
@@ -74,7 +74,7 @@ async fn delete_current_model(
         }));
     }
 
-    let before_status = inference.current_status();
+    let before_status = inference.model_source_status();
     if before_status.is_dormant() {
         return HttpResponse::Ok().json(serde_json::json!({
             "already_dormant": true,

@@ -2,7 +2,7 @@ use rusqlite::params;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::interface::port::enforcement::EnforcementRepo;
+use crate::interface::enforcement::EnforcementRepo;
 
 impl Database {
     pub fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error> {

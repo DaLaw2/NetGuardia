@@ -1,8 +1,8 @@
 use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
-use crate::core::identity::extractor::AuthClaims;
-use crate::interface::port::api_key::ApiKeyRepo;
+use crate::adapter::http::middleware::extractor::AuthClaims;
+use crate::interface::api_key::ApiKeyRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/api-keys")
@@ -16,13 +16,13 @@ async fn list_keys(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>) -> HttpResp
         Ok(keys) => {
             let responses: Vec<serde_json::Value> = keys
                 .into_iter()
-                .map(|(id, name, level, created, last_used)| {
+                .map(|k| {
                     serde_json::json!({
-                        "id": id,
-                        "name": name,
-                        "permission_level": level,
-                        "created_at": created,
-                        "last_used_at": last_used,
+                        "id": k.id,
+                        "name": k.name,
+                        "permission_level": k.permission_level,
+                        "created_at": k.created_at,
+                        "last_used_at": k.last_used_at,
                     })
                 })
                 .collect();

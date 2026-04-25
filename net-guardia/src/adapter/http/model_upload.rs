@@ -15,13 +15,12 @@
 //! down on any error path so failed uploads don't pile up in
 //! `models/.staging/`.
 
-use std::fs as std_fs;
 use std::fs::File as StdFile;
 use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, Scope, web};
@@ -35,7 +34,7 @@ use tokio::sync::broadcast;
 use tokio::task;
 use uuid::Uuid;
 
-use crate::core::identity::extractor::AuthClaims;
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::core::inference::model_loader::build_adapter;
 use crate::core::inference::runner::Inference;
 use crate::domain::common::config::AppConfig;
@@ -583,7 +582,7 @@ async fn validate_and_promote(ctx: &PromoteContext<'_>) -> Result<PromoteReport,
         .await
         .map_err(|e| PromoteError::StagingIo(format!("sha256 onnx: {e}")))?;
 
-    let before_status = inference.current_status();
+    let before_status = inference.model_source_status();
 
     let _guard = promote_lock.try_acquire().ok_or(PromoteError::ConcurrentPromote)?;
     let models_dir = PathBuf::from(MODELS_DIR);
@@ -705,36 +704,12 @@ async fn sha256_file(path: &Path) -> io::Result<String> {
     .unwrap_or_else(|e| Err(io::Error::other(format!("sha256 join: {e}"))))
 }
 
-/// Remove staging subdirectories older than `max_age`. Runs on startup
-/// and on a periodic timer so failed uploads don't accumulate.
-pub fn clean_staging_orphans(staging_root: &Path, max_age: Duration) -> io::Result<usize> {
-    if !staging_root.exists() {
-        return Ok(0);
-    }
-    let now = SystemTime::now();
-    let mut cleaned = 0usize;
-    for entry in std_fs::read_dir(staging_root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let metadata = entry.metadata()?;
-        let mtime = metadata.modified()?;
-        let age = now.duration_since(mtime).unwrap_or_default();
-        if age >= max_age {
-            std_fs::remove_dir_all(&path)?;
-            cleaned += 1;
-        }
-    }
-    Ok(cleaned)
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::utils::staging::clean_staging_orphans;
 
     #[test]
     fn onnx_sniff_rejects_empty() {

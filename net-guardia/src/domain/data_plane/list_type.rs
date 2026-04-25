@@ -8,3 +8,12 @@ pub enum ListType {
     #[serde(rename = "blacklist")]
     Black,
 }
+
+impl ListType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::White => "whitelist",
+            Self::Black => "blacklist",
+        }
+    }
+}

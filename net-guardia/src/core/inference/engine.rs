@@ -16,22 +16,27 @@ use super::alert::MLAlert;
 use super::drift_detector::DriftDetectorHandle;
 use super::runner::Inference;
 use super::traffic_logger::TrafficLogger;
+use crate::core::inference::aggregator::AttackAggregator;
+use crate::core::inference::flow_tracker::FlowTracker;
 use crate::domain::data_plane::user_packet::UserPacket;
-use crate::domain::detection::aggregator::AttackAggregator;
 use crate::domain::detection::flow_features::FlowFeatures;
-use crate::domain::detection::flow_tracker::{FlowData, FlowLimits, FlowTracker};
+use crate::domain::detection::flow_tracker::{FlowData, FlowLimits};
 use crate::domain::detection::log::MLLog;
-use crate::domain::detection::ml_detection::{EngineConfig, FlowKey, InferenceStats};
-use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
+use crate::domain::detection::ml_detection::{FlowKey, InferenceStats};
+use crate::interface::packet_sink::{PacketSink, PacketSinkFactory};
 
-/// Per-queue tracker. With symmetric hash in eBPF, both directions of a flow
-/// land on the same queue, so per-queue trackers correctly see bidirectional flows.
-/// `FlowTracker` itself is internally synchronized (DashMap), so the
-/// per-queue handle is a plain `Arc`.
-pub type ThreadTracker = Arc<FlowTracker>;
+pub struct EngineConfig {
+    pub max_flows: usize,
+    pub min_packets: usize,
+    pub min_packets_floor: usize,
+    pub batch_size: usize,
+    pub inference_interval_secs: u64,
+    pub aggregator_window_secs: u64,
+    pub confirmation_window_fraction: u64,
+}
 
 pub struct Engine {
-    trackers: Vec<ThreadTracker>,
+    trackers: Vec<Arc<FlowTracker>>,
     inference_pipeline: Arc<Inference>,
     aggregator: AttackAggregator,
     drift_detector: DriftDetectorHandle,
@@ -65,7 +70,7 @@ impl Engine {
         let aggregator = AttackAggregator::new(engine_config.aggregator_window_secs);
 
         let max_flows_per_thread = engine_config.max_flows / (num_threads as usize).max(1);
-        let trackers: Vec<ThreadTracker> = (0..num_threads)
+        let trackers: Vec<Arc<FlowTracker>> = (0..num_threads)
             .map(|_| Arc::new(FlowTracker::new(max_flows_per_thread, flow_limits)))
             .collect();
 
@@ -85,11 +90,11 @@ impl Engine {
     }
 
     /// xsk_manager calls this per queue_id; with symmetric hash each queue has its own tracker.
-    pub fn tracker(&self, queue_id: u32) -> &ThreadTracker {
+    pub fn tracker(&self, queue_id: u32) -> &Arc<FlowTracker> {
         &self.trackers[queue_id as usize % self.trackers.len()]
     }
 
-    pub fn trackers(&self) -> &[ThreadTracker] {
+    pub fn trackers(&self) -> &[Arc<FlowTracker>] {
         &self.trackers
     }
 
@@ -337,9 +342,9 @@ impl Engine {
     }
 }
 
-/// Adapter that exposes one `ThreadTracker` (per AF_XDP queue) as a `PacketSink`.
+/// Adapter that exposes one `Arc<FlowTracker>` (per AF_XDP queue) as a `PacketSink`.
 struct QueueTrackerSink {
-    tracker: ThreadTracker,
+    tracker: Arc<FlowTracker>,
 }
 
 impl PacketSink for QueueTrackerSink {

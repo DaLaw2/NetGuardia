@@ -6,7 +6,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use crate::domain::common::error::Error;
 use crate::domain::identity::auth::Claims;
 use crate::domain::identity::error::AuthError;
-use crate::interface::port::secret_store::SecretStorePort;
+use crate::interface::secret_store::SecretStorePort;
 
 pub struct JwtService {
     encoding_key: EncodingKey,

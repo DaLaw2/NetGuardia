@@ -6,7 +6,7 @@
 
 use actix_web::{HttpResponse, Scope, web};
 
-use crate::core::identity::extractor::AuthClaims;
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::domain::detection::feature_extractor::feature_registry_names;
 
 pub fn initialize() -> Scope {

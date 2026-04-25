@@ -43,7 +43,7 @@ const AUDIT_ACTOR_SYSTEM: &str = "system";
 const AUDIT_ACTION_FLOW_TRACE_STOPPED: &str = "flow_trace_stopped";
 
 /// Rotation thresholds. Immutable after logger construction — change
-/// requires a full logger restart through `AppServices`.
+/// requires a full logger restart through `InferenceRuntime`.
 #[derive(Debug, Clone)]
 pub struct RotationPolicy {
     pub max_file_bytes: u64,

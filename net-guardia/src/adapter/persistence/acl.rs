@@ -2,7 +2,8 @@ use rusqlite::params;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::interface::port::acl::{AclRepo, AclRuleTuple};
+use crate::domain::data_plane::acl_rule::AclRuleView;
+use crate::interface::acl::AclRepo;
 
 impl Database {
     pub fn insert_acl_rule(
@@ -37,17 +38,17 @@ impl Database {
         Ok(())
     }
 
-    pub fn list_acl_rules(&self) -> Result<Vec<AclRuleTuple>, Error> {
+    pub fn list_acl_rules(&self) -> Result<Vec<AclRuleView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT ip_version, direction, list_type, ip_address, port FROM acl_rules")?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, u8>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)? as u16,
-            ))
+            Ok(AclRuleView {
+                ip_version: row.get(0)?,
+                direction: row.get(1)?,
+                list_type: row.get(2)?,
+                ip_address: row.get(3)?,
+                port: row.get::<_, i64>(4)? as u16,
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -146,16 +147,11 @@ mod tests {
         db.insert_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
         let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(
-            rules[0],
-            (
-                4,
-                "source".to_string(),
-                "blacklist".to_string(),
-                "192.168.1.1".to_string(),
-                80
-            )
-        );
+        assert_eq!(rules[0].ip_version, 4);
+        assert_eq!(rules[0].direction, "source");
+        assert_eq!(rules[0].list_type, "blacklist");
+        assert_eq!(rules[0].ip_address, "192.168.1.1");
+        assert_eq!(rules[0].port, 80);
 
         db.delete_acl_rule(4, "source", "blacklist", "192.168.1.1", 80).unwrap();
         let rules = db.list_acl_rules().unwrap();

@@ -8,7 +8,7 @@ use moka::sync::Cache;
 use tokio::task;
 
 use crate::domain::data_plane::geolocation::GeoLocation;
-use crate::interface::port::geo_lookup::GeoLookup;
+use crate::interface::geo_lookup::GeoLookup;
 use crate::utils::ip_address;
 
 pub struct GeoIpService {

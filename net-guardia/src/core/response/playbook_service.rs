@@ -1,4 +1,3 @@
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::core::response::engine::SoarEngine;
@@ -7,8 +6,9 @@ use crate::domain::response::error::SoarError;
 use crate::domain::response::playbook_data::{
     ActiveBlockView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
 };
-use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::app_repo::AppRepo;
+use crate::interface::access_control::AccessControlPort;
+use crate::interface::app_repo::AppRepo;
+use crate::utils::ip_address::ip_version_from_str;
 
 /// Domain service for SOAR playbook CRUD operations.
 /// Coordinates DB reads/writes, SOAR engine cache refresh, and eBPF unblock.
@@ -155,43 +155,5 @@ impl PlaybookService {
         self.db.delete_admin_whitelist(ip)?;
         self.soar_engine.reload_cache()?;
         Ok(())
-    }
-}
-
-/// Determine IP version from a string address using proper parsing.
-pub fn ip_version_from_str(ip: &str) -> u8 {
-    match ip.parse::<IpAddr>() {
-        Ok(IpAddr::V4(_)) => 4,
-        Ok(IpAddr::V6(_)) => 6,
-        Err(_) => {
-            if ip.contains(':') {
-                6
-            } else {
-                4
-            }
-        } // fallback
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ip_version_from_str_ipv4() {
-        assert_eq!(ip_version_from_str("1.2.3.4"), 4);
-        assert_eq!(ip_version_from_str("192.168.1.1"), 4);
-    }
-
-    #[test]
-    fn ip_version_from_str_ipv6() {
-        assert_eq!(ip_version_from_str("::1"), 6);
-        assert_eq!(ip_version_from_str("2001:db8::1"), 6);
-    }
-
-    #[test]
-    fn ip_version_from_str_ipv4_mapped_ipv6() {
-        // ::ffff:1.2.3.4 should be recognized as IPv6 (it is an IPv6 address)
-        assert_eq!(ip_version_from_str("::ffff:1.2.3.4"), 6);
     }
 }

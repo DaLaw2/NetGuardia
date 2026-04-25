@@ -36,3 +36,12 @@ pub const PERMISSION_SYSTEM_ADMIN: &str = "system:admin";
 
 // ── Event Channels ────────────────────────────────────────────────
 pub const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+// ── Enforce Mode ─────────────────────────────────────────────────
+pub fn enforce_mode_to_u8(mode: &str) -> u8 {
+    match mode {
+        "enforce" => 2,
+        "ml_only" => 1,
+        _ => 0,
+    }
+}

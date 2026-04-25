@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
 use crate::domain::data_plane::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
-use crate::interface::port::drop_stats::DropStatsPort;
+use crate::interface::drop_stats::DropStatsPort;
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,

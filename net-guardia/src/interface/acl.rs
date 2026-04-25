@@ -1,8 +1,5 @@
 use crate::domain::common::error::Error;
 
-/// Type alias for ACL rule tuples: (ip_version, direction, list_type, ip_address, port)
-pub type AclRuleTuple = (u8, String, String, String, u16);
-
 /// Data Plane BC — ACL aggregate repository.
 ///
 /// Owns ACL rules (user-managed block/allow lists) and the admin whitelist that

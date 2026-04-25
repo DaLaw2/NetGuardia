@@ -7,13 +7,13 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 
+use crate::core::correlation::botnet::BotnetDetector;
+use crate::core::correlation::lateral::LateralMovementDetector;
+use crate::core::correlation::scan::ScanDetector;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::DetectionEvent;
-use crate::domain::detection::botnet::BotnetDetector;
-use crate::domain::detection::lateral::LateralMovementDetector;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
-use crate::domain::detection::scan::ScanDetector;
 
 /// Coordinates cross-flow correlation detectors (botnet, scan, lateral movement).
 /// Subscribes to ML AlertMessage broadcast and feeds enriched DetectionEvents

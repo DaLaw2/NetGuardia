@@ -5,11 +5,12 @@ use serde_json::Value;
 
 use super::Database;
 use crate::domain::common::error::Error;
+use crate::domain::response::defaults::DEFAULT_PLAYBOOKS;
 use crate::domain::response::playbook_data::{
     ActionView, ActiveBlockView, ConditionView, CreatePlaybookInput, ExecutionView, PendingUnblock, PlaybookView,
     UpdatePlaybookInput,
 };
-use crate::interface::port::soar::SoarRepo;
+use crate::interface::soar::SoarRepo;
 
 /// Intermediate row from the playbooks LEFT JOIN playbook_actions query.
 /// Private to this module; consumed only by `SoarRepo::list_playbooks`.
@@ -198,40 +199,22 @@ impl Database {
         }
         drop(conn);
 
-        // 1. brute_force_block: brute_force, count 5 in 60s → block_ip(3600s) + send_telegram + log
-        let pb1 = self.insert_playbook("brute_force_block", "brute_force", None, Some(5), Some(60), 600)?;
-        self.insert_playbook_action(pb1, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb1, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb1, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb1, "frequency", ">=", "5", Some("60"))?;
-
-        // 2. port_scan_alert: port_scan, threshold 0.7 → send_telegram + log (no block)
-        let pb2 = self.insert_playbook("port_scan_alert", "port_scan", Some(0.7), None, None, 300)?;
-        self.insert_playbook_action(pb2, 1, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb2, 2, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb2, "threshold", ">=", "0.7", None)?;
-
-        // 3. fusion_c2_multi_source_block — C2 beacon observed by ≥2 sources
-        //    (e.g. Suricata trojan-activity + Beaconing CV + ML c2 class) is
-        //    the highest-precision fusion signal we ship. Block for 1h and
-        //    notify, no solo-source threshold so single-source C2 hits still
-        //    require the solo playbook below to act.
-        let pb3 = self.insert_playbook("fusion_c2_multi_source_block", "c2_beacon", None, None, None, 600)?;
-        self.insert_playbook_action(pb3, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb3, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb3, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb3, "multi_source_min", ">=", "2", None)?;
-
-        // 4. fusion_c2_suricata_solo_high_block — the escape hatch for
-        //    Suricata signature hits with very high confidence (>=0.95).
-        //    Lets known-good rules fire without waiting for agreement from a
-        //    second source, matching how analysts intuitively treat a
-        //    signature "dead-on" match.
-        let pb4 = self.insert_playbook("fusion_c2_suricata_solo_high_block", "c2_beacon", None, None, None, 600)?;
-        self.insert_playbook_action(pb4, 1, "block_ip", r#"{"ttl_secs": 3600}"#)?;
-        self.insert_playbook_action(pb4, 2, "send_telegram", "{}")?;
-        self.insert_playbook_action(pb4, 3, "log", r#"{"level": "warn"}"#)?;
-        self.insert_playbook_condition(pb4, "single_source_high", "==", "Suricata", Some("0.95"))?;
+        for def in DEFAULT_PLAYBOOKS {
+            let pb_id = self.insert_playbook(
+                def.name,
+                def.trigger_event,
+                def.threshold,
+                def.count,
+                def.window,
+                def.cooldown,
+            )?;
+            for action in def.actions {
+                self.insert_playbook_action(pb_id, action.order, action.action_type, action.params)?;
+            }
+            for cond in def.conditions {
+                self.insert_playbook_condition(pb_id, cond.condition_type, cond.operator, cond.value, cond.value2)?;
+            }
+        }
 
         Ok(())
     }
@@ -450,7 +433,7 @@ mod tests {
     /// atomically.
     #[test]
     fn test_insert_playbook_atomic_writes_all_three_tables() {
-        use crate::interface::port::soar::SoarRepo;
+        use crate::interface::soar::SoarRepo;
 
         let db = test_db();
         use crate::domain::response::playbook_data::CreatePlaybookInput;

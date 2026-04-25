@@ -37,15 +37,3 @@ traceable! {
         AuditRowHashMismatch { id: i64, computed: String, stored: String } => tracing::Level::ERROR,
     }
 }
-
-impl From<rusqlite::Error> for DatabaseError {
-    fn from(e: rusqlite::Error) -> Self {
-        DatabaseError::QueryFailed(e)
-    }
-}
-
-impl From<rusqlite::Error> for super::Error {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Database(DatabaseError::from(e))
-    }
-}

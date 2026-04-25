@@ -1,15 +1,14 @@
-pub mod app_services;
 pub mod audit_logger;
 pub mod cli;
 pub mod ebpf_preflight;
-pub mod enforce_mode_handler;
 pub mod geoip;
 pub mod health;
 pub mod http_server;
+pub mod inference_runtime;
+pub mod log_buffer;
 pub mod logger;
 pub mod secret_store;
 pub mod service_factory;
-pub mod statistics;
 pub mod suricata_manager;
 pub mod suricata_monitor;
 pub mod system;

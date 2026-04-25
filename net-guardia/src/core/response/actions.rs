@@ -17,17 +17,17 @@ use tokio::net::lookup_host;
 use tokio::task::spawn_blocking;
 use url::Url;
 
-use crate::core::reporting::email_scheduler::SmtpClient;
+use crate::adapter::notification::smtp::SmtpClient;
 use crate::core::response::engine::SoarEngine;
-use crate::core::response::playbook_service::ip_version_from_str;
 use crate::domain::common::error::Error;
 use crate::domain::common::event::ThreatDetectedEvent;
+use crate::domain::common::notification::AlertPayload;
 use crate::domain::response::error::SoarError;
 use crate::domain::response::log::SoarLog;
 use crate::domain::response::playbook::{Playbook, PlaybookAction};
-use crate::interface::port::access_control::AccessControlPort;
-use crate::interface::port::app_repo::AppRepo;
-use crate::interface::port::notification::AlertPayload;
+use crate::interface::access_control::AccessControlPort;
+use crate::interface::app_repo::AppRepo;
+use crate::utils::ip_address::{ip_version_from_str, is_private_ip};
 
 /// Lower bound on the rate-limit factor — anything below 1% of current
 /// would brick traffic flow.
@@ -361,7 +361,7 @@ impl SoarEngine {
         }
 
         for addr in &addrs {
-            if crate::domain::response::matcher::is_private_ip(&addr.ip()) {
+            if is_private_ip(&addr.ip()) {
                 log!(SoarLog::EventHandlingFailed(format!(
                     "SSRF blocked: webhook URL '{}' resolved to private IP {}",
                     url_str,

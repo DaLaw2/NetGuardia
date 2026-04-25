@@ -1,14 +1,13 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
-use macros::log;
 use serde::Deserialize;
 
+use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::adapter::http::response::ok_or_error;
-use crate::core::identity::extractor::AuthClaims;
-use crate::core::identity::jwt::JwtService;
+use crate::core::identity::auth_service::{AuthService, LoginError, RegisterError};
 use crate::domain::identity::auth::{DEFAULT_ADMIN_USERNAME, GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
-use crate::domain::identity::error::AuthError;
 use crate::domain::identity::password;
-use crate::interface::port::app_repo::AppRepo;
+use crate::domain::identity::validation::validate_password;
+use crate::interface::app_repo::AppRepo;
 
 type Repo = dyn AppRepo;
 
@@ -49,161 +48,47 @@ pub fn initialize() -> Scope {
         .route("/groups/{id}", web::delete().to(delete_group))
 }
 
-fn validate_username(username: &str) -> Result<(), &'static str> {
-    if username.is_empty() || username.len() > 32 {
-        return Err("Username must be 1-32 characters");
-    }
-    if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err("Username must contain only alphanumeric characters and underscores");
-    }
-    Ok(())
-}
-
-fn validate_password(password: &str) -> Result<(), &'static str> {
-    if password.len() < 8 {
-        return Err("Password must be at least 8 characters");
-    }
-    Ok(())
-}
-
-/// Dummy Argon2 hash used to prevent timing-based username enumeration.
-/// When a user doesn't exist, we still run verify_password against this
-/// so the response time is indistinguishable from a real user lookup.
-const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dW5rbm93bg$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
-
-async fn login(body: web::Json<LoginRequest>, db: web::Data<Repo>, jwt: web::Data<JwtService>) -> impl Responder {
+async fn login(body: web::Json<LoginRequest>, auth_svc: web::Data<AuthService>) -> impl Responder {
     let req = body.into_inner();
-
-    // Check login lockout
-    match db.check_login_locked(&req.username) {
-        Ok(Some(remaining_secs)) => {
-            return HttpResponse::TooManyRequests().json(serde_json::json!({
-                "error": "Account temporarily locked due to too many failed login attempts",
-                "retry_after_secs": remaining_secs,
-            }));
-        }
-        Err(_) => {}
-        Ok(None) => {}
-    }
-
-    let user = match db.find_user(&req.username) {
-        Ok(Some(u)) => u,
-        _ => {
-            // Run dummy hash verification to prevent timing-based username enumeration
-            let _ = password::verify_password(&req.password, DUMMY_HASH);
-            if let Err(e) = db.record_login_failure(&req.username) {
-                log!(AuthError::LoginFailureTrackingError(e));
-            }
-            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"}));
-        }
-    };
-
-    let (id, username, hash, _db_role, force_password_change) = user;
-
-    match password::verify_password(&req.password, &hash) {
-        Ok(true) => {}
-        _ => {
-            if let Err(e) = db.record_login_failure(&req.username) {
-                log!(AuthError::LoginFailureTrackingError(e));
-            }
-            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"}));
-        }
-    }
-
-    // Clear login failures on success
-    if let Err(e) = db.clear_login_failures(&req.username) {
-        log!(AuthError::LoginClearError(e));
-    }
-
-    // Permissions come exclusively from groups — no role-based fallback
-    let permissions = db.list_user_permissions(id).unwrap_or_default();
-
-    let groups = db.list_groups_for_user(id).unwrap_or_default();
-    let role = if groups.iter().any(|(_id, name, _desc, _perms)| name == GROUP_ADMIN) {
-        ROLE_ADMIN.to_string()
-    } else {
-        ROLE_VIEWER.to_string()
-    };
-
-    match jwt.create_token(id, &username, &role, permissions) {
-        Ok(token) => HttpResponse::Ok().json(serde_json::json!({
-            "token": token,
-            "role": role,
-            "force_password_change": force_password_change,
+    match auth_svc.login(&req.username, &req.password) {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(LoginError::Locked { retry_after_secs }) => HttpResponse::TooManyRequests().json(serde_json::json!({
+            "error": "Account temporarily locked due to too many failed login attempts",
+            "retry_after_secs": retry_after_secs,
         })),
-        Err(_) => HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to create token"})),
+        Err(LoginError::InvalidCredentials) => {
+            HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"}))
+        }
+        Err(LoginError::InternalError) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to create token"}))
+        }
     }
 }
 
-async fn register(auth: AuthClaims, body: web::Json<RegisterRequest>, db: web::Data<Repo>) -> impl Responder {
+async fn register(
+    auth: AuthClaims,
+    body: web::Json<RegisterRequest>,
+    auth_svc: web::Data<AuthService>,
+) -> impl Responder {
     let reg = body.into_inner();
-
-    // Validate input
-    if let Err(msg) = validate_username(&reg.username) {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
-    }
-    if let Err(msg) = validate_password(&reg.password) {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
-    }
-
-    // Validate role
-    if reg.role != ROLE_ADMIN && reg.role != ROLE_VIEWER {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": "Role must be 'admin' or 'viewer'"}));
-    }
-
-    // Only admins can create admin accounts
-    if reg.role == ROLE_ADMIN && auth.role != ROLE_ADMIN {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "Only administrators can create admin accounts"}));
-    }
-
-    let hash = match password::hash_password(&reg.password) {
-        Ok(h) => h,
-        Err(_) => {
-            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to hash password"}));
+    match auth_svc.register(&reg.username, &reg.password, &reg.role, &auth.role) {
+        Ok(_) => HttpResponse::Created().json(serde_json::json!({"username": reg.username, "role": reg.role})),
+        Err(RegisterError::Validation(msg)) => HttpResponse::BadRequest().json(serde_json::json!({"error": msg})),
+        Err(RegisterError::InvalidRole) => {
+            HttpResponse::BadRequest().json(serde_json::json!({"error": "Role must be 'admin' or 'viewer'"}))
         }
-    };
-
-    match db.insert_user(&reg.username, &hash, &reg.role, false) {
-        Ok(new_user_id) => {
-            // Auto-assign to default group based on role
-            let default_group_name = if reg.role == ROLE_ADMIN {
-                GROUP_ADMIN
-            } else {
-                GROUP_VIEWER
-            };
-            if let Ok(groups) = db.list_user_groups()
-                && let Some((group_id, _, _, _, _)) =
-                    groups.into_iter().find(|(_, name, _, _, _)| name == default_group_name)
-                && let Err(e) = db.set_user_groups(new_user_id, &[group_id])
-            {
-                log!(AuthError::GroupAssignmentFailed(e));
-            }
-            HttpResponse::Created().json(serde_json::json!({"username": reg.username, "role": reg.role}))
+        Err(RegisterError::Forbidden) => HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "Only administrators can create admin accounts"})),
+        Err(RegisterError::HashFailed) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to hash password"}))
         }
-        Err(e) => HttpResponse::Conflict().json(serde_json::json!({"error": e.to_string()})),
+        Err(RegisterError::Conflict(e)) => HttpResponse::Conflict().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
-async fn me(auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
-    let user_groups = db.list_groups_for_user(auth.sub).unwrap_or_default();
-    let group_names: Vec<String> = user_groups
-        .iter()
-        .map(|(_id, name, _desc, _perms)| name.clone())
-        .collect();
-    let role = if group_names.iter().any(|n| n == GROUP_ADMIN) {
-        ROLE_ADMIN
-    } else {
-        ROLE_VIEWER
-    };
-    let permissions = db.list_user_permissions(auth.sub).unwrap_or_default();
-    HttpResponse::Ok().json(serde_json::json!({
-        "id": auth.sub,
-        "username": auth.username,
-        "role": role,
-        "permissions": permissions,
-        "groups": group_names,
-    }))
+async fn me(auth: AuthClaims, auth_svc: web::Data<AuthService>) -> impl Responder {
+    let profile = auth_svc.user_profile(auth.sub, &auth.username);
+    HttpResponse::Ok().json(profile)
 }
 
 async fn change_password(
@@ -211,32 +96,26 @@ async fn change_password(
     body: web::Json<ChangePasswordRequest>,
     db: web::Data<Repo>,
 ) -> impl Responder {
-    let claims = &*auth;
     let change_req = body.into_inner();
 
-    // Validate new password
     if let Err(msg) = validate_password(&change_req.new_password) {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
     }
 
-    // Verify current password
-    let user = match db.find_user(&claims.username) {
+    let user = match db.find_user(&auth.username) {
         Ok(Some(u)) => u,
         _ => {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "User not found"}));
         }
     };
 
-    let (_id, _username, hash, _role, _force) = user;
-
-    match password::verify_password(&change_req.current_password, &hash) {
+    match password::verify_password(&change_req.current_password, &user.password_hash) {
         Ok(true) => {}
         _ => {
             return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Current password is incorrect"}));
         }
     }
 
-    // Hash and update
     let new_hash = match password::hash_password(&change_req.new_password) {
         Ok(h) => h,
         Err(_) => {
@@ -244,35 +123,34 @@ async fn change_password(
         }
     };
 
-    match db.update_user_password(claims.sub, &new_hash) {
+    match db.update_user_password(auth.sub, &new_hash) {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"message": "Password changed successfully"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
-
-// --- User Management (admin only) ---
 
 async fn list_users(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
     match db.list_users_with_groups() {
         Ok(users) => {
             let result: Vec<serde_json::Value> = users
                 .into_iter()
-                .map(|(id, username, _role, force_pw, created_at, user_groups)| {
-                    let groups: Vec<serde_json::Value> = user_groups
+                .map(|u| {
+                    let groups: Vec<serde_json::Value> = u
+                        .groups
                         .iter()
-                        .map(|(gid, name)| serde_json::json!({"id": gid, "name": name}))
+                        .map(|g| serde_json::json!({"id": g.group_id, "name": g.group_name}))
                         .collect();
-                    let role = if user_groups.iter().any(|(_id, name)| name == GROUP_ADMIN) {
+                    let role = if u.groups.iter().any(|g| g.group_name == GROUP_ADMIN) {
                         ROLE_ADMIN
                     } else {
                         ROLE_VIEWER
                     };
                     serde_json::json!({
-                        "id": id,
-                        "username": username,
+                        "id": u.id,
+                        "username": u.username,
                         "role": role,
-                        "force_password_change": force_pw,
-                        "created_at": created_at,
+                        "force_password_change": u.force_password_change,
+                        "created_at": u.created_at,
                         "groups": groups,
                     })
                 })
@@ -286,14 +164,12 @@ async fn list_users(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
 async fn delete_user(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>) -> impl Responder {
     let user_id = path.into_inner();
 
-    // Can't delete self
     if _auth.sub == user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Cannot delete your own account"}));
     }
 
-    // Protect the built-in admin account
     match db.find_user_by_id(user_id) {
-        Ok(Some((_, ref username, _, _, _))) if username == DEFAULT_ADMIN_USERNAME => {
+        Ok(Some(ref u)) if u.username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot delete the built-in admin account"}));
         }
@@ -315,7 +191,6 @@ async fn update_role(
 ) -> impl Responder {
     let user_id = path.into_inner();
 
-    // Can't change own role
     if _auth.sub == user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Cannot change your own role"}));
     }
@@ -327,7 +202,6 @@ async fn update_role(
         }
     };
 
-    // Check target user exists
     match db.find_user_by_id(user_id) {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -367,7 +241,6 @@ async fn reset_password(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
     }
 
-    // Check target user exists
     match db.find_user_by_id(user_id) {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -388,27 +261,26 @@ async fn reset_password(
     ok_or_error(db.reset_user_password(user_id, &hash))
 }
 
-// --- User Group Management (users:admin required) ---
-
 async fn list_groups(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
     match db.list_user_groups() {
         Ok(groups) => {
             let result: Vec<serde_json::Value> = groups
                 .into_iter()
-                .map(|(id, name, description, permissions, created_at)| {
-                    let perms: serde_json::Value = serde_json::from_str(&permissions).unwrap_or(serde_json::json!([]));
+                .map(|g| {
+                    let perms: serde_json::Value =
+                        serde_json::from_str(&g.permissions).unwrap_or(serde_json::json!([]));
                     let members: Vec<serde_json::Value> = db
-                        .list_group_members(id)
+                        .list_group_members(g.id)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|(uid, username)| serde_json::json!({"id": uid, "username": username}))
                         .collect();
                     serde_json::json!({
-                        "id": id,
-                        "name": name,
-                        "description": description,
+                        "id": g.id,
+                        "name": g.name,
+                        "description": g.description,
                         "permissions": perms,
-                        "created_at": created_at,
+                        "created_at": g.created_at,
                         "members": members,
                     })
                 })
@@ -448,15 +320,15 @@ async fn get_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>)
     let group_id = path.into_inner();
 
     match db.get_user_group(group_id) {
-        Ok(Some((id, name, description, permissions, created_at))) => {
-            let perms: serde_json::Value = serde_json::from_str(&permissions).unwrap_or(serde_json::json!([]));
+        Ok(Some(g)) => {
+            let perms: serde_json::Value = serde_json::from_str(&g.permissions).unwrap_or(serde_json::json!([]));
             let members = db.list_group_member_ids(group_id).unwrap_or_default();
             HttpResponse::Ok().json(serde_json::json!({
-                "id": id,
-                "name": name,
-                "description": description,
+                "id": g.id,
+                "name": g.name,
+                "description": g.description,
                 "permissions": perms,
-                "created_at": created_at,
+                "created_at": g.created_at,
                 "members": members,
             }))
         }
@@ -473,11 +345,9 @@ async fn update_group(
 ) -> impl Responder {
     let group_id = path.into_inner();
 
-    // Check group exists
     let existing = match db.get_user_group(group_id) {
         Ok(Some(g)) => {
-            // Protect built-in groups
-            if g.1 == GROUP_ADMIN || g.1 == GROUP_VIEWER {
+            if g.name == GROUP_ADMIN || g.name == GROUP_VIEWER {
                 return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot modify built-in groups"}));
             }
             g
@@ -490,11 +360,14 @@ async fn update_group(
         }
     };
 
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or(&existing.1);
-    let description = body.get("description").and_then(|v| v.as_str()).unwrap_or(&existing.2);
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or(&existing.name);
+    let description = body
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&existing.description);
     let permissions = match body.get("permissions") {
         Some(p) if p.is_array() => p.to_string(),
-        _ => existing.3.clone(),
+        _ => existing.permissions.clone(),
     };
 
     match db.update_user_group(group_id, name, description, &permissions) {
@@ -511,9 +384,8 @@ async fn update_group(
 async fn delete_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>) -> impl Responder {
     let group_id = path.into_inner();
 
-    // Protect built-in groups
     match db.get_user_group(group_id) {
-        Ok(Some(g)) if g.1 == GROUP_ADMIN || g.1 == GROUP_VIEWER => {
+        Ok(Some(ref g)) if g.name == GROUP_ADMIN || g.name == GROUP_VIEWER => {
             return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot delete built-in groups"}));
         }
         _ => {}
@@ -534,9 +406,8 @@ async fn set_user_groups(
 ) -> impl Responder {
     let user_id = path.into_inner();
 
-    // Protect the default admin account
     match db.find_user_by_id(user_id) {
-        Ok(Some((_, ref username, _, _, _))) if username == DEFAULT_ADMIN_USERNAME => {
+        Ok(Some(ref u)) if u.username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot modify groups for the built-in admin account"}));
         }
@@ -565,57 +436,29 @@ async fn set_user_groups(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_username_valid() {
-        assert!(validate_username("admin").is_ok());
-        assert!(validate_username("user_123").is_ok());
-        assert!(validate_username("a").is_ok());
-    }
-
-    #[test]
-    fn test_validate_username_empty() {
-        assert!(validate_username("").is_err());
-    }
-
-    #[test]
-    fn test_validate_username_too_long() {
-        let long = "a".repeat(33);
-        assert!(validate_username(&long).is_err());
-    }
-
-    #[test]
-    fn test_validate_username_special_chars() {
-        assert!(validate_username("admin@host").is_err());
-        assert!(validate_username("user name").is_err());
-        assert!(validate_username("user-name").is_err());
-        assert!(validate_username("用戶").is_err());
-    }
-
-    #[test]
-    fn test_validate_password_valid() {
-        assert!(validate_password("12345678").is_ok());
-        assert!(validate_password("a very long password").is_ok());
-    }
-
-    #[test]
-    fn test_validate_password_too_short() {
-        assert!(validate_password("").is_err());
-        assert!(validate_password("1234567").is_err());
-        assert!(validate_password("a").is_err());
-    }
+    use crate::domain::identity::validation::{validate_password, validate_username};
 
     #[test]
     fn test_dummy_hash_is_valid_argon2() {
         use argon2::password_hash::PasswordHash;
-        // DUMMY_HASH must be parseable as a valid Argon2 hash structure
-        // so that timing-based username enumeration is prevented
+
+        use crate::core::identity::auth_service::DUMMY_HASH;
         let parsed = PasswordHash::new(DUMMY_HASH);
         assert!(
             parsed.is_ok(),
             "DUMMY_HASH should be a valid Argon2 hash format, got error: {:?}",
             parsed.err()
         );
+    }
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("admin").is_ok());
+        assert!(validate_username("user_123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("12345678").is_ok());
     }
 }

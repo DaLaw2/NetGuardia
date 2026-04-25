@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use crate::domain::common::error::Error;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::ip_address::NativeConvert;
-use crate::interface::port::protocol_filter::ProtocolFilterPort;
+use crate::interface::protocol_filter::ProtocolFilterPort;
 
 pub struct ProtocolFilter {
     ipv4_http_service: RwLock<HttpServiceWrapper<AddrPortV4>>,

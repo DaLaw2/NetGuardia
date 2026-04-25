@@ -9,14 +9,15 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
+use crate::core::detection::metrics::FusionMetrics;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::constants::{FUSION_AUDIT_ACTION, FUSION_AUDIT_ACTOR};
 use crate::domain::common::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
 use crate::domain::detection::attack_type::translate;
 use crate::domain::detection::fusion_math::{FusionWindowLengths, fused_confidence};
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::metrics::FusionMetrics;
-use crate::interface::port::geo_lookup::GeoLookup;
+use crate::domain::detection::ml_detection::AlertMessage;
+use crate::interface::geo_lookup::GeoLookup;
 
 /// Per-source record within an in-flight dedup entry. Keeps the strongest
 /// confidence per source so multi-hit from one source doesn't inflate the
@@ -350,6 +351,46 @@ impl DetectionOrchestrator {
         }
         for key in expired {
             self.dedup.pop(&key);
+        }
+    }
+}
+
+pub async fn bridge_ml_to_detection(mut rx: broadcast::Receiver<AlertMessage>, tx: mpsc::Sender<DetectionEvent>) {
+    log!(DetectionLog::MlBridgeStarted);
+
+    loop {
+        match rx.recv().await {
+            Ok(alert) => {
+                let raw_type = alert.attack_type.as_deref().unwrap_or("unknown");
+
+                if raw_type.eq_ignore_ascii_case("normal") {
+                    continue;
+                }
+
+                let event = DetectionEvent {
+                    source: DetectionSource::ML,
+                    attack_type: raw_type.to_string(),
+                    confidence: alert.confidence,
+                    source_ip: alert.src_ip,
+                    dest_ip: alert.dst_ip,
+                    protocol: alert.protocol,
+                    packet_count: alert.packet_count,
+                    flow_duration_us: alert.flow_duration_us,
+                    ae_score: alert.ae_score,
+                    anomaly_score: alert.anomaly_score,
+                    c2_score: alert.c2_score,
+                };
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                log!(DetectionLog::MlBridgeLagged(n));
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                log!(DetectionLog::MlAlertChannelClosed);
+                break;
+            }
         }
     }
 }
