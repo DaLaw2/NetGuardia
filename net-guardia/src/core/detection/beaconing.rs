@@ -10,6 +10,7 @@ use tokio::time::interval;
 
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
 
@@ -77,6 +78,8 @@ impl BeaconingDetector {
 
 type FlowTuple = (String, String, u16);
 
+const MAX_TIMESTAMPS_PER_FLOW: usize = 100;
+
 struct CachedFlow {
     timestamps: Vec<Instant>,
     last_alerted: Option<Instant>,
@@ -120,8 +123,8 @@ impl BeaconingState {
 
         entry.timestamps.push(now);
 
-        if entry.timestamps.len() > 100 {
-            let excess = entry.timestamps.len() - 100;
+        if entry.timestamps.len() > MAX_TIMESTAMPS_PER_FLOW {
+            let excess = entry.timestamps.len() - MAX_TIMESTAMPS_PER_FLOW;
             entry.timestamps.drain(..excess);
         }
     }
@@ -160,7 +163,7 @@ impl BeaconingState {
 
             events.push(DetectionEvent {
                 source: DetectionSource::Beaconing,
-                attack_type: "c2_communication".to_string(),
+                attack_type: CanonicalAttackType::C2Beacon.as_str().to_string(),
                 confidence: (1.0 - cv / self.cv_threshold) as f32 * 0.5 + 0.5,
                 source_ip: src_ip.clone(),
                 dest_ip: dst_ip.clone(),
@@ -225,7 +228,11 @@ pub fn compute_cv(timestamps: &[Instant]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use crate::core::detection::beaconing::{BeaconingState, CachedFlow, compute_cv};
+    use crate::domain::common::event::DetectionSource;
+    use crate::domain::detection::attack_type::CanonicalAttackType;
     #[test]
     fn cv_perfectly_periodic() {
         let base = Instant::now();
@@ -286,6 +293,6 @@ mod tests {
         let events = state.analyze();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, DetectionSource::Beaconing);
-        assert_eq!(events[0].attack_type, "c2_communication");
+        assert_eq!(events[0].attack_type, CanonicalAttackType::C2Beacon.as_str());
     }
 }

@@ -13,9 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use adapter::http::middleware::jwt::JwtService;
 use clap::Parser;
-use interface::secret_store::SecretStorePort;
 use macros::log;
 use sd_notify::NotifyState;
 use tokio::time::sleep;
@@ -31,7 +29,6 @@ use crate::domain::identity::password;
 use crate::infrastructure::cli::{Cli, handle_subcommand};
 use crate::infrastructure::http_server;
 use crate::infrastructure::logger::Logger;
-use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
 
 fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
@@ -60,14 +57,11 @@ fn is_setup_complete(database: &Arc<Database>) -> Result<bool, Error> {
 async fn run_setup_wizard(database: &Arc<Database>) -> Result<(), Error> {
     log!(SystemLog::SetupMode);
 
-    let secret_store = Arc::new(SecretStore::new(database.clone()));
-    let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
-    let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
     let setup_flag = Arc::new(AtomicBool::new(false));
     let setup_complete_flag = http_server::SetupCompleteFlag(setup_flag.clone());
 
-    let handle =
-        http_server::start_setup_server(database.clone(), secret_store, jwt_service, setup_complete_flag, 8080)?;
+    let params = http_server::SetupServerParams::build(database.clone(), setup_complete_flag, 8080)?;
+    let handle = http_server::start_setup_server(params)?;
 
     let flag = setup_flag.clone();
     let setup_done = async move {

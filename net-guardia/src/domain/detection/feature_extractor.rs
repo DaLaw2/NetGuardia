@@ -168,32 +168,44 @@ impl PrecomputedStats {
         let bwd_total_bytes = flow.bwd_total_bytes as f64;
         let total_bytes = fwd_total_bytes + bwd_total_bytes;
 
-        // Packet length stats
-        let fwd_lengths: Vec<f64> = flow.fwd_packets.iter().map(|p| p.payload_length as f64).collect();
-        let (fwd_len_max, fwd_len_min, fwd_len_mean, fwd_len_std) = compute_stats(&fwd_lengths);
+        let mut fwd_len_stats = StreamingStats::new();
+        for p in &flow.fwd_packets {
+            fwd_len_stats.push(p.payload_length as f64);
+        }
+        let (fwd_len_max, fwd_len_min, fwd_len_mean, fwd_len_std) = fwd_len_stats.finalize();
 
-        let bwd_lengths: Vec<f64> = flow.bwd_packets.iter().map(|p| p.payload_length as f64).collect();
-        let (bwd_len_max, bwd_len_min, bwd_len_mean, bwd_len_std) = compute_stats(&bwd_lengths);
+        let mut bwd_len_stats = StreamingStats::new();
+        for p in &flow.bwd_packets {
+            bwd_len_stats.push(p.payload_length as f64);
+        }
+        let (bwd_len_max, bwd_len_min, bwd_len_mean, bwd_len_std) = bwd_len_stats.finalize();
 
-        let all_lengths: Vec<f64> = flow
-            .fwd_packets
-            .iter()
-            .chain(flow.bwd_packets.iter())
-            .map(|p| p.payload_length as f64)
-            .collect();
-        let (all_len_max, all_len_min, all_len_mean, all_len_std) = compute_stats(&all_lengths);
+        let mut all_len_stats = StreamingStats::new();
+        for p in flow.fwd_packets.iter().chain(flow.bwd_packets.iter()) {
+            all_len_stats.push(p.payload_length as f64);
+        }
+        let (all_len_max, all_len_min, all_len_mean, all_len_std) = all_len_stats.finalize();
 
-        // IAT stats
-        let flow_iats = compute_flow_iats(&flow.fwd_packets, &flow.bwd_packets);
-        let (flow_iat_max, flow_iat_min, flow_iat_mean, flow_iat_std) = compute_stats(&flow_iats);
+        let (flow_iat_max, flow_iat_min, flow_iat_mean, flow_iat_std) =
+            compute_flow_iat_stats(&flow.fwd_packets, &flow.bwd_packets);
 
         let fwd_iats = compute_iats(&flow.fwd_packets);
-        let fwd_iat_total: f64 = fwd_iats.iter().sum();
-        let (fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = compute_stats(&fwd_iats);
+        let mut fwd_iat_stats = StreamingStats::new();
+        let mut fwd_iat_total: f64 = 0.0;
+        for &v in &fwd_iats {
+            fwd_iat_stats.push(v);
+            fwd_iat_total += v;
+        }
+        let (fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = fwd_iat_stats.finalize();
 
         let bwd_iats = compute_iats(&flow.bwd_packets);
-        let bwd_iat_total: f64 = bwd_iats.iter().sum();
-        let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = compute_stats(&bwd_iats);
+        let mut bwd_iat_stats = StreamingStats::new();
+        let mut bwd_iat_total: f64 = 0.0;
+        for &v in &bwd_iats {
+            bwd_iat_stats.push(v);
+            bwd_iat_total += v;
+        }
+        let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = bwd_iat_stats.finalize();
 
         // Per-direction flag counts
         let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
@@ -226,11 +238,17 @@ impl PrecomputedStats {
             .min_by(|a, b| a.total_cmp(b))
             .unwrap_or(0.0);
 
-        // Active/idle period stats
-        let (active_max, active_min, active_mean, active_std) =
-            compute_stats(&flow.active_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
-        let (idle_max, idle_min, idle_mean, idle_std) =
-            compute_stats(&flow.idle_periods.iter().map(|&x| x as f64).collect::<Vec<_>>());
+        let mut active_stats = StreamingStats::new();
+        for &x in &flow.active_periods {
+            active_stats.push(x as f64);
+        }
+        let (active_max, active_min, active_mean, active_std) = active_stats.finalize();
+
+        let mut idle_stats = StreamingStats::new();
+        for &x in &flow.idle_periods {
+            idle_stats.push(x as f64);
+        }
+        let (idle_max, idle_min, idle_mean, idle_std) = idle_stats.finalize();
 
         // Phase 2: new features for C2/Bot detection
         let fwd_bwd_bytes_ratio = safe_div(fwd_total_bytes, fwd_total_bytes + bwd_total_bytes);
@@ -511,31 +529,57 @@ static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLo
     m
 });
 
-fn compute_stats(values: &[f64]) -> (f64, f64, f64, f64) {
-    if values.is_empty() {
-        return (0.0, 0.0, 0.0, 0.0);
+/// Welford online accumulator — computes max, min, mean, sample-std in a
+/// single pass without allocating a Vec.
+struct StreamingStats {
+    count: u64,
+    min: f64,
+    max: f64,
+    mean: f64,
+    m2: f64,
+}
+
+impl StreamingStats {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            mean: 0.0,
+            m2: 0.0,
+        }
     }
 
-    let n = values.len() as f64;
-    let sum: f64 = values.iter().sum();
-    let mean = sum / n;
+    fn push(&mut self, x: f64) {
+        self.count += 1;
+        if x < self.min {
+            self.min = x;
+        }
+        if x > self.max {
+            self.max = x;
+        }
+        let delta = x - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = x - self.mean;
+        self.m2 += delta * delta2;
+    }
 
-    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-
-    let variance: f64 = if n > 1.0 {
-        values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)
-    } else {
-        0.0
-    };
-    let std = variance.sqrt();
-
-    (max, min, mean, std)
+    fn finalize(self) -> (f64, f64, f64, f64) {
+        if self.count == 0 {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let variance = if self.count > 1 {
+            self.m2 / (self.count - 1) as f64
+        } else {
+            0.0
+        };
+        (self.max, self.min, self.mean, variance.sqrt())
+    }
 }
 
 fn compute_iats(packets: &[PacketData]) -> Vec<f64> {
     if packets.len() < 2 {
-        return vec![0.0];
+        return Vec::new();
     }
 
     packets
@@ -546,33 +590,78 @@ fn compute_iats(packets: &[PacketData]) -> Vec<f64> {
 
 /// Bowley (quartile) skewness: (Q3 + Q1 - 2*Q2) / (Q3 - Q1)
 /// Returns 0.0 for insufficient data or zero IQR.
-/// Used for C2 beacon detection — regular beacons have skewness near 0.
+/// Uses `select_nth_unstable` for O(n) partial ordering instead of O(n log n) full sort.
 fn compute_bowley_skewness(values: &[f64]) -> f64 {
-    if values.len() < 4 {
+    let n = values.len();
+    if n < 4 {
         return 0.0;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let n = sorted.len();
-    let q1 = sorted[n / 4];
-    let q2 = sorted[n / 2];
-    let q3 = sorted[3 * n / 4];
+    let mut buf = values.to_vec();
+
+    let i_q1 = n / 4;
+    let i_q2 = n / 2;
+    let i_q3 = 3 * n / 4;
+
+    buf.select_nth_unstable_by(i_q2, |a, b| a.total_cmp(b));
+    let q2 = buf[i_q2];
+
+    buf[..i_q2].select_nth_unstable_by(i_q1, |a, b| a.total_cmp(b));
+    let q1 = buf[i_q1];
+
+    let q3 = {
+        let offset = i_q2 + 1;
+        let local_idx = i_q3 - offset;
+        buf[offset..].select_nth_unstable_by(local_idx, |a, b| a.total_cmp(b));
+        buf[i_q3]
+    };
+
     let iqr = q3 - q1;
     if iqr <= 0.0 { 0.0 } else { (q3 + q1 - 2.0 * q2) / iqr }
 }
 
-fn compute_flow_iats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]) -> Vec<f64> {
-    let mut all_packets: Vec<&PacketData> = fwd_packets.iter().chain(bwd_packets.iter()).collect();
-    all_packets.sort_by_key(|p| p.timestamp_us);
+/// Merge-walk two already-timestamp-ordered packet sequences to compute
+/// flow IAT stats in O(n) without allocating a combined Vec or sorting.
+fn compute_flow_iat_stats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]) -> (f64, f64, f64, f64) {
+    let mut fi = fwd_packets.iter().peekable();
+    let mut bi = bwd_packets.iter().peekable();
+    let mut stats = StreamingStats::new();
+    let mut prev_ts: Option<u64> = None;
 
-    if all_packets.len() < 2 {
-        return vec![0.0];
+    loop {
+        let ts = match (fi.peek(), bi.peek()) {
+            (Some(f), Some(b)) => {
+                if f.timestamp_us <= b.timestamp_us {
+                    let t = f.timestamp_us;
+                    fi.next();
+                    t
+                } else {
+                    let t = b.timestamp_us;
+                    bi.next();
+                    t
+                }
+            }
+            (Some(f), None) => {
+                let t = f.timestamp_us;
+                fi.next();
+                t
+            }
+            (None, Some(b)) => {
+                let t = b.timestamp_us;
+                bi.next();
+                t
+            }
+            (None, None) => break,
+        };
+        if let Some(prev) = prev_ts {
+            stats.push((ts - prev) as f64);
+        }
+        prev_ts = Some(ts);
     }
 
-    all_packets
-        .windows(2)
-        .map(|w| (w[1].timestamp_us - w[0].timestamp_us) as f64)
-        .collect()
+    if stats.count == 0 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    stats.finalize()
 }
 
 #[cfg(test)]
@@ -795,6 +884,47 @@ mod tests {
         // Spot-check a canonical + alias pair both surface.
         assert!(names.contains(&"Flow Duration"));
         assert!(names.contains(&"flow_duration"));
+    }
+
+    fn naive_stats(values: &[f64]) -> (f64, f64, f64, f64) {
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let n = values.len() as f64;
+        let sum: f64 = values.iter().sum();
+        let mean = sum / n;
+        let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let variance = if n > 1.0 {
+            values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)
+        } else {
+            0.0
+        };
+        (max, min, mean, variance.sqrt())
+    }
+
+    #[test]
+    fn streaming_stats_matches_naive() {
+        let cases: Vec<Vec<f64>> = vec![
+            vec![],
+            vec![42.0],
+            vec![1.0, 2.0],
+            vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            vec![100.0, 100.0, 100.0],
+            vec![1.0, 1000.0, 0.5, 500.0, 250.0],
+        ];
+        for values in &cases {
+            let expected = naive_stats(values);
+            let mut s = StreamingStats::new();
+            for &v in values {
+                s.push(v);
+            }
+            let got = s.finalize();
+            assert!((got.0 - expected.0).abs() < 1e-10, "max mismatch for {values:?}");
+            assert!((got.1 - expected.1).abs() < 1e-10, "min mismatch for {values:?}");
+            assert!((got.2 - expected.2).abs() < 1e-10, "mean mismatch for {values:?}");
+            assert!((got.3 - expected.3).abs() < 1e-10, "std mismatch for {values:?}");
+        }
     }
 
     #[test]

@@ -11,10 +11,10 @@ use macros::log;
 use tokio::sync::broadcast;
 
 use crate::adapter::ebpf::EbpfServices;
+use crate::adapter::http::jwt::JwtService;
 use crate::adapter::http::middleware::auth::AuthMiddleware;
 use crate::adapter::http::middleware::csrf::CsrfMiddleware;
 use crate::adapter::http::middleware::https_redirect::HttpsRedirect;
-use crate::adapter::http::middleware::jwt::JwtService;
 use crate::adapter::http::middleware::setup_guard::SetupGuard;
 use crate::adapter::http::model_upload::PromoteGate;
 use crate::adapter::http::{
@@ -40,12 +40,12 @@ use crate::domain::common::error::Error;
 use crate::domain::common::error::http::HttpError;
 use crate::domain::common::event::{AuditEvent, ThreatDetectedEvent};
 use crate::domain::common::log::http::HttpLog;
-use crate::domain::common::system::readiness::ReadinessState;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::inference_runtime::InferenceRuntime;
 use crate::infrastructure::log_buffer::LogBuffer;
 use crate::infrastructure::logger::Logger;
+use crate::infrastructure::readiness::ReadinessState;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::system::ShutdownHandle;
@@ -54,6 +54,8 @@ use crate::interface::app_repo::AppRepo;
 use crate::interface::audit::AuditRepo;
 use crate::interface::drop_stats::DropStatsPort;
 use crate::interface::protocol_filter::ProtocolFilterPort;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::token_minter::TokenMinter;
 
 #[derive(Clone)]
 pub struct SetupCompleteFlag(pub Arc<AtomicBool>);
@@ -79,6 +81,7 @@ pub struct HttpServerParams {
     pub flow_statistics: Arc<FlowStatistics>,
 
     pub jwt_service: Arc<JwtService>,
+    pub auth_service: Arc<AuthService>,
     pub enforce_handler: Arc<EnforceModeHandler>,
 
     pub acl_service: Arc<AclService>,
@@ -151,13 +154,43 @@ fn is_private_origin(origin: &str) -> bool {
     false
 }
 
-pub fn start_setup_server(
+pub struct SetupServerParams {
     database: Arc<Database>,
     secret_store: Arc<SecretStore>,
     jwt_service: Arc<JwtService>,
+    auth_service: Arc<AuthService>,
     setup_complete: SetupCompleteFlag,
     port: u16,
-) -> Result<ServerHandle, Error> {
+}
+
+impl SetupServerParams {
+    pub fn build(database: Arc<Database>, setup_complete: SetupCompleteFlag, port: u16) -> Result<Self, Error> {
+        let secret_store = Arc::new(SecretStore::new(database.clone()));
+        let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
+        let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
+        let auth_service = Arc::new(AuthService::new(
+            database.clone() as Arc<dyn AppRepo>,
+            jwt_service.clone() as Arc<dyn TokenMinter>,
+        ));
+        Ok(Self {
+            database,
+            secret_store,
+            jwt_service,
+            auth_service,
+            setup_complete,
+            port,
+        })
+    }
+}
+
+pub fn start_setup_server(params: SetupServerParams) -> Result<ServerHandle, Error> {
+    let database = params.database;
+    let secret_store = params.secret_store;
+    let jwt_service = params.jwt_service;
+    let auth_service = params.auth_service;
+    let setup_complete = params.setup_complete;
+    let port = params.port;
+
     let app = move || {
         App::new()
             .wrap(cors(vec![]))
@@ -167,7 +200,7 @@ pub fn start_setup_server(
             .app_data(web::Data::from(database.clone()))
             .app_data(web::Data::from(secret_store.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
-            .app_data(web::Data::new(AuthService::new(database.clone(), jwt_service.clone())))
+            .app_data(web::Data::from(auth_service.clone()))
             .app_data(web::Data::new(setup_complete.clone()))
             .service(
                 web::scope("/api")
@@ -219,7 +252,6 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
 
     let access_control = params.ebpf_services.access_control.clone();
     let protocol_filter: Arc<dyn ProtocolFilterPort> = params.ebpf_services.protocol_filter.clone();
-    let dns_filter = params.ebpf_services.dns_filter.clone();
     let geo_block = params.ebpf_services.geo_block.clone();
     let rate_limit = params.ebpf_services.rate_limit.clone();
     let drop_monitor = params.ebpf_services.drop_monitor.clone();
@@ -232,6 +264,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let flow_statistics = params.flow_statistics;
 
     let jwt_service = params.jwt_service;
+    let auth_service = params.auth_service;
     let enforce_handler = params.enforce_handler;
 
     let acl_service = params.acl_service;
@@ -271,7 +304,6 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(log_buffer.clone()))
             .app_data(web::Data::from(access_control.clone()))
             .app_data(web::Data::from(protocol_filter.clone()))
-            .app_data(web::Data::from(dns_filter.clone()))
             .app_data(web::Data::from(geo_block.clone()))
             .app_data(web::Data::from(rate_limit.clone()))
             .app_data(web::Data::from(drop_monitor.clone()))
@@ -283,7 +315,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .app_data(web::Data::from(health.clone()))
             .app_data(web::Data::from(flow_statistics.clone()))
             .app_data(web::Data::from(jwt_service.clone()))
-            .app_data(web::Data::new(AuthService::new(database.clone(), jwt_service.clone())))
+            .app_data(web::Data::from(auth_service.clone()))
             .app_data(web::Data::from(enforce_handler.clone()))
             .app_data(web::Data::from(acl_service.clone()))
             .app_data(web::Data::from(config_service.clone()))

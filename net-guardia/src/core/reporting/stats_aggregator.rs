@@ -7,18 +7,22 @@ use tokio::time::{self, Duration};
 
 use crate::domain::common::error::Error;
 use crate::domain::common::log::system::SystemLog;
-use crate::infrastructure::health::SystemHealth;
+use crate::interface::health_query::HealthQuery;
 use crate::interface::setting::SettingRepo;
 use crate::interface::stats::StatsRepo;
 
 pub struct StatsAggregator {
     stats: Arc<dyn StatsRepo>,
     repo: Arc<dyn SettingRepo + Send + Sync>,
-    health: Arc<SystemHealth>,
+    health: Arc<dyn HealthQuery>,
 }
 
 impl StatsAggregator {
-    pub fn new(stats: Arc<dyn StatsRepo>, repo: Arc<dyn SettingRepo + Send + Sync>, health: Arc<SystemHealth>) -> Self {
+    pub fn new(
+        stats: Arc<dyn StatsRepo>,
+        repo: Arc<dyn SettingRepo + Send + Sync>,
+        health: Arc<dyn HealthQuery>,
+    ) -> Self {
         Self { stats, repo, health }
     }
 
@@ -61,25 +65,23 @@ impl StatsAggregator {
         self.repo
             .set_setting("weekly_blocked_count", &blocks_count.to_string())?;
 
-        // Threat breakdown by type
         let breakdown = self.stats.weekly_threat_breakdown(days)?;
         let breakdown_json: serde_json::Map<String, serde_json::Value> = breakdown
             .into_iter()
-            .map(|(k, v)| (k, Value::Number(v.into())))
+            .map(|entry| (entry.threat_type, Value::Number(entry.count.into())))
             .collect();
         self.repo.set_setting(
             "weekly_threat_breakdown",
             &serde_json::to_string(&breakdown_json).unwrap_or_else(|_| "{}".to_string()),
         )?;
 
-        // Top blocked IPs
         let top_ips = self.stats.weekly_top_ips(days, 10)?;
         let top_ips_json: Vec<serde_json::Value> = top_ips
             .into_iter()
-            .map(|(ip, count)| {
+            .map(|entry| {
                 serde_json::json!({
-                    "ip": ip,
-                    "count": count,
+                    "ip": entry.ip,
+                    "count": entry.count,
                     "country": "N/A",
                 })
             })
@@ -142,8 +144,9 @@ mod tests {
     use crate::adapter::persistence::Database;
     use crate::domain::common::config::AppConfig;
     use crate::domain::common::system::health::EbpfHealth;
+    use crate::infrastructure::health::SystemHealth;
 
-    fn test_health(db: &Arc<Database>) -> Arc<SystemHealth> {
+    fn test_health(db: &Arc<Database>) -> Arc<dyn HealthQuery> {
         use arc_swap::ArcSwap;
         let config = Arc::new(ArcSwap::from_pointee(AppConfig::from_settings(db.as_ref()).unwrap()));
         let ebpf_health = Arc::new(ArcSwap::from_pointee(EbpfHealth::Healthy));

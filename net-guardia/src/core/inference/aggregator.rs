@@ -40,7 +40,7 @@ impl AttackAggregator {
     ) -> bool {
         let now = Instant::now();
 
-        let mut detections = self.detections.entry(flow_key.clone()).or_default();
+        let mut detections = self.detections.entry(*flow_key).or_default();
         detections.retain(|(time, _)| now.duration_since(*time) < self.window_duration);
         detections.push((now, score));
 

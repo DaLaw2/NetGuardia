@@ -15,6 +15,7 @@ use crate::domain::common::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, EbpfHealth, LoadAverage, MemoryUsage, NetworkStats,
     SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };
+use crate::interface::health_query::HealthQuery;
 
 /// Lock-free system health.
 ///
@@ -359,5 +360,11 @@ impl SystemHealth {
             }
         }
         None
+    }
+}
+
+impl HealthQuery for SystemHealth {
+    fn get_current_metrics(&self) -> SystemHealthMetrics {
+        self.get_current_metrics()
     }
 }

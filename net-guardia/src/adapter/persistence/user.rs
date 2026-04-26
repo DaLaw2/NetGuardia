@@ -7,8 +7,10 @@ use super::Database;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::database::DatabaseError;
 use crate::domain::identity::auth::{LOGIN_LOCKOUT_SECS, LOGIN_MAX_FAILURES};
-use crate::domain::identity::user::{UserGroupMembership, UserGroupView, UserView, UserWithGroupsView};
-use crate::interface::identity::IdentityRepo;
+use crate::domain::identity::user::{
+    GroupMemberView, UserGroupMembership, UserGroupView, UserView, UserWithGroupsView,
+};
+use crate::interface::identity::{LoginAttemptRepo, UserGroupRepo, UserRepo};
 
 impl Database {
     pub fn find_user(&self, username: &str) -> Result<Option<UserView>, Error> {
@@ -232,20 +234,21 @@ impl Database {
         }
     }
 
-    pub fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+    pub fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<UserGroupView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.name, g.description, g.permissions FROM user_groups g \
+            "SELECT g.id, g.name, g.description, g.permissions, g.created_at FROM user_groups g \
              INNER JOIN user_group_members m ON g.id = m.group_id \
              WHERE m.user_id = ?1 ORDER BY g.id",
         )?;
         let rows = stmt.query_map(params![user_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+            Ok(UserGroupView {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                permissions: row.get(3)?,
+                created_at: row.get(4)?,
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -269,8 +272,8 @@ impl Database {
     pub fn list_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
         let groups = self.list_groups_for_user(user_id)?;
         let mut all_perms = HashSet::new();
-        for (_id, _name, _desc, perms_json) in groups {
-            if let Ok(perms) = serde_json::from_str::<Vec<String>>(&perms_json) {
+        for g in groups {
+            if let Ok(perms) = serde_json::from_str::<Vec<String>>(&g.permissions) {
                 for p in perms {
                     all_perms.insert(p);
                 }
@@ -298,7 +301,7 @@ impl Database {
         Ok(results)
     }
 
-    pub fn list_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
+    pub fn list_group_members(&self, group_id: i64) -> Result<Vec<GroupMemberView>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username FROM users u \
@@ -306,7 +309,10 @@ impl Database {
              WHERE m.group_id = ?1 ORDER BY u.username",
         )?;
         let rows = stmt.query_map(params![group_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok(GroupMemberView {
+                id: row.get(0)?,
+                username: row.get(1)?,
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -368,7 +374,7 @@ impl Database {
     }
 }
 
-impl IdentityRepo for Database {
+impl UserRepo for Database {
     fn find_user(&self, username: &str) -> Result<Option<UserView>, Error> {
         self.find_user(username)
     }
@@ -406,7 +412,9 @@ impl IdentityRepo for Database {
     fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
         self.reset_user_password(user_id, password_hash)
     }
+}
 
+impl UserGroupRepo for Database {
     fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
         self.list_user_groups()
     }
@@ -427,7 +435,7 @@ impl IdentityRepo for Database {
         self.get_user_group(id)
     }
 
-    fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<(i64, String, String, String)>, Error> {
+    fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<UserGroupView>, Error> {
         self.list_groups_for_user(user_id)
     }
 
@@ -443,10 +451,12 @@ impl IdentityRepo for Database {
         self.list_group_member_ids(group_id)
     }
 
-    fn list_group_members(&self, group_id: i64) -> Result<Vec<(i64, String)>, Error> {
+    fn list_group_members(&self, group_id: i64) -> Result<Vec<GroupMemberView>, Error> {
         self.list_group_members(group_id)
     }
+}
 
+impl LoginAttemptRepo for Database {
     fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> {
         self.record_login_failure(username)
     }

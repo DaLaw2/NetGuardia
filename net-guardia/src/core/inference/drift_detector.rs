@@ -165,7 +165,11 @@ pub async fn run_drift_monitor(drift_detector: DriftDetectorHandle, drift_tx: br
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::core::inference::drift_detector::DriftDetector;
+    use crate::domain::detection::drift::FeatureBaselines;
+
     fn make_baselines(n: usize) -> FeatureBaselines {
         FeatureBaselines {
             names: (0..n).map(|i| format!("feature_{i}")).collect(),

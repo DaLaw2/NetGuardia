@@ -61,6 +61,10 @@ traceable! {
         InvalidIpAddress { ip: String } => tracing::Level::ERROR,
 
         #[no_source]
+        #[error("IP version mismatch: expected {expected}")]
+        IpVersionMismatch { expected: String } => tracing::Level::ERROR,
+
+        #[no_source]
         #[error("Unknown eBPF error")]
         UnknownError => tracing::Level::ERROR,
 

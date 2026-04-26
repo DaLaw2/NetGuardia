@@ -19,6 +19,7 @@ use crate::domain::response::log::SoarLog;
 use crate::domain::response::playbook::{Playbook, PlaybookAction};
 use crate::interface::access_control::AccessControlPort;
 use crate::interface::app_repo::AppRepo;
+use crate::interface::email_sender::EmailSenderFactory;
 use crate::interface::geo_lookup::GeoLookup;
 use crate::interface::notification::AlertNotifier;
 use crate::interface::rate_limit_api::RateLimitPort;
@@ -28,19 +29,12 @@ pub struct SoarEngine {
     pub(super) db: Arc<dyn AppRepo>,
     pub(super) access_control: Arc<dyn AccessControlPort>,
     pub(super) matcher: PlaybookMatcher,
-    /// Optional alert notifier (Telegram, etc.).
     pub(super) alert_notifier: Option<Arc<dyn AlertNotifier>>,
-    /// Optional GeoIP service for country lookups.
     pub(super) geoip: Option<Arc<dyn GeoLookup>>,
-    /// Owner-task handle that serializes the rate-limit DB+eBPF
-    /// read-modify-write batch. `None` when no `RateLimitPort` was wired
-    /// up (eBPF unavailable); SOAR actions that need rate-limit then
-    /// fail with `SoarError::RateLimitUnavailable`.
     pub(super) rate_limit: Option<RateLimitOwnerHandle>,
-    /// Cached enforce level: Monitor=0, MlOnly=1, Enforce=2.
     pub(super) enforce_level_cache: Arc<AtomicU8>,
-    /// Secret store for decrypting SMTP passwords etc.
     pub(super) secrets: Option<Arc<dyn SecretStorePort>>,
+    pub(super) email_sender_factory: Arc<dyn EmailSenderFactory>,
 }
 
 pub struct SoarEngineDeps {
@@ -52,6 +46,7 @@ pub struct SoarEngineDeps {
     pub rate_limit: Option<Arc<dyn RateLimitPort>>,
     pub enforce_level_cache: Arc<AtomicU8>,
     pub secrets: Option<Arc<dyn SecretStorePort>>,
+    pub email_sender_factory: Arc<dyn EmailSenderFactory>,
 }
 
 impl SoarEngine {
@@ -65,6 +60,7 @@ impl SoarEngine {
             rate_limit,
             enforce_level_cache,
             secrets,
+            email_sender_factory,
         } = deps;
         let soar_cfg = config.load();
         let rate_limit_channel = soar_cfg.soar.rate_limit_cmd_channel_capacity;
@@ -81,6 +77,7 @@ impl SoarEngine {
             rate_limit: rate_limit_owner,
             enforce_level_cache,
             secrets,
+            email_sender_factory,
         };
         engine.reload_cache()?;
         Ok(engine)
@@ -357,8 +354,24 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
+    use crate::domain::common::config::notification::SmtpConfig;
     use crate::domain::common::event::DetectionSource;
     use crate::domain::data_plane::error::EbpfError;
+    use crate::interface::email_sender::{
+        EmailSender as EmailSenderTrait, EmailSenderFactory as EmailSenderFactoryTrait,
+    };
+
+    struct NoopEmailSenderFactory;
+
+    impl EmailSenderFactoryTrait for NoopEmailSenderFactory {
+        fn build_smtp_sender(
+            &self,
+            _cfg: &SmtpConfig,
+            _secrets: Option<&dyn crate::interface::secret_store::SecretStorePort>,
+        ) -> Result<Option<Box<dyn EmailSenderTrait>>, Error> {
+            Ok(None)
+        }
+    }
 
     /// Mock AccessControlPort that records calls.
     struct MockAccessControl {
@@ -403,9 +416,7 @@ mod tests {
     fn test_engine(ac: Arc<dyn AccessControlPort>) -> SoarEngine {
         let db = test_db();
         db.seed_default_playbooks().ok();
-        // Tests expect enforce mode to be active so block_ip actions execute
         db.set_setting("enforce_mode", "enforce").ok();
-        // enforce=2
         let cache = Arc::new(AtomicU8::new(2));
         AppConfig::seed_defaults(&*db).expect("seed config defaults");
         let cfg = AppConfig::from_settings(&*db).expect("load config");
@@ -419,6 +430,7 @@ mod tests {
             rate_limit: None,
             enforce_level_cache: cache,
             secrets: None,
+            email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
         .expect("Failed to create SOAR engine")
     }
@@ -522,6 +534,7 @@ mod tests {
             rate_limit: None,
             enforce_level_cache: cache,
             secrets: None,
+            email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
         .expect("Failed to create engine");
         engine.recover_active_blocks().await.expect("Recovery should succeed");
@@ -556,6 +569,7 @@ mod tests {
             rate_limit: None,
             enforce_level_cache: cache,
             secrets: None,
+            email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
         .expect("Failed to create engine");
 
@@ -670,6 +684,7 @@ mod tests {
             rate_limit: None,
             enforce_level_cache: cache,
             secrets: None,
+            email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
         .expect("Failed to create engine");
 
@@ -745,6 +760,7 @@ mod tests {
             rate_limit: None,
             enforce_level_cache: cache,
             secrets: None,
+            email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
         .expect("Failed to create engine");
 

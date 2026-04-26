@@ -95,8 +95,8 @@ fn run_verify(db_path: &str) -> Result<(), Error> {
             process::exit(EXIT_OP_FAILED);
         }
     };
-    match db.verify_audit_log_chain() {
-        Ok(count) => {
+    match db.verify_audit_log_chain(0) {
+        Ok((count, _last_id)) => {
             log!(CliLog::VerifyOk(count));
             Ok(())
         }

@@ -15,8 +15,7 @@ pub trait AuditRepo: Send + Sync {
     /// chain for every request.
     fn list_audit_logs_by_action(&self, action: &str, limit: i64) -> Result<Vec<AuditLogEntry>, Error>;
 
-    /// Walk the full chain and verify every `row_hash` matches
-    /// `H(ts || actor || action || detail || prev_hash)`. Returns the number
-    /// of entries verified. Errors on the first broken link.
-    fn verify_audit_log_chain(&self) -> Result<usize, Error>;
+    /// Walk the chain from `after_id` onward, verifying every `row_hash`.
+    /// Pass `0` to verify the full table. Returns `(verified_count, last_id)`.
+    fn verify_audit_log_chain(&self, after_id: i64) -> Result<(usize, i64), Error>;
 }

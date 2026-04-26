@@ -8,6 +8,7 @@ pub mod filter;
 pub mod flow_trace;
 pub mod fusion;
 pub mod health;
+pub mod jwt;
 pub mod logs;
 pub mod middleware;
 pub mod ml;

@@ -1,6 +1,14 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use crate::domain::detection::ml_detection::ClipParams;
+
+static ALL_FEATURE_NAMES_OWNED: LazyLock<Vec<String>> = LazyLock::new(|| {
+    FlowFeatures::all_feature_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+});
 
 #[derive(Debug, Clone)]
 pub struct FlowFeatures {
@@ -126,8 +134,8 @@ impl FlowFeatures {
         ]
     }
 
-    pub fn all_feature_names_owned() -> Vec<String> {
-        Self::all_feature_names().iter().map(|s| s.to_string()).collect()
+    pub fn all_feature_names_owned() -> &'static [String] {
+        &ALL_FEATURE_NAMES_OWNED
     }
 
     pub fn to_csv_record(&self) -> Vec<String> {

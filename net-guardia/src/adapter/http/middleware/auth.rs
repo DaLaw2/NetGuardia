@@ -9,7 +9,7 @@ use actix_web::http::Method;
 use actix_web::{Error as ActixError, HttpMessage, HttpResponse, web};
 use macros::log;
 
-use crate::adapter::http::middleware::jwt::JwtService;
+use crate::adapter::http::jwt::JwtService;
 use crate::domain::identity::error::AuthError;
 use crate::interface::api_key::ApiKeyRepo;
 use crate::interface::app_repo::AppRepo;

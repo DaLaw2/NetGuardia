@@ -6,7 +6,7 @@ use sha2::Sha256;
 
 use super::Database;
 use crate::domain::common::error::Error;
-use crate::domain::identity::auth::{API_KEY_READ_ONLY_PERMISSIONS, API_KEY_READ_WRITE_PERMISSIONS, Claims};
+use crate::domain::identity::auth::{Claims, PermissionLevel};
 use crate::domain::identity::user::ApiKeyView;
 use crate::interface::api_key::ApiKeyRepo;
 
@@ -55,12 +55,8 @@ impl Database {
                     params![id],
                 );
 
-                // Build permissions based on permission level
-                let source = match level.as_str() {
-                    "read_write" | "full_access" => API_KEY_READ_WRITE_PERMISSIONS,
-                    _ => API_KEY_READ_ONLY_PERMISSIONS,
-                };
-                let permissions: Vec<String> = source.iter().map(|s| (*s).to_string()).collect();
+                let perm_level = PermissionLevel::from_str(&level).unwrap_or(PermissionLevel::ReadOnly);
+                let permissions: Vec<String> = perm_level.permissions().iter().map(|s| (*s).to_string()).collect();
 
                 Ok(Some(Claims {
                     sub: -id, // negative ID to distinguish from user IDs

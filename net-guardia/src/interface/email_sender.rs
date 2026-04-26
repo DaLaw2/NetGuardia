@@ -1,0 +1,15 @@
+use crate::domain::common::config::notification::SmtpConfig;
+use crate::domain::common::error::Error;
+use crate::interface::secret_store::SecretStorePort;
+
+pub trait EmailSender: Send + Sync {
+    fn send(&self, to: &str, subject: &str, html_body: &str) -> Result<(), Error>;
+}
+
+pub trait EmailSenderFactory: Send + Sync {
+    fn build_smtp_sender(
+        &self,
+        cfg: &SmtpConfig,
+        secrets: Option<&dyn SecretStorePort>,
+    ) -> Result<Option<Box<dyn EmailSender>>, Error>;
+}

@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, SocketAddr};
 
 use actix_web::{HttpResponse, Responder, Scope, web};
 use common::model::http_method::HttpMethod;
@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::adapter::http::response::ok_or_error;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
-use crate::interface::protocol_filter::ProtocolFilterPort;
+use crate::interface::protocol_filter::{IpVersion, ProtocolFilterPort};
 
 pub fn initialize() -> Scope {
     web::scope("/filter")
@@ -18,6 +18,14 @@ pub fn initialize() -> Scope {
 #[derive(Deserialize)]
 struct DnsDomainsRequest {
     domains: Vec<String>,
+}
+
+fn parse_ip_version(path: &str) -> Option<IpVersion> {
+    match path {
+        "ipv4" => Some(IpVersion::V4),
+        "ipv6" => Some(IpVersion::V6),
+        _ => None,
+    }
 }
 
 fn dns_scope() -> Scope {
@@ -57,22 +65,16 @@ async fn remove_dns_blacklist(
 
 fn http_scope() -> Scope {
     web::scope("/http")
-        .route("/ipv4", web::get().to(get_ipv4_http_service))
-        .route("/ipv6", web::get().to(get_ipv6_http_service))
-        .route("/ipv4", web::put().to(add_ipv4_http_service))
-        .route("/ipv6", web::put().to(add_ipv6_http_service))
-        .route("/ipv4", web::delete().to(remove_ipv4_http_service))
-        .route("/ipv6", web::delete().to(remove_ipv6_http_service))
+        .route("/{version}", web::get().to(get_http_service))
+        .route("/{version}", web::put().to(add_http_service))
+        .route("/{version}", web::delete().to(remove_http_service))
 }
 
 fn ssh_scope() -> Scope {
     web::scope("/ssh")
-        .route("/ipv4", web::get().to(get_ipv4_ssh_service))
-        .route("/ipv6", web::get().to(get_ipv6_ssh_service))
-        .route("/ipv4", web::put().to(add_ipv4_ssh_service))
-        .route("/ipv6", web::put().to(add_ipv6_ssh_service))
-        .route("/ipv4", web::delete().to(remove_ipv4_ssh_service))
-        .route("/ipv6", web::delete().to(remove_ipv6_ssh_service))
+        .route("/{version}", web::get().to(get_ssh_service))
+        .route("/{version}", web::put().to(add_ssh_service))
+        .route("/{version}", web::delete().to(remove_ssh_service))
         .service(ssh_whitelist_scope())
         .service(ssh_blacklist_scope())
 }
@@ -82,105 +84,77 @@ fn ssh_whitelist_scope() -> Scope {
         .route("/status", web::get().to(is_ssh_white_list_enable))
         .route("/enable", web::post().to(enable_ssh_white_list))
         .route("/disable", web::post().to(disable_ssh_white_list))
-        .route("/ipv4", web::get().to(get_ipv4_ssh_white_list))
-        .route("/ipv6", web::get().to(get_ipv6_ssh_white_list))
-        .route("/ipv4", web::put().to(add_ipv4_ssh_white_list))
-        .route("/ipv6", web::put().to(add_ipv6_ssh_white_list))
-        .route("/ipv4", web::delete().to(remove_ipv4_ssh_white_list))
-        .route("/ipv6", web::delete().to(remove_ipv6_ssh_white_list))
+        .route("/{version}", web::get().to(get_ssh_white_list))
+        .route("/{version}", web::put().to(add_ssh_white_list))
+        .route("/{version}", web::delete().to(remove_ssh_white_list))
 }
 
 fn ssh_blacklist_scope() -> Scope {
     web::scope("/blacklist")
-        .route("/ipv4", web::get().to(get_ipv4_ssh_black_list))
-        .route("/ipv6", web::get().to(get_ipv6_ssh_black_list))
-        .route("/ipv4", web::put().to(add_ipv4_ssh_black_list))
-        .route("/ipv6", web::put().to(add_ipv6_ssh_black_list))
-        .route("/ipv4", web::delete().to(remove_ipv4_ssh_black_list))
-        .route("/ipv6", web::delete().to(remove_ipv6_ssh_black_list))
+        .route("/{version}", web::get().to(get_ssh_black_list))
+        .route("/{version}", web::put().to(add_ssh_black_list))
+        .route("/{version}", web::delete().to(remove_ssh_black_list))
 }
 
-// --- HTTP service handlers ---
-
-async fn get_ipv4_http_service(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv4_http_service())
+async fn get_http_service(path: web::Path<String>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    HttpResponse::Ok().json(service.get_http_service(version))
 }
 
-async fn get_ipv6_http_service(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv6_http_service())
-}
-
-async fn add_ipv4_http_service(
-    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
+async fn add_http_service(
+    path: web::Path<String>,
+    payload: web::Json<(SocketAddr, Vec<HttpMethod>)>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
     let (addr, methods) = payload.into_inner();
-    ok_or_error(service.add_ipv4_http_service(addr, methods))
+    ok_or_error(service.add_http_service(version, addr, methods))
 }
 
-async fn add_ipv6_http_service(
-    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
+async fn remove_http_service(
+    path: web::Path<String>,
+    payload: web::Json<(SocketAddr, Vec<HttpMethod>)>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
     let (addr, methods) = payload.into_inner();
-    ok_or_error(service.add_ipv6_http_service(addr, methods))
+    ok_or_error(service.remove_http_service(version, addr, methods))
 }
 
-async fn remove_ipv4_http_service(
-    payload: web::Json<(SocketAddrV4, Vec<HttpMethod>)>,
+async fn get_ssh_service(path: web::Path<String>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    HttpResponse::Ok().json(service.get_ssh_service(version))
+}
+
+async fn add_ssh_service(
+    path: web::Path<String>,
+    payload: web::Json<SocketAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    let (addr, methods) = payload.into_inner();
-    ok_or_error(service.remove_ipv4_http_service(addr, methods))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.add_ssh_service(version, payload.into_inner()))
 }
 
-async fn remove_ipv6_http_service(
-    payload: web::Json<(SocketAddrV6, Vec<HttpMethod>)>,
+async fn remove_ssh_service(
+    path: web::Path<String>,
+    payload: web::Json<SocketAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    let (addr, methods) = payload.into_inner();
-    ok_or_error(service.remove_ipv6_http_service(addr, methods))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.remove_ssh_service(version, payload.into_inner()))
 }
-
-// --- SSH service handlers ---
-
-async fn get_ipv4_ssh_service(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv4_ssh_service())
-}
-
-async fn get_ipv6_ssh_service(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv6_ssh_service())
-}
-
-async fn add_ipv4_ssh_service(
-    ip_addr: web::Json<SocketAddrV4>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.add_ipv4_ssh_service(ip_addr.into_inner()))
-}
-
-async fn add_ipv6_ssh_service(
-    ip_addr: web::Json<SocketAddrV6>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.add_ipv6_ssh_service(ip_addr.into_inner()))
-}
-
-async fn remove_ipv4_ssh_service(
-    ip_addr: web::Json<SocketAddrV4>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.remove_ipv4_ssh_service(ip_addr.into_inner()))
-}
-
-async fn remove_ipv6_ssh_service(
-    ip_addr: web::Json<SocketAddrV6>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.remove_ipv6_ssh_service(ip_addr.into_inner()))
-}
-
-// --- SSH whitelist handlers ---
 
 async fn is_ssh_white_list_enable(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
     HttpResponse::Ok().json(service.is_ssh_white_list_enable())
@@ -194,76 +168,60 @@ async fn disable_ssh_white_list(service: web::Data<dyn ProtocolFilterPort>) -> i
     ok_or_error(service.disable_ssh_white_list())
 }
 
-async fn get_ipv4_ssh_white_list(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv4_ssh_white_list())
+async fn get_ssh_white_list(path: web::Path<String>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    HttpResponse::Ok().json(service.get_ssh_white_list(version))
 }
 
-async fn get_ipv6_ssh_white_list(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv6_ssh_white_list())
-}
-
-async fn add_ipv4_ssh_white_list(
-    ip_addr: web::Json<Ipv4Addr>,
+async fn add_ssh_white_list(
+    path: web::Path<String>,
+    payload: web::Json<IpAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    ok_or_error(service.add_ipv4_ssh_white_list(ip_addr.into_inner()))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.add_ssh_white_list(version, payload.into_inner()))
 }
 
-async fn add_ipv6_ssh_white_list(
-    ip_addr: web::Json<Ipv6Addr>,
+async fn remove_ssh_white_list(
+    path: web::Path<String>,
+    payload: web::Json<IpAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    ok_or_error(service.add_ipv6_ssh_white_list(ip_addr.into_inner()))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.remove_ssh_white_list(version, payload.into_inner()))
 }
 
-async fn remove_ipv4_ssh_white_list(
-    ip_addr: web::Json<Ipv4Addr>,
+async fn get_ssh_black_list(path: web::Path<String>, service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    HttpResponse::Ok().json(service.get_ssh_black_list(version))
+}
+
+async fn add_ssh_black_list(
+    path: web::Path<String>,
+    payload: web::Json<IpAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    ok_or_error(service.remove_ipv4_ssh_white_list(ip_addr.into_inner()))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.add_ssh_black_list(version, payload.into_inner()))
 }
 
-async fn remove_ipv6_ssh_white_list(
-    ip_addr: web::Json<Ipv6Addr>,
+async fn remove_ssh_black_list(
+    path: web::Path<String>,
+    payload: web::Json<IpAddr>,
     service: web::Data<dyn ProtocolFilterPort>,
 ) -> impl Responder {
-    ok_or_error(service.remove_ipv6_ssh_white_list(ip_addr.into_inner()))
-}
-
-// --- SSH blacklist handlers ---
-
-async fn get_ipv4_ssh_black_list(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv4_ssh_black_list())
-}
-
-async fn get_ipv6_ssh_black_list(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.get_ipv6_ssh_black_list())
-}
-
-async fn add_ipv4_ssh_black_list(
-    ip_addr: web::Json<Ipv4Addr>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.add_ipv4_ssh_black_list(ip_addr.into_inner()))
-}
-
-async fn add_ipv6_ssh_black_list(
-    ip_addr: web::Json<Ipv6Addr>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.add_ipv6_ssh_black_list(ip_addr.into_inner()))
-}
-
-async fn remove_ipv4_ssh_black_list(
-    ip_addr: web::Json<Ipv4Addr>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.remove_ipv4_ssh_black_list(ip_addr.into_inner()))
-}
-
-async fn remove_ipv6_ssh_black_list(
-    ip_addr: web::Json<Ipv6Addr>,
-    service: web::Data<dyn ProtocolFilterPort>,
-) -> impl Responder {
-    ok_or_error(service.remove_ipv6_ssh_black_list(ip_addr.into_inner()))
+    let Some(version) = parse_ip_version(&path) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid IP version"}));
+    };
+    ok_or_error(service.remove_ssh_black_list(version, payload.into_inner()))
 }

@@ -4,7 +4,9 @@ use serde::Deserialize;
 use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::core::common::config_service::ConfigService;
 use crate::core::common::enforce_mode_handler::EnforceModeHandler;
-use crate::domain::common::config::constants::PERMISSION_SYSTEM_ADMIN;
+use crate::domain::common::config::constants::{
+    ENFORCE_MODE_ENFORCE, ENFORCE_MODE_ML_ONLY, ENFORCE_MODE_MONITOR, PERMISSION_SYSTEM_ADMIN,
+};
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
 use crate::interface::app_repo::AppRepo;
@@ -47,7 +49,7 @@ async fn set_enforce_mode(
     handler: web::Data<EnforceModeHandler>,
 ) -> impl Responder {
     let mode = &body.mode;
-    if mode != "monitor" && mode != "ml_only" && mode != "enforce" {
+    if mode != ENFORCE_MODE_MONITOR && mode != ENFORCE_MODE_ML_ONLY && mode != ENFORCE_MODE_ENFORCE {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Mode must be 'monitor', 'ml_only', or 'enforce'"}));
     }

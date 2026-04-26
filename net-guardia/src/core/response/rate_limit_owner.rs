@@ -179,7 +179,7 @@ fn first_adjust(rate_limit: &dyn RateLimitPort, config: &AppConfig, factor: f64)
 
     Ok(AdjustResult {
         orig,
-        new_snapshot: orig,
+        new_snapshot: new,
     })
 }
 

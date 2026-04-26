@@ -3,19 +3,19 @@ use std::sync::Arc;
 use macros::log;
 use serde::Serialize;
 
-use crate::adapter::http::middleware::jwt::JwtService;
 use crate::domain::common::error::Error;
 use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
 use crate::domain::identity::error::AuthError;
 use crate::domain::identity::password;
 use crate::domain::identity::validation::{validate_password, validate_username};
 use crate::interface::app_repo::AppRepo;
+use crate::interface::token_minter::TokenMinter;
 
 pub const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dW5rbm93bg$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
 
 pub struct AuthService {
     db: Arc<dyn AppRepo>,
-    jwt: Arc<JwtService>,
+    jwt: Arc<dyn TokenMinter>,
 }
 
 #[derive(Serialize)]
@@ -49,7 +49,7 @@ pub enum RegisterError {
 }
 
 impl AuthService {
-    pub fn new(db: Arc<dyn AppRepo>, jwt: Arc<JwtService>) -> Self {
+    pub fn new(db: Arc<dyn AppRepo>, jwt: Arc<dyn TokenMinter>) -> Self {
         Self { db, jwt }
     }
 
@@ -137,7 +137,7 @@ impl AuthService {
 
     pub fn user_profile(&self, user_id: i64, username: &str) -> UserProfile {
         let groups_raw = self.db.list_groups_for_user(user_id).unwrap_or_default();
-        let group_names: Vec<String> = groups_raw.iter().map(|(_, name, _, _)| name.clone()).collect();
+        let group_names: Vec<String> = groups_raw.iter().map(|g| g.name.clone()).collect();
         let role = if group_names.iter().any(|n| n == GROUP_ADMIN) {
             ROLE_ADMIN.to_string()
         } else {
@@ -156,7 +156,7 @@ impl AuthService {
 
     pub fn derive_role(&self, user_id: i64) -> String {
         let groups = self.db.list_groups_for_user(user_id).unwrap_or_default();
-        if groups.iter().any(|(_, name, _, _)| name == GROUP_ADMIN) {
+        if groups.iter().any(|g| g.name == GROUP_ADMIN) {
             ROLE_ADMIN.to_string()
         } else {
             ROLE_VIEWER.to_string()

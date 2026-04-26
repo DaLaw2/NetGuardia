@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering::SeqCst;
 
 use actix_web::{HttpResponse, web};
 
-use crate::domain::common::system::readiness::ReadinessState;
+use crate::infrastructure::readiness::ReadinessState;
 
 pub async fn health_ready(ready: web::Data<Arc<AtomicBool>>, state: web::Data<ReadinessState>) -> HttpResponse {
     let is_ready = ready.load(SeqCst);

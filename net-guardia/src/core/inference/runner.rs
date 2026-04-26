@@ -176,7 +176,10 @@ impl Inference {
         let (normal_idx, c2_idx) = (*normal_idx, *c2_idx);
         let n = flows.len();
 
-        let all_ae_features: Vec<Vec<f32>> = flows.iter().map(|f| self.preprocess_ae_features(f)).collect();
+        let mut flat_ae: Vec<f32> = Vec::with_capacity(n * n_ae);
+        for f in flows {
+            flat_ae.extend(self.preprocess_ae_features(f));
+        }
 
         let mut ae_scores = Vec::with_capacity(n);
         for chunk_start in (0..n).step_by(batch_size) {
@@ -184,7 +187,7 @@ impl Inference {
             let actual = chunk_end - chunk_start;
             let ae_input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_ae), |(i, j)| {
                 if i < actual {
-                    all_ae_features[chunk_start + i][j]
+                    flat_ae[(chunk_start + i) * n_ae + j]
                 } else {
                     0.0
                 }
@@ -211,7 +214,7 @@ impl Inference {
             let cls_input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_cls), |(i, j)| {
                 if i < actual {
                     if j < n_ae {
-                        all_ae_features[chunk_start + i][j]
+                        flat_ae[(chunk_start + i) * n_ae + j]
                     } else {
                         ae_scores[chunk_start + i]
                     }
@@ -285,7 +288,7 @@ impl Inference {
                 } else {
                     String::new()
                 },
-                flow_key_raw: flow.flow_key.clone(),
+                flow_key_raw: flow.flow_key,
                 direction: flow.direction,
                 is_attack,
                 attack_type: if is_attack { Some(attack_type) } else { None },
@@ -346,7 +349,7 @@ impl Inference {
                     } else {
                         String::new()
                     },
-                    flow_key_raw: flow.flow_key.clone(),
+                    flow_key_raw: flow.flow_key,
                     direction: flow.direction,
                     is_attack,
                     attack_type: if is_attack { Some("anomaly".to_string()) } else { None },
@@ -415,7 +418,7 @@ impl Inference {
                     } else {
                         String::new()
                     },
-                    flow_key_raw: flow.flow_key.clone(),
+                    flow_key_raw: flow.flow_key,
                     direction: flow.direction,
                     is_attack,
                     attack_type: if is_attack { Some(attack_type) } else { None },

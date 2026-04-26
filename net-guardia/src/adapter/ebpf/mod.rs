@@ -21,7 +21,6 @@ use crate::adapter::ebpf::geo_block::GeoBlock;
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::ebpf::rate_limit::RateLimitConfig;
 use crate::adapter::ebpf::xsk_manager::XskManager;
-use crate::core::data_plane::dns_filter::DnsFilter;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
@@ -33,7 +32,7 @@ pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
     pub access_control: Arc<AccessControl>,
     pub protocol_filter: Arc<ProtocolFilter>,
-    pub dns_filter: Arc<DnsFilter>,
+    pub dns_query_filter: Arc<dyn DnsQueryFilter>,
     pub geo_block: Arc<GeoBlock>,
     pub rate_limit: Arc<RateLimitConfig>,
     pub drop_monitor: Arc<DropMonitor>,
@@ -46,11 +45,11 @@ impl EbpfServices {
         app_config: Arc<ArcSwap<AppConfig>>,
         ingress_ebpf: &mut Ebpf,
         egress_ebpf: &mut Ebpf,
+        dns_query_filter: Arc<dyn DnsQueryFilter>,
     ) -> Result<Self, Error> {
         let xsk_manager = XskManager::new(app_config.clone(), ingress_ebpf, egress_ebpf)?;
         let access_control = AccessControl::new(ingress_ebpf)?;
         let protocol_filter = ProtocolFilter::new(ingress_ebpf)?;
-        let dns_filter = DnsFilter::new();
         let geo_block = GeoBlock::new(ingress_ebpf, app_config.clone())?;
         let rate_limit = RateLimitConfig::new(ingress_ebpf)?;
         let drop_monitor = Arc::new(DropMonitor::new(app_config.load().observability.drop_channel_capacity));
@@ -62,7 +61,7 @@ impl EbpfServices {
             xsk_manager: Arc::new(xsk_manager),
             access_control: Arc::new(access_control),
             protocol_filter: Arc::new(protocol_filter),
-            dns_filter: Arc::new(dns_filter),
+            dns_query_filter,
             geo_block: Arc::new(geo_block),
             rate_limit: Arc::new(rate_limit),
             drop_monitor,
@@ -71,15 +70,12 @@ impl EbpfServices {
         })
     }
 
-    /// Build an EbpfServices with every eBPF-backed subservice in the
-    /// "unavailable" state. Used when eBPF failed to load at startup.
-    /// Queries return empty results; mutating calls return `EbpfError::NotLoaded`.
-    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
+    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>, dns_query_filter: Arc<dyn DnsQueryFilter>) -> Self {
         Self {
             xsk_manager: Arc::new(XskManager::unavailable(app_config.clone())),
             access_control: Arc::new(AccessControl::unavailable()),
             protocol_filter: Arc::new(ProtocolFilter::unavailable()),
-            dns_filter: Arc::new(DnsFilter::new()),
+            dns_query_filter,
             geo_block: Arc::new(GeoBlock::unavailable(app_config.clone())),
             rate_limit: Arc::new(RateLimitConfig::unavailable()),
             drop_monitor: Arc::new(DropMonitor::new(app_config.load().observability.drop_channel_capacity)),
@@ -90,7 +86,7 @@ impl EbpfServices {
 
     pub async fn run(self: Arc<Self>, sink_factory: Arc<dyn PacketSinkFactory>) -> Result<(), Error> {
         let xsk_manager = self.xsk_manager.clone();
-        let dns: Arc<dyn DnsQueryFilter> = self.dns_filter.clone();
+        let dns = self.dns_query_filter.clone();
         xsk_manager.run(
             Some(sink_factory),
             Some(dns),

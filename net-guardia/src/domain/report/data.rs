@@ -36,6 +36,18 @@ pub struct BlockedIpItem {
     pub country: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreatBreakdownEntry {
+    pub threat_type: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopIpEntry {
+    pub ip: String,
+    pub count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoItem {
     pub country: String,

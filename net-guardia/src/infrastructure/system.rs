@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tokio::time::interval;
 
 use crate::adapter::ebpf::EbpfServices;
-use crate::adapter::http::middleware::jwt::JwtService;
+use crate::adapter::http::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::core::common::config_service::ConfigService;
 use crate::core::common::enforce_mode_handler::EnforceModeHandler;
@@ -28,6 +28,7 @@ use crate::core::data_plane::rate_limit_service::RateLimitService;
 use crate::core::detection::beaconing::BeaconingDetector;
 use crate::core::detection::orchestrator::DetectionOrchestrator;
 use crate::core::detection::orchestrator::bridge_ml_to_detection;
+use crate::core::identity::auth_service::AuthService;
 use crate::core::inference::drift_detector::{DriftDetectorHandle, run_drift_monitor};
 use crate::core::inference::model_watcher::ModelWatcher;
 use crate::core::reporting::email_scheduler::ReportScheduler;
@@ -44,7 +45,6 @@ use crate::domain::common::event::{DetectionEvent, DriftDetectedEvent, ThreatDet
 use crate::domain::common::log::system::SystemLog;
 use crate::domain::common::system::health::EbpfFailStage;
 use crate::domain::common::system::health::EbpfHealth;
-use crate::domain::common::system::readiness::ReadinessState;
 use crate::domain::detection::log::MLLog;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::infrastructure::audit_logger::AuditLogger;
@@ -54,6 +54,7 @@ use crate::infrastructure::http_server::{self, ForceHttpsFlag, HttpServerParams,
 use crate::infrastructure::inference_runtime::InferenceRuntime;
 use crate::infrastructure::log_buffer::LogBuffer;
 use crate::infrastructure::logger::Logger;
+use crate::infrastructure::readiness::ReadinessState;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
@@ -103,6 +104,7 @@ pub struct System {
     pub drift_detector: DriftDetectorHandle,
 
     pub jwt_service: Arc<JwtService>,
+    pub auth_service: Arc<AuthService>,
     pub enforce_handler: Arc<EnforceModeHandler>,
 
     pub acl_service: Arc<AclService>,
@@ -148,6 +150,7 @@ impl System {
             drift_detector: state.drift_detector,
 
             jwt_service: state.jwt_service,
+            auth_service: state.auth_service,
             enforce_handler: state.enforce_handler,
 
             acl_service: state.acl_service,
@@ -296,10 +299,11 @@ impl System {
         let audit_logger = Arc::new(AuditLogger::new(self.database.clone() as Arc<dyn AuditRepo>));
         audit_logger.start(self.audit_tx.subscribe(), self.drift_tx.subscribe());
 
+        let health_query: Arc<dyn crate::interface::health_query::HealthQuery> = self.health.clone();
         let stats_aggregator = StatsAggregator::new(
             self.database.clone() as Arc<dyn StatsRepo>,
             self.database.clone() as Arc<dyn SettingRepo + Send + Sync>,
-            self.health.clone(),
+            health_query,
         );
         stats_aggregator.start();
 
@@ -347,6 +351,7 @@ impl System {
             flow_statistics: self.flow_statistics.clone(),
 
             jwt_service: self.jwt_service.clone(),
+            auth_service: self.auth_service.clone(),
             enforce_handler: self.enforce_handler.clone(),
 
             acl_service: self.acl_service.clone(),

@@ -3,7 +3,7 @@ use crate::interface::api_key::ApiKeyRepo;
 use crate::interface::audit::AuditRepo;
 use crate::interface::db_admin::DbAdminRepo;
 use crate::interface::enforcement::EnforcementRepo;
-use crate::interface::identity::IdentityRepo;
+use crate::interface::identity::{LoginAttemptRepo, UserGroupRepo, UserRepo};
 use crate::interface::setting::SettingRepo;
 use crate::interface::soar::SoarRepo;
 use crate::interface::stats::StatsRepo;
@@ -23,7 +23,9 @@ pub trait AppRepo:
     + AuditRepo
     + DbAdminRepo
     + EnforcementRepo
-    + IdentityRepo
+    + UserRepo
+    + UserGroupRepo
+    + LoginAttemptRepo
     + SettingRepo
     + SoarRepo
     + StatsRepo
@@ -38,7 +40,9 @@ impl<T> AppRepo for T where
         + AuditRepo
         + DbAdminRepo
         + EnforcementRepo
-        + IdentityRepo
+        + UserRepo
+        + UserGroupRepo
+        + LoginAttemptRepo
         + SettingRepo
         + SoarRepo
         + StatsRepo

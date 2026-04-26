@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::domain::common::config::constants::enforce_mode_to_u8;
+use crate::domain::common::config::constants::{ENFORCE_MODE_MONITOR, enforce_mode_to_u8};
 use crate::domain::common::error::Error;
 use crate::domain::common::event::AuditEvent;
 use crate::domain::common::log::system::SystemLog;
@@ -45,7 +45,7 @@ impl EnforceModeHandler {
     pub fn get_mode(&self) -> Result<String, Error> {
         match self.db.get_setting("enforce_mode")? {
             Some(mode) => Ok(mode),
-            None => Ok("monitor".to_string()),
+            None => Ok(ENFORCE_MODE_MONITOR.to_string()),
         }
     }
 }

@@ -103,7 +103,7 @@ impl InferenceRuntime {
 
         let traffic_logger = if config.ml.traffic_logging_mode {
             let csv_path = config.ml.traffic_log_csv_path.clone();
-            let mut header = FlowFeatures::all_feature_names_owned();
+            let mut header = FlowFeatures::all_feature_names_owned().to_vec();
             header.push("Label".to_string());
             let base_path = PathBuf::from(&csv_path);
             let policy = RotationPolicy {

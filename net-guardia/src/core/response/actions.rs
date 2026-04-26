@@ -17,7 +17,6 @@ use tokio::net::lookup_host;
 use tokio::task::spawn_blocking;
 use url::Url;
 
-use crate::adapter::notification::smtp::SmtpClient;
 use crate::core::response::engine::SoarEngine;
 use crate::domain::common::error::Error;
 use crate::domain::common::event::ThreatDetectedEvent;
@@ -297,7 +296,10 @@ impl SoarEngine {
     /// Send email alert.
     async fn action_send_email(&self, event: &ThreatDetectedEvent) -> Result<String, Error> {
         let smtp_cfg = self.matcher.config.load().notification.smtp.clone();
-        match SmtpClient::from_config(&smtp_cfg, self.secrets.as_deref())? {
+        match self
+            .email_sender_factory
+            .build_smtp_sender(&smtp_cfg, self.secrets.as_deref())?
+        {
             Some(smtp) => {
                 let subject = format!(
                     "[NetGuardia] Threat Alert: {} from {}",

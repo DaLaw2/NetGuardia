@@ -1,6 +1,7 @@
 use crate::domain::common::error::Error;
 use crate::domain::response::playbook_data::{
-    ActiveBlockView, CreatePlaybookInput, ExecutionView, PendingUnblock, PlaybookView, UpdatePlaybookInput,
+    ActionInput, ActiveBlockView, CreateConditionInput, CreatePlaybookInput, ExecutionView, PendingUnblock,
+    PlaybookView, UpdatePlaybookInput,
 };
 
 /// Threat Response BC — SOAR aggregate repository.
@@ -46,23 +47,18 @@ pub trait SoarRepo: Send + Sync {
     /// All rows (playbook + conditions + actions) commit together; any error
     /// rolls back the whole insert. Returns the new playbook id.
     ///
-    /// `actions` tuples: `(action_order, action_type, params_json)`.
-    /// `conditions` tuples: `(condition_type, operator, value, value2)`.
     fn insert_playbook_atomic(
         &self,
         input: &CreatePlaybookInput,
-        actions: &[(i64, String, String)],
-        conditions: &[(String, String, String, Option<String>)],
+        actions: &[ActionInput],
+        conditions: &[CreateConditionInput],
     ) -> Result<i64, Error>;
 
-    /// Atomically update a playbook's metadata and replace its conditions
-    /// and actions. Returns `Ok(false)` if no playbook with that id exists;
-    /// otherwise `Ok(true)` after the whole update commits.
     fn update_playbook_atomic(
         &self,
         id: i64,
         row: &UpdatePlaybookInput,
-        actions: &[(i64, String, String)],
-        conditions: &[(String, String, String, Option<String>)],
+        actions: &[ActionInput],
+        conditions: &[CreateConditionInput],
     ) -> Result<bool, Error>;
 }

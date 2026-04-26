@@ -215,7 +215,7 @@ mod tests {
         // acl_rules has the matching row
         let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].3, "10.0.0.99");
+        assert_eq!(rules[0].ip_address, "10.0.0.99");
     }
 
     /// Verifies `commit_soar_unblock_to_db` removes the ACL row and marks

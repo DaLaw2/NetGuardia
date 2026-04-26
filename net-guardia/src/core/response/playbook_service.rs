@@ -4,7 +4,7 @@ use crate::core::response::engine::SoarEngine;
 use crate::domain::common::error::Error;
 use crate::domain::response::error::SoarError;
 use crate::domain::response::playbook_data::{
-    ActiveBlockView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
+    ActionInput, ActiveBlockView, CreatePlaybookInput, ExecutionView, PlaybookView, UpdatePlaybookInput,
 };
 use crate::interface::access_control::AccessControlPort;
 use crate::interface::app_repo::AppRepo;
@@ -33,25 +33,17 @@ impl PlaybookService {
 
     pub fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
         // Single atomic insert (playbook + actions + conditions).
-        let actions: Vec<(i64, String, String)> = input
+        let actions: Vec<ActionInput> = input
             .actions
             .iter()
             .enumerate()
-            .map(|(i, (ty, params))| ((i + 1) as i64, ty.clone(), params.clone()))
-            .collect();
-        let conditions: Vec<(String, String, String, Option<String>)> = input
-            .conditions
-            .iter()
-            .map(|c| {
-                (
-                    c.condition_type.clone(),
-                    c.operator.clone(),
-                    c.value.clone(),
-                    c.value2.clone(),
-                )
+            .map(|(i, (ty, params))| ActionInput {
+                action_order: (i + 1) as i64,
+                action_type: ty.clone(),
+                params_json: params.clone(),
             })
             .collect();
-        let playbook_id = self.db.insert_playbook_atomic(input, &actions, &conditions)?;
+        let playbook_id = self.db.insert_playbook_atomic(input, &actions, &input.conditions)?;
         self.soar_engine.reload_cache()?;
         Ok(playbook_id)
     }
@@ -66,25 +58,17 @@ impl PlaybookService {
             cooldown_secs: input.cooldown_secs,
         };
         // Single atomic update (playbook metadata + replace actions/conditions).
-        let actions: Vec<(i64, String, String)> = input
+        let actions: Vec<ActionInput> = input
             .actions
             .iter()
             .enumerate()
-            .map(|(i, (ty, params))| ((i + 1) as i64, ty.clone(), params.clone()))
-            .collect();
-        let conditions: Vec<(String, String, String, Option<String>)> = input
-            .conditions
-            .iter()
-            .map(|c| {
-                (
-                    c.condition_type.clone(),
-                    c.operator.clone(),
-                    c.value.clone(),
-                    c.value2.clone(),
-                )
+            .map(|(i, (ty, params))| ActionInput {
+                action_order: (i + 1) as i64,
+                action_type: ty.clone(),
+                params_json: params.clone(),
             })
             .collect();
-        let updated = self.db.update_playbook_atomic(id, &row, &actions, &conditions)?;
+        let updated = self.db.update_playbook_atomic(id, &row, &actions, &input.conditions)?;
         if !updated {
             return Ok(false);
         }

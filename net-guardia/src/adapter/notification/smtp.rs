@@ -5,6 +5,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use crate::domain::common::config::notification::SmtpConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::notification::NotificationError;
+use crate::interface::email_sender::{EmailSender, EmailSenderFactory};
 use crate::interface::secret_store::SecretStorePort;
 
 pub struct SmtpClient {
@@ -82,5 +83,23 @@ impl SmtpClient {
         mailer.send(&email).map_err(NotificationError::SmtpSendFailed)?;
 
         Ok(())
+    }
+}
+
+impl EmailSender for SmtpClient {
+    fn send(&self, to: &str, subject: &str, html_body: &str) -> Result<(), Error> {
+        self.send(to, subject, html_body)
+    }
+}
+
+pub struct SmtpClientFactory;
+
+impl EmailSenderFactory for SmtpClientFactory {
+    fn build_smtp_sender(
+        &self,
+        cfg: &SmtpConfig,
+        secrets: Option<&dyn SecretStorePort>,
+    ) -> Result<Option<Box<dyn EmailSender>>, Error> {
+        SmtpClient::from_config(cfg, secrets).map(|opt| opt.map(|c| Box::new(c) as Box<dyn EmailSender>))
     }
 }

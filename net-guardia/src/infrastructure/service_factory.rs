@@ -16,7 +16,8 @@ use tokio::sync::broadcast;
 
 use crate::adapter::access_control::AccessControlAdapter;
 use crate::adapter::ebpf::EbpfServices;
-use crate::adapter::http::middleware::jwt::JwtService;
+use crate::adapter::http::jwt::JwtService;
+use crate::adapter::notification::smtp::SmtpClientFactory;
 use crate::adapter::persistence::Database;
 use crate::adapter::telegram::{TelegramAdapter, TelegramAdapterFactory};
 use crate::core::common::config_service::ConfigService;
@@ -24,15 +25,17 @@ use crate::core::common::enforce_mode_handler::EnforceModeHandler;
 use crate::core::common::notification_service::NotificationService;
 use crate::core::common::statistics::FlowStatistics;
 use crate::core::data_plane::acl_service::AclService;
+use crate::core::data_plane::dns_filter::DnsFilter;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
 use crate::core::data_plane::rate_limit_service::RateLimitService;
+use crate::core::identity::auth_service::AuthService;
 use crate::core::inference::drift_detector::DriftDetectorHandle;
 use crate::core::reporting::email_scheduler::ReportScheduler;
 use crate::core::response::engine::{SoarEngine, SoarEngineDeps};
 use crate::core::response::playbook_service::PlaybookService;
 use crate::core::response::scheduler::TtlScheduler;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::{EVENT_CHANNEL_CAPACITY, enforce_mode_to_u8};
+use crate::domain::common::config::constants::{ENFORCE_MODE_MONITOR, EVENT_CHANNEL_CAPACITY, enforce_mode_to_u8};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
@@ -57,6 +60,8 @@ use crate::interface::access_control::AccessControlPort;
 use crate::interface::access_control_admin::AccessControlAdminPort;
 use crate::interface::app_repo::AppRepo;
 use crate::interface::dns_filter_api::DnsFilterPort;
+use crate::interface::dns_query_filter::DnsQueryFilter;
+use crate::interface::email_sender::EmailSenderFactory;
 use crate::interface::geo_block_api::GeoBlockPort;
 use crate::interface::geo_lookup::GeoLookup;
 use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
@@ -83,6 +88,7 @@ pub struct AppState {
     pub drift_detector: DriftDetectorHandle,
 
     pub jwt_service: Arc<JwtService>,
+    pub auth_service: Arc<AuthService>,
     pub enforce_handler: Arc<EnforceModeHandler>,
 
     pub acl_service: Arc<AclService>,
@@ -160,30 +166,34 @@ impl ServiceFactory {
         // rest of the system (HTTP API, SOAR, ML engine, auth) is built
         // regardless so the operator can still reach the frontend and see
         // the reason.
-        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) = match Self::try_build_ebpf(&app_config)
-        {
-            Ok(build) => (
-                Some(build.ingress),
-                Some(build.egress),
-                Some(build.program_array),
-                Arc::new(build.services),
-            ),
-            Err((stage, err)) => {
-                let health = ebpf_preflight::classify(stage, &err, None);
-                log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
-                ebpf_health.store(Arc::new(health));
-                (
-                    None,
-                    None,
-                    None,
-                    Arc::new(EbpfServices::unavailable(app_config.clone())),
-                )
-            }
-        };
+        let dns_filter = Arc::new(DnsFilter::new());
+        let dns_query_filter: Arc<dyn DnsQueryFilter> = dns_filter.clone();
+        let dns_filter_port: Arc<dyn DnsFilterPort> = dns_filter;
+
+        let (ingress_ebpf, egress_ebpf, ingress_program_array, ebpf_services) =
+            match Self::try_build_ebpf(&app_config, dns_query_filter.clone()) {
+                Ok(build) => (
+                    Some(build.ingress),
+                    Some(build.egress),
+                    Some(build.program_array),
+                    Arc::new(build.services),
+                ),
+                Err((stage, err)) => {
+                    let health = ebpf_preflight::classify(stage, &err, None);
+                    log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
+                    ebpf_health.store(Arc::new(health));
+                    (
+                        None,
+                        None,
+                        None,
+                        Arc::new(EbpfServices::unavailable(app_config.clone(), dns_query_filter)),
+                    )
+                }
+            };
 
         // Ensure enforce_mode setting exists (default: monitor)
         if db.get_setting("enforce_mode")?.is_none() {
-            db.set_setting("enforce_mode", "monitor")?;
+            db.set_setting("enforce_mode", ENFORCE_MODE_MONITOR)?;
         }
 
         let secret_store = Arc::new(SecretStore::new(db.clone()));
@@ -193,6 +203,8 @@ impl ServiceFactory {
             &secret_store_port,
             app_config.load().http_server.jwt_expiry_hours,
         )?);
+
+        let auth_service = Arc::new(AuthService::new(db.clone() as Arc<dyn AppRepo>, jwt_service.clone()));
 
         // Initialize ML drift detector from inference config baselines
         let baselines = FeatureBaselines::from_inference_config(&inference_config);
@@ -244,7 +256,7 @@ impl ServiceFactory {
         (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;
 
         // Restore persisted state from database
-        Self::restore_dns_blacklist(&db, &ebpf_services);
+        Self::restore_dns_blacklist(&db, dns_filter_port.as_ref());
         Self::restore_geo_countries(&db, &ebpf_services);
         Self::restore_rate_limits(&db, &ebpf_services);
         Self::restore_acl_rules(&db, &ebpf_services).await;
@@ -278,6 +290,8 @@ impl ServiceFactory {
         let access_control_port: Arc<dyn AccessControlPort> =
             Arc::new(AccessControlAdapter::new(ebpf_services.access_control.clone()));
 
+        let email_sender_factory: Arc<dyn EmailSenderFactory> = Arc::new(SmtpClientFactory);
+
         // Create SOAR engine
         let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
         let soar_engine = Arc::new(SoarEngine::new(SoarEngineDeps {
@@ -289,6 +303,7 @@ impl ServiceFactory {
             rate_limit: Some(rate_limit_port.clone()),
             enforce_level_cache,
             secrets: Some(secret_store_port.clone()),
+            email_sender_factory: email_sender_factory.clone(),
         })?);
 
         // Create TTL scheduler
@@ -299,13 +314,13 @@ impl ServiceFactory {
             db.clone() as Arc<dyn SettingRepo + Send + Sync>,
             app_config.clone(),
             Some(secret_store_port.clone()),
+            email_sender_factory.clone(),
         );
 
         // Create domain services (Phase 2B) — upcast concrete eBPF services to
         // their port-layer traits so the core services see only abstract ports.
         let access_control_admin: Arc<dyn AccessControlAdminPort> = ebpf_services.access_control.clone();
         let geo_block_port: Arc<dyn GeoBlockPort> = ebpf_services.geo_block.clone();
-        let dns_filter_port: Arc<dyn DnsFilterPort> = ebpf_services.dns_filter.clone();
         let acl_service = Arc::new(AclService::new(
             db.clone() as Arc<dyn AppRepo>,
             access_control_admin,
@@ -336,6 +351,7 @@ impl ServiceFactory {
             app_config.clone(),
             secret_store_port,
             notifier_factory,
+            email_sender_factory,
         ));
 
         let suricata_manager = SuricataManager::new(app_config.clone());
@@ -358,6 +374,7 @@ impl ServiceFactory {
             drift_detector,
 
             jwt_service,
+            auth_service,
             enforce_handler,
 
             acl_service,
@@ -384,7 +401,10 @@ impl ServiceFactory {
     /// ingress pipeline, write queue counts, and hand out map handles to the
     /// services. Returns the original stage on the first failure so the
     /// classifier can render targeted diagnostics.
-    fn try_build_ebpf(app_config: &Arc<ArcSwap<AppConfig>>) -> Result<EbpfBuild, (EbpfFailStage, Error)> {
+    fn try_build_ebpf(
+        app_config: &Arc<ArcSwap<AppConfig>>,
+        dns_query_filter: Arc<dyn DnsQueryFilter>,
+    ) -> Result<EbpfBuild, (EbpfFailStage, Error)> {
         let mut ingress = Self::load_ebpf("ingress").map_err(|e| (EbpfFailStage::Load, e))?;
         let mut egress = Self::load_ebpf("egress").map_err(|e| (EbpfFailStage::Load, e))?;
 
@@ -397,7 +417,7 @@ impl ServiceFactory {
         Self::write_num_queues(&mut ingress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
         Self::write_num_queues(&mut egress, num_queues).map_err(|e| (EbpfFailStage::PipelineSetup, e))?;
 
-        let services = EbpfServices::new(app_config.clone(), &mut ingress, &mut egress)
+        let services = EbpfServices::new(app_config.clone(), &mut ingress, &mut egress, dns_query_filter)
             .map_err(|e| (EbpfFailStage::MapsBind, e))?;
 
         Ok(EbpfBuild {
@@ -547,10 +567,10 @@ impl ServiceFactory {
 
     // --- State restoration helpers ---
 
-    fn restore_dns_blacklist(db: &Database, ebpf_services: &EbpfServices) {
+    fn restore_dns_blacklist(db: &Database, dns_filter_port: &dyn DnsFilterPort) {
         if let Ok(domains) = db.load_dns_domains() {
             for domain in &domains {
-                if let Err(e) = ebpf_services.dns_filter.add_domain(domain) {
+                if let Err(e) = dns_filter_port.add_domain(domain) {
                     log!(SystemLog::DnsRestoreFailed(domain.clone(), e.to_string()));
                 }
             }

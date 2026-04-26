@@ -7,8 +7,8 @@ use super::Database;
 use crate::domain::common::error::Error;
 use crate::domain::response::defaults::DEFAULT_PLAYBOOKS;
 use crate::domain::response::playbook_data::{
-    ActionView, ActiveBlockView, ConditionView, CreatePlaybookInput, ExecutionView, PendingUnblock, PlaybookView,
-    UpdatePlaybookInput,
+    ActionInput, ActionView, ActiveBlockView, ConditionView, CreateConditionInput, CreatePlaybookInput, ExecutionView,
+    PendingUnblock, PlaybookView, UpdatePlaybookInput,
 };
 use crate::interface::soar::SoarRepo;
 
@@ -354,8 +354,8 @@ impl SoarRepo for Database {
     fn insert_playbook_atomic(
         &self,
         input: &CreatePlaybookInput,
-        actions: &[(i64, String, String)],
-        conditions: &[(String, String, String, Option<String>)],
+        actions: &[ActionInput],
+        conditions: &[CreateConditionInput],
     ) -> Result<i64, Error> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -364,16 +364,16 @@ impl SoarRepo for Database {
             params![input.name, input.trigger_event, input.condition_threshold, input.condition_count, input.condition_window_secs, input.cooldown_secs],
         )?;
         let playbook_id = tx.last_insert_rowid();
-        for (action_order, action_type, params_json) in actions {
+        for a in actions {
             tx.execute(
                 "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
-                params![playbook_id, action_order, action_type, params_json],
+                params![playbook_id, a.action_order, a.action_type, a.params_json],
             )?;
         }
-        for (condition_type, operator, value, value2) in conditions {
+        for c in conditions {
             tx.execute(
                 "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![playbook_id, condition_type, operator, value, value2.as_deref()],
+                params![playbook_id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
             )?;
         }
         tx.commit()?;
@@ -384,8 +384,8 @@ impl SoarRepo for Database {
         &self,
         id: i64,
         row: &UpdatePlaybookInput,
-        actions: &[(i64, String, String)],
-        conditions: &[(String, String, String, Option<String>)],
+        actions: &[ActionInput],
+        conditions: &[CreateConditionInput],
     ) -> Result<bool, Error> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -408,16 +408,16 @@ impl SoarRepo for Database {
         }
         tx.execute("DELETE FROM playbook_actions WHERE playbook_id = ?1", params![id])?;
         tx.execute("DELETE FROM playbook_conditions WHERE playbook_id = ?1", params![id])?;
-        for (action_order, action_type, params_json) in actions {
+        for a in actions {
             tx.execute(
                 "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
-                params![id, action_order, action_type, params_json],
+                params![id, a.action_order, a.action_type, a.params_json],
             )?;
         }
-        for (condition_type, operator, value, value2) in conditions {
+        for c in conditions {
             tx.execute(
                 "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, condition_type, operator, value, value2.as_deref()],
+                params![id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
             )?;
         }
         tx.commit()?;
@@ -436,7 +436,7 @@ mod tests {
         use crate::interface::soar::SoarRepo;
 
         let db = test_db();
-        use crate::domain::response::playbook_data::CreatePlaybookInput;
+        use crate::domain::response::playbook_data::{ActionInput, CreateConditionInput, CreatePlaybookInput};
 
         let input = CreatePlaybookInput {
             name: "atom_pb".to_string(),
@@ -448,8 +448,17 @@ mod tests {
             actions: vec![("block_ip".to_string(), "{}".to_string())],
             conditions: vec![],
         };
-        let actions = vec![(1i64, "block_ip".to_string(), "{}".to_string())];
-        let conditions = vec![("threshold".to_string(), ">=".to_string(), "0.8".to_string(), None)];
+        let actions = vec![ActionInput {
+            action_order: 1,
+            action_type: "block_ip".to_string(),
+            params_json: "{}".to_string(),
+        }];
+        let conditions = vec![CreateConditionInput::new(
+            "threshold".to_string(),
+            Some(">=".to_string()),
+            "0.8".to_string(),
+            None,
+        )];
         let id = db.insert_playbook_atomic(&input, &actions, &conditions).unwrap();
         assert!(id > 0);
         let loaded = db.list_playbooks().unwrap();

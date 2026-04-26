@@ -91,17 +91,33 @@ impl Database {
         Ok(rows)
     }
 
-    /// Walk the entire audit_log in id order and verify the hash chain.
-    /// Returns `Ok(count)` on success; returns `Err` at the first mismatch,
-    /// naming the offending row id and the kind of mismatch.
-    pub fn verify_audit_log_chain(&self) -> Result<usize, Error> {
+    /// Walk audit_log rows in id order, verifying the hash chain.
+    /// When `after_id` is 0 the entire table is checked; otherwise only
+    /// rows with `id > after_id` are verified (the prev_hash of the first
+    /// row is validated against the stored row_hash of `after_id`).
+    /// Returns `Ok((verified_count, last_id))` on success.
+    pub fn verify_audit_log_chain(&self, after_id: i64) -> Result<(usize, i64), Error> {
         let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT id, ts, actor, action, detail, prev_hash, row_hash FROM audit_log ORDER BY id ASC")?;
-        let mut rows = stmt.query([])?;
 
-        let mut expected_prev = String::new();
+        let mut expected_prev = if after_id > 0 {
+            conn.query_row(
+                "SELECT row_hash FROM audit_log WHERE id = ?1",
+                params![after_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, actor, action, detail, prev_hash, row_hash \
+             FROM audit_log WHERE id > ?1 ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query(params![after_id])?;
+
         let mut count = 0usize;
+        let mut last_id = after_id;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
             let ts: String = row.get(1)?;
@@ -119,9 +135,10 @@ impl Database {
                 return Err(DatabaseError::AuditRowHashMismatch(id, computed, row_hash).into());
             }
             expected_prev = row_hash;
+            last_id = id;
             count += 1;
         }
-        Ok(count)
+        Ok((count, last_id))
     }
 }
 
@@ -134,7 +151,7 @@ impl AuditRepo for Database {
         self.list_audit_logs_by_action(action, limit)
     }
 
-    fn verify_audit_log_chain(&self) -> Result<usize, Error> {
-        self.verify_audit_log_chain()
+    fn verify_audit_log_chain(&self, after_id: i64) -> Result<(usize, i64), Error> {
+        self.verify_audit_log_chain(after_id)
     }
 }

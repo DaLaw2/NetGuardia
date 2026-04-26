@@ -1,7 +1,7 @@
 use std::mem;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
@@ -10,8 +10,37 @@ use common::model::drop_event::DropEvent as RawDropEvent;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::domain::data_plane::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
+use crate::domain::data_plane::drop_event::{DropCounters, DropEventMessage};
 use crate::interface::drop_stats::DropStatsPort;
+
+#[derive(Default)]
+pub struct DropCountersAtomic {
+    acl_blacklist: AtomicU64,
+    rate_limit_pkt: AtomicU64,
+    rate_limit_syn: AtomicU64,
+    rate_limit_udp: AtomicU64,
+    rate_limit_dns: AtomicU64,
+    protocol_filter: AtomicU64,
+    dns_blacklist: AtomicU64,
+    geo_block: AtomicU64,
+    total: AtomicU64,
+}
+
+impl DropCountersAtomic {
+    pub fn snapshot(&self) -> DropCounters {
+        DropCounters {
+            acl_blacklist: self.acl_blacklist.load(Ordering::Relaxed),
+            rate_limit_pkt: self.rate_limit_pkt.load(Ordering::Relaxed),
+            rate_limit_syn: self.rate_limit_syn.load(Ordering::Relaxed),
+            rate_limit_udp: self.rate_limit_udp.load(Ordering::Relaxed),
+            rate_limit_dns: self.rate_limit_dns.load(Ordering::Relaxed),
+            protocol_filter: self.protocol_filter.load(Ordering::Relaxed),
+            dns_blacklist: self.dns_blacklist.load(Ordering::Relaxed),
+            geo_block: self.geo_block.load(Ordering::Relaxed),
+            total: self.total.load(Ordering::Relaxed),
+        }
+    }
+}
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,
@@ -31,12 +60,7 @@ impl DropMonitor {
         self.broadcast_tx.subscribe()
     }
 
-    /// Record a userspace drop decision (XSK worker's DNS filter) by the
-    /// per-reason counter. Callers at this layer haven't parsed src/dst yet,
-    /// so no broadcast event is emitted — `/api/stats/drops` stays correct,
-    /// `/ws/drops` simply does not surface the individual packet. Parse the
-    /// packet upstream if you need a structured event.
-    fn bucket_for(&self, reason: u8) -> Option<&std::sync::atomic::AtomicU64> {
+    fn bucket_for(&self, reason: u8) -> Option<&AtomicU64> {
         match reason {
             DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
             DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
@@ -66,7 +90,6 @@ impl DropMonitor {
 
         let reason_str = reason_to_str(raw.reason);
 
-        // Format IPs based on version
         let (src_ip, dst_ip) = format_ips(raw);
 
         let msg = DropEventMessage {
@@ -104,7 +127,6 @@ fn format_ips(raw: &RawDropEvent) -> (String, String) {
             (src, dst)
         }
         _ => {
-            // IPv6 - format as hex
             let src = format_ipv6(&raw.src_ip);
             let dst = format_ipv6(&raw.dst_ip);
             (src, dst)

@@ -1,3 +1,4 @@
+use crate::domain::common::event::ThreatDetectedEvent;
 use crate::domain::response::condition::PlaybookCondition;
 
 /// In-memory playbook representation.
@@ -10,6 +11,12 @@ pub struct Playbook {
     pub cooldown_secs: i64,
     pub actions: Vec<PlaybookAction>,
     pub conditions: Vec<PlaybookCondition>,
+}
+
+impl Playbook {
+    pub fn matches_trigger(&self, event: &ThreatDetectedEvent) -> bool {
+        self.enabled && self.trigger_event == event.attack_type
+    }
 }
 
 #[derive(Debug, Clone)]

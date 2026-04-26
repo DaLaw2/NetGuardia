@@ -11,7 +11,7 @@ use sha2::Sha256;
 
 use crate::adapter::persistence::Database;
 use crate::domain::common::error::Error;
-use crate::domain::common::error::crypto::CryptoError;
+use crate::domain::common::error::crypto::{CryptoError, EnvelopeField};
 use crate::domain::common::log::crypto::CryptoLog;
 use crate::interface::secret_store::SecretStorePort;
 use crate::interface::setting::SettingRepo;
@@ -85,7 +85,7 @@ impl SecretStore {
         let ct_b64 = env
             .get("ct")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| CryptoError::MissingEnvelopeField("ct"))?;
+            .ok_or_else(|| CryptoError::MissingEnvelopeField(EnvelopeField::Ciphertext))?;
 
         match alg {
             "none" => {
@@ -101,7 +101,7 @@ impl SecretStore {
                 let nonce_b64 = env
                     .get("nonce")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| CryptoError::MissingEnvelopeField("nonce"))?;
+                    .ok_or_else(|| CryptoError::MissingEnvelopeField(EnvelopeField::Nonce))?;
 
                 let nonce_bytes = B64.decode(nonce_b64).map_err(CryptoError::DecryptionFailed)?;
                 let nonce = Nonce::from_exact_iter(nonce_bytes).ok_or(CryptoError::InvalidNonceLength)?;

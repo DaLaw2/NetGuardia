@@ -3,10 +3,10 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde_json::Value;
 
-use crate::adapter::notification::smtp::SmtpClient;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
+use crate::interface::email_sender::EmailSenderFactory;
 use crate::interface::notification::AlertNotifierFactory;
 use crate::interface::secret_store::SecretStorePort;
 use crate::interface::setting::SettingRepo;
@@ -18,6 +18,7 @@ pub struct NotificationService {
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Arc<dyn SecretStorePort>,
     alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
+    email_sender_factory: Arc<dyn EmailSenderFactory>,
 }
 
 impl NotificationService {
@@ -26,12 +27,14 @@ impl NotificationService {
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Arc<dyn SecretStorePort>,
         alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
+        email_sender_factory: Arc<dyn EmailSenderFactory>,
     ) -> Self {
         Self {
             notif,
             config,
             secrets,
             alert_notifier_factory,
+            email_sender_factory,
         }
     }
 
@@ -88,12 +91,15 @@ impl NotificationService {
     /// Send a test email using current SMTP config.
     pub fn test_smtp(&self) -> Result<String, Error> {
         let smtp_cfg = self.config.load().notification.smtp.clone();
-        let smtp = SmtpClient::from_config(&smtp_cfg, Some(self.secrets.as_ref()))?.ok_or_else(|| {
-            MiscError::ValidationError(
-                "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
-                 If smtp_username is not an email address, also set smtp_sender.",
-            )
-        })?;
+        let smtp = self
+            .email_sender_factory
+            .build_smtp_sender(&smtp_cfg, Some(self.secrets.as_ref()))?
+            .ok_or_else(|| {
+                MiscError::ValidationError(
+                    "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \
+                     If smtp_username is not an email address, also set smtp_sender.",
+                )
+            })?;
 
         if smtp_cfg.recipient.is_empty() {
             Err(MiscError::ValidationError("No smtp_recipient configured."))?;

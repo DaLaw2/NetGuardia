@@ -11,6 +11,10 @@ use crate::interface::app_repo::AppRepo;
 
 type Repo = dyn AppRepo;
 
+fn parse_permissions(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or(serde_json::json!([]))
+}
+
 #[derive(Deserialize)]
 struct LoginRequest {
     username: String,
@@ -267,13 +271,12 @@ async fn list_groups(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
             let result: Vec<serde_json::Value> = groups
                 .into_iter()
                 .map(|g| {
-                    let perms: serde_json::Value =
-                        serde_json::from_str(&g.permissions).unwrap_or(serde_json::json!([]));
+                    let perms: serde_json::Value = parse_permissions(&g.permissions);
                     let members: Vec<serde_json::Value> = db
                         .list_group_members(g.id)
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|(uid, username)| serde_json::json!({"id": uid, "username": username}))
+                        .map(|m| serde_json::json!({"id": m.id, "username": m.username}))
                         .collect();
                     serde_json::json!({
                         "id": g.id,
@@ -310,7 +313,7 @@ async fn create_group(_auth: AuthClaims, body: web::Json<serde_json::Value>, db:
             "id": id,
             "name": name,
             "description": description,
-            "permissions": serde_json::from_str::<serde_json::Value>(&permissions).unwrap_or(serde_json::json!([])),
+            "permissions": parse_permissions(&permissions),
         })),
         Err(e) => HttpResponse::Conflict().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -321,7 +324,7 @@ async fn get_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>)
 
     match db.get_user_group(group_id) {
         Ok(Some(g)) => {
-            let perms: serde_json::Value = serde_json::from_str(&g.permissions).unwrap_or(serde_json::json!([]));
+            let perms: serde_json::Value = parse_permissions(&g.permissions);
             let members = db.list_group_member_ids(group_id).unwrap_or_default();
             HttpResponse::Ok().json(serde_json::json!({
                 "id": g.id,
@@ -375,7 +378,7 @@ async fn update_group(
             "id": group_id,
             "name": name,
             "description": description,
-            "permissions": serde_json::from_str::<serde_json::Value>(&permissions).unwrap_or(serde_json::json!([])),
+            "permissions": parse_permissions(&permissions),
         })),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }

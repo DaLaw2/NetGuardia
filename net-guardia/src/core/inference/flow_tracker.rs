@@ -79,7 +79,7 @@ impl FlowTracker {
             Direction::Ingress
         };
 
-        let key_for_init = actual_key.clone();
+        let key_for_init = actual_key;
         let entry = self.active.get_with(actual_key, || {
             Arc::new(Mutex::new(FlowData::new(key_for_init, &packet, initiator_direction)))
         });
@@ -128,7 +128,7 @@ impl FlowTracker {
                 idle >= self.limits.idle_timeout_us
             };
             if stale {
-                keys_to_remove.push((*key).clone());
+                keys_to_remove.push(*key);
             }
         }
         let mut removed = 0;

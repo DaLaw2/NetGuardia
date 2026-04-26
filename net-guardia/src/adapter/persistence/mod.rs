@@ -329,6 +329,9 @@ impl Database {
                 row_hash TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE INDEX IF NOT EXISTS idx_audit_log_action
+                ON audit_log(action, id DESC);
+
             CREATE TRIGGER IF NOT EXISTS audit_log_no_update
             BEFORE UPDATE ON audit_log BEGIN
                 SELECT RAISE(ABORT, 'audit_log is append-only (WORM)');
@@ -367,7 +370,7 @@ impl Database {
 mod tests {
     use super::*;
     use crate::interface::acl::AclRepo;
-    use crate::interface::identity::IdentityRepo;
+    use crate::interface::identity::UserRepo;
     use crate::interface::setting::SettingRepo;
 
     pub(super) fn test_db() -> Database {
@@ -380,7 +383,7 @@ mod tests {
     }
 
     /// Verify that Database satisfies each aggregate Repo trait contract
-    /// (AclRepo / SettingRepo / IdentityRepo). Exercises the trait-object
+    /// (AclRepo / SettingRepo / UserRepo). Exercises the trait-object
     /// path so callers that take `Arc<dyn XxxRepo>` compile end-to-end.
     #[test]
     fn test_aggregate_repo_trait_objects() {
@@ -397,7 +400,7 @@ mod tests {
         let rules = db.list_acl_rules().unwrap();
         assert_eq!(rules.len(), 1);
 
-        let identity: &dyn IdentityRepo = &db;
+        let identity: &dyn UserRepo = &db;
         // user_count is inherent — inserts still go through the trait so
         // the vtable has something to exercise.
         assert_eq!(db.user_count().unwrap(), 0);

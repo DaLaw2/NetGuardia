@@ -10,6 +10,13 @@ pub struct UpdatePlaybookInput {
     pub cooldown_secs: i64,
 }
 
+/// Input for a single playbook action in atomic create/update operations.
+pub struct ActionInput {
+    pub action_order: i64,
+    pub action_type: String,
+    pub params_json: String,
+}
+
 /// Input for creating a single playbook condition.
 pub struct CreateConditionInput {
     pub condition_type: String,

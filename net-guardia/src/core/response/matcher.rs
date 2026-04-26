@@ -44,7 +44,7 @@ impl PlaybookMatcher {
         self.playbooks
             .load()
             .iter()
-            .filter(|pb| pb.enabled && pb.trigger_event == event.attack_type)
+            .filter(|pb| pb.matches_trigger(event))
             .filter(|pb| self.evaluate_conditions(pb, event))
             .cloned()
             .collect()
@@ -304,7 +304,7 @@ fn simulate_playbook(pb: &Playbook, event: &ThreatDetectedEvent, default_single_
         })
         .collect();
     let all_conditions_met = conditions.iter().all(|r| r.met);
-    let would_fire = pb.enabled && trigger_matches && all_conditions_met;
+    let would_fire = pb.matches_trigger(event) && all_conditions_met;
     let actions: Vec<DryRunAction> = pb
         .actions
         .iter()

@@ -7,9 +7,9 @@ use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::{self, Duration};
 
 use super::email_report as report;
-use crate::adapter::notification::smtp::SmtpClient;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::log::system::SystemLog;
+use crate::interface::email_sender::EmailSenderFactory;
 use crate::interface::secret_store::SecretStorePort;
 use crate::interface::setting::SettingRepo;
 
@@ -17,6 +17,7 @@ pub struct ReportScheduler {
     db: Arc<dyn SettingRepo + Send + Sync>,
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
+    email_sender_factory: Arc<dyn EmailSenderFactory>,
 }
 
 impl ReportScheduler {
@@ -24,8 +25,14 @@ impl ReportScheduler {
         db: Arc<dyn SettingRepo + Send + Sync>,
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Option<Arc<dyn SecretStorePort>>,
+        email_sender_factory: Arc<dyn EmailSenderFactory>,
     ) -> Self {
-        Self { db, config, secrets }
+        Self {
+            db,
+            config,
+            secrets,
+            email_sender_factory,
+        }
     }
 
     /// Spawn a background tokio task that runs the weekly check loop.
@@ -33,6 +40,7 @@ impl ReportScheduler {
         let db = Arc::clone(&self.db);
         let config = Arc::clone(&self.config);
         let secrets = self.secrets.clone();
+        let email_sender_factory = Arc::clone(&self.email_sender_factory);
         tokio::spawn(async move {
             log!(SystemLog::WeeklyReportSchedulerStarted);
             let mut interval = time::interval(Duration::from_secs(3600));
@@ -47,7 +55,7 @@ impl ReportScheduler {
 
                 let smtp_cfg = config.load().notification.smtp.clone();
 
-                let smtp = match SmtpClient::from_config(&smtp_cfg, secrets.as_deref()) {
+                let smtp = match email_sender_factory.build_smtp_sender(&smtp_cfg, secrets.as_deref()) {
                     Ok(Some(client)) => client,
                     Ok(None) => {
                         log!(SystemLog::SmtpNotConfigured);

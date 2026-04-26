@@ -10,6 +10,10 @@ traceable! {
         #[error("Invalid configuration")]
         InvalidConfig => tracing::Level::ERROR,
 
+        #[no_source]
+        #[error("Invalid configuration field: {field}")]
+        InvalidConfigField { field: String } => tracing::Level::ERROR,
+
         #[error("Configuration file not found")]
         ConfigNotFound => tracing::Level::ERROR,
 

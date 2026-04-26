@@ -26,107 +26,29 @@ use crate::domain::response::error::SoarError;
 #[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
 pub enum Error {
     #[error("{0}")]
-    Auth(AuthError),
+    Auth(#[from] AuthError),
     #[error("{0}")]
-    Crypto(CryptoError),
+    Crypto(#[from] CryptoError),
     #[error("{0}")]
-    Database(DatabaseError),
+    Database(#[from] DatabaseError),
     #[error("{0}")]
-    Ebpf(EbpfError),
+    Ebpf(#[from] EbpfError),
     #[error("{0}")]
-    Http(HttpError),
+    Http(#[from] HttpError),
     #[error("{0}")]
-    ML(MLError),
+    ML(#[from] MLError),
     #[error("{0}")]
-    IO(IOError),
+    IO(#[from] IOError),
     #[error("{0}")]
-    Mcp(McpError),
+    Mcp(#[from] McpError),
     #[error("{0}")]
-    Misc(MiscError),
+    Misc(#[from] MiscError),
     #[error("{0}")]
-    Notification(NotificationError),
+    Notification(#[from] NotificationError),
     #[error("{0}")]
-    Soar(SoarError),
+    Soar(#[from] SoarError),
     #[error("{0}")]
-    Suricata(SuricataError),
+    Suricata(#[from] SuricataError),
     #[error("{0}")]
-    System(SystemError),
-}
-
-impl From<AuthError> for Error {
-    fn from(error: AuthError) -> Self {
-        Self::Auth(error)
-    }
-}
-
-impl From<CryptoError> for Error {
-    fn from(error: CryptoError) -> Self {
-        Self::Crypto(error)
-    }
-}
-
-impl From<DatabaseError> for Error {
-    fn from(error: DatabaseError) -> Self {
-        Self::Database(error)
-    }
-}
-
-impl From<EbpfError> for Error {
-    fn from(error: EbpfError) -> Self {
-        Self::Ebpf(error)
-    }
-}
-
-impl From<HttpError> for Error {
-    fn from(error: HttpError) -> Self {
-        Self::Http(error)
-    }
-}
-
-impl From<IOError> for Error {
-    fn from(error: IOError) -> Self {
-        Self::IO(error)
-    }
-}
-
-impl From<MiscError> for Error {
-    fn from(error: MiscError) -> Self {
-        Self::Misc(error)
-    }
-}
-
-impl From<SystemError> for Error {
-    fn from(error: SystemError) -> Self {
-        Self::System(error)
-    }
-}
-
-impl From<MLError> for Error {
-    fn from(error: MLError) -> Self {
-        Self::ML(error)
-    }
-}
-
-impl From<NotificationError> for Error {
-    fn from(error: NotificationError) -> Self {
-        Self::Notification(error)
-    }
-}
-
-impl From<SoarError> for Error {
-    fn from(error: SoarError) -> Self {
-        Self::Soar(error)
-    }
-}
-
-impl From<SuricataError> for Error {
-    fn from(error: SuricataError) -> Self {
-        Self::Suricata(error)
-    }
-}
-
-impl From<McpError> for Error {
-    fn from(error: McpError) -> Self {
-        Self::Mcp(error)
-    }
+    System(#[from] SystemError),
 }

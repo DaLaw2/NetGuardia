@@ -2,6 +2,7 @@ use actix_web::{HttpResponse, Scope, web};
 use serde::Deserialize;
 
 use crate::adapter::http::middleware::extractor::AuthClaims;
+use crate::domain::identity::auth::PermissionLevel;
 use crate::interface::api_key::ApiKeyRepo;
 
 pub fn initialize() -> Scope {
@@ -54,19 +55,19 @@ async fn generate_key(
 
     let key_hash = db.hmac_api_key(&raw_key);
 
-    let level = body.level.as_deref().unwrap_or("read_only");
-    if !matches!(level, "read_only" | "read_write" | "full_access") {
+    let raw_level = body.level.as_deref().unwrap_or("read_only");
+    let Some(level) = PermissionLevel::from_str(raw_level) else {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Invalid permission level. Must be: read_only, read_write, or full_access"
         }));
-    }
+    };
 
-    match db.insert_api_key(&key_hash, &body.name, level) {
+    match db.insert_api_key(&key_hash, &body.name, level.as_str()) {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({
             "id": id,
             "key": raw_key,
             "name": body.name,
-            "permission_level": level,
+            "permission_level": level.as_str(),
         })),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }

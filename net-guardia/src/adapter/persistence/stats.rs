@@ -2,6 +2,7 @@ use rusqlite::params;
 
 use super::Database;
 use crate::domain::common::error::Error;
+use crate::domain::report::data::{ThreatBreakdownEntry, TopIpEntry};
 use crate::interface::stats::StatsRepo;
 
 impl Database {
@@ -39,13 +40,16 @@ impl Database {
     }
 
     /// Get threat breakdown by trigger_event in the last N days.
-    pub fn weekly_threat_breakdown(&self, days: i64) -> Result<Vec<(String, u64)>, Error> {
+    pub fn weekly_threat_breakdown(&self, days: i64) -> Result<Vec<ThreatBreakdownEntry>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT trigger_event, COUNT(*) FROM soar_executions WHERE executed_at >= datetime('now', ?1) GROUP BY trigger_event ORDER BY COUNT(*) DESC"
         )?;
         let rows = stmt.query_map(params![format!("-{} days", days)], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            Ok(ThreatBreakdownEntry {
+                threat_type: row.get(0)?,
+                count: row.get::<_, i64>(1)? as u64,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -55,13 +59,16 @@ impl Database {
     }
 
     /// Get top blocked IPs in the last N days.
-    pub fn weekly_top_ips(&self, days: i64, limit: i64) -> Result<Vec<(String, u64)>, Error> {
+    pub fn weekly_top_ips(&self, days: i64, limit: i64) -> Result<Vec<TopIpEntry>, Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT source_ip, COUNT(*) as cnt FROM soar_block_rules WHERE created_at >= datetime('now', ?1) GROUP BY source_ip ORDER BY cnt DESC LIMIT ?2"
         )?;
         let rows = stmt.query_map(params![format!("-{} days", days), limit], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            Ok(TopIpEntry {
+                ip: row.get(0)?,
+                count: row.get::<_, i64>(1)? as u64,
+            })
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -91,11 +98,11 @@ impl StatsRepo for Database {
         self.count_weekly_unblocks(days)
     }
 
-    fn weekly_threat_breakdown(&self, days: i64) -> Result<Vec<(String, u64)>, Error> {
+    fn weekly_threat_breakdown(&self, days: i64) -> Result<Vec<ThreatBreakdownEntry>, Error> {
         self.weekly_threat_breakdown(days)
     }
 
-    fn weekly_top_ips(&self, days: i64, limit: i64) -> Result<Vec<(String, u64)>, Error> {
+    fn weekly_top_ips(&self, days: i64, limit: i64) -> Result<Vec<TopIpEntry>, Error> {
         self.weekly_top_ips(days, limit)
     }
 

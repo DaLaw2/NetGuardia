@@ -34,6 +34,13 @@ pub struct UserGroupView {
     pub created_at: String,
 }
 
+/// Minimal group member info for group detail views.
+#[derive(Debug, Clone)]
+pub struct GroupMemberView {
+    pub id: i64,
+    pub username: String,
+}
+
 /// API key list entry.
 #[derive(Debug, Clone)]
 pub struct ApiKeyView {

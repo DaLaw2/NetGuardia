@@ -12,7 +12,7 @@ pub struct ClipParams {
     pub upper: f64,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FlowKey {
     pub src_ip: [u8; 16],
     pub dst_ip: [u8; 16],

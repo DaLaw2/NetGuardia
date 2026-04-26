@@ -7,6 +7,7 @@ use crate::domain::common::error::Error;
 use crate::domain::identity::auth::Claims;
 use crate::domain::identity::error::AuthError;
 use crate::interface::secret_store::SecretStorePort;
+use crate::interface::token_minter::TokenMinter;
 
 pub struct JwtService {
     encoding_key: EncodingKey,
@@ -60,6 +61,18 @@ impl JwtService {
                 }
             })?;
         Ok(token_data.claims)
+    }
+}
+
+impl TokenMinter for JwtService {
+    fn create_token(
+        &self,
+        user_id: i64,
+        username: &str,
+        role: &str,
+        permissions: Vec<String>,
+    ) -> Result<String, Error> {
+        self.create_token(user_id, username, role, permissions)
     }
 }
 

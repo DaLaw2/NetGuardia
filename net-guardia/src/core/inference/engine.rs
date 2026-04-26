@@ -261,7 +261,7 @@ impl Engine {
     fn log_traffic(&self, flows: &[FlowData], logger: &TrafficLogger) {
         let feature_names = FlowFeatures::all_feature_names_owned();
         for flow in flows {
-            let features = FlowFeatures::extract(flow, &feature_names);
+            let features = FlowFeatures::extract(flow, feature_names);
             logger.log_row(features.to_csv_record());
         }
     }

@@ -8,6 +8,39 @@ pub const DEFAULT_ADMIN_USERNAME: &str = "admin";
 pub const LOGIN_MAX_FAILURES: u32 = 5;
 pub const LOGIN_LOCKOUT_SECS: u64 = 900;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionLevel {
+    ReadOnly,
+    ReadWrite,
+    FullAccess,
+}
+
+impl PermissionLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::ReadWrite => "read_write",
+            Self::FullAccess => "full_access",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read_only" => Some(Self::ReadOnly),
+            "read_write" => Some(Self::ReadWrite),
+            "full_access" => Some(Self::FullAccess),
+            _ => None,
+        }
+    }
+
+    pub fn permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::ReadOnly => API_KEY_READ_ONLY_PERMISSIONS,
+            Self::ReadWrite | Self::FullAccess => API_KEY_READ_WRITE_PERMISSIONS,
+        }
+    }
+}
+
 pub const ADMIN_PERMISSIONS: &[&str] = &[
     "dashboard:read",
     "statistics:read",

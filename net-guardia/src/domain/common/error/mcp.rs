@@ -7,8 +7,8 @@ traceable! {
         ToolNotFound { tool_name: String } => tracing::Level::WARN,
 
         #[no_source]
-        #[error("MCP parameter validation failed: {reason}")]
-        InvalidParams { reason: String } => tracing::Level::WARN,
+        #[error("MCP parameter validation failed: {detail}")]
+        InvalidParams { detail: String } => tracing::Level::WARN,
 
         #[no_source]
         #[error("MCP permission denied: key has '{key_level}' but tool requires '{required_level}'")]
@@ -19,7 +19,7 @@ traceable! {
         InvalidApiKey => tracing::Level::WARN,
 
         #[no_source]
-        #[error("MCP proxy error: {reason}")]
-        ProxyError { reason: String } => tracing::Level::ERROR,
+        #[error("MCP proxy error: {detail}")]
+        ProxyError { detail: String } => tracing::Level::ERROR,
     }
 }

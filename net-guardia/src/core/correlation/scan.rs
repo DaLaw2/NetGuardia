@@ -7,6 +7,7 @@ use macros::log;
 use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
 use crate::domain::detection::log::DetectionLog;
 use crate::domain::detection::ml_detection::AlertMessage;
 
@@ -80,7 +81,7 @@ impl ScanDetector {
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
-                attack_type: "port_scan".to_string(),
+                attack_type: CanonicalAttackType::PortScan.as_str().to_string(),
                 confidence: 0.80,
                 source_ip: key.clone(),
                 dest_ip: last_dst_ip,

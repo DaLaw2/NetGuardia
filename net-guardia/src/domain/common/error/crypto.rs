@@ -1,4 +1,20 @@
 use macros::traceable;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnvelopeField {
+    Nonce,
+    Ciphertext,
+}
+
+impl std::fmt::Display for EnvelopeField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nonce => f.write_str("nonce"),
+            Self::Ciphertext => f.write_str("ct"),
+        }
+    }
+}
 
 traceable! {
     CryptoError {
@@ -17,7 +33,7 @@ traceable! {
 
         #[no_source]
         #[error("Missing envelope field: {field}")]
-        MissingEnvelopeField { field: String } => tracing::Level::ERROR,
+        MissingEnvelopeField { field: EnvelopeField } => tracing::Level::ERROR,
 
         #[no_source]
         #[error("Envelope algorithm 'none' rejected in production mode (encryption key is set)")]

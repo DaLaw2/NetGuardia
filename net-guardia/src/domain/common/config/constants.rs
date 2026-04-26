@@ -38,10 +38,14 @@ pub const PERMISSION_SYSTEM_ADMIN: &str = "system:admin";
 pub const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 // ── Enforce Mode ─────────────────────────────────────────────────
+pub const ENFORCE_MODE_MONITOR: &str = "monitor";
+pub const ENFORCE_MODE_ML_ONLY: &str = "ml_only";
+pub const ENFORCE_MODE_ENFORCE: &str = "enforce";
+
 pub fn enforce_mode_to_u8(mode: &str) -> u8 {
     match mode {
-        "enforce" => 2,
-        "ml_only" => 1,
+        ENFORCE_MODE_ENFORCE => 2,
+        ENFORCE_MODE_ML_ONLY => 1,
         _ => 0,
     }
 }
