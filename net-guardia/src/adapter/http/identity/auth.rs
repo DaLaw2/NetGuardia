@@ -1,8 +1,8 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
+use crate::adapter::http::helpers::ok_or_error;
 use crate::adapter::http::middleware::extractor::AuthClaims;
-use crate::adapter::http::response::ok_or_error;
 use crate::core::identity::auth_service::{AuthService, LoginError, RegisterError};
 use crate::domain::identity::auth::{DEFAULT_ADMIN_USERNAME, GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
 use crate::domain::identity::password;

@@ -4,7 +4,7 @@ use actix_web::{HttpResponse, Responder, Scope, web};
 use common::model::http_method::HttpMethod;
 use serde::Deserialize;
 
-use crate::adapter::http::response::ok_or_error;
+use crate::adapter::http::helpers::ok_or_error;
 use crate::core::data_plane::dns_filter_service::DnsFilterService;
 use crate::interface::protocol_filter::{IpVersion, ProtocolFilterPort};
 

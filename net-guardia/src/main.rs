@@ -19,7 +19,9 @@ use sd_notify::NotifyState;
 use tokio::time::sleep;
 use tokio::{signal, time};
 
+use crate::adapter::http::jwt::JwtService;
 use crate::adapter::persistence::Database;
+use crate::core::identity::auth_service::AuthService;
 use crate::domain::common::config::observability::ObservabilityConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
@@ -28,8 +30,13 @@ use crate::domain::identity::auth::{DEFAULT_ADMIN_USERNAME, GROUP_ADMIN, ROLE_AD
 use crate::domain::identity::password;
 use crate::infrastructure::cli::{Cli, handle_subcommand};
 use crate::infrastructure::http_server;
+use crate::infrastructure::http_server::SetupServerParams;
 use crate::infrastructure::logger::Logger;
+use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
+use crate::interface::app_repo::AppRepo;
+use crate::interface::secret_store::SecretStorePort;
+use crate::interface::token_minter::TokenMinter;
 
 fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
     if database.user_count().unwrap_or(0) != 0 {
@@ -60,7 +67,22 @@ async fn run_setup_wizard(database: &Arc<Database>) -> Result<(), Error> {
     let setup_flag = Arc::new(AtomicBool::new(false));
     let setup_complete_flag = http_server::SetupCompleteFlag(setup_flag.clone());
 
-    let params = http_server::SetupServerParams::build(database.clone(), setup_complete_flag, 8080)?;
+    let database = database.clone();
+    let secret_store = Arc::new(SecretStore::new(database.clone()));
+    let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
+    let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
+    let auth_service = Arc::new(AuthService::new(
+        database.clone() as Arc<dyn AppRepo>,
+        jwt_service.clone() as Arc<dyn TokenMinter>,
+    ));
+    let params = SetupServerParams {
+        database,
+        secret_store,
+        jwt_service,
+        auth_service,
+        setup_complete: setup_complete_flag,
+        port: 8080,
+    };
     let handle = http_server::start_setup_server(params)?;
 
     let flag = setup_flag.clone();

@@ -61,6 +61,7 @@ async fn set_enforce_mode(
 }
 
 async fn get_xdp_mode(db: web::Data<Repo>) -> impl Responder {
+    // todo get from config, not db
     let ingress = db
         .get_setting("xdp_ingress_mode")
         .ok()

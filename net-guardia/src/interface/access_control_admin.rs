@@ -13,6 +13,10 @@ use crate::domain::data_plane::list_type::ListType;
 /// `unblock_ip` for SOAR). `AclService` uses this richer API to serve the
 /// `/api/acl` HTTP routes.
 pub trait AccessControlAdminPort: Send + Sync {
+    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>>;
+
+    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>>;
+
     fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error>;
 
     fn add_ipv6_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error>;
@@ -30,8 +34,4 @@ pub trait AccessControlAdminPort: Send + Sync {
         list_type: ListType,
         address: SocketAddrV6,
     ) -> Result<(), Error>;
-
-    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>>;
-
-    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>>;
 }

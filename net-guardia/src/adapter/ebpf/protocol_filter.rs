@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
@@ -56,28 +56,28 @@ impl ProtocolFilter {
     }
 }
 
-fn require_v4_socket(addr: SocketAddr) -> Result<std::net::SocketAddrV4, Error> {
+fn require_v4_socket(addr: SocketAddr) -> Result<SocketAddrV4, Error> {
     match addr {
         SocketAddr::V4(a) => Ok(a),
         SocketAddr::V6(_) => Err(EbpfError::IpVersionMismatch("IPv4".to_string()))?,
     }
 }
 
-fn require_v6_socket(addr: SocketAddr) -> Result<std::net::SocketAddrV6, Error> {
+fn require_v6_socket(addr: SocketAddr) -> Result<SocketAddrV6, Error> {
     match addr {
         SocketAddr::V6(a) => Ok(a),
         SocketAddr::V4(_) => Err(EbpfError::IpVersionMismatch("IPv6".to_string()))?,
     }
 }
 
-fn require_v4_ip(ip: IpAddr) -> Result<std::net::Ipv4Addr, Error> {
+fn require_v4_ip(ip: IpAddr) -> Result<Ipv4Addr, Error> {
     match ip {
         IpAddr::V4(a) => Ok(a),
         IpAddr::V6(_) => Err(EbpfError::IpVersionMismatch("IPv4".to_string()))?,
     }
 }
 
-fn require_v6_ip(ip: IpAddr) -> Result<std::net::Ipv6Addr, Error> {
+fn require_v6_ip(ip: IpAddr) -> Result<Ipv6Addr, Error> {
     match ip {
         IpAddr::V6(a) => Ok(a),
         IpAddr::V4(_) => Err(EbpfError::IpVersionMismatch("IPv6".to_string()))?,

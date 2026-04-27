@@ -143,6 +143,14 @@ impl AccessControl {
 }
 
 impl AccessControlAdminPort for AccessControl {
+    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
+        self.get_ipv4_list(direction, list_type)
+    }
+
+    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
+        self.get_ipv6_list(direction, list_type)
+    }
+
     fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error> {
         self.add_ipv4_list(direction, list_type, address)
     }
@@ -167,14 +175,6 @@ impl AccessControlAdminPort for AccessControl {
         address: SocketAddrV6,
     ) -> Result<(), Error> {
         self.remove_ipv6_list(direction, list_type, address)
-    }
-
-    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
-        self.get_ipv4_list(direction, list_type)
-    }
-
-    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
-        self.get_ipv6_list(direction, list_type)
     }
 }
 

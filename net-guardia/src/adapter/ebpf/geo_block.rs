@@ -15,9 +15,8 @@ use crate::domain::common::error::misc::MiscError;
 use crate::domain::data_plane::error::EbpfError;
 use crate::interface::geo_block_api::GeoBlockPort;
 
-/// Pre-indexed GeoIP prefix table, built once at startup.
 struct GeoIndex {
-    v4: StdHashMap<String, Vec<(u32, u32)>>, // country -> [(ip_be, prefix_len)]
+    v4: StdHashMap<String, Vec<(u32, u32)>>,
     v6: StdHashMap<String, Vec<(u128, u32)>>,
 }
 
@@ -36,6 +35,7 @@ impl GeoBlock {
         let v6_map = ebpf.take_map("GEO_BLOCK_V6").ok_or(EbpfError::MapNotFound)?;
         let v6_trie = LpmTrie::try_from(v6_map).map_err(EbpfError::MapOperationError)?;
 
+        // todo read config from AppConfig, not db
         let db_path = app_config.load().acl.geoip_db_name.clone();
         let reader = Reader::open_readfile(&db_path).map_err(|e| MiscError::GeoIPDatabaseError(db_path.clone(), e))?;
 
@@ -49,10 +49,6 @@ impl GeoBlock {
         })
     }
 
-    /// Construct a GeoBlock with no eBPF trie backing. Attempts to still load
-    /// the GeoIP index so the frontend can list what *would* be enforced;
-    /// mutating calls (`block_countries`, `unblock_countries`) return
-    /// `EbpfError::NotLoaded`.
     pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         let index = Reader::open_readfile(&app_config.load().acl.geoip_db_name)
             .ok()
@@ -69,7 +65,6 @@ impl GeoBlock {
         }
     }
 
-    /// Build index from MaxMind DB at startup. One-time cost.
     fn build_index(reader: &Reader<Vec<u8>>) -> Result<GeoIndex, Error> {
         let mut v4: StdHashMap<String, Vec<(u32, u32)>> = StdHashMap::new();
         let mut v6: StdHashMap<String, Vec<(u128, u32)>> = StdHashMap::new();
@@ -115,7 +110,10 @@ impl GeoBlock {
         Ok(GeoIndex { v4, v6 })
     }
 
-    /// Block multiple countries at once, rebuilding tries only once.
+    pub fn get_blocked_countries(&self) -> Vec<String> {
+        self.blocked_countries.load().iter().cloned().collect()
+    }
+
     pub fn block_countries(&self, country_codes: &[String]) -> Result<u64, Error> {
         self.blocked_countries.rcu(|cur| {
             let mut next: HashSet<String> = (**cur).clone();
@@ -130,7 +128,6 @@ impl GeoBlock {
         self.rebuild_tries()
     }
 
-    /// Unblock multiple countries at once, rebuilding tries only once.
     pub fn unblock_countries(&self, country_codes: &[String]) -> Result<u64, Error> {
         self.blocked_countries.rcu(|cur| {
             let mut next: HashSet<String> = (**cur).clone();
@@ -142,15 +139,9 @@ impl GeoBlock {
         self.rebuild_tries()
     }
 
-    pub fn get_blocked_countries(&self) -> Vec<String> {
-        self.blocked_countries.load().iter().cloned().collect()
-    }
-
-    /// Rebuild LPM tries from pre-indexed data. Fast — no DB scan.
     fn rebuild_tries(&self) -> Result<u64, Error> {
         let countries = self.blocked_countries.load_full();
 
-        // Collect entries from index (no DB scan)
         let mut v4_entries: Vec<(Key<u32>, u8)> = Vec::new();
         let mut v6_entries: Vec<(Key<u128>, u8)> = Vec::new();
 
@@ -167,7 +158,6 @@ impl GeoBlock {
             }
         }
 
-        // Lock, clear, insert
         let mut v4_guard = self.geo_block_v4.write();
         let mut v6_guard = self.geo_block_v6.write();
         let (v4_trie, v6_trie) = match (v4_guard.as_mut(), v6_guard.as_mut()) {
@@ -208,15 +198,15 @@ impl GeoBlock {
 }
 
 impl GeoBlockPort for GeoBlock {
+    fn list_blocked(&self) -> Vec<String> {
+        self.get_blocked_countries()
+    }
+
     fn block_countries(&self, codes: &[String]) -> Result<u64, Error> {
         self.block_countries(codes)
     }
 
     fn unblock_countries(&self, codes: &[String]) -> Result<u64, Error> {
         self.unblock_countries(codes)
-    }
-
-    fn list_blocked(&self) -> Vec<String> {
-        self.get_blocked_countries()
     }
 }

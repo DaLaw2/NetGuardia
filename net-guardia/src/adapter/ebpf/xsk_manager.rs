@@ -30,7 +30,6 @@ use crate::interface::dns_query_filter::DnsQueryFilter;
 use crate::interface::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::utils::packet_parser::parse_packet;
 
-/// Pre-allocated buffer pool to avoid per-packet malloc.
 struct BufferPool {
     buffers: Vec<Vec<u8>>,
     buffer_size: usize,
@@ -63,7 +62,7 @@ impl BufferPool {
 
 pub struct XskManager {
     app_config: Arc<ArcSwap<AppConfig>>,
-    xsk_map: Mutex<Option<XskMap<MapData>>>,
+    ingress_xsk_map: Mutex<Option<XskMap<MapData>>>,
     egress_xsk_map: Mutex<Option<XskMap<MapData>>>,
 }
 
@@ -73,17 +72,17 @@ impl XskManager {
         ingress_ebpf: &mut Ebpf,
         egress_ebpf: &mut Ebpf,
     ) -> Result<Self, Error> {
-        let map = ingress_ebpf
+        let ingress_map = ingress_ebpf
             .take_map("INGRESS_XSKS_MAP")
             .ok_or(EbpfError::MapNotFound)?;
-        let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
+        let ingress_xsk_map = XskMap::try_from(ingress_map).map_err(EbpfError::MapOperationError)?;
 
         let egress_map = egress_ebpf.take_map("EGRESS_XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
         let egress_xsk_map = XskMap::try_from(egress_map).map_err(EbpfError::MapOperationError)?;
 
         Ok(Self {
             app_config,
-            xsk_map: Mutex::new(Some(xsk_map)),
+            ingress_xsk_map: Mutex::new(Some(ingress_xsk_map)),
             egress_xsk_map: Mutex::new(Some(egress_xsk_map)),
         })
     }
@@ -91,7 +90,7 @@ impl XskManager {
     pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         Self {
             app_config,
-            xsk_map: Mutex::new(None),
+            ingress_xsk_map: Mutex::new(None),
             egress_xsk_map: Mutex::new(None),
         }
     }
@@ -103,10 +102,11 @@ impl XskManager {
         drop_monitor: Option<Arc<DropMonitor>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
+        // todo need to check logic
         // If eBPF failed to load, there are no XSK maps to bind and no queues
         // to start — skip silently. AF_XDP would have no maps to attach sockets
         // to, and ML sees no packets, which is the designed behaviour.
-        if self.xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
+        if self.ingress_xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
             return Ok(());
         }
 
@@ -139,13 +139,13 @@ impl XskManager {
                 drop_monitor.clone(),
             )?;
 
-            let mut xsk_guard = self.xsk_map.lock();
+            let mut ingress_guard = self.ingress_xsk_map.lock();
             let mut egress_guard = self.egress_xsk_map.lock();
-            let xsk_map = xsk_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
+            let ingress_xsk_map = ingress_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
             let egress_xsk_map = egress_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
 
             let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
-            xsk_map
+            ingress_xsk_map
                 .set(queue_id, ingress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
 
@@ -154,7 +154,7 @@ impl XskManager {
                 .set(queue_id, egress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
 
-            drop(xsk_guard);
+            drop(ingress_guard);
             drop(egress_guard);
 
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;

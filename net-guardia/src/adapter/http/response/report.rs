@@ -5,8 +5,8 @@ use arc_swap::ArcSwap;
 use chrono::Local;
 use tokio::task::spawn_blocking;
 
+use crate::adapter::http::helpers::ok_json_or_error;
 use crate::adapter::http::middleware::extractor::AuthClaims;
-use crate::adapter::http::response::ok_json_or_error;
 use crate::adapter::notification::smtp::SmtpClient;
 use crate::adapter::persistence::Database;
 use crate::core::reporting::email_report::generate_weekly_report;

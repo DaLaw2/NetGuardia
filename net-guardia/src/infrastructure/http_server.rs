@@ -11,17 +11,19 @@ use macros::log;
 use tokio::sync::broadcast;
 
 use crate::adapter::ebpf::EbpfServices;
+use crate::adapter::http::data_plane::{acl, filter, rate_limit as rate_limit_api};
+use crate::adapter::http::default;
+use crate::adapter::http::detection::model_upload::PromoteGate;
+use crate::adapter::http::detection::{byo, flow_trace, fusion, health as health_api, ml, model_upload, stats};
+use crate::adapter::http::identity::{api_keys, auth};
 use crate::adapter::http::jwt::JwtService;
 use crate::adapter::http::middleware::auth::AuthMiddleware;
 use crate::adapter::http::middleware::csrf::CsrfMiddleware;
 use crate::adapter::http::middleware::https_redirect::HttpsRedirect;
 use crate::adapter::http::middleware::setup_guard::SetupGuard;
-use crate::adapter::http::model_upload::PromoteGate;
-use crate::adapter::http::{
-    acl, api_keys, audit as audit_api, auth, byo, default, filter, flow_trace, fusion, health as health_api,
-    logs as logs_api, ml, model_upload, notification as notification_api, rate_limit as rate_limit_api, ready,
-    report as report_api, setup as setup_api, soar, stats, system as system_api,
-};
+use crate::adapter::http::ready;
+use crate::adapter::http::response::{notification as notification_api, report as report_api, soar};
+use crate::adapter::http::{audit as audit_api, logs as logs_api, setup as setup_api, system as system_api};
 use crate::adapter::persistence::Database;
 use crate::adapter::websocket::routes as ws;
 use crate::core::common::config_service::ConfigService;
@@ -54,8 +56,6 @@ use crate::interface::app_repo::AppRepo;
 use crate::interface::audit::AuditRepo;
 use crate::interface::drop_stats::DropStatsPort;
 use crate::interface::protocol_filter::ProtocolFilterPort;
-use crate::interface::secret_store::SecretStorePort;
-use crate::interface::token_minter::TokenMinter;
 
 #[derive(Clone)]
 pub struct SetupCompleteFlag(pub Arc<AtomicBool>);
@@ -155,32 +155,12 @@ fn is_private_origin(origin: &str) -> bool {
 }
 
 pub struct SetupServerParams {
-    database: Arc<Database>,
-    secret_store: Arc<SecretStore>,
-    jwt_service: Arc<JwtService>,
-    auth_service: Arc<AuthService>,
-    setup_complete: SetupCompleteFlag,
-    port: u16,
-}
-
-impl SetupServerParams {
-    pub fn build(database: Arc<Database>, setup_complete: SetupCompleteFlag, port: u16) -> Result<Self, Error> {
-        let secret_store = Arc::new(SecretStore::new(database.clone()));
-        let secrets: Arc<dyn SecretStorePort> = secret_store.clone();
-        let jwt_service = Arc::new(JwtService::new(&secrets, 24)?);
-        let auth_service = Arc::new(AuthService::new(
-            database.clone() as Arc<dyn AppRepo>,
-            jwt_service.clone() as Arc<dyn TokenMinter>,
-        ));
-        Ok(Self {
-            database,
-            secret_store,
-            jwt_service,
-            auth_service,
-            setup_complete,
-            port,
-        })
-    }
+    pub database: Arc<Database>,
+    pub secret_store: Arc<SecretStore>,
+    pub jwt_service: Arc<JwtService>,
+    pub auth_service: Arc<AuthService>,
+    pub setup_complete: SetupCompleteFlag,
+    pub port: u16,
 }
 
 pub fn start_setup_server(params: SetupServerParams) -> Result<ServerHandle, Error> {

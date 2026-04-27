@@ -1,4 +1,3 @@
-use std::mem;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -152,12 +151,12 @@ fn reason_to_str(reason: u8) -> &'static str {
     }
 }
 
-/// Start the ring buffer consumer as a tokio task. Returns a shutdown sender.
 pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor>) -> oneshot::Sender<()> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     tokio::spawn(async move {
         let mut ring_buf = ring_buf;
+        // todo add interval value to config
         let mut interval = interval(Duration::from_millis(100));
 
         loop {
@@ -167,7 +166,7 @@ pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor
             }
 
             while let Some(item) = ring_buf.next() {
-                if item.len() >= mem::size_of::<RawDropEvent>() {
+                if item.len() >= size_of::<RawDropEvent>() {
                     let event = unsafe { &*(item.as_ptr() as *const RawDropEvent) };
                     monitor.process_event(event);
                 }

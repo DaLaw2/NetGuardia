@@ -3,7 +3,7 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
-use crate::adapter::http::response::ok_or_error;
+use crate::adapter::http::helpers::ok_or_error;
 use crate::core::data_plane::acl_service::AclService;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::list_type::ListType;
