@@ -22,7 +22,6 @@ services:
       mgmt-net:
         ipv4_address: 10.10.3.10
     ports:
-      - "2222:22"
       - "8080:8080"
     volumes:
       - /home/dalaw2/NetGuardia:/root/NetGuardia:z

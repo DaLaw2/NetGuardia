@@ -1,6 +1,6 @@
 # NetGuardia
 
-Inline network security platform built on eBPF/XDP. Runs four independent detectors (per-packet ML, temporal beaconing, graph correlation, Suricata) over the same data plane, fuses their verdicts, drives SOAR playbooks, and writes every decision into a WORM audit chain.
+Inline network security platform built on eBPF/XDP. Combines ONNX-based ML, temporal beaconing, correlation heuristics, and Suricata `eve.json` alerts in one fusion path, drives SOAR playbooks, and writes decisions into a WORM audit chain.
 
 ## Stack
 
@@ -8,7 +8,7 @@ Inline network security platform built on eBPF/XDP. Runs four independent detect
 - **Detection** — Rust + tract-onnx for ML, custom temporal / graph engines, Suricata `eve.json` ingest
 - **Control plane** — actix-web REST + WebSocket, SQLite + SQLCipher, argon2 / JWT / CSRF, per-playbook SOAR
 - **Frontend** — Vue 3 + Pinia + Vue-i18n (en / zh-TW / zh-CN / ja)
-- **Architecture** — hexagonal: `adapter/` · `core/` · `infrastructure/` · `interface/` · `model/`
+- **Architecture** — hexagonal-ish Rust workspace: `domain/` · `interface/` · `core/` · `adapter/` · `infrastructure/`
 
 ## Screens
 
