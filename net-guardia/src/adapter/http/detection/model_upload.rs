@@ -584,26 +584,32 @@ async fn validate_and_promote(ctx: &PromoteContext<'_>) -> Result<PromoteReport,
 
     let before_status = inference.model_source_status();
 
-    let _guard = promote_lock.try_acquire().ok_or(PromoteError::ConcurrentPromote)?;
     let models_dir = PathBuf::from(MODELS_DIR);
     let target_onnx = models_dir.join(&declared_onnx);
-    fs::rename(&staged_onnx, &target_onnx)
-        .await
-        .map_err(|e| PromoteError::PromoteIo(format!("rename onnx into models/: {e}")))?;
-
-    if let Some(ref pp) = manifest.preprocessing {
-        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
-        let src = staging_dir.join(&pp.scaler_sidecar);
-        let dst = models_dir.join(&pp.scaler_sidecar);
-        fs::rename(&src, &dst)
-            .await
-            .map_err(|e| PromoteError::PromoteIo(format!("rename sidecar into models/: {e}")))?;
-    }
-
     let target_manifest = models_dir.join(MANIFEST_FILENAME);
-    fs::rename(&staging_manifest, &target_manifest)
-        .await
-        .map_err(|e| PromoteError::PromoteIo(format!("rename manifest into models/: {e}")))?;
+    let staged_sidecar = if let Some(ref pp) = manifest.preprocessing {
+        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
+        Some(staging_dir.join(&pp.scaler_sidecar))
+    } else {
+        None
+    };
+    let target_sidecar = manifest
+        .preprocessing
+        .as_ref()
+        .map(|pp| models_dir.join(&pp.scaler_sidecar));
+
+    let _guard = promote_lock.try_acquire().ok_or(PromoteError::ConcurrentPromote)?;
+    let backup_dir = models_dir.join(format!(".promote-backup-{}", Uuid::new_v4()));
+    promote_files_atomically(&PromoteFileSet {
+        staging_manifest: staging_manifest.clone(),
+        staged_onnx,
+        staged_sidecar,
+        target_manifest,
+        target_onnx,
+        target_sidecar,
+        backup_dir,
+    })
+    .await?;
     drop(_guard);
 
     let audit_detail = serde_json::json!({
@@ -626,6 +632,105 @@ async fn validate_and_promote(ctx: &PromoteContext<'_>) -> Result<PromoteReport,
         manifest_sha256,
         onnx_sha256,
     })
+}
+
+struct PromoteFileSet {
+    staging_manifest: PathBuf,
+    staged_onnx: PathBuf,
+    staged_sidecar: Option<PathBuf>,
+    target_manifest: PathBuf,
+    target_onnx: PathBuf,
+    target_sidecar: Option<PathBuf>,
+    backup_dir: PathBuf,
+}
+
+async fn promote_files_atomically(files: &PromoteFileSet) -> Result<(), PromoteError> {
+    fs::create_dir_all(&files.backup_dir)
+        .await
+        .map_err(|e| PromoteError::PromoteIo(format!("create promote backup dir: {e}")))?;
+
+    let backup_manifest = backup_existing(&files.target_manifest, &files.backup_dir, "manifest.yaml").await?;
+    let backup_onnx = backup_existing(&files.target_onnx, &files.backup_dir, "model.onnx").await?;
+    let backup_sidecar = match &files.target_sidecar {
+        Some(target) => Some(backup_existing(target, &files.backup_dir, "sidecar").await?),
+        None => None,
+    };
+
+    let result = async {
+        move_file(&files.staged_onnx, &files.target_onnx, "rename onnx into models/").await?;
+        if let (Some(src), Some(dst)) = (&files.staged_sidecar, &files.target_sidecar) {
+            move_file(src, dst, "rename sidecar into models/").await?;
+        }
+        move_file(
+            &files.staging_manifest,
+            &files.target_manifest,
+            "rename manifest into models/",
+        )
+        .await
+    }
+    .await;
+
+    match result {
+        Ok(()) => {
+            let _ = fs::remove_dir_all(&files.backup_dir).await;
+            Ok(())
+        }
+        Err(err) => {
+            rollback_promote(files, backup_manifest, backup_onnx, backup_sidecar).await;
+            let _ = fs::remove_dir_all(&files.backup_dir).await;
+            Err(err)
+        }
+    }
+}
+
+async fn backup_existing(target: &Path, backup_dir: &Path, backup_name: &str) -> Result<Option<PathBuf>, PromoteError> {
+    if !target
+        .try_exists()
+        .map_err(|e| PromoteError::PromoteIo(format!("check existing target {}: {e}", target.display())))?
+    {
+        return Ok(None);
+    }
+    let backup = backup_dir.join(backup_name);
+    fs::rename(target, &backup)
+        .await
+        .map_err(|e| PromoteError::PromoteIo(format!("backup existing target {}: {e}", target.display())))?;
+    Ok(Some(backup))
+}
+
+async fn move_file(src: &Path, dst: &Path, op: &str) -> Result<(), PromoteError> {
+    fs::rename(src, dst)
+        .await
+        .map_err(|e| PromoteError::PromoteIo(format!("{op}: {e}")))
+}
+
+async fn rollback_promote(
+    files: &PromoteFileSet,
+    backup_manifest: Option<PathBuf>,
+    backup_onnx: Option<PathBuf>,
+    backup_sidecar: Option<Option<PathBuf>>,
+) {
+    remove_if_exists(&files.target_manifest).await;
+    remove_if_exists(&files.target_onnx).await;
+    if let Some(target) = &files.target_sidecar {
+        remove_if_exists(target).await;
+    }
+    restore_backup(backup_manifest, &files.target_manifest).await;
+    restore_backup(backup_onnx, &files.target_onnx).await;
+    if let (Some(backup), Some(target)) = (backup_sidecar.flatten(), &files.target_sidecar) {
+        restore_backup(Some(backup), target).await;
+    }
+}
+
+async fn remove_if_exists(path: &Path) {
+    if let Ok(true) = path.try_exists() {
+        let _ = fs::remove_file(path).await;
+    }
+}
+
+async fn restore_backup(backup: Option<PathBuf>, target: &Path) {
+    if let Some(backup) = backup {
+        let _ = fs::rename(backup, target).await;
+    }
 }
 
 /// Metadata surfaced back to the client when the promote succeeds.
@@ -856,6 +961,48 @@ mod tests {
     fn promote_error_promote_io_maps_to_500() {
         let resp = PromoteError::PromoteIo("rename failed".into()).into_response();
         assert_eq!(resp.status().as_u16(), 500);
+    }
+
+    #[tokio::test]
+    async fn promote_files_rolls_back_active_files_when_sidecar_move_fails() {
+        let tmp = std::env::temp_dir().join(format!("nguardia-promote-rollback-{}", Uuid::new_v4()));
+        let staging = tmp.join("staging");
+        let models = tmp.join("models");
+        let backup = models.join(".promote-backup-test");
+        fs::create_dir_all(&staging).await.unwrap();
+        fs::create_dir_all(&models).await.unwrap();
+
+        let staging_manifest = staging.join(MANIFEST_FILENAME);
+        let staged_onnx = staging.join("model.onnx");
+        let missing_sidecar = staging.join("missing-scaler.json");
+        let target_manifest = models.join(MANIFEST_FILENAME);
+        let target_onnx = models.join("model.onnx");
+        let target_sidecar = models.join("scaler.json");
+
+        fs::write(&staging_manifest, b"new manifest").await.unwrap();
+        fs::write(&staged_onnx, b"new onnx").await.unwrap();
+        fs::write(&target_manifest, b"old manifest").await.unwrap();
+        fs::write(&target_onnx, b"old onnx").await.unwrap();
+        fs::write(&target_sidecar, b"old sidecar").await.unwrap();
+
+        let err = promote_files_atomically(&PromoteFileSet {
+            staging_manifest: staging_manifest.clone(),
+            staged_onnx,
+            staged_sidecar: Some(missing_sidecar),
+            target_manifest: target_manifest.clone(),
+            target_onnx: target_onnx.clone(),
+            target_sidecar: Some(target_sidecar.clone()),
+            backup_dir: backup,
+        })
+        .await
+        .expect_err("missing sidecar should fail promote");
+
+        assert!(matches!(err, PromoteError::PromoteIo(_)));
+        assert_eq!(fs::read(&target_manifest).await.unwrap(), b"old manifest");
+        assert_eq!(fs::read(&target_onnx).await.unwrap(), b"old onnx");
+        assert_eq!(fs::read(&target_sidecar).await.unwrap(), b"old sidecar");
+
+        fs::remove_dir_all(&tmp).await.ok();
     }
 
     #[test]

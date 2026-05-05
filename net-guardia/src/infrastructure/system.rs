@@ -296,7 +296,12 @@ impl System {
     }
 
     async fn boot_observability(&mut self) {
-        let health_shutdown = self.health.clone().run(Duration::from_secs(3)).await;
+        let monitoring_interval_secs = self.app_config.load().health.monitoring_interval_secs;
+        let health_shutdown = self
+            .health
+            .clone()
+            .run(Duration::from_secs(monitoring_interval_secs))
+            .await;
         self.health_shutdown = Some(health_shutdown);
 
         let audit_logger = Arc::new(AuditLogger::new(self.database.clone() as Arc<dyn AuditRepo>));

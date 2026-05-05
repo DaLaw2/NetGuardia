@@ -6,18 +6,8 @@ traceable! {
         #[error("Failed to remove limit on locked memory, ret is: {ret}")]
         RamLimitUnlockError { ret: i32 } => tracing::Level::ERROR,
 
-        #[error("Failed to send message to receiver")]
-        SendMessageError => tracing::Level::ERROR,
-
         #[error("Failed to serialize data")]
         SerializeError => tracing::Level::ERROR,
-
-        #[error("Failed to deserialize data")]
-        DeserializeError => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Network interface '{interface}' not found")]
-        NetworkInterfaceNotFound { interface: String } => tracing::Level::ERROR,
 
         #[error("Failed to open GeoIP database '{path}': {err}")]
         GeoIPDatabaseError { path: String } => tracing::Level::ERROR,
@@ -32,18 +22,6 @@ traceable! {
         #[no_source]
         #[error("DNS domain name too long: '{domain}'")]
         DnsDomainTooLong { domain: String } => tracing::Level::WARN,
-
-        #[no_source]
-        #[error("Type mismatch during message dispatch")]
-        TypeMismatch => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("No handler registered for this message type")]
-        HandlerNotFound => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Event type not registered with communication manager")]
-        TypeNotRegistered => tracing::Level::ERROR,
 
         #[no_source]
         #[error("Validation error: {message}")]

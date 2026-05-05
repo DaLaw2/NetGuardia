@@ -63,7 +63,7 @@ fn required_permission(path: &str, method: &Method) -> Option<String> {
         "rate_limit"
     } else if path.starts_with("/api/system/") {
         "system"
-    } else if path.starts_with("/api/api-keys/") {
+    } else if path == "/api/api-keys" || path.starts_with("/api/api-keys/") {
         return Some("api_keys:admin".to_string());
     } else if path.contains("/soar/blocks/") && path.ends_with("/unblock") {
         return Some("access_control:write".to_string());
@@ -215,5 +215,32 @@ where
             let res = service.call(req).await?.map_into_left_body();
             Ok(res)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::Method;
+
+    use super::required_permission;
+
+    #[test]
+    fn api_key_collection_requires_admin_permission() {
+        assert_eq!(
+            required_permission("/api/api-keys", &Method::GET),
+            Some("api_keys:admin".to_string())
+        );
+    }
+
+    #[test]
+    fn api_key_subroutes_require_admin_permission() {
+        assert_eq!(
+            required_permission("/api/api-keys/generate", &Method::POST),
+            Some("api_keys:admin".to_string())
+        );
+        assert_eq!(
+            required_permission("/api/api-keys/1", &Method::DELETE),
+            Some("api_keys:admin".to_string())
+        );
     }
 }

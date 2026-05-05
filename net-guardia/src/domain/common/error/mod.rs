@@ -2,7 +2,6 @@ pub mod crypto;
 pub mod database;
 pub mod http;
 pub mod io;
-pub mod mcp;
 pub mod misc;
 pub mod notification;
 pub mod system;
@@ -13,7 +12,6 @@ use crate::domain::common::error::crypto::CryptoError;
 use crate::domain::common::error::database::DatabaseError;
 use crate::domain::common::error::http::HttpError;
 use crate::domain::common::error::io::IOError;
-use crate::domain::common::error::mcp::McpError;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::error::notification::NotificationError;
 use crate::domain::common::error::system::SystemError;
@@ -39,8 +37,6 @@ pub enum Error {
     ML(#[from] MLError),
     #[error("{0}")]
     IO(#[from] IOError),
-    #[error("{0}")]
-    Mcp(#[from] McpError),
     #[error("{0}")]
     Misc(#[from] MiscError),
     #[error("{0}")]

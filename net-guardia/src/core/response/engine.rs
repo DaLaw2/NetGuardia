@@ -65,9 +65,11 @@ impl SoarEngine {
         let soar_cfg = config.load();
         let rate_limit_channel = soar_cfg.soar.rate_limit_cmd_channel_capacity;
         let freq_max_keys = soar_cfg.soar.frequency_max_tracked_keys;
+        let freq_max_events_per_key = soar_cfg.soar.frequency_max_events_per_key;
+        let freq_retention_secs = soar_cfg.soar.frequency_retention_secs;
         drop(soar_cfg);
         let rate_limit_owner = rate_limit.map(|rl| RateLimitOwnerHandle::spawn(rl, config.clone(), rate_limit_channel));
-        let matcher = PlaybookMatcher::new(config, freq_max_keys);
+        let matcher = PlaybookMatcher::new(config, freq_max_keys, freq_max_events_per_key, freq_retention_secs);
         let engine = Self {
             db,
             access_control,

@@ -11,7 +11,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, filter, reload};
 
-use crate::domain::common::config::observability::ObservabilityConfig;
+use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::io::IOError;
 use crate::infrastructure::log_buffer::{LogBuffer, LogBufferLayer};
@@ -26,9 +26,10 @@ pub struct Logger {
 }
 
 impl Logger {
-    pub fn initialize(config: &ObservabilityConfig) -> Result<(Self, LogBuffer), Error> {
-        let log_directory = "logs";
-        fs::create_dir_all(log_directory).map_err(|err| IOError::CreateDirectoryFailed(log_directory, err))?;
+    pub fn initialize(config: &AppConfig) -> Result<(Self, LogBuffer), Error> {
+        let observability = &config.observability;
+        let log_directory = &config.system.log_dir;
+        fs::create_dir_all(log_directory).map_err(|err| IOError::CreateDirectoryFailed(log_directory.clone(), err))?;
 
         let file_appender = RollingFileAppender::new(Rotation::DAILY, log_directory, "NetGuardia");
 
@@ -47,7 +48,7 @@ impl Logger {
             .with_ansi(false)
             .with_writer(file_appender);
 
-        let level: Level = config
+        let level: Level = observability
             .log_level
             .parse()
             .ok()
@@ -71,8 +72,10 @@ impl Logger {
         filter = Self::apply_directives(filter, &preserved);
         let (filter_layer, reload_handle) = reload::Layer::new(filter);
 
-        let (log_buffer_layer, log_buffer) =
-            LogBufferLayer::new(config.log_buffer_capacity, config.log_buffer_max_message_bytes);
+        let (log_buffer_layer, log_buffer) = LogBufferLayer::new(
+            observability.log_buffer_capacity,
+            observability.log_buffer_max_message_bytes,
+        );
 
         tracing_subscriber::registry()
             .with(filter_layer)

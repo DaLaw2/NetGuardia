@@ -3,9 +3,6 @@ use tracing;
 
 loggable! {
     SystemLog {
-        #[error("Online now")]
-        Online => tracing::Level::INFO,
-
         #[error("Initializing")]
         Initializing => tracing::Level::INFO,
 
@@ -26,9 +23,6 @@ loggable! {
 
         #[error("Setup wizard completed — starting full system initialization")]
         SetupCompleted => tracing::Level::INFO,
-
-        #[error("Config reloaded from DB: ingress={ingress}, egress={egress}")]
-        ConfigReloaded { ingress: String, egress: String } => tracing::Level::INFO,
 
         #[error("Full system initialization complete — all services running")]
         FullInitComplete => tracing::Level::INFO,

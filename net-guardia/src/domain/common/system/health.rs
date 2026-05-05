@@ -63,8 +63,8 @@ pub enum EbpfFailCategory {
     InterfaceNotFound,
     /// Interface exists but XDP native/SKB attach refused by driver.
     XdpUnsupported,
-    /// AF_XDP bind rejected — driver does not implement AF_XDP on this kernel.
-    /// Common case: Intel i350 (igb) on kernel < 6.17.
+    /// AF_XDP bind rejected — driver or netdev capabilities do not support
+    /// the requested AF_XDP socket mode on this interface.
     AfXdpUnsupported,
     /// ENOMEM / RLIMIT_MEMLOCK exhausted.
     MemlockExhausted,

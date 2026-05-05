@@ -162,8 +162,12 @@ async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path
     ok_or_error(svc.manual_unblock(path.into_inner()).await)
 }
 
-async fn list_executions(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    ok_json_or_error(svc.list_executions(100).await)
+async fn list_executions(
+    _auth: AuthClaims,
+    svc: web::Data<PlaybookService>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
+) -> HttpResponse {
+    ok_json_or_error(svc.list_executions(app_config.load().soar.execution_list_limit).await)
 }
 
 async fn list_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {

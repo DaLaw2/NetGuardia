@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::inference::engine::Engine;
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::flow_stats::{
-    FlowPushPayload, FlowStatsEntry, FlowSubscription, FlowSummary, StatsSummary,
+    FlowPushPayload, FlowStatsEntry, FlowStatsLimits, FlowSubscription, FlowSummary, StatsSummary,
 };
 use crate::domain::detection::flow_tracker::FlowData;
 
@@ -32,17 +32,28 @@ impl From<&FlowData> for FlowStatsEntry {
 
 pub struct FlowStatistics {
     engine: Arc<Engine>,
+    limits: FlowStatsLimits,
 }
 
 impl FlowStatistics {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+    pub fn new(engine: Arc<Engine>, limits: FlowStatsLimits) -> Self {
+        Self { engine, limits }
     }
 
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
+        self.collect_flows(Some(self.limits.result_limit(None)))
+    }
+
+    fn collect_flows(&self, limit: Option<usize>) -> Vec<FlowStatsEntry> {
         let mut entries = Vec::new();
         for tracker in self.engine.trackers() {
             entries.extend(tracker.get_flow_stats(|flow| FlowStatsEntry::from(flow)));
+            if let Some(limit) = limit
+                && entries.len() >= limit
+            {
+                entries.truncate(limit);
+                break;
+            }
         }
         entries
     }
@@ -53,7 +64,7 @@ impl FlowStatistics {
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 
-        let mut flows = self.get_all_flows();
+        let mut flows = self.collect_flows(None);
 
         if let Some(dir) = &sub.direction {
             flows.retain(|f| &f.direction == dir);
@@ -65,10 +76,7 @@ impl FlowStatistics {
         }
 
         flows.sort_by_key(|f| std::cmp::Reverse(f.fwd_bytes + f.bwd_bytes));
-
-        if let Some(n) = sub.top_n {
-            flows.truncate(n.min(10000));
-        }
+        flows.truncate(self.limits.result_limit(sub.top_n));
 
         flows
     }
@@ -120,7 +128,7 @@ impl FlowStatistics {
     }
 
     pub fn get_summary(&self) -> StatsSummary {
-        let flows = self.get_all_flows();
+        let flows = self.collect_flows(None);
         let total_flows = flows.len();
         let total_bytes: u64 = flows.iter().map(|f| f.fwd_bytes + f.bwd_bytes).sum();
         let total_packets: usize = flows.iter().map(|f| f.fwd_packets + f.bwd_packets).sum();

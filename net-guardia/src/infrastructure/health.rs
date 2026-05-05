@@ -36,8 +36,8 @@ pub struct SystemHealth {
 
 impl SystemHealth {
     pub fn new(config: Arc<ArcSwap<AppConfig>>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
-        let (broadcast_tx, _) = broadcast::channel(100);
         let cfg = config.load();
+        let (broadcast_tx, _) = broadcast::channel(cfg.health.broadcast_channel_capacity.max(1));
         let ingress_interface = cfg.ebpf.ingress_ifname.clone();
         let egress_interface = cfg.ebpf.egress_ifname.clone();
 

@@ -29,12 +29,21 @@ pub struct PlaybookMatcher {
 }
 
 impl PlaybookMatcher {
-    pub fn new(config: Arc<ArcSwap<AppConfig>>, frequency_max_tracked_keys: usize) -> Self {
+    pub fn new(
+        config: Arc<ArcSwap<AppConfig>>,
+        frequency_max_tracked_keys: usize,
+        frequency_max_events_per_key: usize,
+        frequency_retention_secs: u64,
+    ) -> Self {
         Self {
             playbooks: ArcSwap::from_pointee(Vec::new()),
             admin_whitelist: ArcSwap::from_pointee(HashSet::new()),
             cooldowns: DashMap::new(),
-            frequency_tracker: FrequencyTracker::new(frequency_max_tracked_keys),
+            frequency_tracker: FrequencyTracker::new(
+                frequency_max_tracked_keys,
+                frequency_max_events_per_key,
+                frequency_retention_secs,
+            ),
             active_block_count: AtomicU32::new(0),
             config,
         }

@@ -22,7 +22,7 @@ use tokio::{signal, time};
 use crate::adapter::http::jwt::JwtService;
 use crate::adapter::persistence::Database;
 use crate::core::identity::auth_service::AuthService;
-use crate::domain::common::config::observability::ObservabilityConfig;
+use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
 use crate::domain::common::log::system::SystemLog;
@@ -145,8 +145,8 @@ async fn main() -> Result<(), Error> {
     }
 
     let database = Arc::new(Database::new(&cli.db_path).await?);
-    let obs_config = ObservabilityConfig::from_config_repo(database.as_ref()).await?;
-    let (logger, log_buffer) = Logger::initialize(&obs_config)?;
+    let app_config = AppConfig::from_config_repo(database.as_ref()).await?;
+    let (logger, log_buffer) = Logger::initialize(&app_config)?;
     let logger = Arc::new(logger);
     let log_buffer = Arc::new(log_buffer);
 

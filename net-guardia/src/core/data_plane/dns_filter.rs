@@ -25,6 +25,10 @@ impl DnsFilter {
         Ok(())
     }
 
+    pub fn validate_domain(&self, domain: &str) -> Result<(), Error> {
+        domain_to_wire_format(domain).map(|_| ())
+    }
+
     pub fn remove_domain(&self, domain: &str) -> Result<(), Error> {
         let name = domain_to_wire_format(domain)?;
         self.blacklist.remove(&name);
@@ -185,6 +189,9 @@ impl DnsFilter {
 }
 
 impl DnsFilterPort for DnsFilter {
+    fn validate_domain(&self, domain: &str) -> Result<(), Error> {
+        self.validate_domain(domain)
+    }
     fn add_domain(&self, domain: &str) -> Result<(), Error> {
         self.add_domain(domain)
     }

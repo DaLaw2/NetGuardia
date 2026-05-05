@@ -14,8 +14,8 @@ pub trait EnforcementRepo: Send + Sync {
     async fn set_rate_limit(&self, key: &str, value: u64) -> Result<(), Error>;
 
     // --- DNS ---
-    async fn insert_dns_domain(&self, domain: &str) -> Result<(), Error>;
-    async fn delete_dns_domain(&self, domain: &str) -> Result<(), Error>;
+    async fn insert_dns_domains(&self, domains: &[String]) -> Result<(), Error>;
+    async fn delete_dns_domains(&self, domains: &[String]) -> Result<(), Error>;
 
     // --- Geo ---
     async fn insert_geo_country(&self, code: &str) -> Result<(), Error>;

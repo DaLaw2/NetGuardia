@@ -139,3 +139,36 @@ impl ApiKeyRepo for Database {
         self.delete_api_key(id).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    #[tokio::test]
+    async fn validate_full_access_api_key_grants_admin_permissions() {
+        let db = Database::new(":memory:").await.expect("test db");
+        let raw_key = "ng-test-full-access";
+        let digest = db.hmac_api_key(raw_key);
+
+        db.insert_api_key(&digest, "automation", "full_access").await.unwrap();
+
+        let claims = db.validate_api_key(raw_key).await.unwrap().expect("claims");
+        assert!(claims.permissions.contains(&"api_keys:admin".to_string()));
+        assert!(claims.permissions.contains(&"system:admin".to_string()));
+        assert!(claims.permissions.contains(&"users:admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_read_write_api_key_does_not_grant_admin_permissions() {
+        let db = Database::new(":memory:").await.expect("test db");
+        let raw_key = "ng-test-read-write";
+        let digest = db.hmac_api_key(raw_key);
+
+        db.insert_api_key(&digest, "automation", "read_write").await.unwrap();
+
+        let claims = db.validate_api_key(raw_key).await.unwrap().expect("claims");
+        assert!(!claims.permissions.contains(&"api_keys:admin".to_string()));
+        assert!(!claims.permissions.contains(&"system:admin".to_string()));
+        assert!(!claims.permissions.contains(&"users:admin".to_string()));
+    }
+}

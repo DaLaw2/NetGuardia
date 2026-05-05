@@ -32,6 +32,12 @@ pub struct EbpfConfig {
     pub packet_buffer_size: usize,
     #[setting(section = "xdp", key = "buffer_pool_capacity", default = "1024")]
     pub buffer_pool_capacity: usize,
+    #[setting(section = "xdp", key = "xsk_completion_batch_size", default = "256")]
+    pub xsk_completion_batch_size: usize,
+    #[setting(section = "xdp", key = "xsk_rx_batch_size", default = "64")]
+    pub xsk_rx_batch_size: usize,
+    #[setting(section = "xdp", key = "xsk_tx_batch_size", default = "64")]
+    pub xsk_tx_batch_size: usize,
     // ── internal (not exposed in API) ──────────────────────────────
     #[setting(section = "xdp", key = "default_packet_rate", default = "10000", api = false)]
     pub default_packet_rate: u64,

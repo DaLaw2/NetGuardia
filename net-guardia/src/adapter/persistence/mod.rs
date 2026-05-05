@@ -317,6 +317,32 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_audit_log_action
                 ON audit_log(action, id DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_soar_block_active_expires
+                ON soar_block_rules(expires_at)
+                WHERE unblocked_at IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_soar_block_created_at
+                ON soar_block_rules(created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_soar_block_unblocked_at
+                ON soar_block_rules(unblocked_at)
+                WHERE unblocked_at IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_soar_block_source_created
+                ON soar_block_rules(source_ip, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_soar_executions_executed_at
+                ON soar_executions(executed_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_soar_executions_trigger_executed
+                ON soar_executions(trigger_event, executed_at);
+
+            CREATE INDEX IF NOT EXISTS idx_user_group_members_group_id
+                ON user_group_members(group_id, user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash
+                ON api_keys(key_hash);
+
             CREATE TRIGGER IF NOT EXISTS audit_log_no_update
             BEFORE UPDATE ON audit_log BEGIN
                 SELECT RAISE(ABORT, 'audit_log is append-only (WORM)');
@@ -361,7 +387,7 @@ impl Database {
                     )?;
                 }
 
-                Ok(())
+                Ok::<(), Error>(())
             })
             .await
     }
@@ -543,5 +569,35 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[tokio::test]
+    async fn create_tables_installs_query_shape_indexes() {
+        let db = test_db().await;
+        let expected = [
+            ("soar_block_rules", "idx_soar_block_active_expires"),
+            ("soar_block_rules", "idx_soar_block_created_at"),
+            ("soar_block_rules", "idx_soar_block_unblocked_at"),
+            ("soar_block_rules", "idx_soar_block_source_created"),
+            ("soar_executions", "idx_soar_executions_executed_at"),
+            ("soar_executions", "idx_soar_executions_trigger_executed"),
+            ("user_group_members", "idx_user_group_members_group_id"),
+            ("api_keys", "idx_api_keys_key_hash"),
+        ];
+
+        db.pool
+            .conn_and_then(move |conn| {
+                for (table, index) in expected {
+                    let count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1 AND name = ?2",
+                        params![table, index],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(count, 1, "missing index {index} on {table}");
+                }
+                Ok::<(), Error>(())
+            })
+            .await
+            .unwrap();
     }
 }

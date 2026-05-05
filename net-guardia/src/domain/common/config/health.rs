@@ -21,4 +21,6 @@ pub struct HealthConfig {
     pub temp_warn_celsius: f32,
     #[setting(key = "health_monitoring_interval_secs", default = "5")]
     pub monitoring_interval_secs: u64,
+    #[setting(key = "health_broadcast_channel_capacity", default = "100")]
+    pub broadcast_channel_capacity: usize,
 }

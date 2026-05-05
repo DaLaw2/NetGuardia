@@ -29,6 +29,12 @@ pub struct SoarConfig {
     pub rate_limit_cmd_channel_capacity: usize,
     #[setting(key = "soar_frequency_max_tracked_keys", default = "50000")]
     pub frequency_max_tracked_keys: usize,
+    #[setting(key = "soar_frequency_max_events_per_key", default = "200")]
+    pub frequency_max_events_per_key: usize,
+    #[setting(key = "soar_frequency_retention_secs", default = "7200")]
+    pub frequency_retention_secs: u64,
     #[setting(key = "soar_fallback_cooldown_secs", default = "300")]
     pub fallback_cooldown_secs: i64,
+    #[setting(key = "soar_execution_list_limit", default = "100")]
+    pub execution_list_limit: i64,
 }

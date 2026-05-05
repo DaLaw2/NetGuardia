@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,14 +17,9 @@ pub struct GeoIpService {
 }
 
 impl GeoIpService {
-    pub fn new(db_name: &str) -> Result<Self, MaxMindDbError> {
-        let db_path = PathBuf::from("net-guardia/static/geo").join(db_name);
-        Self::with_cache_size(db_path, 10000)
-    }
-
     pub fn with_cache_size<P: AsRef<Path>>(db_path: P, cache_size: usize) -> Result<Self, MaxMindDbError> {
         let reader = Reader::open_readfile(db_path)?;
-        let capacity = if cache_size == 0 { 10_000 } else { cache_size } as u64;
+        let capacity = cache_size.max(1) as u64;
 
         Ok(Self {
             reader: Arc::new(reader),

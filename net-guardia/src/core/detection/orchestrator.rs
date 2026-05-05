@@ -78,16 +78,17 @@ impl DetectionOrchestrator {
     ) -> Self {
         let cfg = app_config.load();
         let fusion = &cfg.detection.fusion;
-        let max_dedup = NonZero::new(fusion.max_dedup_entries.max(1)).unwrap_or(NonZero::<usize>::MIN);
+        let source_count_max_entries = nonzero_cache_size(fusion.source_count_max_entries);
+        let repeat_tracker_max_entries = nonzero_cache_size(fusion.repeat_tracker_max_entries);
+        let max_dedup = nonzero_cache_size(fusion.max_dedup_entries);
         Self {
             rx,
             threat_tx,
             audit_tx,
             geoip,
             metrics,
-            // SAFETY: NonZero::new on non-zero literals.
-            src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
-            repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
+            src_ip_counts: LruCache::new(source_count_max_entries),
+            repeat_tracker: LruCache::new(repeat_tracker_max_entries),
             dedup: LruCache::new(max_dedup),
             dedup_window: Duration::from_secs(fusion.dedup_window_secs),
             repeat_offender_window: Duration::from_secs(fusion.repeat_offender_window_secs),
@@ -353,6 +354,10 @@ impl DetectionOrchestrator {
             self.dedup.pop(&key);
         }
     }
+}
+
+fn nonzero_cache_size(value: usize) -> NonZero<usize> {
+    NonZero::new(value.max(1)).unwrap_or(NonZero::<usize>::MIN)
 }
 
 pub async fn bridge_ml_to_detection(mut rx: broadcast::Receiver<AlertMessage>, tx: mpsc::Sender<DetectionEvent>) {

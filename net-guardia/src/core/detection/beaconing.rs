@@ -34,6 +34,7 @@ impl BeaconingDetector {
                 beaconing.min_observations,
                 beaconing.cv_threshold,
                 beaconing.max_cache_entries,
+                beaconing.max_timestamps_per_flow,
                 beaconing.expiry_secs,
                 beaconing.alert_cooldown_secs,
             ),
@@ -78,8 +79,6 @@ impl BeaconingDetector {
 
 type FlowTuple = (String, String, u16);
 
-const MAX_TIMESTAMPS_PER_FLOW: usize = 100;
-
 struct CachedFlow {
     timestamps: Vec<Instant>,
     last_alerted: Option<Instant>,
@@ -90,6 +89,7 @@ pub struct BeaconingState {
     min_observations: usize,
     cv_threshold: f64,
     max_cache_entries: usize,
+    max_timestamps_per_flow: usize,
     expiry_secs: u64,
     alert_cooldown_secs: u64,
 }
@@ -99,6 +99,7 @@ impl BeaconingState {
         min_observations: usize,
         cv_threshold: f64,
         max_cache_entries: usize,
+        max_timestamps_per_flow: usize,
         expiry_secs: u64,
         alert_cooldown_secs: u64,
     ) -> Self {
@@ -107,6 +108,7 @@ impl BeaconingState {
             min_observations,
             cv_threshold,
             max_cache_entries,
+            max_timestamps_per_flow,
             expiry_secs,
             alert_cooldown_secs,
         }
@@ -123,8 +125,8 @@ impl BeaconingState {
 
         entry.timestamps.push(now);
 
-        if entry.timestamps.len() > MAX_TIMESTAMPS_PER_FLOW {
-            let excess = entry.timestamps.len() - MAX_TIMESTAMPS_PER_FLOW;
+        if entry.timestamps.len() > self.max_timestamps_per_flow {
+            let excess = entry.timestamps.len() - self.max_timestamps_per_flow;
             entry.timestamps.drain(..excess);
         }
     }
@@ -280,7 +282,7 @@ mod tests {
 
     #[test]
     fn beaconing_state_detects_periodic_flows() {
-        let state = BeaconingState::new(5, 0.3, 50_000, 3600, 120);
+        let state = BeaconingState::new(5, 0.3, 50_000, 100, 3600, 120);
         let base = Instant::now();
         let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
         state.flow_cache.insert(
@@ -294,5 +296,34 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, DetectionSource::Beaconing);
         assert_eq!(events[0].attack_type, CanonicalAttackType::C2Beacon.as_str());
+    }
+
+    #[test]
+    fn record_flow_respects_configured_timestamp_cap() {
+        let state = BeaconingState::new(1, 0.3, 50_000, 3, 3600, 120);
+        let alert = crate::domain::detection::ml_detection::AlertMessage {
+            timestamp: 0,
+            flow_key: "10.0.0.1:12345-1.2.3.4:443".to_string(),
+            src_ip: "10.0.0.1".to_string(),
+            dst_ip: "1.2.3.4".to_string(),
+            src_port: 12345,
+            dst_port: 443,
+            protocol: 6,
+            is_attack: true,
+            attack_type: Some("c2_beacon".to_string()),
+            confidence: 0.9,
+            packet_count: 10,
+            flow_duration_us: 1000,
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
+        };
+
+        for _ in 0..5 {
+            state.record_flow(&alert);
+        }
+
+        let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
+        assert_eq!(state.flow_cache.get(&key).unwrap().timestamps.len(), 3);
     }
 }

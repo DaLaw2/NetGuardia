@@ -33,24 +33,32 @@ impl Database {
             .await
     }
 
-    pub async fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> {
-        let domain = domain.to_string();
+    pub async fn insert_dns_domains(&self, domains: &[String]) -> Result<(), Error> {
+        let domains = domains.to_vec();
         self.pool
-            .conn_and_then(move |conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO dns_blacklist (domain) VALUES (?1)",
-                    params![domain],
-                )?;
+            .conn_mut_and_then(move |conn| {
+                let tx = conn.transaction()?;
+                for domain in domains {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO dns_blacklist (domain) VALUES (?1)",
+                        params![domain],
+                    )?;
+                }
+                tx.commit()?;
                 Ok(())
             })
             .await
     }
 
-    pub async fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> {
-        let domain = domain.to_string();
+    pub async fn delete_dns_domains(&self, domains: &[String]) -> Result<(), Error> {
+        let domains = domains.to_vec();
         self.pool
-            .conn_and_then(move |conn| {
-                conn.execute("DELETE FROM dns_blacklist WHERE domain = ?1", params![domain])?;
+            .conn_mut_and_then(move |conn| {
+                let tx = conn.transaction()?;
+                for domain in domains {
+                    tx.execute("DELETE FROM dns_blacklist WHERE domain = ?1", params![domain])?;
+                }
+                tx.commit()?;
                 Ok(())
             })
             .await
@@ -117,12 +125,12 @@ impl EnforcementRepo for Database {
         self.set_rate_limit(key, value).await
     }
 
-    async fn insert_dns_domain(&self, domain: &str) -> Result<(), Error> {
-        self.insert_dns_domain(domain).await
+    async fn insert_dns_domains(&self, domains: &[String]) -> Result<(), Error> {
+        self.insert_dns_domains(domains).await
     }
 
-    async fn delete_dns_domain(&self, domain: &str) -> Result<(), Error> {
-        self.delete_dns_domain(domain).await
+    async fn delete_dns_domains(&self, domains: &[String]) -> Result<(), Error> {
+        self.delete_dns_domains(domains).await
     }
 
     async fn insert_geo_country(&self, code: &str) -> Result<(), Error> {

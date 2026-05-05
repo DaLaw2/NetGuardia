@@ -127,6 +127,12 @@ impl AppConfig {
         require(self.ebpf.rx_queue_size > 0, "ebpf.rx_queue_size")?;
         require(self.ebpf.frame_size > 0, "ebpf.frame_size")?;
         require(self.ebpf.frame_count > 0, "ebpf.frame_count")?;
+        require(
+            self.ebpf.xsk_completion_batch_size > 0,
+            "ebpf.xsk_completion_batch_size",
+        )?;
+        require(self.ebpf.xsk_rx_batch_size > 0, "ebpf.xsk_rx_batch_size")?;
+        require(self.ebpf.xsk_tx_batch_size > 0, "ebpf.xsk_tx_batch_size")?;
         require(self.http_server.port > 0, "http_server.port")?;
         require(self.ml.max_concurrent_flows > 0, "ml.max_concurrent_flows")?;
         require(self.ml.min_packets_for_inference > 0, "ml.min_packets_for_inference")?;
@@ -160,6 +166,12 @@ impl AppConfig {
             self.soar.frequency_max_tracked_keys > 0,
             "soar.frequency_max_tracked_keys",
         )?;
+        require(self.soar.execution_list_limit > 0, "soar.execution_list_limit")?;
+        require(
+            self.soar.frequency_max_events_per_key > 0,
+            "soar.frequency_max_events_per_key",
+        )?;
+        require(self.soar.frequency_retention_secs > 0, "soar.frequency_retention_secs")?;
         require(
             (0.0..=1.0).contains(&self.soar.default_rate_limit_factor),
             "soar.default_rate_limit_factor",
@@ -177,6 +189,14 @@ impl AppConfig {
             "detection.fusion.max_dedup_entries",
         )?;
         require(
+            self.detection.fusion.source_count_max_entries > 0,
+            "detection.fusion.source_count_max_entries",
+        )?;
+        require(
+            self.detection.fusion.repeat_tracker_max_entries > 0,
+            "detection.fusion.repeat_tracker_max_entries",
+        )?;
+        require(
             self.detection.fusion.dedup_window_secs > 0,
             "detection.fusion.dedup_window_secs",
         )?;
@@ -187,6 +207,26 @@ impl AppConfig {
         require(
             self.detection.beaconing.max_cache_entries > 0,
             "detection.beaconing.max_cache_entries",
+        )?;
+        require(
+            self.detection.beaconing.max_timestamps_per_flow > 1,
+            "detection.beaconing.max_timestamps_per_flow",
+        )?;
+        require(
+            self.detection.flow_stats.max_snapshot_entries > 0,
+            "detection.flow_stats.max_snapshot_entries",
+        )?;
+        require(
+            self.detection.flow_stats.max_top_n >= self.detection.flow_stats.max_snapshot_entries,
+            "detection.flow_stats.max_top_n",
+        )?;
+        require(
+            self.health.monitoring_interval_secs > 0,
+            "health.monitoring_interval_secs",
+        )?;
+        require(
+            self.health.broadcast_channel_capacity > 0,
+            "health.broadcast_channel_capacity",
         )?;
         require(
             self.correlation.max_tracked_entries > 0,
@@ -236,6 +276,7 @@ impl AppConfig {
             self.observability.drop_channel_capacity > 0,
             "observability.drop_channel_capacity",
         )?;
+        require(self.acl.geoip_cache_capacity > 0, "acl.geoip_cache_capacity")?;
         require(self.suricata.poll_interval_ms > 0, "suricata.poll_interval_ms")?;
         require(
             (0.0..=1.0).contains(&self.suricata.confidence_high),
@@ -279,6 +320,9 @@ mod tests {
         assert_eq!(cfg.ebpf.egress_ifname, "eth1");
         assert_eq!(cfg.ebpf.combined_queue_count, 1);
         assert_eq!(cfg.ebpf.frame_size, 4096);
+        assert_eq!(cfg.ebpf.xsk_completion_batch_size, 256);
+        assert_eq!(cfg.ebpf.xsk_rx_batch_size, 64);
+        assert_eq!(cfg.ebpf.xsk_tx_batch_size, 64);
         assert_eq!(cfg.http_server.jwt_expiry_hours, 24);
     }
 
@@ -305,9 +349,15 @@ mod tests {
         let db = test_db().await;
         db.set_config_value("frame_size", "8192").await.unwrap();
         db.set_config_value("combined_queue_count", "4").await.unwrap();
+        db.set_config_value("xsk_completion_batch_size", "512").await.unwrap();
+        db.set_config_value("xsk_rx_batch_size", "128").await.unwrap();
+        db.set_config_value("xsk_tx_batch_size", "32").await.unwrap();
         let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.ebpf.frame_size, 8192);
         assert_eq!(cfg.ebpf.combined_queue_count, 4);
+        assert_eq!(cfg.ebpf.xsk_completion_batch_size, 512);
+        assert_eq!(cfg.ebpf.xsk_rx_batch_size, 128);
+        assert_eq!(cfg.ebpf.xsk_tx_batch_size, 32);
     }
 
     #[tokio::test]
@@ -344,7 +394,7 @@ mod tests {
             Some("access_control,rate_limit,service".to_string())
         );
         assert_eq!(
-            db.get_config_value("geoip_db_name").await.unwrap(),
+            db.get_config_value("geoip_db_path").await.unwrap(),
             Some("net-guardia/static/geo/dbip-city-lite.mmdb".to_string())
         );
         assert_eq!(
@@ -356,8 +406,28 @@ mod tests {
             Some("86400".to_string())
         );
         assert_eq!(
+            db.get_config_value("soar_execution_list_limit").await.unwrap(),
+            Some("100".to_string())
+        );
+        assert_eq!(
             db.get_config_value("ml_drift_window_secs").await.unwrap(),
             Some("3600".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("fusion_source_count_max_entries").await.unwrap(),
+            Some("10000".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("fusion_repeat_tracker_max_entries").await.unwrap(),
+            Some("5000".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("health_broadcast_channel_capacity").await.unwrap(),
+            Some("100".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("geoip_cache_capacity").await.unwrap(),
+            Some("10000".to_string())
         );
     }
 
@@ -401,9 +471,47 @@ mod tests {
     async fn db_overrides_soar_and_drift() {
         let db = test_db().await;
         db.set_config_value("soar_max_ttl_secs", "3600").await.unwrap();
+        db.set_config_value("soar_execution_list_limit", "42").await.unwrap();
         db.set_config_value("ml_drift_window_secs", "900").await.unwrap();
         let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.soar.max_ttl_secs, 3600);
+        assert_eq!(cfg.soar.execution_list_limit, 42);
         assert_eq!(cfg.ml.drift_window_secs, 900);
+    }
+
+    #[tokio::test]
+    async fn db_overrides_fusion_runtime_cache_sizes() {
+        let db = test_db().await;
+        db.set_config_value("fusion_source_count_max_entries", "1234")
+            .await
+            .unwrap();
+        db.set_config_value("fusion_repeat_tracker_max_entries", "567")
+            .await
+            .unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
+        assert_eq!(cfg.detection.fusion.source_count_max_entries, 1234);
+        assert_eq!(cfg.detection.fusion.repeat_tracker_max_entries, 567);
+    }
+
+    #[tokio::test]
+    async fn db_overrides_health_runtime_values() {
+        let db = test_db().await;
+        db.set_config_value("health_monitoring_interval_secs", "9")
+            .await
+            .unwrap();
+        db.set_config_value("health_broadcast_channel_capacity", "321")
+            .await
+            .unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
+        assert_eq!(cfg.health.monitoring_interval_secs, 9);
+        assert_eq!(cfg.health.broadcast_channel_capacity, 321);
+    }
+
+    #[tokio::test]
+    async fn db_overrides_geoip_runtime_cache_capacity() {
+        let db = test_db().await;
+        db.set_config_value("geoip_cache_capacity", "2048").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
+        assert_eq!(cfg.acl.geoip_cache_capacity, 2048);
     }
 }

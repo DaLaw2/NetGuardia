@@ -36,7 +36,7 @@ impl GeoBlock {
         let v6_trie = LpmTrie::try_from(v6_map).map_err(EbpfError::MapOperationError)?;
 
         // todo read config from AppConfig, not db
-        let db_path = app_config.load().acl.geoip_db_name.clone();
+        let db_path = app_config.load().acl.geoip_db_path.clone();
         let reader = Reader::open_readfile(&db_path).map_err(|e| MiscError::GeoIPDatabaseError(db_path.clone(), e))?;
 
         let index = Self::build_index(&reader)?;
@@ -50,7 +50,7 @@ impl GeoBlock {
     }
 
     pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
-        let index = Reader::open_readfile(&app_config.load().acl.geoip_db_name)
+        let index = Reader::open_readfile(&app_config.load().acl.geoip_db_path)
             .ok()
             .and_then(|reader| Self::build_index(&reader).ok())
             .unwrap_or(GeoIndex {

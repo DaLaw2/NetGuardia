@@ -3,11 +3,6 @@ use macros::config_settings;
 #[config_settings]
 #[derive(Debug, Clone)]
 pub struct MlConfig {
-    // ── models ─────────────────────────────────────────────────────
-    #[setting(section = "models", key = "deep_autoencoder_name", default = "deep_autoencoder.onnx")]
-    pub deep_autoencoder_name: String,
-    #[setting(section = "models", key = "classifier_name", default = "classifier.onnx")]
-    pub classifier_name: String,
     #[setting(section = "models", key = "models_config_name", default = "inference_config.json")]
     pub models_config_name: String,
 

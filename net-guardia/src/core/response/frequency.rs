@@ -11,14 +11,16 @@ pub struct FrequencyTracker {
     events: DashMap<FreqKey, VecDeque<Instant>>,
     max_deque_size: usize,
     max_tracked_keys: usize,
+    max_retention: Duration,
 }
 
 impl FrequencyTracker {
-    pub fn new(max_tracked_keys: usize) -> Self {
+    pub fn new(max_tracked_keys: usize, max_events_per_key: usize, retention_secs: u64) -> Self {
         Self {
             events: DashMap::new(),
-            max_deque_size: 200,
+            max_deque_size: max_events_per_key.max(1),
             max_tracked_keys: max_tracked_keys.max(1),
+            max_retention: Duration::from_secs(retention_secs.max(1)),
         }
     }
 
@@ -50,20 +52,19 @@ impl FrequencyTracker {
         deque.len() as u64
     }
 
-    /// Remove empty deques and entries where all timestamps are expired.
-    /// Uses a conservative 2-hour max window for expiry detection.
+    /// Remove empty deques and entries where all timestamps are outside the
+    /// configured retention window.
     pub fn cleanup(&self) -> u32 {
         let now = Instant::now();
-        let max_window = Duration::from_secs(7200); // 2 hours — conservative upper bound
         let mut removed = 0u32;
         self.events.retain(|_, deque| {
             if deque.is_empty() {
                 removed += 1;
                 return false;
             }
-            // If all entries are older than max_window, remove the whole entry
+            // If all entries are older than max_retention, remove the whole entry.
             if let Some(newest) = deque.back()
-                && now.checked_duration_since(*newest).unwrap_or(Duration::ZERO) > max_window
+                && now.checked_duration_since(*newest).unwrap_or(Duration::ZERO) > self.max_retention
             {
                 removed += 1;
                 return false;
@@ -82,5 +83,19 @@ impl FrequencyTracker {
         }
 
         removed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrequencyTracker;
+
+    #[test]
+    fn record_and_count_respects_configured_per_key_cap() {
+        let tracker = FrequencyTracker::new(10, 2, 60);
+
+        assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 1);
+        assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 2);
+        assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 2);
     }
 }

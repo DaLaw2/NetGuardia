@@ -34,6 +34,7 @@ pub struct UserProfile {
     pub groups: Vec<String>,
 }
 
+#[derive(Debug)]
 pub enum LoginError {
     Locked { retry_after_secs: u64 },
     InvalidCredentials,
@@ -162,5 +163,64 @@ impl AuthService {
         } else {
             ROLE_VIEWER.to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::adapter::http::jwt::JwtService;
+    use crate::adapter::persistence::Database;
+    use crate::domain::identity::password;
+    use crate::infrastructure::secret_store::SecretStore;
+    use crate::interface::secret_store::SecretStorePort;
+
+    async fn auth_fixture() -> (Arc<Database>, Arc<JwtService>, AuthService) {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db.clone()));
+        let jwt = Arc::new(JwtService::new(&secrets, 24).expect("jwt"));
+        let auth = AuthService::new(db.clone() as Arc<dyn AppRepo>, jwt.clone());
+        (db, jwt, auth)
+    }
+
+    async fn create_viewer(db: &Database, username: &str, password: &str) -> i64 {
+        let hash = password::hash_password(password).expect("hash");
+        let user_id = db
+            .insert_user(username, &hash, ROLE_VIEWER, false)
+            .await
+            .expect("insert user");
+        let viewer_group = db
+            .list_user_groups()
+            .await
+            .expect("groups")
+            .into_iter()
+            .find(|g| g.name == GROUP_VIEWER)
+            .expect("viewer group");
+        db.set_user_groups(user_id, &[viewer_group.id])
+            .await
+            .expect("assign viewer group");
+        user_id
+    }
+
+    #[tokio::test]
+    async fn relogin_token_permissions_follow_role_promotion_and_demotion() {
+        let (db, jwt, auth) = auth_fixture().await;
+        let user_id = create_viewer(&db, "alice", "Correct Horse 123!").await;
+
+        db.update_user_role(user_id, ROLE_ADMIN).await.expect("promote");
+        let promoted = auth.login("alice", "Correct Horse 123!").await.expect("login");
+        let promoted_claims = jwt.validate_token(&promoted.token).expect("promoted token");
+        assert_eq!(promoted.role, ROLE_ADMIN);
+        assert_eq!(promoted_claims.role, ROLE_ADMIN);
+        assert!(promoted_claims.permissions.contains(&"users:admin".to_string()));
+
+        db.update_user_role(user_id, ROLE_VIEWER).await.expect("demote");
+        let demoted = auth.login("alice", "Correct Horse 123!").await.expect("login");
+        let demoted_claims = jwt.validate_token(&demoted.token).expect("demoted token");
+        assert_eq!(demoted.role, ROLE_VIEWER);
+        assert_eq!(demoted_claims.role, ROLE_VIEWER);
+        assert!(!demoted_claims.permissions.contains(&"users:admin".to_string()));
     }
 }

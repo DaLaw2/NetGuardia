@@ -36,7 +36,8 @@ impl PermissionLevel {
     pub fn permissions(self) -> &'static [&'static str] {
         match self {
             Self::ReadOnly => API_KEY_READ_ONLY_PERMISSIONS,
-            Self::ReadWrite | Self::FullAccess => API_KEY_READ_WRITE_PERMISSIONS,
+            Self::ReadWrite => API_KEY_READ_WRITE_PERMISSIONS,
+            Self::FullAccess => API_KEY_FULL_ACCESS_PERMISSIONS,
         }
     }
 }
@@ -115,6 +116,8 @@ pub const API_KEY_READ_ONLY_PERMISSIONS: &[&str] = &[
     "system:read",
 ];
 
+pub const API_KEY_FULL_ACCESS_PERMISSIONS: &[&str] = ADMIN_PERMISSIONS;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: i64,
@@ -122,4 +125,32 @@ pub struct Claims {
     pub role: String,
     pub permissions: Vec<String>,
     pub exp: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PermissionLevel;
+
+    #[test]
+    fn read_write_api_keys_do_not_receive_admin_permissions() {
+        let permissions = PermissionLevel::ReadWrite.permissions();
+
+        assert!(!permissions.contains(&"api_keys:admin"));
+        assert!(!permissions.contains(&"system:admin"));
+        assert!(!permissions.contains(&"users:admin"));
+    }
+
+    #[test]
+    fn full_access_api_keys_receive_admin_permissions() {
+        let permissions = PermissionLevel::FullAccess.permissions();
+
+        assert!(permissions.contains(&"api_keys:admin"));
+        assert!(permissions.contains(&"system:admin"));
+        assert!(permissions.contains(&"users:admin"));
+    }
+
+    #[test]
+    fn full_access_has_more_permissions_than_read_write() {
+        assert!(PermissionLevel::FullAccess.permissions().len() > PermissionLevel::ReadWrite.permissions().len());
+    }
 }

@@ -5,9 +5,6 @@ traceable! {
         #[error("Database error: {err}")]
         QueryFailed => tracing::Level::ERROR,
 
-        #[error("Database connection failed")]
-        ConnectionFailed => tracing::Level::ERROR,
-
         #[no_source]
         #[error("User '{username}' already exists")]
         UserAlreadyExists { username: String } => tracing::Level::WARN,

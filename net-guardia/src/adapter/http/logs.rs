@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use actix_web::{HttpResponse, Scope, web};
@@ -9,9 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::common::config::AppConfig;
 use crate::infrastructure::log_buffer::{self, LogBuffer, LogEntry};
-
-/// Hardcoded log directory — not configurable via API to prevent directory traversal.
-const LOG_DIR: &str = "logs";
 
 /// Validate log filename: only alphanumeric, dots, underscores, hyphens.
 /// Prevents path traversal.
@@ -87,9 +84,9 @@ struct LogFileEntry {
     modified: Option<u64>,
 }
 
-async fn list_logs() -> HttpResponse {
-    let log_dir = LOG_DIR;
-    let entries = match fs::read_dir(log_dir) {
+async fn list_logs(app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
+    let log_dir = app_config.load().system.log_dir.clone();
+    let entries = match fs::read_dir(&log_dir) {
         Ok(dir) => dir
             .filter_map(|e| e.ok())
             .filter_map(|e| {
@@ -117,7 +114,9 @@ async fn list_logs() -> HttpResponse {
 }
 
 async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
-    let max_download_size = app_config.load().observability.log_max_download_size;
+    let config = app_config.load();
+    let max_download_size = config.observability.log_max_download_size;
+    let log_dir = PathBuf::from(&config.system.log_dir);
     let filename = path.into_inner();
 
     if !is_valid_log_filename(&filename) {
@@ -126,7 +125,7 @@ async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<App
         }));
     }
 
-    let file_path = Path::new(LOG_DIR).join(&filename);
+    let file_path = log_dir.join(&filename);
 
     // Canonicalize to prevent symlink traversal
     let canonical = match fs::canonicalize(&file_path) {
@@ -137,7 +136,7 @@ async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<App
             }));
         }
     };
-    if let Ok(log_dir_canonical) = fs::canonicalize(LOG_DIR)
+    if let Ok(log_dir_canonical) = fs::canonicalize(&log_dir)
         && !canonical.starts_with(&log_dir_canonical)
     {
         return HttpResponse::Forbidden().json(serde_json::json!({

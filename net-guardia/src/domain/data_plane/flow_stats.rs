@@ -2,6 +2,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::data_plane::direction::Direction;
 
+#[derive(Debug, Clone, Copy)]
+pub struct FlowStatsLimits {
+    max_snapshot_entries: usize,
+    max_top_n: usize,
+}
+
+impl FlowStatsLimits {
+    pub fn new(max_snapshot_entries: usize, max_top_n: usize) -> Self {
+        Self {
+            max_snapshot_entries: max_snapshot_entries.max(1),
+            max_top_n: max_top_n.max(1),
+        }
+    }
+
+    pub fn result_limit(self, requested_top_n: Option<usize>) -> usize {
+        requested_top_n
+            .unwrap_or(self.max_snapshot_entries)
+            .max(1)
+            .min(self.max_top_n)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowStatsEntry {
     pub direction: Direction,
@@ -60,4 +82,30 @@ pub struct FlowSubscription {
     pub top_n: Option<usize>,
     /// Push interval in seconds (default 5)
     pub interval_secs: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FlowStatsLimits;
+
+    #[test]
+    fn result_limit_uses_snapshot_default_when_top_n_absent() {
+        let limits = FlowStatsLimits::new(128, 1024);
+
+        assert_eq!(limits.result_limit(None), 128);
+    }
+
+    #[test]
+    fn result_limit_caps_requested_top_n() {
+        let limits = FlowStatsLimits::new(128, 256);
+
+        assert_eq!(limits.result_limit(Some(1_000)), 256);
+    }
+
+    #[test]
+    fn result_limit_never_returns_zero() {
+        let limits = FlowStatsLimits::new(0, 0);
+
+        assert_eq!(limits.result_limit(Some(0)), 1);
+    }
 }

@@ -44,6 +44,7 @@ use crate::domain::common::system::health::EbpfFailStage;
 use crate::domain::common::system::health::EbpfHealth;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::flow_stats::FlowStatsLimits;
 use crate::domain::data_plane::list_type::ListType;
 use crate::domain::data_plane::log::EbpfLog;
 use crate::domain::detection::drift::FeatureBaselines;
@@ -64,6 +65,7 @@ use crate::interface::config_repo::ConfigRepo;
 use crate::interface::dns_filter_api::DnsFilterPort;
 use crate::interface::dns_query_filter::DnsQueryFilter;
 use crate::interface::email_sender::EmailSenderFactory;
+use crate::interface::enforcement::EnforcementRepo;
 use crate::interface::geo_block_api::GeoBlockPort;
 use crate::interface::geo_lookup::GeoLookup;
 use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
@@ -243,7 +245,16 @@ impl ServiceFactory {
             audit_tx.clone(),
         )?);
 
-        let flow_statistics = Arc::new(FlowStatistics::new(inference_runtime.ml_engine.clone()));
+        let flow_stats_cfg = app_config.load();
+        let flow_stats_limits = FlowStatsLimits::new(
+            flow_stats_cfg.detection.flow_stats.max_snapshot_entries,
+            flow_stats_cfg.detection.flow_stats.max_top_n,
+        );
+        drop(flow_stats_cfg);
+        let flow_statistics = Arc::new(FlowStatistics::new(
+            inference_runtime.ml_engine.clone(),
+            flow_stats_limits,
+        ));
 
         let enforce_handler = Arc::new(EnforceModeHandler::new(
             db.clone() as Arc<dyn AppRepo>,
@@ -275,16 +286,18 @@ impl ServiceFactory {
         };
 
         // Try to initialize GeoIP service
-        let geoip: Option<Arc<dyn GeoLookup>> = match GeoIpService::new(&app_config.load().acl.geoip_db_name) {
-            Ok(svc) => {
-                log!(SystemLog::GeoIpInitialized);
-                Some(Arc::new(svc))
-            }
-            Err(e) => {
-                log!(SystemLog::GeoIpUnavailable(e.to_string()));
-                None
-            }
-        };
+        let acl_cfg = app_config.load().acl.clone();
+        let geoip: Option<Arc<dyn GeoLookup>> =
+            match GeoIpService::with_cache_size(&acl_cfg.geoip_db_path, acl_cfg.geoip_cache_capacity) {
+                Ok(svc) => {
+                    log!(SystemLog::GeoIpInitialized);
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    log!(SystemLog::GeoIpUnavailable(e.to_string()));
+                    None
+                }
+            };
 
         // Create AccessControlPort adapter for SOAR/TTL (decoupled from eBPF)
         let access_control_port: Arc<dyn AccessControlPort> =
@@ -330,7 +343,7 @@ impl ServiceFactory {
             geo_block_port,
         ));
         let dns_filter_service = Arc::new(DnsFilterService::new(
-            db.clone() as Arc<dyn AppRepo>,
+            db.clone() as Arc<dyn EnforcementRepo>,
             dns_filter_port,
             app_config.clone(),
         ));

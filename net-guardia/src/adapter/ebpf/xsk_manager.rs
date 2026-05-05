@@ -183,6 +183,9 @@ pub struct XskPair {
     drop_monitor: Option<Arc<DropMonitor>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
+    completion_batch_size: usize,
+    rx_batch_size: usize,
+    tx_batch_size: usize,
     tx_packet_buf: Vec<Vec<u8>>,
     tx_frame_buf: Vec<FrameDesc>,
 }
@@ -255,8 +258,11 @@ impl XskPair {
             drop_monitor,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
-            tx_packet_buf: Vec::with_capacity(64),
-            tx_frame_buf: Vec::with_capacity(64),
+            completion_batch_size: config.xsk_completion_batch_size,
+            rx_batch_size: config.xsk_rx_batch_size,
+            tx_batch_size: config.xsk_tx_batch_size,
+            tx_packet_buf: Vec::with_capacity(config.xsk_tx_batch_size),
+            tx_frame_buf: Vec::with_capacity(config.xsk_tx_batch_size),
         };
 
         Ok(xsk_pair)
@@ -277,8 +283,8 @@ impl XskPair {
                 let mut shutdown_rx = Some(shutdown_rx);
                 let mut idle_count: u32 = 0;
                 let mut buffer_pool = BufferPool::new(self.buffer_pool_capacity, self.packet_buffer_size);
-                let mut comp_descs = vec![FrameDesc::default(); 256];
-                let mut rx_descs = vec![FrameDesc::default(); 64];
+                let mut comp_descs = vec![FrameDesc::default(); self.completion_batch_size];
+                let mut rx_descs = vec![FrameDesc::default(); self.rx_batch_size];
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -426,7 +432,7 @@ impl XskPair {
         self.tx_packet_buf.clear();
         while let Ok(packet) = forward_rx.try_recv() {
             self.tx_packet_buf.push(packet);
-            if self.tx_packet_buf.len() >= 64 {
+            if self.tx_packet_buf.len() >= self.tx_batch_size {
                 break;
             }
         }
