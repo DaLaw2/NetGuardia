@@ -57,7 +57,11 @@ impl McpServer {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to create HTTP client");
-        Self { client, api_url, api_key }
+        Self {
+            client,
+            api_url,
+            api_key,
+        }
     }
 
     async fn handle_request(&self, req: JsonRpcRequest) -> JsonRpcResponse {
@@ -69,7 +73,10 @@ impl McpServer {
                 jsonrpc: "2.0".into(),
                 id: req.id,
                 result: None,
-                error: Some(JsonRpcError { code: -32601, message: "Method not found".into() }),
+                error: Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".into(),
+                }),
             },
         }
     }
@@ -120,7 +127,10 @@ impl McpServer {
 
     async fn handle_tool_call(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        let arguments = params.get("arguments").cloned().unwrap_or(Value::Object(Default::default()));
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         let (method, path, body): (&str, String, Option<Value>) = match tool_name {
             "get_health" => ("GET", "/api/health/status".into(), None),
@@ -136,34 +146,65 @@ impl McpServer {
                 let ip = arguments.get("ip").and_then(|v| v.as_str()).unwrap_or("");
                 let is_v6 = ip.contains(':');
                 let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
-                let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
-                ("PUT", format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
+                let addr = if is_v6 {
+                    format!("[{}]:0", ip)
+                } else {
+                    format!("{}:0", ip)
+                };
+                (
+                    "PUT",
+                    format!("/api/acl/{}/source/blacklist", ip_ver),
+                    Some(Value::String(addr)),
+                )
             }
             "unblock_ip" => {
                 let ip = arguments.get("ip").and_then(|v| v.as_str()).unwrap_or("");
                 let is_v6 = ip.contains(':');
                 let ip_ver = if is_v6 { "ipv6" } else { "ipv4" };
-                let addr = if is_v6 { format!("[{}]:0", ip) } else { format!("{}:0", ip) };
-                ("DELETE", format!("/api/acl/{}/source/blacklist", ip_ver), Some(Value::String(addr)))
+                let addr = if is_v6 {
+                    format!("[{}]:0", ip)
+                } else {
+                    format!("{}:0", ip)
+                };
+                (
+                    "DELETE",
+                    format!("/api/acl/{}/source/blacklist", ip_ver),
+                    Some(Value::String(addr)),
+                )
             }
             "set_enforce_mode" => {
                 let mode = arguments.get("mode").and_then(|v| v.as_str()).unwrap_or("monitor");
-                ("PUT", "/api/system/enforce-mode".into(), Some(serde_json::json!({"mode": mode})))
+                (
+                    "PUT",
+                    "/api/system/enforce-mode".into(),
+                    Some(serde_json::json!({"mode": mode})),
+                )
             }
             "add_dns_filter" => {
                 let domain = arguments.get("domain").and_then(|v| v.as_str()).unwrap_or("");
-                ("PUT", "/api/filter/dns/blacklist".into(), Some(serde_json::json!({"domains": [domain]})))
+                (
+                    "PUT",
+                    "/api/filter/dns/blacklist".into(),
+                    Some(serde_json::json!({"domains": [domain]})),
+                )
             }
             "add_geo_block" => {
                 let code = arguments.get("country_code").and_then(|v| v.as_str()).unwrap_or("");
-                ("PUT", "/api/acl/geo/block".into(), Some(serde_json::json!({"country_codes": [code]})))
+                (
+                    "PUT",
+                    "/api/acl/geo/block".into(),
+                    Some(serde_json::json!({"country_codes": [code]})),
+                )
             }
             _ => {
                 return JsonRpcResponse {
                     jsonrpc: "2.0".into(),
                     id,
                     result: None,
-                    error: Some(JsonRpcError { code: -32602, message: format!("Unknown tool: {}", tool_name) }),
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Unknown tool: {}", tool_name),
+                    }),
                 };
             }
         };
@@ -208,17 +249,15 @@ impl McpServer {
                     }
                 }
             }
-            Err(e) => {
-                JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id,
-                    result: Some(serde_json::json!({
-                        "content": [{ "type": "text", "text": format!("Connection error: {}", e) }],
-                        "isError": true
-                    })),
-                    error: None,
-                }
-            }
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id,
+                result: Some(serde_json::json!({
+                    "content": [{ "type": "text", "text": format!("Connection error: {}", e) }],
+                    "isError": true
+                })),
+                error: None,
+            },
         }
     }
 }
@@ -227,7 +266,8 @@ impl McpServer {
 async fn main() {
     let args = Args::parse();
 
-    let api_key = args.api_key
+    let api_key = args
+        .api_key
         .or_else(|| std::env::var("NETGUARDIA_API_KEY").ok())
         .unwrap_or_else(|| {
             eprintln!("Error: No API key provided. Set NETGUARDIA_API_KEY env var or use --api-key flag.");
@@ -256,7 +296,10 @@ async fn main() {
                     jsonrpc: "2.0".into(),
                     id: None,
                     result: None,
-                    error: Some(JsonRpcError { code: -32700, message: format!("Parse error: {}", e) }),
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("Parse error: {}", e),
+                    }),
                 };
                 let _ = writeln!(stdout, "{}", serde_json::to_string(&err_resp).unwrap());
                 let _ = stdout.flush();

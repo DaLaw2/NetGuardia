@@ -1,35 +1,82 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use macros::log;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 
-use crate::model::detection::ml_detection::AlertMessage;
-use crate::model::event::{DetectionEvent, DetectionSource};
-use crate::model::log::detection::DetectionLog;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::ml_detection::AlertMessage;
 
-/// How often to analyze cached flows for beaconing patterns.
-const ANALYSIS_INTERVAL_SECS: u64 = 30;
+pub struct BeaconingDetector {
+    state: BeaconingState,
+    alert_rx: broadcast::Receiver<AlertMessage>,
+    detection_tx: mpsc::Sender<DetectionEvent>,
+    analysis_interval_secs: u64,
+}
 
-/// Minimum number of flow observations before computing CV.
-const MIN_OBSERVATIONS: usize = 5;
+impl BeaconingDetector {
+    pub fn new(
+        app_config: &Arc<ArcSwap<AppConfig>>,
+        alert_rx: broadcast::Receiver<AlertMessage>,
+        detection_tx: mpsc::Sender<DetectionEvent>,
+    ) -> Self {
+        let cfg = app_config.load();
+        let beaconing = &cfg.detection.beaconing;
+        Self {
+            state: BeaconingState::new(
+                beaconing.min_observations,
+                beaconing.cv_threshold,
+                beaconing.max_cache_entries,
+                beaconing.max_timestamps_per_flow,
+                beaconing.expiry_secs,
+                beaconing.alert_cooldown_secs,
+            ),
+            alert_rx,
+            detection_tx,
+            analysis_interval_secs: beaconing.analysis_interval_secs,
+        }
+    }
 
-/// CV threshold: values below this indicate periodic (beaconing) behavior.
-/// 0 = perfectly periodic, 1 = random. C2 beacons typically have CV < 0.3.
-const CV_THRESHOLD: f64 = 0.3;
+    pub fn start(self) {
+        tokio::spawn(async move { self.run().await });
+    }
 
-/// Maximum entries in the flow cache to bound memory.
-const MAX_CACHE_ENTRIES: usize = 50_000;
+    async fn run(mut self) {
+        log!(DetectionLog::BeaconingDetectorStarted);
+        let mut analysis_interval = interval(Duration::from_secs(self.analysis_interval_secs));
+        loop {
+            tokio::select! {
+                result = self.alert_rx.recv() => {
+                    match result {
+                        Ok(alert) => self.state.record_flow(&alert),
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+                _ = analysis_interval.tick() => {
+                    for event in self.state.analyze() {
+                        if let Err(mpsc::error::TrySendError::Full(d)) = self.detection_tx.try_send(event) {
+                            log!(DetectionLog::DetectionChannelDrop(
+                                format!("{:?}", d.source),
+                                d.attack_type,
+                                d.source_ip,
+                            ));
+                        }
+                    }
+                    self.state.cleanup();
+                }
+            }
+        }
+    }
+}
 
-/// Expire entries not seen within this window.
-const EXPIRY_SECS: u64 = 600; // 10 minutes
-
-/// Cooldown between re-alerting on the same (src, dst, port) tuple.
-const ALERT_COOLDOWN_SECS: u64 = 300; // 5 minutes
-
-/// Key for tracking flow timing: (src_ip, dst_ip, dst_port).
 type FlowTuple = (String, String, u16);
 
 struct CachedFlow {
@@ -37,52 +84,37 @@ struct CachedFlow {
     last_alerted: Option<Instant>,
 }
 
-/// Detects C2 beaconing by analyzing the periodicity of flows between
-/// (src_ip, dst_ip, dst_port) tuples. Uses coefficient of variation (CV)
-/// of inter-arrival times: CV < 0.3 with sufficient observations = beaconing.
-pub struct BeaconingDetector {
+pub struct BeaconingState {
     flow_cache: DashMap<FlowTuple, CachedFlow>,
-    detection_tx: mpsc::Sender<DetectionEvent>,
-    alert_rx: broadcast::Receiver<AlertMessage>,
+    min_observations: usize,
+    cv_threshold: f64,
+    max_cache_entries: usize,
+    max_timestamps_per_flow: usize,
+    expiry_secs: u64,
+    alert_cooldown_secs: u64,
 }
 
-impl BeaconingDetector {
-    pub fn new(alert_rx: broadcast::Receiver<AlertMessage>, detection_tx: mpsc::Sender<DetectionEvent>) -> Self {
+impl BeaconingState {
+    pub fn new(
+        min_observations: usize,
+        cv_threshold: f64,
+        max_cache_entries: usize,
+        max_timestamps_per_flow: usize,
+        expiry_secs: u64,
+        alert_cooldown_secs: u64,
+    ) -> Self {
         Self {
             flow_cache: DashMap::new(),
-            detection_tx,
-            alert_rx,
+            min_observations,
+            cv_threshold,
+            max_cache_entries,
+            max_timestamps_per_flow,
+            expiry_secs,
+            alert_cooldown_secs,
         }
     }
 
-    /// Spawn the beaconing detector as a background task.
-    pub fn start(self) {
-        tokio::spawn(async move { self.run().await });
-    }
-
-    async fn run(mut self) {
-        log!(DetectionLog::BeaconingDetectorStarted);
-
-        let mut analysis_interval = interval(Duration::from_secs(ANALYSIS_INTERVAL_SECS));
-
-        loop {
-            tokio::select! {
-                result = self.alert_rx.recv() => {
-                    match result {
-                        Ok(alert) => self.record_flow(&alert),
-                        Err(RecvError::Lagged(_)) => continue,
-                        Err(RecvError::Closed) => break,
-                    }
-                }
-                _ = analysis_interval.tick() => {
-                    self.analyze_and_alert();
-                    self.cleanup();
-                }
-            }
-        }
-    }
-
-    fn record_flow(&self, alert: &AlertMessage) {
+    pub fn record_flow(&self, alert: &AlertMessage) {
         let key = (alert.src_ip.clone(), alert.dst_ip.clone(), alert.dst_port);
         let now = Instant::now();
 
@@ -93,23 +125,20 @@ impl BeaconingDetector {
 
         entry.timestamps.push(now);
 
-        // Cap stored timestamps to avoid unbounded growth per entry
-        if entry.timestamps.len() > 100 {
-            let excess = entry.timestamps.len() - 100;
+        if entry.timestamps.len() > self.max_timestamps_per_flow {
+            let excess = entry.timestamps.len() - self.max_timestamps_per_flow;
             entry.timestamps.drain(..excess);
         }
     }
 
-    fn analyze_and_alert(&self) {
+    pub fn analyze(&self) -> Vec<DetectionEvent> {
         let now = Instant::now();
-        let cooldown = Duration::from_secs(ALERT_COOLDOWN_SECS);
+        let cooldown = Duration::from_secs(self.alert_cooldown_secs);
 
-        // Phase 1: read-lock scan to find beaconing candidates (avoids holding write locks
-        // across the entire 50K-entry iteration, reducing contention with record_flow).
-        let mut alerts: Vec<(FlowTuple, f64, usize)> = Vec::new();
+        let mut candidates: Vec<(FlowTuple, f64, usize)> = Vec::new();
         for entry in self.flow_cache.iter() {
             let flow = entry.value();
-            if flow.timestamps.len() < MIN_OBSERVATIONS {
+            if flow.timestamps.len() < self.min_observations {
                 continue;
             }
             if let Some(last) = flow.last_alerted
@@ -118,13 +147,13 @@ impl BeaconingDetector {
                 continue;
             }
             let cv = compute_cv(&flow.timestamps);
-            if cv < CV_THRESHOLD {
-                alerts.push((entry.key().clone(), cv, flow.timestamps.len()));
+            if cv < self.cv_threshold {
+                candidates.push((entry.key().clone(), cv, flow.timestamps.len()));
             }
         }
 
-        // Phase 2: selective write-lock only for entries that need last_alerted update.
-        for (key, cv, count) in alerts {
+        let mut events = Vec::new();
+        for (key, cv, count) in candidates {
             let (src_ip, dst_ip, dst_port) = &key;
             log!(DetectionLog::BeaconingDetected(
                 src_ip.clone(),
@@ -134,10 +163,10 @@ impl BeaconingDetector {
                 count,
             ));
 
-            let event = DetectionEvent {
+            events.push(DetectionEvent {
                 source: DetectionSource::Beaconing,
-                attack_type: "c2_communication".to_string(),
-                confidence: (1.0 - cv / CV_THRESHOLD) as f32 * 0.5 + 0.5,
+                attack_type: CanonicalAttackType::C2Beacon.as_str().to_string(),
+                confidence: (1.0 - cv / self.cv_threshold) as f32 * 0.5 + 0.5,
                 source_ip: src_ip.clone(),
                 dest_ip: dst_ip.clone(),
                 protocol: 6,
@@ -146,18 +175,19 @@ impl BeaconingDetector {
                 ae_score: 0.0,
                 anomaly_score: 0.0,
                 c2_score: 0.0,
-            };
+            });
 
-            let _ = self.detection_tx.try_send(event);
             if let Some(mut entry) = self.flow_cache.get_mut(&key) {
                 entry.last_alerted = Some(now);
             }
         }
+
+        events
     }
 
-    fn cleanup(&self) {
+    pub fn cleanup(&self) {
         let now = Instant::now();
-        let expiry = Duration::from_secs(EXPIRY_SECS);
+        let expiry = Duration::from_secs(self.expiry_secs);
 
         self.flow_cache.retain(|_, flow| {
             flow.timestamps
@@ -165,9 +195,8 @@ impl BeaconingDetector {
                 .is_some_and(|last| now.duration_since(*last) < expiry)
         });
 
-        // Enforce max capacity
-        if self.flow_cache.len() > MAX_CACHE_ENTRIES {
-            let excess = self.flow_cache.len() - MAX_CACHE_ENTRIES;
+        if self.flow_cache.len() > self.max_cache_entries {
+            let excess = self.flow_cache.len() - self.max_cache_entries;
             let keys_to_remove: Vec<FlowTuple> = self.flow_cache.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys_to_remove {
                 self.flow_cache.remove(&key);
@@ -176,9 +205,7 @@ impl BeaconingDetector {
     }
 }
 
-/// Compute the coefficient of variation (std / mean) of inter-arrival times.
-/// Returns f64::MAX if fewer than 2 timestamps (no intervals to compute).
-fn compute_cv(timestamps: &[Instant]) -> f64 {
+pub fn compute_cv(timestamps: &[Instant]) -> f64 {
     if timestamps.len() < 2 {
         return f64::MAX;
     }
@@ -203,11 +230,13 @@ fn compute_cv(timestamps: &[Instant]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::{Duration, Instant};
 
+    use crate::core::detection::beaconing::{BeaconingState, CachedFlow, compute_cv};
+    use crate::domain::common::event::DetectionSource;
+    use crate::domain::detection::attack_type::CanonicalAttackType;
     #[test]
     fn cv_perfectly_periodic() {
-        // Perfectly periodic: CV should be ~0
         let base = Instant::now();
         let timestamps: Vec<Instant> = (0..10).map(|i| base + Duration::from_secs(i * 60)).collect();
         let cv = compute_cv(&timestamps);
@@ -216,7 +245,6 @@ mod tests {
 
     #[test]
     fn cv_random_high() {
-        // Irregular intervals: CV should be high
         let base = Instant::now();
         let timestamps = vec![
             base,
@@ -232,15 +260,14 @@ mod tests {
 
     #[test]
     fn cv_with_slight_jitter() {
-        // Periodic with small jitter: CV should be low but > 0
         let base = Instant::now();
         let timestamps = vec![
             base,
             base + Duration::from_millis(60_000),
-            base + Duration::from_millis(121_000), // 61s interval
-            base + Duration::from_millis(179_000), // 58s interval
-            base + Duration::from_millis(240_000), // 61s interval
-            base + Duration::from_millis(299_000), // 59s interval
+            base + Duration::from_millis(121_000),
+            base + Duration::from_millis(179_000),
+            base + Duration::from_millis(240_000),
+            base + Duration::from_millis(299_000),
         ];
         let cv = compute_cv(&timestamps);
         assert!(cv < 0.3, "Slight jitter CV should be < 0.3, got {cv}");
@@ -253,30 +280,50 @@ mod tests {
         assert_eq!(compute_cv(&[]), f64::MAX);
     }
 
-    #[tokio::test]
-    async fn beaconing_detector_records_and_detects() {
-        let (alert_tx, alert_rx) = broadcast::channel(64);
-        let (detection_tx, mut detection_rx) = mpsc::channel(64);
-
-        let detector = BeaconingDetector::new(alert_rx, detection_tx);
-
-        // Manually record periodic flows
+    #[test]
+    fn beaconing_state_detects_periodic_flows() {
+        let state = BeaconingState::new(5, 0.3, 50_000, 100, 3600, 120);
         let base = Instant::now();
         let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
-        detector.flow_cache.insert(
+        state.flow_cache.insert(
             key,
             CachedFlow {
                 timestamps: (0..10).map(|i| base + Duration::from_secs(i * 60)).collect(),
                 last_alerted: None,
             },
         );
+        let events = state.analyze();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, DetectionSource::Beaconing);
+        assert_eq!(events[0].attack_type, CanonicalAttackType::C2Beacon.as_str());
+    }
 
-        detector.analyze_and_alert();
+    #[test]
+    fn record_flow_respects_configured_timestamp_cap() {
+        let state = BeaconingState::new(1, 0.3, 50_000, 3, 3600, 120);
+        let alert = crate::domain::detection::ml_detection::AlertMessage {
+            timestamp: 0,
+            flow_key: "10.0.0.1:12345-1.2.3.4:443".to_string(),
+            src_ip: "10.0.0.1".to_string(),
+            dst_ip: "1.2.3.4".to_string(),
+            src_port: 12345,
+            dst_port: 443,
+            protocol: 6,
+            is_attack: true,
+            attack_type: Some("c2_beacon".to_string()),
+            confidence: 0.9,
+            packet_count: 10,
+            flow_duration_us: 1000,
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
+        };
 
-        let event = detection_rx.try_recv().expect("Should detect beaconing");
-        assert_eq!(event.source, DetectionSource::Beaconing);
-        assert_eq!(event.attack_type, "c2_communication");
+        for _ in 0..5 {
+            state.record_flow(&alert);
+        }
 
-        drop(alert_tx);
+        let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
+        assert_eq!(state.flow_cache.get(&key).unwrap().timestamps.len(), 3);
     }
 }

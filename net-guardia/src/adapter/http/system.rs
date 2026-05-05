@@ -1,17 +1,16 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
-use crate::core::auth::extractor::AuthClaims;
-use crate::core::config_service::ConfigService;
-use crate::infrastructure::communication_manager::CommunicationManager;
+use crate::adapter::http::middleware::extractor::AuthClaims;
+use crate::core::common::config_service::ConfigService;
+use crate::core::common::enforce_mode_handler::EnforceModeHandler;
+use crate::domain::common::config::constants::{
+    ENFORCE_MODE_ENFORCE, ENFORCE_MODE_ML_ONLY, ENFORCE_MODE_MONITOR, PERMISSION_SYSTEM_ADMIN,
+};
+use crate::infrastructure::logger::Logger;
+use crate::infrastructure::runtime_state::RuntimeState;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
-use crate::interface::communication::command_types::ChangeEnforceModeCommand;
-use crate::interface::communication::query_types::GetEnforceModeQuery;
-use crate::interface::port::app_repo::AppRepo;
 use crate::utils::boot_time;
-use crate::utils::logging::Logging;
-
-type Repo = dyn AppRepo;
 
 #[derive(Deserialize)]
 struct EnforceModeRequest {
@@ -36,54 +35,42 @@ async fn get_boot_time() -> impl Responder {
     HttpResponse::Ok().json(boot_time::boot_time())
 }
 
-async fn get_enforce_mode(comm: web::Data<CommunicationManager>) -> impl Responder {
-    match comm.send_query(GetEnforceModeQuery).await {
-        Ok(mode) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+async fn get_enforce_mode(handler: web::Data<EnforceModeHandler>) -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({"mode": handler.get_mode()}))
 }
 
 async fn set_enforce_mode(
     body: web::Json<EnforceModeRequest>,
-    comm: web::Data<CommunicationManager>,
+    handler: web::Data<EnforceModeHandler>,
 ) -> impl Responder {
     let mode = &body.mode;
-    if mode != "monitor" && mode != "ml_only" && mode != "enforce" {
+    if mode != ENFORCE_MODE_MONITOR && mode != ENFORCE_MODE_ML_ONLY && mode != ENFORCE_MODE_ENFORCE {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Mode must be 'monitor', 'ml_only', or 'enforce'"}));
     }
 
-    match comm.send_command(ChangeEnforceModeCommand { mode: mode.clone() }).await {
+    match handler.change_mode(mode.clone()).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
-async fn get_xdp_mode(db: web::Data<Repo>) -> impl Responder {
-    let ingress = db
-        .get_setting("xdp_ingress_mode")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown".to_string());
-    let egress = db
-        .get_setting("xdp_egress_mode")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown".to_string());
+async fn get_xdp_mode(runtime_state: web::Data<arc_swap::ArcSwap<RuntimeState>>) -> impl Responder {
+    let xdp = runtime_state.load().xdp.clone();
 
     HttpResponse::Ok().json(serde_json::json!({
-        "ingress_mode": ingress,
-        "egress_mode": egress,
+        "ingress_mode": xdp.ingress_mode,
+        "egress_mode": xdp.egress_mode,
     }))
 }
 
 async fn get_config(svc: web::Data<ConfigService>) -> impl Responder {
-    HttpResponse::Ok().json(svc.get_config())
+    HttpResponse::Ok().json(svc.get_config().await)
 }
 
-async fn get_log_level() -> impl Responder {
+async fn get_log_level(logging: web::Data<Logger>) -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
-        "level": Logging::current_level(),
+        "level": logging.current_level(),
     }))
 }
 
@@ -92,8 +79,8 @@ struct LogLevelRequest {
     level: String,
 }
 
-async fn set_log_level(body: web::Json<LogLevelRequest>) -> impl Responder {
-    match Logging::set_level(&body.level) {
+async fn set_log_level(body: web::Json<LogLevelRequest>, logging: web::Data<Logger>) -> impl Responder {
+    match logging.set_level(&body.level) {
         Ok(new_level) => HttpResponse::Ok().json(serde_json::json!({
             "level": new_level,
             "message": "Log level updated",
@@ -110,7 +97,7 @@ async fn update_config(
     svc: web::Data<ConfigService>,
     handle: web::Data<ShutdownHandle>,
 ) -> impl Responder {
-    match svc.update_config(&body) {
+    match svc.update_config(&body).await {
         Ok(updated) => {
             let needs_restart = updated.iter().any(|k| HTTP_RELOAD_KEYS.contains(&k.as_str()));
             if needs_restart {
@@ -137,7 +124,7 @@ async fn update_config(
 }
 
 async fn shutdown(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
-    if !auth.permissions.iter().any(|p| p == "system:admin") {
+    if !auth.permissions.iter().any(|p| p == PERMISSION_SYSTEM_ADMIN) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
     }
     if handle.trigger(ShutdownMode::Shutdown) {
@@ -148,7 +135,7 @@ async fn shutdown(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl R
 }
 
 async fn restart(auth: AuthClaims, handle: web::Data<ShutdownHandle>) -> impl Responder {
-    if !auth.permissions.iter().any(|p| p == "system:admin") {
+    if !auth.permissions.iter().any(|p| p == PERMISSION_SYSTEM_ADMIN) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Requires system:admin permission"}));
     }
     if handle.trigger(ShutdownMode::Restart) {

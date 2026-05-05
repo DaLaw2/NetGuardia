@@ -50,19 +50,11 @@ fn get_config(index: u32, default: u64) -> u64 {
 
 #[inline(always)]
 fn is_syn_only(pkt: &ParsedPacket) -> bool {
-    matches!(pkt.protocol, IpProto::Tcp)
-        && (pkt.tcp_flags & TCP_SYN != 0)
-        && (pkt.tcp_flags & TCP_ACK == 0)
+    matches!(pkt.protocol, IpProto::Tcp) && (pkt.tcp_flags & TCP_SYN != 0) && (pkt.tcp_flags & TCP_ACK == 0)
 }
 
 #[inline(always)]
-fn check_rate<K>(
-    map: &LruHashMap<K, RateState>,
-    key: &K,
-    now: u64,
-    window: u64,
-    limit: u64,
-) -> bool {
+fn check_rate<K>(map: &LruHashMap<K, RateState>, key: &K, now: u64, window: u64, limit: u64) -> bool {
     unsafe {
         if let Some(state) = map.get_ptr_mut(key) {
             if now - (*state).window_start >= window {
@@ -91,24 +83,48 @@ fn ipv4_should_drop(pkt: &ParsedPacket) -> Option<u8> {
     let window = get_config(CFG_WINDOW_NS, DEFAULT_WINDOW_NS);
     let src_ip = pkt.src_ip_v4();
 
-    if check_rate(&IPV4_PACKET_RATE_MAP, &src_ip, now, window, get_config(CFG_PACKET_RATE, DEFAULT_PACKET_RATE)) {
+    if check_rate(
+        &IPV4_PACKET_RATE_MAP,
+        &src_ip,
+        now,
+        window,
+        get_config(CFG_PACKET_RATE, DEFAULT_PACKET_RATE),
+    ) {
         return Some(DROP_REASON_RATE_LIMIT_PKT);
     }
 
     if is_syn_only(pkt) {
-        if check_rate(&IPV4_SYN_RATE_MAP, &src_ip, now, window, get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE)) {
+        if check_rate(
+            &IPV4_SYN_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_SYN);
         }
     }
 
     if matches!(pkt.protocol, IpProto::Udp) {
-        if check_rate(&IPV4_UDP_RATE_MAP, &src_ip, now, window, get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE)) {
+        if check_rate(
+            &IPV4_UDP_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_UDP);
         }
     }
 
     if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
-        if check_rate(&IPV4_DNS_RATE_MAP, &src_ip, now, window, get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE)) {
+        if check_rate(
+            &IPV4_DNS_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_DNS);
         }
     }
@@ -122,24 +138,48 @@ fn ipv6_should_drop(pkt: &ParsedPacket) -> Option<u8> {
     let window = get_config(CFG_WINDOW_NS, DEFAULT_WINDOW_NS);
     let src_ip = pkt.src_ip_v6();
 
-    if check_rate(&IPV6_PACKET_RATE_MAP, &src_ip, now, window, get_config(CFG_PACKET_RATE, DEFAULT_PACKET_RATE)) {
+    if check_rate(
+        &IPV6_PACKET_RATE_MAP,
+        &src_ip,
+        now,
+        window,
+        get_config(CFG_PACKET_RATE, DEFAULT_PACKET_RATE),
+    ) {
         return Some(DROP_REASON_RATE_LIMIT_PKT);
     }
 
     if is_syn_only(pkt) {
-        if check_rate(&IPV6_SYN_RATE_MAP, &src_ip, now, window, get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE)) {
+        if check_rate(
+            &IPV6_SYN_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_SYN);
         }
     }
 
     if matches!(pkt.protocol, IpProto::Udp) {
-        if check_rate(&IPV6_UDP_RATE_MAP, &src_ip, now, window, get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE)) {
+        if check_rate(
+            &IPV6_UDP_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_UDP);
         }
     }
 
     if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
-        if check_rate(&IPV6_DNS_RATE_MAP, &src_ip, now, window, get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE)) {
+        if check_rate(
+            &IPV6_DNS_RATE_MAP,
+            &src_ip,
+            now,
+            window,
+            get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE),
+        ) {
             return Some(DROP_REASON_RATE_LIMIT_DNS);
         }
     }

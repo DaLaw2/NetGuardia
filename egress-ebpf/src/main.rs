@@ -19,9 +19,7 @@ static EGRESS_XSKS_MAP: XskMap = XskMap::pinned(64, 0);
 
 #[xdp]
 pub fn net_guardia(ctx: XdpContext) -> u32 {
-    let queue_id = unsafe {
-        compute_symmetric_queue_id(&ctx).unwrap_or((*ctx.ctx).rx_queue_index)
-    };
+    let queue_id = unsafe { compute_symmetric_queue_id(&ctx).unwrap_or((*ctx.ctx).rx_queue_index) };
     match EGRESS_XSKS_MAP.redirect(queue_id, 0) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,

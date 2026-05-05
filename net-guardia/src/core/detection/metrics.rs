@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 
-use crate::model::event::DetectionSource;
+use crate::domain::common::event::DetectionSource;
 
 /// Relaxed ordering is enough for counters: readers tolerate arbitrary
 /// interleaving, and no counter's value gates access to another memory

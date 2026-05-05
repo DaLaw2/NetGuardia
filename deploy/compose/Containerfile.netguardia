@@ -17,7 +17,6 @@ RUN dnf install -y epel-release && \
     git \
     gh \
     vim \
-    openssh-server \
     ethtool \
     nodejs24 \
     nodejs24-npm \
@@ -39,9 +38,5 @@ RUN ln -s /usr/bin/node-24 /usr/local/bin/node && \
     ln -s /usr/bin/npm-24 /usr/local/bin/npm && \
     ln -s /usr/bin/npx-24 /usr/local/bin/npx
 
-RUN echo 'root:@Server20040421@' | chpasswd && \
-    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-
 WORKDIR /root/NetGuardia
-CMD sh -c "ssh-keygen -A && /usr/sbin/sshd && sleep infinity"
+CMD ["sleep", "infinity"]

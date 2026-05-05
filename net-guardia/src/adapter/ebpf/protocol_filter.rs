@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
@@ -8,9 +8,10 @@ use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
 use common::model::placeholder::PlaceHolder;
 use parking_lot::RwLock;
 
-use crate::model::access_control::ip_address::NativeConvert;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::ip_address::NativeConvert;
+use crate::interface::protocol_filter::{IpVersion, ProtocolFilterPort};
 
 pub struct ProtocolFilter {
     ipv4_http_service: RwLock<HttpServiceWrapper<AddrPortV4>>,
@@ -40,7 +41,6 @@ impl ProtocolFilter {
         Ok(service)
     }
 
-    /// Construct a ProtocolFilter backed by no eBPF maps.
     pub fn unavailable() -> Self {
         Self {
             ipv4_http_service: RwLock::new(HttpServiceWrapper::unavailable()),
@@ -54,125 +54,196 @@ impl ProtocolFilter {
             ipv6_ssh_black_list: RwLock::new(EntryMap::unavailable()),
         }
     }
+}
 
-    pub fn get_ipv4_http_service(&self) -> HashMap<SocketAddrV4, Vec<HttpMethod>> {
-        self.ipv4_http_service.read().get_http_method()
+fn require_v4_socket(addr: SocketAddr) -> Result<SocketAddrV4, Error> {
+    match addr {
+        SocketAddr::V4(a) => Ok(a),
+        SocketAddr::V6(_) => Err(EbpfError::IpVersionMismatch("IPv4".to_string()))?,
+    }
+}
+
+fn require_v6_socket(addr: SocketAddr) -> Result<SocketAddrV6, Error> {
+    match addr {
+        SocketAddr::V6(a) => Ok(a),
+        SocketAddr::V4(_) => Err(EbpfError::IpVersionMismatch("IPv6".to_string()))?,
+    }
+}
+
+fn require_v4_ip(ip: IpAddr) -> Result<Ipv4Addr, Error> {
+    match ip {
+        IpAddr::V4(a) => Ok(a),
+        IpAddr::V6(_) => Err(EbpfError::IpVersionMismatch("IPv4".to_string()))?,
+    }
+}
+
+fn require_v6_ip(ip: IpAddr) -> Result<Ipv6Addr, Error> {
+    match ip {
+        IpAddr::V6(a) => Ok(a),
+        IpAddr::V4(_) => Err(EbpfError::IpVersionMismatch("IPv6".to_string()))?,
+    }
+}
+
+impl ProtocolFilterPort for ProtocolFilter {
+    fn get_http_service(&self, version: IpVersion) -> HashMap<SocketAddr, Vec<HttpMethod>> {
+        match version {
+            IpVersion::V4 => self
+                .ipv4_http_service
+                .read()
+                .get_http_method()
+                .into_iter()
+                .map(|(k, v)| (SocketAddr::V4(k), v))
+                .collect(),
+            IpVersion::V6 => self
+                .ipv6_http_service
+                .read()
+                .get_http_method()
+                .into_iter()
+                .map(|(k, v)| (SocketAddr::V6(k), v))
+                .collect(),
+        }
     }
 
-    pub fn get_ipv6_http_service(&self) -> HashMap<SocketAddrV6, Vec<HttpMethod>> {
-        self.ipv6_http_service.read().get_http_method()
+    fn add_http_service(&self, version: IpVersion, address: SocketAddr, methods: Vec<HttpMethod>) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self
+                .ipv4_http_service
+                .write()
+                .add_http_service(require_v4_socket(address)?, methods),
+            IpVersion::V6 => self
+                .ipv6_http_service
+                .write()
+                .add_http_service(require_v6_socket(address)?, methods),
+        }
     }
 
-    pub fn add_ipv4_http_service(&self, address: SocketAddrV4, http_method: Vec<HttpMethod>) -> Result<(), Error> {
-        self.ipv4_http_service.write().add_http_service(address, http_method)
-    }
-
-    pub fn add_ipv6_http_service(&self, address: SocketAddrV6, http_method: Vec<HttpMethod>) -> Result<(), Error> {
-        self.ipv6_http_service.write().add_http_service(address, http_method)
-    }
-
-    pub fn remove_ipv4_http_service(
+    fn remove_http_service(
         &self,
-        address: SocketAddrV4,
-        removed_http_method: Vec<HttpMethod>,
+        version: IpVersion,
+        address: SocketAddr,
+        methods: Vec<HttpMethod>,
     ) -> Result<(), Error> {
-        self.ipv4_http_service
-            .write()
-            .remove_http_service(address, removed_http_method)
+        match version {
+            IpVersion::V4 => self
+                .ipv4_http_service
+                .write()
+                .remove_http_service(require_v4_socket(address)?, methods),
+            IpVersion::V6 => self
+                .ipv6_http_service
+                .write()
+                .remove_http_service(require_v6_socket(address)?, methods),
+        }
     }
 
-    pub fn remove_ipv6_http_service(
-        &self,
-        address: SocketAddrV6,
-        removed_http_method: Vec<HttpMethod>,
-    ) -> Result<(), Error> {
-        self.ipv6_http_service
-            .write()
-            .remove_http_service(address, removed_http_method)
-    }
-
-    pub fn is_ssh_white_list_enable(&self) -> bool {
+    fn is_ssh_white_list_enable(&self) -> bool {
         self.ssh_white_list_enable.read().is_white_list_enable()
     }
 
-    pub fn enable_ssh_white_list(&self) -> Result<(), Error> {
+    fn enable_ssh_white_list(&self) -> Result<(), Error> {
         self.ssh_white_list_enable.write().enable_white_list()
     }
 
-    pub fn disable_ssh_white_list(&self) -> Result<(), Error> {
+    fn disable_ssh_white_list(&self) -> Result<(), Error> {
         self.ssh_white_list_enable.write().disable_white_list()
     }
 
-    pub fn get_ipv4_ssh_service(&self) -> Vec<SocketAddrV4> {
-        self.ipv4_ssh_service.read().get_all()
+    fn get_ssh_service(&self, version: IpVersion) -> Vec<SocketAddr> {
+        match version {
+            IpVersion::V4 => self
+                .ipv4_ssh_service
+                .read()
+                .get_all()
+                .into_iter()
+                .map(SocketAddr::V4)
+                .collect(),
+            IpVersion::V6 => self
+                .ipv6_ssh_service
+                .read()
+                .get_all()
+                .into_iter()
+                .map(SocketAddr::V6)
+                .collect(),
+        }
     }
 
-    pub fn get_ipv6_ssh_service(&self) -> Vec<SocketAddrV6> {
-        self.ipv6_ssh_service.read().get_all()
+    fn add_ssh_service(&self, version: IpVersion, address: SocketAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_service.write().add(require_v4_socket(address)?),
+            IpVersion::V6 => self.ipv6_ssh_service.write().add(require_v6_socket(address)?),
+        }
     }
 
-    pub fn add_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().add(address)
+    fn remove_ssh_service(&self, version: IpVersion, address: SocketAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_service.write().remove(require_v4_socket(address)?),
+            IpVersion::V6 => self.ipv6_ssh_service.write().remove(require_v6_socket(address)?),
+        }
     }
 
-    pub fn add_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().add(address)
+    fn get_ssh_white_list(&self, version: IpVersion) -> Vec<IpAddr> {
+        match version {
+            IpVersion::V4 => self
+                .ipv4_ssh_white_list
+                .read()
+                .get_all()
+                .into_iter()
+                .map(IpAddr::V4)
+                .collect(),
+            IpVersion::V6 => self
+                .ipv6_ssh_white_list
+                .read()
+                .get_all()
+                .into_iter()
+                .map(IpAddr::V6)
+                .collect(),
+        }
     }
 
-    pub fn remove_ipv4_ssh_service(&self, address: SocketAddrV4) -> Result<(), Error> {
-        self.ipv4_ssh_service.write().remove(address)
+    fn add_ssh_white_list(&self, version: IpVersion, ip: IpAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_white_list.write().add(require_v4_ip(ip)?),
+            IpVersion::V6 => self.ipv6_ssh_white_list.write().add(require_v6_ip(ip)?),
+        }
     }
 
-    pub fn remove_ipv6_ssh_service(&self, address: SocketAddrV6) -> Result<(), Error> {
-        self.ipv6_ssh_service.write().remove(address)
+    fn remove_ssh_white_list(&self, version: IpVersion, ip: IpAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_white_list.write().remove(require_v4_ip(ip)?),
+            IpVersion::V6 => self.ipv6_ssh_white_list.write().remove(require_v6_ip(ip)?),
+        }
     }
 
-    pub fn get_ipv4_ssh_white_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_white_list.read().get_all()
+    fn get_ssh_black_list(&self, version: IpVersion) -> Vec<IpAddr> {
+        match version {
+            IpVersion::V4 => self
+                .ipv4_ssh_black_list
+                .read()
+                .get_all()
+                .into_iter()
+                .map(IpAddr::V4)
+                .collect(),
+            IpVersion::V6 => self
+                .ipv6_ssh_black_list
+                .read()
+                .get_all()
+                .into_iter()
+                .map(IpAddr::V6)
+                .collect(),
+        }
     }
 
-    pub fn get_ipv6_ssh_white_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_white_list.read().get_all()
+    fn add_ssh_black_list(&self, version: IpVersion, ip: IpAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_black_list.write().add(require_v4_ip(ip)?),
+            IpVersion::V6 => self.ipv6_ssh_black_list.write().add(require_v6_ip(ip)?),
+        }
     }
 
-    pub fn add_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().add(ip)
-    }
-
-    pub fn add_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().add(ip)
-    }
-
-    pub fn remove_ipv4_ssh_white_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_white_list.write().remove(ip)
-    }
-
-    pub fn remove_ipv6_ssh_white_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_white_list.write().remove(ip)
-    }
-
-    pub fn get_ipv4_ssh_black_list(&self) -> Vec<Ipv4Addr> {
-        self.ipv4_ssh_black_list.read().get_all()
-    }
-
-    pub fn get_ipv6_ssh_black_list(&self) -> Vec<Ipv6Addr> {
-        self.ipv6_ssh_black_list.read().get_all()
-    }
-
-    pub fn add_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().add(ip)
-    }
-
-    pub fn add_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().add(ip)
-    }
-
-    pub fn remove_ipv4_ssh_black_list(&self, ip: Ipv4Addr) -> Result<(), Error> {
-        self.ipv4_ssh_black_list.write().remove(ip)
-    }
-
-    pub fn remove_ipv6_ssh_black_list(&self, ip: Ipv6Addr) -> Result<(), Error> {
-        self.ipv6_ssh_black_list.write().remove(ip)
+    fn remove_ssh_black_list(&self, version: IpVersion, ip: IpAddr) -> Result<(), Error> {
+        match version {
+            IpVersion::V4 => self.ipv4_ssh_black_list.write().remove(require_v4_ip(ip)?),
+            IpVersion::V6 => self.ipv6_ssh_black_list.write().remove(require_v6_ip(ip)?),
+        }
     }
 }
 

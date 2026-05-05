@@ -6,8 +6,8 @@ use actix_ws::Message;
 use futures_util::StreamExt;
 use tokio::time::interval;
 
-use crate::infrastructure::statistics::FlowStatistics;
-use crate::model::monitoring::flow_stats::FlowSubscription;
+use crate::core::common::statistics::FlowStatistics;
+use crate::domain::data_plane::flow_stats::FlowSubscription;
 
 /// Default subscription: all flows, no filter, 5 second interval
 fn default_subscription() -> FlowSubscription {

@@ -3,25 +3,19 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use macros::log;
-use tokio::sync::mpsc;
 
-use crate::model::detection::ml_detection::AlertMessage;
-use crate::model::event::{DetectionEvent, DetectionSource};
-use crate::model::log::detection::DetectionLog;
-
-/// Window within which unique destination ports are counted per source.
-const SCAN_WINDOW_SECS: u64 = 120; // 2 minutes
-
-/// Minimum unique destination ports to trigger a scan alert.
-const SCAN_THRESHOLD: usize = 20;
-
-/// Maximum tracked source IPs to bound memory.
-const MAX_TRACKED_SRCS: usize = 10_000;
+use crate::core::correlation::correlation_cleanup::capped_cleanup;
+use crate::domain::common::config::correlation::CorrelationDetectorParams;
+use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::ml_detection::AlertMessage;
 
 struct TimedPortSet {
     ports: HashSet<u16>,
     window_start: Instant,
     last_dst_ip: String,
+    last_alerted: Option<Instant>,
 }
 
 /// Detects port scanning: a single source IP probing many destination ports.
@@ -29,20 +23,23 @@ pub struct ScanDetector {
     /// src_ip → set of unique dst_ports within the time window
     state: DashMap<String, TimedPortSet>,
     window: Duration,
+    window_secs: u64,
     threshold: usize,
+    max_tracked: usize,
 }
 
 impl ScanDetector {
-    pub fn new() -> Self {
+    pub fn new(params: &CorrelationDetectorParams, max_tracked: usize) -> Self {
         Self {
             state: DashMap::new(),
-            window: Duration::from_secs(SCAN_WINDOW_SECS),
-            threshold: SCAN_THRESHOLD,
+            window: Duration::from_secs(params.window_secs),
+            window_secs: params.window_secs,
+            threshold: params.threshold,
+            max_tracked,
         }
     }
 
-    /// Process an alert and emit a DetectionEvent if the scan threshold is crossed.
-    pub fn process(&self, alert: &AlertMessage, detection_tx: &mpsc::Sender<DetectionEvent>) {
+    pub fn process(&self, alert: &AlertMessage) -> Option<DetectionEvent> {
         let key = alert.src_ip.clone();
         let now = Instant::now();
 
@@ -51,6 +48,7 @@ impl ScanDetector {
                 ports: HashSet::new(),
                 window_start: now,
                 last_dst_ip: alert.dst_ip.clone(),
+                last_alerted: None,
             });
 
             let set = entry.value_mut();
@@ -65,6 +63,13 @@ impl ScanDetector {
             set.last_dst_ip = alert.dst_ip.clone();
 
             if set.ports.len() >= self.threshold {
+                if let Some(last) = set.last_alerted
+                    && now.duration_since(last) < self.window
+                {
+                    set.ports.clear();
+                    set.window_start = now;
+                    return None;
+                }
                 Some((set.ports.len(), set.last_dst_ip.clone()))
             } else {
                 None
@@ -72,11 +77,11 @@ impl ScanDetector {
         };
 
         if let Some((unique_ports, last_dst_ip)) = should_alert {
-            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, SCAN_WINDOW_SECS,));
+            log!(DetectionLog::ScanDetected(key.clone(), unique_ports, self.window_secs,));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
-                attack_type: "port_scan".to_string(),
+                attack_type: CanonicalAttackType::PortScan.as_str().to_string(),
                 confidence: 0.80,
                 source_ip: key.clone(),
                 dest_ip: last_dst_ip,
@@ -88,40 +93,33 @@ impl ScanDetector {
                 c2_score: 0.0,
             };
 
-            let _ = detection_tx.try_send(event);
-
-            // Reset after alerting
             if let Some(mut entry) = self.state.get_mut(&key) {
                 entry.ports.clear();
                 entry.window_start = now;
+                entry.last_alerted = Some(now);
             }
+
+            return Some(event);
         }
+
+        None
     }
 
-    /// Remove expired entries. Returns number of entries removed.
     pub fn cleanup(&self) -> usize {
-        let now = Instant::now();
-        let window = self.window;
-        let before = self.state.len();
-
-        self.state
-            .retain(|_, set| now.duration_since(set.window_start) < window);
-
-        if self.state.len() > MAX_TRACKED_SRCS {
-            let excess = self.state.len() - MAX_TRACKED_SRCS;
-            let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys_to_remove {
-                self.state.remove(&key);
-            }
-        }
-
-        before.saturating_sub(self.state.len())
+        capped_cleanup(&self.state, self.window, self.max_tracked, |s| s.window_start)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_params() -> CorrelationDetectorParams {
+        CorrelationDetectorParams {
+            window_secs: 120,
+            threshold: 20,
+        }
+    }
 
     fn make_alert(src_ip: &str, dst_port: u16) -> AlertMessage {
         AlertMessage {
@@ -143,32 +141,27 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn scan_threshold_triggers_alert() {
-        let detector = ScanDetector::new();
-        let (tx, mut rx) = mpsc::channel(64);
+    #[test]
+    fn scan_threshold_triggers_alert() {
+        let detector = ScanDetector::new(&test_params(), 10_000);
 
         for port in 0..19 {
             let alert = make_alert("10.0.0.1", port);
-            detector.process(&alert, &tx);
+            assert!(detector.process(&alert).is_none());
         }
-        assert!(rx.try_recv().is_err(), "Should not alert below threshold");
 
         let alert = make_alert("10.0.0.1", 19);
-        detector.process(&alert, &tx);
-        let event = rx.try_recv().expect("Should alert at threshold");
+        let event = detector.process(&alert).expect("Should alert at threshold");
         assert_eq!(event.attack_type, "port_scan");
     }
 
-    #[tokio::test]
-    async fn different_sources_tracked_independently() {
-        let detector = ScanDetector::new();
-        let (tx, mut rx) = mpsc::channel(64);
+    #[test]
+    fn different_sources_tracked_independently() {
+        let detector = ScanDetector::new(&test_params(), 10_000);
 
         for port in 0..15 {
-            detector.process(&make_alert("10.0.0.1", port), &tx);
-            detector.process(&make_alert("10.0.0.2", port), &tx);
+            assert!(detector.process(&make_alert("10.0.0.1", port)).is_none());
+            assert!(detector.process(&make_alert("10.0.0.2", port)).is_none());
         }
-        assert!(rx.try_recv().is_err(), "Neither should alert at 15 ports");
     }
 }

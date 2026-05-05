@@ -1,7 +1,8 @@
 #[cfg(feature = "user")]
-use aya::Pod;
-#[cfg(feature = "user")]
 use std::vec::Vec;
+
+#[cfg(feature = "user")]
+use aya::Pod;
 
 use crate::define::setting::MAX_RULES_PORT;
 use crate::model::ip_address::Port;

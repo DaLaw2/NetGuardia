@@ -1,18 +1,45 @@
-use std::mem;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
+use common::define::drop_reason::*;
+use common::model::drop_event::DropEvent as RawDropEvent;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use common::define::drop_reason::*;
-use common::model::drop_event::DropEvent as RawDropEvent;
+use crate::domain::data_plane::drop_event::{DropCounters, DropEventMessage};
+use crate::interface::drop_stats::DropStatsPort;
 
-use crate::model::config::constants::DROP_CHANNEL_CAPACITY;
-use crate::model::monitoring::drop_event::{DropCounters, DropCountersAtomic, DropEventMessage};
+#[derive(Default)]
+pub struct DropCountersAtomic {
+    acl_blacklist: AtomicU64,
+    rate_limit_pkt: AtomicU64,
+    rate_limit_syn: AtomicU64,
+    rate_limit_udp: AtomicU64,
+    rate_limit_dns: AtomicU64,
+    protocol_filter: AtomicU64,
+    dns_blacklist: AtomicU64,
+    geo_block: AtomicU64,
+    total: AtomicU64,
+}
+
+impl DropCountersAtomic {
+    pub fn snapshot(&self) -> DropCounters {
+        DropCounters {
+            acl_blacklist: self.acl_blacklist.load(Ordering::Relaxed),
+            rate_limit_pkt: self.rate_limit_pkt.load(Ordering::Relaxed),
+            rate_limit_syn: self.rate_limit_syn.load(Ordering::Relaxed),
+            rate_limit_udp: self.rate_limit_udp.load(Ordering::Relaxed),
+            rate_limit_dns: self.rate_limit_dns.load(Ordering::Relaxed),
+            protocol_filter: self.protocol_filter.load(Ordering::Relaxed),
+            dns_blacklist: self.dns_blacklist.load(Ordering::Relaxed),
+            geo_block: self.geo_block.load(Ordering::Relaxed),
+            total: self.total.load(Ordering::Relaxed),
+        }
+    }
+}
 
 pub struct DropMonitor {
     broadcast_tx: broadcast::Sender<DropEventMessage>,
@@ -20,8 +47,8 @@ pub struct DropMonitor {
 }
 
 impl DropMonitor {
-    pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(DROP_CHANNEL_CAPACITY);
+    pub fn new(channel_capacity: usize) -> Self {
+        let (tx, _) = broadcast::channel(channel_capacity.max(1));
         Self {
             broadcast_tx: tx,
             counters: DropCountersAtomic::default(),
@@ -32,18 +59,8 @@ impl DropMonitor {
         self.broadcast_tx.subscribe()
     }
 
-    pub fn get_counters(&self) -> DropCounters {
-        self.counters.snapshot()
-    }
-
-    /// Record a userspace drop decision (XSK worker's DNS filter) by the
-    /// per-reason counter. Callers at this layer haven't parsed src/dst yet,
-    /// so no broadcast event is emitted — `/api/stats/drops` stays correct,
-    /// `/ws/drops` simply does not surface the individual packet. Parse the
-    /// packet upstream if you need a structured event.
-    pub fn record_userspace_drop_count_only(&self, reason: u8) {
-        self.counters.total.fetch_add(1, Ordering::Relaxed);
-        let bucket = match reason {
+    fn bucket_for(&self, reason: u8) -> Option<&AtomicU64> {
+        match reason {
             DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
             DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
             DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
@@ -53,32 +70,25 @@ impl DropMonitor {
             DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
             DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
             _ => None,
-        };
-        if let Some(counter) = bucket {
+        }
+    }
+
+    fn record_drop(&self, reason: u8) {
+        self.counters.total.fetch_add(1, Ordering::Relaxed);
+        if let Some(counter) = self.bucket_for(reason) {
             counter.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub fn record_userspace_drop_count_only(&self, reason: u8) {
+        self.record_drop(reason);
     }
 
     fn process_event(&self, raw: &RawDropEvent) {
-        self.counters.total.fetch_add(1, Ordering::Relaxed);
-        let bucket = match raw.reason {
-            DROP_REASON_ACL_BLACKLIST => Some(&self.counters.acl_blacklist),
-            DROP_REASON_RATE_LIMIT_PKT => Some(&self.counters.rate_limit_pkt),
-            DROP_REASON_RATE_LIMIT_SYN => Some(&self.counters.rate_limit_syn),
-            DROP_REASON_RATE_LIMIT_UDP => Some(&self.counters.rate_limit_udp),
-            DROP_REASON_RATE_LIMIT_DNS => Some(&self.counters.rate_limit_dns),
-            DROP_REASON_PROTOCOL_FILTER => Some(&self.counters.protocol_filter),
-            DROP_REASON_DNS_BLACKLIST => Some(&self.counters.dns_blacklist),
-            DROP_REASON_GEO_BLOCK => Some(&self.counters.geo_block),
-            _ => None,
-        };
-        if let Some(counter) = bucket {
-            counter.fetch_add(1, Ordering::Relaxed);
-        }
+        self.record_drop(raw.reason);
 
         let reason_str = reason_to_str(raw.reason);
 
-        // Format IPs based on version
         let (src_ip, dst_ip) = format_ips(raw);
 
         let msg = DropEventMessage {
@@ -96,9 +106,9 @@ impl DropMonitor {
     }
 }
 
-impl Default for DropMonitor {
-    fn default() -> Self {
-        Self::new()
+impl DropStatsPort for DropMonitor {
+    fn get_counters(&self) -> DropCounters {
+        self.counters.snapshot()
     }
 }
 
@@ -116,7 +126,6 @@ fn format_ips(raw: &RawDropEvent) -> (String, String) {
             (src, dst)
         }
         _ => {
-            // IPv6 - format as hex
             let src = format_ipv6(&raw.src_ip);
             let dst = format_ipv6(&raw.dst_ip);
             (src, dst)
@@ -142,12 +151,12 @@ fn reason_to_str(reason: u8) -> &'static str {
     }
 }
 
-/// Start the ring buffer consumer as a tokio task. Returns a shutdown sender.
 pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor>) -> oneshot::Sender<()> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     tokio::spawn(async move {
         let mut ring_buf = ring_buf;
+        // todo add interval value to config
         let mut interval = interval(Duration::from_millis(100));
 
         loop {
@@ -157,7 +166,7 @@ pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor
             }
 
             while let Some(item) = ring_buf.next() {
-                if item.len() >= mem::size_of::<RawDropEvent>() {
+                if item.len() >= size_of::<RawDropEvent>() {
                     let event = unsafe { &*(item.as_ptr() as *const RawDropEvent) };
                     monitor.process_event(event);
                 }

@@ -21,20 +21,20 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
-use crate::infrastructure::app_config::AppConfig;
-use crate::model::error::Error;
-use crate::model::error::suricata::SuricataError;
-use crate::model::log::suricata::SuricataLog;
-use crate::model::system::suricata::SuricataHealth;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::system::suricata::SuricataHealth;
+use crate::domain::detection::error::SuricataError;
+use crate::domain::detection::log::SuricataLog;
 
 pub struct SuricataManager {
-    config: Arc<AppConfig>,
+    config: Arc<ArcSwap<AppConfig>>,
     health: Arc<ArcSwap<SuricataHealth>>,
 }
 
 impl SuricataManager {
-    pub fn new(config: Arc<AppConfig>) -> Arc<Self> {
-        let initial = if config.suricata.enabled {
+    pub fn new(config: Arc<ArcSwap<AppConfig>>) -> Arc<Self> {
+        let initial = if config.load().suricata.enabled {
             SuricataHealth::Stopped {
                 reason: "not yet started".to_string(),
             }
@@ -57,7 +57,7 @@ impl SuricataManager {
     pub fn run(self: Arc<Self>) -> oneshot::Sender<()> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        if !self.config.suricata.enabled {
+        if !self.config.load().suricata.enabled {
             log!(SuricataLog::Disabled);
             return shutdown_tx;
         }
@@ -97,8 +97,9 @@ impl SuricataManager {
                         Ok(status) => format!("exited with {status}"),
                         Err(e) => format!("wait error: {e}"),
                     };
-                    if self.config.suricata.auto_restart_on_crash {
-                        let backoff = self.config.suricata.restart_backoff_secs;
+                    let config = self.config.load();
+                    if config.suricata.auto_restart_on_crash {
+                        let backoff = config.suricata.restart_backoff_secs;
                         log!(SuricataLog::CrashedRestartPending(reason.clone(), backoff));
                         self.health.store(Arc::new(SuricataHealth::Stopped { reason }));
                         sleep(Duration::from_secs(backoff)).await;
@@ -121,21 +122,23 @@ impl SuricataManager {
         }
     }
 
-    fn preflight(config: &AppConfig) -> Result<(), Error> {
+    fn preflight(config: &Arc<ArcSwap<AppConfig>>) -> Result<(), Error> {
+        let config = config.load();
         let bin = &config.suricata.binary_path;
         if !Path::new(bin).exists() {
             Err(SuricataError::BinaryNotFound(bin.clone()))?;
         }
-        let cfg = &config.suricata.config_path;
-        if !Path::new(cfg).exists() {
-            Err(SuricataError::ConfigNotFound(cfg.clone()))?;
+        let cfg_path = &config.suricata.config_path;
+        if !Path::new(cfg_path).exists() {
+            Err(SuricataError::ConfigNotFound(cfg_path.clone()))?;
         }
         Ok(())
     }
 
     fn spawn_child(&self) -> Result<Child, Error> {
-        let sc = &self.config.suricata;
-        let iface = &self.config.network.ingress_ifname;
+        let config = self.config.load();
+        let sc = &config.suricata;
+        let iface = &config.ebpf.ingress_ifname;
 
         log!(SuricataLog::Spawning(
             sc.binary_path.clone(),

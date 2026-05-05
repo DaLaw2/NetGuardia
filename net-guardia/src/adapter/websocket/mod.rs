@@ -4,3 +4,4 @@ pub mod flow_websocket;
 pub mod fusion_websocket;
 pub mod health_websocket;
 pub mod routes;
+pub mod ws_bridge;

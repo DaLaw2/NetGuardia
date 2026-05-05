@@ -8,13 +8,14 @@ use sysinfo::{Components, Networks, System};
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
-use crate::infrastructure::app_config::AppConfig;
-use crate::model::error::Error;
-use crate::model::log::health::Health;
-use crate::model::system::health::{
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::log::health::Health;
+use crate::domain::common::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, EbpfHealth, LoadAverage, MemoryUsage, NetworkStats,
     SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };
+use crate::interface::health_query::HealthQuery;
 
 /// Lock-free system health.
 ///
@@ -25,6 +26,7 @@ use crate::model::system::health::{
 /// (`get_current_metrics`, `is_system_healthy`, HTTP handlers) just
 /// `.load()` the `ArcSwap` — no locks crossed, no `await` needed.
 pub struct SystemHealth {
+    config: Arc<ArcSwap<AppConfig>>,
     metrics: Arc<ArcSwap<SystemHealthMetrics>>,
     broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
     ingress_interface: String,
@@ -33,10 +35,11 @@ pub struct SystemHealth {
 }
 
 impl SystemHealth {
-    pub fn new(config: Arc<AppConfig>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
-        let (broadcast_tx, _) = broadcast::channel(100);
-        let ingress_interface = config.network.ingress_ifname.clone();
-        let egress_interface = config.network.egress_ifname.clone();
+    pub fn new(config: Arc<ArcSwap<AppConfig>>, ebpf_health: Arc<ArcSwap<EbpfHealth>>) -> Result<Self, Error> {
+        let cfg = config.load();
+        let (broadcast_tx, _) = broadcast::channel(cfg.health.broadcast_channel_capacity.max(1));
+        let ingress_interface = cfg.ebpf.ingress_ifname.clone();
+        let egress_interface = cfg.ebpf.egress_ifname.clone();
 
         // Bootstrap snapshot so readers don't have to handle a "no metrics yet"
         // case before the refresh task fires for the first time. The
@@ -54,6 +57,7 @@ impl SystemHealth {
         );
 
         Ok(SystemHealth {
+            config,
             metrics: Arc::new(ArcSwap::from_pointee(initial)),
             broadcast_tx,
             ingress_interface,
@@ -271,6 +275,7 @@ impl SystemHealth {
 
     pub fn is_system_healthy(&self) -> SystemHealthStatus {
         let metrics = self.get_current_metrics();
+        let h = &self.config.load().health;
 
         let mut status = SystemHealthStatus {
             overall_healthy: true,
@@ -278,34 +283,34 @@ impl SystemHealth {
             warnings: Vec::new(),
         };
 
-        if metrics.cpu_details.cpu_usage > 90.0 {
+        if metrics.cpu_details.cpu_usage > h.cpu_issue_percent {
             status.overall_healthy = false;
             status
                 .issues
                 .push(format!("High CPU usage: {:.1}%", metrics.cpu_details.cpu_usage));
-        } else if metrics.cpu_details.cpu_usage > 75.0 {
+        } else if metrics.cpu_details.cpu_usage > h.cpu_warn_percent {
             status
                 .warnings
                 .push(format!("Moderate CPU usage: {:.1}%", metrics.cpu_details.cpu_usage));
         }
 
-        if metrics.memory_usage.usage_percent > 95.0 {
+        if metrics.memory_usage.usage_percent > h.mem_issue_percent {
             status.overall_healthy = false;
             status.issues.push(format!(
                 "Critical memory usage: {:.1}%",
                 metrics.memory_usage.usage_percent
             ));
-        } else if metrics.memory_usage.usage_percent > 80.0 {
+        } else if metrics.memory_usage.usage_percent > h.mem_warn_percent {
             status
                 .warnings
                 .push(format!("High memory usage: {:.1}%", metrics.memory_usage.usage_percent));
         }
 
         if let Some(temp) = metrics.temperature {
-            if temp > 80.0 {
+            if temp > h.temp_issue_celsius {
                 status.overall_healthy = false;
                 status.issues.push(format!("High CPU temperature: {:.1}°C", temp));
-            } else if temp > 70.0 {
+            } else if temp > h.temp_warn_celsius {
                 status.warnings.push(format!("Elevated CPU temperature: {:.1}°C", temp));
             }
         }
@@ -319,16 +324,15 @@ impl SystemHealth {
             status.issues.push("Egress interface not available".to_string());
         }
 
-        // Disk usage check
         let disk_usage = Self::check_disk_usage();
         if let Some((usage_percent, available_gb)) = disk_usage {
-            if usage_percent > 95.0 {
+            if usage_percent > h.disk_issue_percent {
                 status.overall_healthy = false;
                 status.issues.push(format!(
                     "Critical disk usage: {:.1}% (only {:.1} GB free). Traffic logging paused.",
                     usage_percent, available_gb
                 ));
-            } else if usage_percent > 90.0 {
+            } else if usage_percent > h.disk_warn_percent {
                 status.warnings.push(format!(
                     "High disk usage: {:.1}% ({:.1} GB free)",
                     usage_percent, available_gb
@@ -356,5 +360,11 @@ impl SystemHealth {
             }
         }
         None
+    }
+}
+
+impl HealthQuery for SystemHealth {
+    fn get_current_metrics(&self) -> SystemHealthMetrics {
+        self.get_current_metrics()
     }
 }

@@ -1,5 +1,7 @@
+use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use macros::log;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
@@ -8,12 +10,10 @@ use tokio::time::interval;
 use crate::core::correlation::botnet::BotnetDetector;
 use crate::core::correlation::lateral::LateralMovementDetector;
 use crate::core::correlation::scan::ScanDetector;
-use crate::model::detection::ml_detection::AlertMessage;
-use crate::model::event::DetectionEvent;
-use crate::model::log::detection::DetectionLog;
-
-/// How often to sweep expired correlation state.
-const CLEANUP_INTERVAL_SECS: u64 = 60;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::event::DetectionEvent;
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::ml_detection::AlertMessage;
 
 /// Coordinates cross-flow correlation detectors (botnet, scan, lateral movement).
 /// Subscribes to ML AlertMessage broadcast and feeds enriched DetectionEvents
@@ -24,16 +24,25 @@ pub struct CorrelationEngine {
     lateral: LateralMovementDetector,
     alert_rx: broadcast::Receiver<AlertMessage>,
     detection_tx: mpsc::Sender<DetectionEvent>,
+    cleanup_interval_secs: u64,
 }
 
 impl CorrelationEngine {
-    pub fn new(alert_rx: broadcast::Receiver<AlertMessage>, detection_tx: mpsc::Sender<DetectionEvent>) -> Self {
+    pub fn new(
+        app_config: &Arc<ArcSwap<AppConfig>>,
+        alert_rx: broadcast::Receiver<AlertMessage>,
+        detection_tx: mpsc::Sender<DetectionEvent>,
+    ) -> Self {
+        let cfg = app_config.load();
+        let correlation = &cfg.correlation;
+        let max_tracked = correlation.max_tracked_entries;
         Self {
-            botnet: BotnetDetector::new(),
-            scan: ScanDetector::new(),
-            lateral: LateralMovementDetector::new(),
+            botnet: BotnetDetector::new(&correlation.botnet, max_tracked),
+            scan: ScanDetector::new(&correlation.scan, max_tracked),
+            lateral: LateralMovementDetector::new(&correlation.lateral, max_tracked),
             alert_rx,
             detection_tx,
+            cleanup_interval_secs: cfg.detection.cleanup_interval_secs,
         }
     }
 
@@ -45,7 +54,7 @@ impl CorrelationEngine {
     async fn run(mut self) {
         log!(DetectionLog::CorrelationEngineStarted);
 
-        let mut cleanup_interval = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut cleanup_interval = interval(Duration::from_secs(self.cleanup_interval_secs));
 
         loop {
             tokio::select! {
@@ -64,9 +73,15 @@ impl CorrelationEngine {
     }
 
     fn process_alert(&self, alert: &AlertMessage) {
-        self.botnet.process(alert, &self.detection_tx);
-        self.scan.process(alert, &self.detection_tx);
-        self.lateral.process(alert, &self.detection_tx);
+        if let Some(event) = self.botnet.process(alert) {
+            send_or_log(&self.detection_tx, event);
+        }
+        if let Some(event) = self.scan.process(alert) {
+            send_or_log(&self.detection_tx, event);
+        }
+        if let Some(event) = self.lateral.process(alert) {
+            send_or_log(&self.detection_tx, event);
+        }
     }
 
     fn cleanup(&self) {
@@ -74,5 +89,15 @@ impl CorrelationEngine {
         if removed > 0 {
             log!(DetectionLog::CorrelationCleanup(removed));
         }
+    }
+}
+
+fn send_or_log(tx: &mpsc::Sender<DetectionEvent>, event: DetectionEvent) {
+    if let Err(mpsc::error::TrySendError::Full(dropped)) = tx.try_send(event) {
+        log!(DetectionLog::DetectionChannelDrop(
+            format!("{:?}", dropped.source),
+            dropped.attack_type,
+            dropped.source_ip,
+        ));
     }
 }

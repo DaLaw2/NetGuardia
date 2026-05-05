@@ -1,27 +1,21 @@
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use macros::log;
-use tokio::sync::mpsc;
 
-use crate::model::detection::ml_detection::AlertMessage;
-use crate::model::event::{DetectionEvent, DetectionSource};
-use crate::model::log::detection::DetectionLog;
-
-/// Window within which unique internal destinations are counted per source.
-const LATERAL_WINDOW_SECS: u64 = 300; // 5 minutes
-
-/// Minimum unique internal destination IPs to trigger a lateral movement alert.
-const LATERAL_THRESHOLD: usize = 5;
-
-/// Maximum tracked source IPs to bound memory.
-const MAX_TRACKED_SRCS: usize = 10_000;
+use crate::core::correlation::correlation_cleanup::capped_cleanup;
+use crate::domain::common::config::correlation::CorrelationDetectorParams;
+use crate::domain::common::event::{DetectionEvent, DetectionSource};
+use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::ml_detection::AlertMessage;
+use crate::utils::ip_address::is_internal_ip;
 
 struct TimedDestSet {
     dests: HashSet<String>,
     window_start: Instant,
+    last_alerted: Option<Instant>,
 }
 
 /// Detects lateral movement: an internal IP reaching many other internal IPs.
@@ -29,23 +23,25 @@ pub struct LateralMovementDetector {
     /// src_ip → set of unique internal dst_ips within the time window
     state: DashMap<String, TimedDestSet>,
     window: Duration,
+    window_secs: u64,
     threshold: usize,
+    max_tracked: usize,
 }
 
 impl LateralMovementDetector {
-    pub fn new() -> Self {
+    pub fn new(params: &CorrelationDetectorParams, max_tracked: usize) -> Self {
         Self {
             state: DashMap::new(),
-            window: Duration::from_secs(LATERAL_WINDOW_SECS),
-            threshold: LATERAL_THRESHOLD,
+            window: Duration::from_secs(params.window_secs),
+            window_secs: params.window_secs,
+            threshold: params.threshold,
+            max_tracked,
         }
     }
 
-    /// Process an alert. Only tracks internal-to-internal flows.
-    pub fn process(&self, alert: &AlertMessage, detection_tx: &mpsc::Sender<DetectionEvent>) {
-        // Only track internal-to-internal flows
+    pub fn process(&self, alert: &AlertMessage) -> Option<DetectionEvent> {
         if !is_internal_ip(&alert.src_ip) || !is_internal_ip(&alert.dst_ip) {
-            return;
+            return None;
         }
 
         let key = alert.src_ip.clone();
@@ -55,6 +51,7 @@ impl LateralMovementDetector {
             let mut entry = self.state.entry(key.clone()).or_insert_with(|| TimedDestSet {
                 dests: HashSet::new(),
                 window_start: now,
+                last_alerted: None,
             });
 
             let set = entry.value_mut();
@@ -67,6 +64,13 @@ impl LateralMovementDetector {
             set.dests.insert(alert.dst_ip.clone());
 
             if set.dests.len() >= self.threshold {
+                if let Some(last) = set.last_alerted
+                    && now.duration_since(last) < self.window
+                {
+                    set.dests.clear();
+                    set.window_start = now;
+                    return None;
+                }
                 Some(set.dests.len())
             } else {
                 None
@@ -77,12 +81,12 @@ impl LateralMovementDetector {
             log!(DetectionLog::LateralMovementDetected(
                 key.clone(),
                 unique_dests,
-                LATERAL_WINDOW_SECS,
+                self.window_secs,
             ));
 
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
-                attack_type: "threat_detected".to_string(),
+                attack_type: CanonicalAttackType::LateralMovement.as_str().to_string(),
                 confidence: 0.75,
                 source_ip: key.clone(),
                 dest_ip: alert.dst_ip.clone(),
@@ -94,70 +98,27 @@ impl LateralMovementDetector {
                 c2_score: 0.0,
             };
 
-            let _ = detection_tx.try_send(event);
-
-            // Reset after alerting
             if let Some(mut entry) = self.state.get_mut(&key) {
                 entry.dests.clear();
                 entry.window_start = now;
+                entry.last_alerted = Some(now);
             }
+
+            return Some(event);
         }
+
+        None
     }
 
-    /// Remove expired entries. Returns number of entries removed.
     pub fn cleanup(&self) -> usize {
-        let now = Instant::now();
-        let window = self.window;
-        let before = self.state.len();
-
-        self.state
-            .retain(|_, set| now.duration_since(set.window_start) < window);
-
-        if self.state.len() > MAX_TRACKED_SRCS {
-            let excess = self.state.len() - MAX_TRACKED_SRCS;
-            let keys_to_remove: Vec<String> = self.state.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys_to_remove {
-                self.state.remove(&key);
-            }
-        }
-
-        before.saturating_sub(self.state.len())
-    }
-}
-
-/// Check if an IP address string represents a private/internal address.
-/// RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-/// RFC 4193: fc00::/7 (IPv6 unique local)
-pub fn is_internal_ip(ip_str: &str) -> bool {
-    let Ok(ip) = ip_str.parse::<IpAddr>() else {
-        return false;
-    };
-
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            // 10.0.0.0/8
-            octets[0] == 10
-            // 172.16.0.0/12
-            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-            // 192.168.0.0/16
-            || (octets[0] == 192 && octets[1] == 168)
-            // 127.0.0.0/8 (loopback)
-            || octets[0] == 127
-        }
-        IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            // fc00::/7
-            (segments[0] & 0xfe00) == 0xfc00
-            // ::1 (loopback)
-            || v6.is_loopback()
-        }
+        capped_cleanup(&self.state, self.window, self.max_tracked, |s| s.window_start)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::ip_address::is_internal_ip;
 
     #[test]
     fn test_internal_ip_detection() {
@@ -211,24 +172,31 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn lateral_threshold_triggers_for_internal_only() {
-        let detector = LateralMovementDetector::new();
-        let (tx, mut rx) = mpsc::channel(64);
-
-        // Internal → external should be ignored
-        detector.process(&make_alert("10.0.0.1", "8.8.8.8"), &tx);
-        assert!(rx.try_recv().is_err());
-
-        // Internal → internal, below threshold
-        for i in 1..5 {
-            detector.process(&make_alert("10.0.0.1", &format!("10.0.1.{i}")), &tx);
+    fn test_params() -> CorrelationDetectorParams {
+        CorrelationDetectorParams {
+            window_secs: 300,
+            threshold: 5,
         }
-        assert!(rx.try_recv().is_err(), "Should not alert below threshold");
+    }
 
-        // 5th unique internal dest should trigger
-        detector.process(&make_alert("10.0.0.1", "10.0.1.5"), &tx);
-        let event = rx.try_recv().expect("Should alert at threshold");
+    #[test]
+    fn lateral_threshold_triggers_for_internal_only() {
+        let detector = LateralMovementDetector::new(&test_params(), 10_000);
+
+        assert!(detector.process(&make_alert("10.0.0.1", "8.8.8.8")).is_none());
+
+        for i in 1..5 {
+            assert!(
+                detector
+                    .process(&make_alert("10.0.0.1", &format!("10.0.1.{i}")))
+                    .is_none(),
+                "Should not alert below threshold"
+            );
+        }
+
+        let event = detector
+            .process(&make_alert("10.0.0.1", "10.0.1.5"))
+            .expect("Should alert at threshold");
         assert_eq!(event.source, DetectionSource::Correlation);
     }
 }

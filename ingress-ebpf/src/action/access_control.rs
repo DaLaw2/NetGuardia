@@ -2,9 +2,9 @@ use aya_ebpf::macros::map;
 use aya_ebpf::maps::HashMap;
 use aya_ebpf::maps::LpmTrie;
 use aya_ebpf::maps::lpm_trie::Key;
-use common::define::setting::{MAX_RULES, MAX_GEO_ENTRIES};
-use common::model::parsed_packet::ParsedPacket;
+use common::define::setting::{MAX_GEO_ENTRIES, MAX_RULES};
 use common::model::ip_address::{IPv4, IPv6};
+use common::model::parsed_packet::ParsedPacket;
 use common::model::port_rule::PortRule;
 
 #[map]

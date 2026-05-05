@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
+use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
@@ -16,21 +18,18 @@ use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
-use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
-
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
-use crate::infrastructure::app_config::AppConfig;
-use crate::interface::port::dns_query_filter::DnsQueryFilter;
-use crate::interface::port::packet_sink::{PacketSink, PacketSinkFactory};
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::error::system::SystemError;
-use crate::model::log::ebpf::EbpfLog;
-use crate::model::monitoring::direction::Direction;
-use crate::model::system::config::NetworkConfig;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::ebpf::EbpfConfig;
+use crate::domain::common::error::Error;
+use crate::domain::common::error::system::SystemError;
+use crate::domain::data_plane::direction::Direction;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::log::EbpfLog;
+use crate::interface::dns_query_filter::DnsQueryFilter;
+use crate::interface::packet_sink::{PacketSink, PacketSinkFactory};
 use crate::utils::packet_parser::parse_packet;
 
-/// Pre-allocated buffer pool to avoid per-packet malloc.
 struct BufferPool {
     buffers: Vec<Vec<u8>>,
     buffer_size: usize,
@@ -62,32 +61,36 @@ impl BufferPool {
 }
 
 pub struct XskManager {
-    app_config: Arc<AppConfig>,
-    xsk_map: Mutex<Option<XskMap<MapData>>>,
+    app_config: Arc<ArcSwap<AppConfig>>,
+    ingress_xsk_map: Mutex<Option<XskMap<MapData>>>,
     egress_xsk_map: Mutex<Option<XskMap<MapData>>>,
 }
 
 impl XskManager {
-    pub fn new(app_config: Arc<AppConfig>, ingress_ebpf: &mut Ebpf, egress_ebpf: &mut Ebpf) -> Result<Self, Error> {
-        let map = ingress_ebpf
+    pub fn new(
+        app_config: Arc<ArcSwap<AppConfig>>,
+        ingress_ebpf: &mut Ebpf,
+        egress_ebpf: &mut Ebpf,
+    ) -> Result<Self, Error> {
+        let ingress_map = ingress_ebpf
             .take_map("INGRESS_XSKS_MAP")
             .ok_or(EbpfError::MapNotFound)?;
-        let xsk_map = XskMap::try_from(map).map_err(EbpfError::MapOperationError)?;
+        let ingress_xsk_map = XskMap::try_from(ingress_map).map_err(EbpfError::MapOperationError)?;
 
         let egress_map = egress_ebpf.take_map("EGRESS_XSKS_MAP").ok_or(EbpfError::MapNotFound)?;
         let egress_xsk_map = XskMap::try_from(egress_map).map_err(EbpfError::MapOperationError)?;
 
         Ok(Self {
             app_config,
-            xsk_map: Mutex::new(Some(xsk_map)),
+            ingress_xsk_map: Mutex::new(Some(ingress_xsk_map)),
             egress_xsk_map: Mutex::new(Some(egress_xsk_map)),
         })
     }
 
-    pub fn unavailable(app_config: Arc<AppConfig>) -> Self {
+    pub fn unavailable(app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         Self {
             app_config,
-            xsk_map: Mutex::new(None),
+            ingress_xsk_map: Mutex::new(None),
             egress_xsk_map: Mutex::new(None),
         }
     }
@@ -99,14 +102,15 @@ impl XskManager {
         drop_monitor: Option<Arc<DropMonitor>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
+        // todo need to check logic
         // If eBPF failed to load, there are no XSK maps to bind and no queues
         // to start — skip silently. AF_XDP would have no maps to attach sockets
         // to, and ML sees no packets, which is the designed behaviour.
-        if self.xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
+        if self.ingress_xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
             return Ok(());
         }
 
-        let network = self.app_config.network.clone();
+        let network = self.app_config.load().ebpf.clone();
         let combined_queue_count = network.combined_queue_count;
 
         for queue_id in 0..combined_queue_count {
@@ -119,7 +123,6 @@ impl XskManager {
                 network.clone(),
                 queue_id,
                 &network.ingress_ifname,
-                &network.egress_ifname,
                 Direction::Ingress,
                 sink.clone(),
                 dns_filter.clone(),
@@ -130,20 +133,19 @@ impl XskManager {
                 network.clone(),
                 queue_id,
                 &network.egress_ifname,
-                &network.ingress_ifname,
                 Direction::Egress,
                 sink,
                 None,
                 drop_monitor.clone(),
             )?;
 
-            let mut xsk_guard = self.xsk_map.lock();
+            let mut ingress_guard = self.ingress_xsk_map.lock();
             let mut egress_guard = self.egress_xsk_map.lock();
-            let xsk_map = xsk_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
+            let ingress_xsk_map = ingress_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
             let egress_xsk_map = egress_guard.as_mut().ok_or(EbpfError::NotLoaded)?;
 
             let ingress_fd = ingress_xsk.rx.fd().as_raw_fd();
-            xsk_map
+            ingress_xsk_map
                 .set(queue_id, ingress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
 
@@ -152,7 +154,7 @@ impl XskManager {
                 .set(queue_id, egress_fd, 0)
                 .map_err(EbpfError::AfXdpSetFailed)?;
 
-            drop(xsk_guard);
+            drop(ingress_guard);
             drop(egress_guard);
 
             let ingress_shutdown = ingress_xsk.run(ingress_to_egress_tx, egress_to_ingress_rx)?;
@@ -181,15 +183,18 @@ pub struct XskPair {
     drop_monitor: Option<Arc<DropMonitor>>,
     packet_buffer_size: usize,
     buffer_pool_capacity: usize,
+    completion_batch_size: usize,
+    rx_batch_size: usize,
+    tx_batch_size: usize,
+    tx_packet_buf: Vec<Vec<u8>>,
+    tx_frame_buf: Vec<FrameDesc>,
 }
 
 impl XskPair {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: NetworkConfig,
+        config: EbpfConfig,
         queue_id: u32,
         rx_ifname: &str,
-        _tx_ifname: &str,
         direction: Direction,
         sink: Option<Arc<dyn PacketSink>>,
         dns_filter: Option<Arc<dyn DnsQueryFilter>>,
@@ -253,6 +258,11 @@ impl XskPair {
             drop_monitor,
             packet_buffer_size: config.packet_buffer_size,
             buffer_pool_capacity: config.buffer_pool_capacity,
+            completion_batch_size: config.xsk_completion_batch_size,
+            rx_batch_size: config.xsk_rx_batch_size,
+            tx_batch_size: config.xsk_tx_batch_size,
+            tx_packet_buf: Vec::with_capacity(config.xsk_tx_batch_size),
+            tx_frame_buf: Vec::with_capacity(config.xsk_tx_batch_size),
         };
 
         Ok(xsk_pair)
@@ -273,8 +283,8 @@ impl XskPair {
                 let mut shutdown_rx = Some(shutdown_rx);
                 let mut idle_count: u32 = 0;
                 let mut buffer_pool = BufferPool::new(self.buffer_pool_capacity, self.packet_buffer_size);
-                let mut comp_descs = vec![FrameDesc::default(); 256];
-                let mut rx_descs = vec![FrameDesc::default(); 64];
+                let mut comp_descs = vec![FrameDesc::default(); self.completion_batch_size];
+                let mut rx_descs = vec![FrameDesc::default(); self.rx_batch_size];
 
                 loop {
                     if let Some(ref mut rx) = shutdown_rx {
@@ -309,13 +319,14 @@ impl XskPair {
                         idle_count = 0;
                     }
 
-                    let sleep_us = match idle_count {
-                        0..=10 => 1,
-                        11..=100 => 10,
-                        _ => 100,
-                    };
-
-                    thread::sleep(Duration::from_micros(sleep_us));
+                    if idle_count > 0 {
+                        let sleep_us = match idle_count {
+                            1..=10 => 1,
+                            11..=100 => 10,
+                            _ => 100,
+                        };
+                        thread::sleep(Duration::from_micros(sleep_us));
+                    }
                 }
 
                 log!(EbpfLog::XSKShutdown);
@@ -418,15 +429,15 @@ impl XskPair {
         buffer_pool: &mut BufferPool,
         comp_descs: &mut [FrameDesc],
     ) -> Result<usize, EbpfError> {
-        let mut packets_to_send = Vec::with_capacity(64);
+        self.tx_packet_buf.clear();
         while let Ok(packet) = forward_rx.try_recv() {
-            packets_to_send.push(packet);
-            if packets_to_send.len() >= 64 {
+            self.tx_packet_buf.push(packet);
+            if self.tx_packet_buf.len() >= self.tx_batch_size {
                 break;
             }
         }
 
-        if packets_to_send.is_empty() {
+        if self.tx_packet_buf.is_empty() {
             return Ok(0);
         }
 
@@ -434,10 +445,10 @@ impl XskPair {
             log!(EbpfLog::CompQueueError(format!("{:?}", e)));
         }
 
-        let total_packets = packets_to_send.len();
+        let total_packets = self.tx_packet_buf.len();
 
         if self.frame_pool.is_empty() {
-            for pkt in packets_to_send {
+            for pkt in self.tx_packet_buf.drain(..) {
                 buffer_pool.put(pkt);
             }
             log!(EbpfLog::FramePoolExhausted(total_packets));
@@ -445,17 +456,19 @@ impl XskPair {
         }
 
         let available = self.frame_pool.len().min(total_packets);
-        let mut frames: Vec<FrameDesc> = self.frame_pool.drain(self.frame_pool.len() - available..).collect();
+        self.tx_frame_buf.clear();
+        self.tx_frame_buf
+            .extend(self.frame_pool.drain(self.frame_pool.len() - available..));
 
-        if frames.is_empty() {
-            for pkt in packets_to_send {
+        if self.tx_frame_buf.is_empty() {
+            for pkt in self.tx_packet_buf.drain(..) {
                 buffer_pool.put(pkt);
             }
             log!(EbpfLog::NoFramesAvailable);
             return Ok(0);
         }
 
-        for (frame, packet) in frames.iter_mut().zip(packets_to_send.iter()) {
+        for (frame, packet) in self.tx_frame_buf.iter_mut().zip(self.tx_packet_buf.iter()) {
             unsafe {
                 self.umem
                     .data_mut(frame)
@@ -465,11 +478,11 @@ impl XskPair {
             }
         }
 
-        let nb_submitted = unsafe { self.tx.produce(&frames) };
+        let nb_submitted = unsafe { self.tx.produce(&self.tx_frame_buf) };
 
         // Return unsubmitted frames to pool to prevent frame leak
-        if nb_submitted < frames.len() {
-            for frame in frames[nb_submitted..].iter() {
+        if nb_submitted < self.tx_frame_buf.len() {
+            for frame in self.tx_frame_buf[nb_submitted..].iter() {
                 self.frame_pool.push(*frame);
             }
         }
@@ -491,7 +504,7 @@ impl XskPair {
         }
 
         // Return all buffers to pool
-        for pkt in packets_to_send {
+        for pkt in self.tx_packet_buf.drain(..) {
             buffer_pool.put(pkt);
         }
 

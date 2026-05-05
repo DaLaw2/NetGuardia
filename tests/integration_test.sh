@@ -1,315 +1,585 @@
-#!/bin/bash
-# NetGuardia 功能測試腳本
-# 測試：XDP 封包轉發、Web API、ML 引擎
-# 使用 graceful shutdown，所有操作設有 timeout
+#!/usr/bin/env bash
+# NetGuardia eBPF end-to-end gate.
+# Builds the dev topology with deploy/scripts/dev.sh, starts net-guardia,
+# exercises real packet paths, and shuts the data plane down with SIGINT.
 
-set -uo pipefail
+set -Eeuo pipefail
 
-TIMEOUT=10
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEV_SCRIPT="$ROOT_DIR/deploy/scripts/dev.sh"
 NG_API="http://10.10.3.10:8080"
+ADMIN_USER="admin"
+ADMIN_PASSWORD="E2eAdmin20040421!"
+CSRF_TOKEN="e2e"
+RUN_LOG="${RUN_LOG:-/tmp/netguardia-ebpf-e2e.log}"
+START_TIMEOUT_SECS="${START_TIMEOUT_SECS:-240}"
+POLL_INTERVAL_SECS=2
+
+SUDO_PASSWORD=""
+RUNTIME=""
+NG_PID=""
+TOKEN=""
 PASS=0
 FAIL=0
-TESTS=()
+declare -a FAILURES=()
+
+read -rsp "sudo password: " SUDO_PASSWORD
+echo
 
 run_sudo() {
-    sudo "$@" 2>/dev/null
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"
+}
+
+detect_runtime() {
+    if run_sudo podman container exists netguardia >/dev/null 2>&1; then
+        RUNTIME="podman"
+    elif run_sudo docker container inspect netguardia >/dev/null 2>&1; then
+        RUNTIME="docker"
+    elif command -v podman >/dev/null 2>&1; then
+        RUNTIME="podman"
+    elif command -v docker >/dev/null 2>&1; then
+        RUNTIME="docker"
+    else
+        echo "No supported container runtime found" >&2
+        return 1
+    fi
+}
+
+container_exec() {
+    run_sudo "$RUNTIME" exec "$@"
 }
 
 ng_exec() {
-    run_sudo podman exec netguardia bash -c "$1"
+    container_exec netguardia bash -lc "$1"
+}
+
+external_exec() {
+    container_exec external bash -lc "$1"
+}
+
+internal_exec() {
+    container_exec internal bash -lc "$1"
 }
 
 router_exec() {
-    run_sudo podman exec router bash -c "$1"
+    container_exec router bash -lc "$1"
 }
 
-ext_exec() {
-    run_sudo podman exec external bash -c "$1"
+container_pid() {
+    run_sudo "$RUNTIME" inspect --format '{{.State.Pid}}' "$1"
 }
 
-int_exec() {
-    run_sudo podman exec internal bash -c "$1"
+host_netns_exec() {
+    local container="$1"
+    shift
+    local pid
+    pid="$(container_pid "$container")"
+    run_sudo nsenter -t "$pid" -n "$@"
 }
 
-test_result() {
+pass() {
+    echo "  PASS $1"
+    PASS=$((PASS + 1))
+}
+
+fail() {
+    echo "  FAIL $1"
+    FAIL=$((FAIL + 1))
+    FAILURES+=("$1")
+}
+
+check() {
     local name="$1"
-    local result="$2"
-    if [ "$result" -eq 0 ]; then
-        echo "  ✅ $name"
-        PASS=$((PASS + 1))
+    shift
+    if "$@"; then
+        pass "$name"
     else
-        echo "  ❌ $name"
-        FAIL=$((FAIL + 1))
+        fail "$name"
     fi
-    TESTS+=("$name:$result")
+}
+
+api_raw() {
+    local method="$1"
+    local path="$2"
+    local body="${3:-}"
+    local auth_args=()
+
+    if [[ -n "$TOKEN" ]]; then
+        auth_args=(-H "Authorization: Bearer $TOKEN")
+        case "$method" in
+            POST|PUT|DELETE|PATCH)
+                auth_args+=(-H "X-CSRF-Token: $CSRF_TOKEN")
+                ;;
+        esac
+    fi
+
+    if [[ -n "$body" ]]; then
+        ng_exec "curl -fsS --max-time 20 -X '$method' '${NG_API}${path}' -H 'Content-Type: application/json' ${auth_args[*]@Q} -d '$body'"
+    else
+        ng_exec "curl -fsS --max-time 20 -X '$method' '${NG_API}${path}' ${auth_args[*]@Q}"
+    fi
+}
+
+api_expect_ok() {
+    local method="$1"
+    local path="$2"
+    local body="${3:-}"
+    api_raw "$method" "$path" "$body" >/dev/null
+}
+
+api_ignore() {
+    api_expect_ok "$@" >/dev/null 2>&1 || true
+}
+
+json_field() {
+    local field="$1"
+    python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get(sys.argv[1], ""))' "$field"
+}
+
+drop_counter() {
+    local field="$1"
+    api_raw GET /api/stats/drops | json_field "$field"
+}
+
+counter_increased() {
+    local field="$1"
+    local before="$2"
+    local after
+    after="$(drop_counter "$field")"
+    [[ "$after" =~ ^[0-9]+$ ]] && (( after > before ))
+}
+
+counter_unchanged() {
+    local field="$1"
+    local before="$2"
+    local after
+    after="$(drop_counter "$field")"
+    [[ "$after" =~ ^[0-9]+$ ]] && (( after == before ))
+}
+
+wait_for_log() {
+    local pattern="$1"
+    local deadline=$((SECONDS + START_TIMEOUT_SECS))
+    while (( SECONDS < deadline )); do
+        if grep -q "$pattern" "$RUN_LOG" 2>/dev/null; then
+            return 0
+        fi
+        sleep "$POLL_INTERVAL_SECS"
+    done
+    return 1
+}
+
+wait_for_http() {
+    local deadline=$((SECONDS + START_TIMEOUT_SECS))
+    while (( SECONDS < deadline )); do
+        if ng_exec "curl -fsS --max-time 2 '${NG_API}/api/setup/status' >/dev/null"; then
+            return 0
+        fi
+        sleep "$POLL_INTERVAL_SECS"
+    done
+    return 1
+}
+
+find_net_guardia_pids() {
+    # shellcheck disable=SC2016 # The script is evaluated inside the container.
+    ng_exec 'for p in /proc/[0-9]*/cmdline; do
+        cmd=$(tr "\0" " " < "$p" 2>/dev/null || true)
+        case "$cmd" in
+            "target/release/net-guardia "*|"target/release/net-guardia")
+                pid=${p#/proc/}; echo "${pid%/cmdline}"
+                ;;
+        esac
+    done'
+}
+
+kill_existing_net_guardia() {
+    local pids
+    pids="$(find_net_guardia_pids || true)"
+    if [[ -n "$pids" ]]; then
+        ng_exec "kill -INT $pids || true"
+        sleep 3
+    fi
+}
+
+detach_xdp_links() {
+    ng_exec "ip link set dev ng-ext xdp off 2>/dev/null || true; ip link set dev ng-int xdp off 2>/dev/null || true"
+}
+
+remove_pinned_xsk_maps() {
+    ng_exec "rm -f /sys/fs/bpf/INGRESS_XSKS_MAP /sys/fs/bpf/EGRESS_XSKS_MAP"
+}
+
+cleanup_runtime_state() {
+    run_sudo rm -f "$ROOT_DIR"/net-guardia.db "$ROOT_DIR"/net-guardia.db-shm "$ROOT_DIR"/net-guardia.db-wal
+    remove_pinned_xsk_maps || true
+}
+
+cleanup_api_state() {
+    [[ -z "$TOKEN" ]] && return 0
+    api_ignore DELETE /api/acl/ipv4/source/blacklist '"10.10.1.5:0"'
+    api_ignore DELETE /api/acl/ipv4/source/whitelist '"10.10.1.5:0"'
+    api_ignore DELETE /api/acl/ipv6/source/blacklist '"[fd00:1::5]:0"'
+    api_ignore DELETE /api/filter/http/ipv4 '["10.10.2.2:80",["GET"]]'
+    api_ignore DELETE /api/filter/ssh/ipv4 '"10.10.2.2:22"'
+    api_ignore DELETE /api/filter/ssh/blacklist/ipv4 '"10.10.1.5"'
+    api_ignore DELETE /api/filter/ssh/whitelist/ipv4 '"10.10.1.2"'
+    api_ignore POST /api/filter/ssh/whitelist/disable
+    api_ignore DELETE /api/filter/dns/blacklist '{"domains":["evil.example.com"]}'
+    api_ignore DELETE /api/acl/geo/unblock '{"country_codes":["US","AU","DE","NL","GB","JP","TW"]}'
+    router_exec "for ip in 8.8.8.8 8.8.4.4 1.1.1.1 9.9.9.9 80.249.99.148 51.140.0.1 133.242.0.1 1.34.0.1; do ip addr del \"\$ip/32\" dev rtr-int 2>/dev/null || true; done" || true
+    api_ignore PUT /api/rate-limit/config '{"packet_rate":10000,"syn_rate":100,"udp_rate":5000,"dns_rate":200,"window_ns":1000000000}'
+}
+
+shutdown_net_guardia() {
+    local pids
+    local had_inner_process=0
+    pids="$(find_net_guardia_pids || true)"
+    if [[ -n "$pids" ]]; then
+        had_inner_process=1
+        ng_exec "kill -INT $pids || true"
+        local deadline=$((SECONDS + 30))
+        while (( SECONDS < deadline )); do
+            [[ -z "$(find_net_guardia_pids || true)" ]] && break
+            sleep 1
+        done
+    fi
+    if [[ -n "$NG_PID" ]]; then
+        if kill -0 "$NG_PID" 2>/dev/null; then
+            kill -INT "$NG_PID" 2>/dev/null || true
+            local host_deadline=$((SECONDS + 15))
+            while (( SECONDS < host_deadline )); do
+                kill -0 "$NG_PID" 2>/dev/null || break
+                sleep 1
+            done
+            if kill -0 "$NG_PID" 2>/dev/null \
+                && (( had_inner_process == 0 )) \
+                && ! ng_exec "bpftool net show | grep -Eq 'ng-ext|ng-int|net_guardia'"
+            then
+                kill -TERM "$NG_PID" 2>/dev/null || true
+            fi
+        fi
+        if kill -0 "$NG_PID" 2>/dev/null; then
+            echo "  WARN net-guardia host runner still alive after SIGINT; leaving final failure to cleanup checks" >&2
+        else
+            wait "$NG_PID" 2>/dev/null || true
+        fi
+        NG_PID=""
+    fi
+}
+
+assert_clean_shutdown() {
+    local pids
+    pids="$(find_net_guardia_pids || true)"
+    [[ -z "$pids" ]] || return 1
+    ! ng_exec "bpftool net show | grep -Eq 'ng-ext|ng-int|net_guardia|xdp.*id'"
+}
+
+cleanup() {
+    set +e
+    cleanup_api_state
+    shutdown_net_guardia
+    assert_clean_shutdown >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT
+
+setup_ipv6_topology() {
+    external_exec "ip -6 addr add fd00:1::2/64 dev ext-eth0 2>/dev/null || true; ip -6 addr add fd00:1::5/64 dev ext-eth0 2>/dev/null || true; ip -6 route replace default via fd00:1::1"
+    router_exec "ip -6 addr add fd00:1::1/64 dev rtr-ext 2>/dev/null || true; ip -6 addr add fd00:2::1/64 dev rtr-int 2>/dev/null || true"
+    host_netns_exec router sh -c "echo 1 > /proc/sys/net/ipv6/conf/all/forwarding"
+    internal_exec "ip -6 addr add fd00:2::2/64 dev int-eth0 2>/dev/null || true; ip -6 route replace default via fd00:2::1"
+}
+
+start_internal_http() {
+    internal_exec "ssh-keygen -A >/dev/null 2>&1 || true; /usr/sbin/sshd 2>/dev/null || true; pkill -f 'python3 -m http.server 80' 2>/dev/null || true; cd /var/www/html && nohup python3 -m http.server 80 >/tmp/ng-http.log 2>&1 &"
+}
+
+start_net_guardia() {
+    : > "$RUN_LOG"
+    (
+        cd "$ROOT_DIR"
+        printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$RUNTIME" exec -i netguardia cargo run --release --bin net-guardia
+    ) >"$RUN_LOG" 2>&1 &
+    NG_PID=$!
+}
+
+complete_setup_if_needed() {
+    local status
+    status="$(ng_exec "curl -fsS --max-time 5 '${NG_API}/api/setup/status'")"
+    if grep -q '"setup_complete":true' <<<"$status"; then
+        return 0
+    fi
+
+    api_raw POST /api/setup/complete '{"ingress_interface":"ng-ext","egress_interface":"ng-int","admin_password":"'"$ADMIN_PASSWORD"'","http_port":8080}' >/dev/null
+    wait_for_log "Full system initialization complete"
+}
+
+login() {
+    local body token
+    body="$(api_raw POST /api/auth/login '{"username":"'"$ADMIN_USER"'","password":"'"$ADMIN_PASSWORD"'"}')"
+    token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$body")"
+    [[ -n "$token" ]]
+    TOKEN="$token"
+}
+
+scapy_send_ipv4_options_tcp() {
+    external_exec "python3 - <<'PY'
+from scapy.all import IP, TCP, Raw, send, conf
+conf.verb = 0
+pkt = IP(src='10.10.1.2', dst='10.10.2.2', options=b'\x01\x01\x00\x00')/TCP(sport=45678, dport=80, flags='PA')/Raw(b'GET / HTTP/1.0\r\n\r\n')
+send(pkt, count=3, inter=0.05)
+PY"
+}
+
+scapy_send_invalid_ipv4() {
+    internal_exec "python3 - <<'PY'
+from scapy.all import Ether, sendp, conf
+conf.verb = 0
+# Ethernet + IPv4 version/IHL byte with invalid IHL=4, sent directly into ng-int.
+pkt = Ether(type=0x0800) / bytes([0x44,0,0,20,0,0,0,0,64,6,0,0,10,10,1,2,10,10,2,2])
+sendp(pkt, iface='int-eth0', count=3, inter=0.05)
+PY"
+}
+
+tcp_connect_from_external() {
+    local src_ip="$1"
+    local dst="$2"
+    external_exec "timeout 5 curl -fsS --interface '$src_ip' '$dst' >/dev/null"
+}
+
+ping4_from_external() {
+    local src_ip="$1"
+    local dst_ip="$2"
+    external_exec "ping -c 2 -W 3 -I '$src_ip' '$dst_ip' >/dev/null 2>&1"
+}
+
+ping6_from_external() {
+    local src_ip="$1"
+    local dst_ip="$2"
+    external_exec "ping -6 -c 2 -W 3 -I '$src_ip' '$dst_ip' >/dev/null 2>&1"
+}
+
+expect_blocked() {
+    if "$@"; then
+        return 1
+    fi
+    return 0
+}
+
+send_burst() {
+    local kind="$1"
+    external_exec "python3 - '$kind' <<'PY'
+import sys
+from scapy.all import IP, ICMP, TCP, UDP, DNS, DNSQR, send, conf
+conf.verb = 0
+kind = sys.argv[1]
+if kind == 'packet':
+    pkt = IP(src='10.10.1.5', dst='10.10.2.2')/ICMP()
+elif kind == 'syn':
+    pkt = IP(src='10.10.1.5', dst='10.10.2.2')/TCP(sport=41000, dport=22, flags='S')
+elif kind == 'udp':
+    pkt = IP(src='10.10.1.5', dst='10.10.2.2')/UDP(sport=41000, dport=9999)/b'x'
+elif kind == 'dns':
+    pkt = IP(src='10.10.1.5', dst='10.10.2.2')/UDP(sport=41000, dport=53)/DNS(rd=1, qd=DNSQR(qname='rate.example.com'))
+else:
+    raise SystemExit(2)
+send(pkt, count=20, inter=0.01)
+PY"
+}
+
+send_dns_query() {
+    local domain="$1"
+    external_exec "python3 - '$domain' <<'PY'
+import sys
+from scapy.all import IP, UDP, DNS, DNSQR, send, conf
+conf.verb = 0
+domain = sys.argv[1]
+pkt = IP(src='10.10.1.5', dst='10.10.2.2')/UDP(sport=53000, dport=53)/DNS(rd=1, qd=DNSQR(qname=domain))
+send(pkt, count=5, inter=0.05)
+PY"
+}
+
+send_geo_packet() {
+    local source_ip="$1"
+    router_exec "ip addr add '$source_ip/32' dev rtr-int 2>/dev/null || true; ping -c 5 -W 1 -I '$source_ip' 10.10.2.2 >/dev/null 2>&1 || true"
+}
+
+geo_block_prefixes() {
+    local country="$1"
+    local response
+    response="$(api_raw PUT /api/acl/geo/block '{"country_codes":["'"$country"'"]}')"
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_prefixes", 0))' <<<"$response"
+}
+
+geo_unblock_country() {
+    local country="$1"
+    api_expect_ok DELETE /api/acl/geo/unblock '{"country_codes":["'"$country"'"]}'
+}
+
+geo_block_counter_increases() {
+    local candidate country source_ip prefixes before
+    local candidates=(
+        "US 8.8.8.8"
+        "US 8.8.4.4"
+        "AU 1.1.1.1"
+        "DE 9.9.9.9"
+        "NL 80.249.99.148"
+        "GB 51.140.0.1"
+        "JP 133.242.0.1"
+        "TW 1.34.0.1"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        country="${candidate%% *}"
+        source_ip="${candidate#* }"
+        geo_unblock_country "$country" >/dev/null 2>&1 || true
+        if ! prefixes="$(geo_block_prefixes "$country" 2>/dev/null)"; then
+            geo_unblock_country "$country" >/dev/null 2>&1 || true
+            continue
+        fi
+        if ! [[ "$prefixes" =~ ^[0-9]+$ ]] || (( prefixes == 0 )); then
+            geo_unblock_country "$country" >/dev/null 2>&1 || true
+            continue
+        fi
+
+        before="$(drop_counter geo_block)"
+        send_geo_packet "$source_ip"
+        sleep 1
+        if counter_increased geo_block "$before"; then
+            geo_unblock_country "$country" >/dev/null 2>&1 || true
+            return 0
+        fi
+        geo_unblock_country "$country" >/dev/null 2>&1 || true
+    done
+
+    return 1
+}
+
+run_rate_limit_case() {
+    local name="$1"
+    local field="$2"
+    local config="$3"
+    local burst_kind="$4"
+    local before
+    before="$(drop_counter "$field")"
+    api_expect_ok PUT /api/rate-limit/config "$config"
+    sleep 1
+    send_burst "$burst_kind"
+    sleep 1
+    check "$name" counter_increased "$field" "$before"
+    api_expect_ok PUT /api/rate-limit/config '{"packet_rate":10000,"syn_rate":100,"udp_rate":5000,"dns_rate":200,"window_ns":1000000000}'
 }
 
 echo "=========================================="
-echo "  NetGuardia 功能測試"
-echo "=========================================="
-echo ""
-
-# ============================================================
-# 1. 基礎檢查
-# ============================================================
-echo "--- 1. 基礎檢查 ---"
-
-# 1a. 容器運行中
-run_sudo podman ps --filter name=netguardia --format "{{.Status}}" | grep -q "Up" 2>/dev/null
-test_result "netguardia 容器運行中" $?
-
-# 1b. XDP 程式已附加
-ng_exec "ip link show ng-ext 2>/dev/null | grep -q xdp"
-test_result "ng-ext XDP 程式已附加" $?
-
-ng_exec "ip link show ng-int 2>/dev/null | grep -q xdp"
-test_result "ng-int XDP 程式已附加" $?
-
-# 1c. 管理網路可達
-ng_exec "ping -c1 -W $TIMEOUT 10.10.3.1 >/dev/null 2>&1"
-test_result "管理網路 (10.10.3.1) 可達" $?
-
-echo ""
-
-# ============================================================
-# 2. XDP 封包轉發測試
-# ============================================================
-echo "--- 2. XDP 封包轉發測試 ---"
-
-# 2a. Router -> Internal (透過 NetGuardia)
-router_exec "ping -c 3 -W $TIMEOUT 10.10.2.2 >/dev/null 2>&1"
-test_result "Router → Internal ICMP 轉發 (10.10.2.2)" $?
-
-# 2b. Internal -> Router (反向轉發)
-int_exec "ping -c 3 -W $TIMEOUT 10.10.2.1 >/dev/null 2>&1"
-test_result "Internal → Router ICMP 轉發 (10.10.2.1)" $?
-
-# 2c. External -> Internal (全路徑: external -> router -> netguardia -> internal)
-ext_exec "ping -c 3 -W $TIMEOUT 10.10.2.2 >/dev/null 2>&1"
-test_result "External → Internal 全路徑 ICMP" $?
-
-# 2d. Internal -> External (全路徑反向)
-int_exec "ping -c 3 -W $TIMEOUT 10.10.1.2 >/dev/null 2>&1"
-test_result "Internal → External 全路徑 ICMP" $?
-
-# 2e. TCP 轉發 (HTTP)
-ext_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' http://10.10.2.2/ 2>/dev/null" | grep -q "200"
-test_result "External → Internal HTTP (TCP 轉發)" $?
-
-echo ""
-
-# ============================================================
-# 3. Web API 測試
-# ============================================================
-echo "--- 3. Web API 測試 ---"
-
-# 3a. Health endpoint
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/health/status" | grep -q "200"
-test_result "GET /api/health/status" $?
-
-# 3b. Health metrics
-ng_exec "timeout $TIMEOUT curl -s $NG_API/api/health/metrics" | grep -q "cpu" 2>/dev/null
-test_result "GET /api/health/metrics (含 CPU 資訊)" $?
-
-# 3c. Flow stats
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/stats/flows" | grep -q "200"
-test_result "GET /api/stats/flows" $?
-
-# 3e. Stats summary
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/stats/summary" | grep -q "200"
-test_result "GET /api/stats/summary" $?
-
-# 3f. ML status
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/ml/status" | grep -q "200"
-test_result "GET /api/ml/status" $?
-
-# 3g. ACL list
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/acl/ipv4/source/whitelist" | grep -q "200"
-test_result "GET /api/acl/ipv4/source/whitelist" $?
-
-# 3h. Rate limit config
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/rate-limit/config" | grep -q "200"
-test_result "GET /api/rate-limit/config" $?
-
-echo ""
-
-# ============================================================
-# 4. ACL 功能測試
-# ============================================================
-echo "--- 4. ACL 功能測試 ---"
-
-# 4a. 添加黑名單規則 (封鎖 10.10.1.5) — API 接收 SocketAddrV4 格式 "ip:port"
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X PUT '$NG_API/api/acl/ipv4/source/blacklist' -H 'Content-Type: application/json' -d '\"10.10.1.5:0\"'" | grep -q "200"
-test_result "PUT ACL 黑名單規則 (封鎖 10.10.1.5)" $?
-
-# 4b. 驗證封鎖生效 (10.10.1.5 不該能 ping 到 internal)
-sleep 1
-ext_exec "ping -c 2 -W 3 -I 10.10.1.5 10.10.2.2 >/dev/null 2>&1" && BLOCKED=1 || BLOCKED=0
-test_result "10.10.1.5 被封鎖 (ping 失敗)" $BLOCKED
-
-# 4c. 未封鎖的 IP 仍然可達
-ext_exec "ping -c 2 -W $TIMEOUT -I 10.10.1.2 10.10.2.2 >/dev/null 2>&1"
-test_result "10.10.1.2 未受影響 (ping 成功)" $?
-
-# 4d. 移除黑名單規則
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X DELETE '$NG_API/api/acl/ipv4/source/blacklist' -H 'Content-Type: application/json' -d '\"10.10.1.5:0\"'" | grep -q "200"
-test_result "DELETE ACL 黑名單規則 (解除 10.10.1.5)" $?
-
-# 4e. 驗證解除封鎖
-sleep 1
-ext_exec "ping -c 2 -W $TIMEOUT -I 10.10.1.5 10.10.2.2 >/dev/null 2>&1"
-test_result "10.10.1.5 解除封鎖 (ping 恢復)" $?
-
-echo ""
-
-# ============================================================
-# 5. Rate Limit 測試
-# ============================================================
-echo "--- 5. Rate Limit 測試 ---"
-
-# 5a. 讀取當前 rate limit 設定
-RL_CONFIG=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/rate-limit/config")
-echo "$RL_CONFIG" | grep -q "packet_rate" 2>/dev/null
-test_result "Rate limit 設定可讀取" $?
-
-echo ""
-
-# ============================================================
-# 6. ML 引擎測試
-# ============================================================
-echo "--- 6. ML 引擎測試 ---"
-
-ML_STATUS=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/ml/status")
-echo "$ML_STATUS" | grep -q "active\|logging\|disabled" 2>/dev/null
-test_result "ML 引擎狀態可查詢" $?
-
-# 檢查 traffic log 是否在寫入 (traffic_logging_mode = true)
-ng_exec "test -f /root/NetGuardia/traffic_log.csv && wc -l < /root/NetGuardia/traffic_log.csv || echo 0" | grep -qv "^0$" 2>/dev/null
-test_result "Traffic log CSV 有寫入資料" $?
-
-echo ""
-
-# ============================================================
-# 7. WebSocket 測試
-# ============================================================
-echo "--- 7. WebSocket 測試 ---"
-
-# 簡單測試 WS endpoint 是否回應 (upgrade request)
-# curl -sv 輸出 status code 到 stderr，101 Switching Protocols 表示成功
-WS_CODE=$(ng_exec "timeout 3 curl -s -o /dev/null -w '%{http_code}' -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGVzdA==' -H 'Sec-WebSocket-Version: 13' $NG_API/ws/health 2>/dev/null || true")
-echo "$WS_CODE" | grep -q "101"
-test_result "WebSocket /ws/health 升級成功 (101)" $?
-
-echo ""
-
-# ============================================================
-# 8. GeoIP 國家封鎖 API 測試
-# ============================================================
-echo "--- 8. GeoIP 國家封鎖 API 測試 ---"
-
-# 8a. 查詢目前封鎖的國家列表
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/acl/geo/blocked" | grep -q "200"
-test_result "GET /api/acl/geo/blocked" $?
-
-# 8b. 封鎖國家 (CN, RU) — GeoIP rebuild 需要掃描 MaxMind DB，timeout 加長到 30s
-ng_exec "timeout 30 curl -s -o /dev/null -w '%{http_code}' -X PUT '$NG_API/api/acl/geo/block' -H 'Content-Type: application/json' -d '{\"country_codes\":[\"CN\",\"RU\"]}'" | grep -q "200"
-test_result "PUT /api/acl/geo/block 封鎖 CN, RU" $?
-
-# 8c. 驗證封鎖列表包含 CN
-GEO_BLOCKED=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/acl/geo/blocked")
-echo "$GEO_BLOCKED" | grep -q "CN" 2>/dev/null
-test_result "封鎖列表包含 CN" $?
-
-# 8d. 回傳包含 total_prefixes
-GEO_PUT_RESP=$(ng_exec "timeout 30 curl -s -X PUT '$NG_API/api/acl/geo/block' -H 'Content-Type: application/json' -d '{\"country_codes\":[\"KP\"]}'")
-echo "$GEO_PUT_RESP" | grep -q "total_prefixes" 2>/dev/null
-test_result "PUT 回傳 total_prefixes 欄位" $?
-
-# 8e. 解除封鎖
-ng_exec "timeout 30 curl -s -o /dev/null -w '%{http_code}' -X DELETE '$NG_API/api/acl/geo/unblock' -H 'Content-Type: application/json' -d '{\"country_codes\":[\"CN\",\"RU\",\"KP\"]}'" | grep -q "200"
-test_result "DELETE /api/acl/geo/unblock 清除所有 GeoIP 規則" $?
-
-# 8f. 驗證清空
-GEO_AFTER=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/acl/geo/blocked")
-echo "$GEO_AFTER" | grep -q '"blocked_countries":\[\]' 2>/dev/null || echo "$GEO_AFTER" | grep -q '"blocked_countries": \[\]' 2>/dev/null
-test_result "封鎖列表已清空" $?
-
-echo ""
-
-# ============================================================
-# 9. DNS 黑名單 API 測試
-# ============================================================
-echo "--- 9. DNS 黑名單 API 測試 ---"
-
-# 9a. 查詢 DNS 黑名單
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' $NG_API/api/filter/dns/blacklist" | grep -q "200"
-test_result "GET /api/filter/dns/blacklist" $?
-
-# 9b. 新增域名到黑名單
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X PUT '$NG_API/api/filter/dns/blacklist' -H 'Content-Type: application/json' -d '{\"domains\":[\"malware.example.com\",\"phishing.test.org\"]}'" | grep -q "200"
-test_result "PUT /api/filter/dns/blacklist 新增域名" $?
-
-# 9c. 驗證黑名單已更新
-DNS_DOMAINS=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/filter/dns/blacklist")
-echo "$DNS_DOMAINS" | grep -q "malware.example.com" 2>/dev/null
-test_result "黑名單包含 malware.example.com" $?
-
-# 9d. 移除域名
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X DELETE '$NG_API/api/filter/dns/blacklist' -H 'Content-Type: application/json' -d '{\"domains\":[\"phishing.test.org\"]}'" | grep -q "200"
-test_result "DELETE 移除 phishing.test.org" $?
-
-# 9e. 驗證移除結果
-DNS_AFTER=$(ng_exec "timeout $TIMEOUT curl -s $NG_API/api/filter/dns/blacklist")
-echo "$DNS_AFTER" | grep -q "malware.example.com" 2>/dev/null
-test_result "移除後仍包含 malware.example.com" $?
-
-# 9f. 清除所有 DNS 黑名單
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X DELETE '$NG_API/api/filter/dns/blacklist' -H 'Content-Type: application/json' -d '{\"domains\":[\"malware.example.com\"]}'" | grep -q "200"
-test_result "清除所有 DNS 黑名單規則" $?
-
-echo ""
-
-# ============================================================
-# 10. DNS 黑名單封鎖流量驗證
-# ============================================================
-echo "--- 10. DNS 黑名單封鎖流量驗證 ---"
-
-# 10a. 新增測試域名到黑名單
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X PUT '$NG_API/api/filter/dns/blacklist' -H 'Content-Type: application/json' -d '{\"domains\":[\"evil.example.com\"]}'" | grep -q "200"
-test_result "新增 evil.example.com 到 DNS 黑名單" $?
-
-# 10b. 對黑名單域名的 DNS 查詢應被丟棄 (timeout)
-sleep 1
-ext_exec "timeout 3 dig @10.10.2.2 evil.example.com +time=2 +tries=1 >/dev/null 2>&1" && DNS_BLOCKED=1 || DNS_BLOCKED=0
-test_result "evil.example.com DNS 查詢被封鎖" $DNS_BLOCKED
-
-# 10c. 子域名也應被封鎖
-ext_exec "timeout 3 dig @10.10.2.2 sub.evil.example.com +time=2 +tries=1 >/dev/null 2>&1" && SUB_BLOCKED=1 || SUB_BLOCKED=0
-test_result "sub.evil.example.com 子域名也被封鎖" $SUB_BLOCKED
-
-# 10d. 清除
-ng_exec "timeout $TIMEOUT curl -s -o /dev/null -w '%{http_code}' -X DELETE '$NG_API/api/filter/dns/blacklist' -H 'Content-Type: application/json' -d '{\"domains\":[\"evil.example.com\"]}'" | grep -q "200"
-test_result "清除 DNS 黑名單測試規則" $?
-
-echo ""
-
-# ============================================================
-# 結果總結
-# ============================================================
-echo "=========================================="
-echo "  測試結果: $PASS 通過 / $FAIL 失敗 / $((PASS + FAIL)) 總計"
+echo "  NetGuardia eBPF E2E Gate"
 echo "=========================================="
 
-if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo "失敗的測試："
-    for t in "${TESTS[@]}"; do
-        name="${t%:*}"
-        result="${t##*:}"
-        if [ "$result" -ne 0 ]; then
-            echo "  ❌ $name"
-        fi
-    done
+echo "--- Environment setup ---"
+run_sudo "$DEV_SCRIPT"
+detect_runtime
+kill_existing_net_guardia
+detach_xdp_links
+cleanup_runtime_state
+setup_ipv6_topology
+start_internal_http
+
+echo "--- Starting net-guardia ---"
+start_net_guardia
+check "setup/status becomes reachable" wait_for_http
+check "setup completion starts full system" complete_setup_if_needed
+check "ng-ext XDP attach logged" wait_for_log "XDP attached to ng-ext"
+check "ng-int XDP attach logged" wait_for_log "XDP attached to ng-int"
+check "XSK queue starts" wait_for_log "Queue pair 0 started successfully"
+check "full system initialized" wait_for_log "Full system initialization complete"
+check "login succeeds" login
+
+echo "--- XSK forwarding ---"
+check "IPv4 external to internal ICMP" ping4_from_external 10.10.1.2 10.10.2.2
+check "IPv4 internal to external ICMP" internal_exec "ping -c 2 -W 3 10.10.1.2 >/dev/null 2>&1"
+check "IPv4 external to internal HTTP" tcp_connect_from_external 10.10.1.2 http://10.10.2.2/
+check "IPv6 external to internal ICMP" ping6_from_external fd00:1::2 fd00:2::2
+
+echo "--- Parser packet path ---"
+check "IPv4 IHL=6 TCP packet path does not detach" scapy_send_ipv4_options_tcp
+sleep 1
+check "Invalid IPv4 packet does not detach XDP" scapy_send_invalid_ipv4
+check "XDP links remain attached after parser probes" ng_exec "bpftool net show | grep -Eq 'ng-ext|ng-int'"
+
+echo "--- ACL ---"
+acl_before="$(drop_counter acl_blacklist)"
+api_expect_ok PUT /api/acl/ipv4/source/blacklist '"10.10.1.5:0"'
+check "IPv4 source blacklist drops traffic" expect_blocked ping4_from_external 10.10.1.5 10.10.2.2
+check "ACL blacklist counter increases" counter_increased acl_blacklist "$acl_before"
+api_expect_ok PUT /api/acl/ipv4/source/whitelist '"10.10.1.5:0"'
+check "Whitelist overrides blacklist" ping4_from_external 10.10.1.5 10.10.2.2
+api_expect_ok DELETE /api/acl/ipv4/source/whitelist '"10.10.1.5:0"'
+check "Blacklist resumes after whitelist removal" expect_blocked ping4_from_external 10.10.1.5 10.10.2.2
+api_expect_ok DELETE /api/acl/ipv4/source/blacklist '"10.10.1.5:0"'
+acl6_before="$(drop_counter acl_blacklist)"
+api_expect_ok PUT /api/acl/ipv6/source/blacklist '"[fd00:1::5]:0"'
+check "IPv6 source blacklist drops traffic" expect_blocked ping6_from_external fd00:1::5 fd00:2::2
+check "IPv6 ACL counter increases" counter_increased acl_blacklist "$acl6_before"
+api_expect_ok DELETE /api/acl/ipv6/source/blacklist '"[fd00:1::5]:0"'
+
+echo "--- Protocol filter ---"
+proto_before="$(drop_counter protocol_filter)"
+api_expect_ok PUT /api/filter/http/ipv4 '["10.10.2.2:80",["GET"]]'
+check "HTTP GET is allowed" external_exec "timeout 5 curl -fsS -X GET http://10.10.2.2/ >/dev/null"
+check "HTTP POST is dropped" expect_blocked external_exec "timeout 5 curl -fsS -X POST http://10.10.2.2/ >/dev/null"
+check "Protocol filter counter increases for POST" counter_increased protocol_filter "$proto_before"
+api_expect_ok DELETE /api/filter/http/ipv4 '["10.10.2.2:80",["GET"]]'
+
+proto_ssh_before="$(drop_counter protocol_filter)"
+api_expect_ok PUT /api/filter/ssh/ipv4 '"10.10.2.2:22"'
+api_expect_ok PUT /api/filter/ssh/blacklist/ipv4 '"10.10.1.5"'
+check "SSH blacklist drops TCP connect" expect_blocked external_exec "timeout 5 nc -z -s 10.10.1.5 10.10.2.2 22"
+check "SSH blacklist counter increases" counter_increased protocol_filter "$proto_ssh_before"
+api_expect_ok DELETE /api/filter/ssh/blacklist/ipv4 '"10.10.1.5"'
+api_expect_ok POST /api/filter/ssh/whitelist/enable
+api_expect_ok PUT /api/filter/ssh/whitelist/ipv4 '"10.10.1.2"'
+check "SSH whitelist allows listed source" external_exec "timeout 5 nc -z -s 10.10.1.2 10.10.2.2 22"
+check "SSH whitelist blocks unlisted source" expect_blocked external_exec "timeout 5 nc -z -s 10.10.1.5 10.10.2.2 22"
+api_expect_ok POST /api/filter/ssh/whitelist/disable
+api_expect_ok DELETE /api/filter/ssh/whitelist/ipv4 '"10.10.1.2"'
+api_expect_ok DELETE /api/filter/ssh/ipv4 '"10.10.2.2:22"'
+
+echo "--- Rate limit ---"
+run_rate_limit_case "Packet rate limit bucket" rate_limit_pkt '{"packet_rate":2,"syn_rate":1000,"udp_rate":1000,"dns_rate":1000,"window_ns":2000000000}' packet
+run_rate_limit_case "SYN rate limit bucket" rate_limit_syn '{"packet_rate":1000,"syn_rate":2,"udp_rate":1000,"dns_rate":1000,"window_ns":2000000000}' syn
+run_rate_limit_case "UDP rate limit bucket" rate_limit_udp '{"packet_rate":1000,"syn_rate":1000,"udp_rate":2,"dns_rate":1000,"window_ns":2000000000}' udp
+run_rate_limit_case "DNS rate limit bucket" rate_limit_dns '{"packet_rate":1000,"syn_rate":1000,"udp_rate":1000,"dns_rate":2,"window_ns":2000000000}' dns
+
+echo "--- DNS blacklist ---"
+dns_before="$(drop_counter dns_blacklist)"
+api_expect_ok PUT /api/filter/dns/blacklist '{"domains":["evil.example.com"]}'
+send_dns_query evil.example.com
+sleep 1
+check "DNS blacklist counter increases" counter_increased dns_blacklist "$dns_before"
+dns_allowed_before="$(drop_counter dns_blacklist)"
+send_dns_query allowed.example.com
+sleep 1
+check "Non-blacklisted DNS does not increase DNS blacklist drops" counter_unchanged dns_blacklist "$dns_allowed_before"
+api_expect_ok DELETE /api/filter/dns/blacklist '{"domains":["evil.example.com"]}'
+
+echo "--- GeoIP block ---"
+check "GeoIP block counter increases" geo_block_counter_increases
+
+echo "--- Graceful shutdown ---"
+cleanup_api_state
+shutdown_net_guardia
+check "No residual XDP link or net-guardia process" assert_clean_shutdown
+
+trap - EXIT
+
+echo "=========================================="
+echo "  eBPF E2E result: $PASS passed / $FAIL failed"
+echo "=========================================="
+if (( FAIL > 0 )); then
+    printf 'Failures:\n'
+    printf '  - %s\n' "${FAILURES[@]}"
+    echo "Run log: $RUN_LOG"
+    exit 1
 fi
 
-exit $FAIL
+echo "Run log: $RUN_LOG"

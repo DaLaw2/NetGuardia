@@ -2,42 +2,22 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use lru::LruCache;
 use macros::log;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-use super::fusion_math::{FusionWindowLengths, fused_confidence};
-use super::metrics::FusionMetrics;
-use crate::infrastructure::communication_manager::CommunicationManager;
-use crate::infrastructure::geoip::GeoIpService;
-use crate::model::detection::attack_type::translate;
-use crate::model::error::system::SystemError;
-use crate::model::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
-use crate::model::log::detection::DetectionLog;
-
-/// Dedup window: detections for the same `(source_ip, canonical_attack_type)`
-/// within this window are suppressed after initial fusion-window expiry.
-const DEDUP_WINDOW_SECS: u64 = 30;
-
-/// How often to sweep expired dedup entries.
-const CLEANUP_INTERVAL_SECS: u64 = 60;
-
-/// Repeat offender detection: same IP within this duration counts as repeat.
-const REPEAT_OFFENDER_WINDOW_SECS: u64 = 2 * 60 * 60;
-
-/// Maximum dedup entries to prevent unbounded memory growth under sustained attack.
-/// Declared as `NonZero` at compile time so `LruCache::new` never needs a
-/// runtime unwrap — if this ever goes to zero, the const expression fails
-/// to compile, not the running server.
-// SAFETY: NonZero::new on a non-zero literal is infallible; const-evaluated.
-const MAX_DEDUP_ENTRIES: NonZero<usize> = NonZero::new(50_000).unwrap();
-
-/// Actor recorded on every fusion-chain WORM entry. Stable across releases —
-/// downstream audit tooling filters on this string.
-const FUSION_AUDIT_ACTOR: &str = "FusionEngine";
-/// Action recorded on every fusion-chain WORM entry. Stable across releases.
-const FUSION_AUDIT_ACTION: &str = "fused_threat_emitted";
+use crate::core::detection::metrics::FusionMetrics;
+use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::constants::{FUSION_AUDIT_ACTION, FUSION_AUDIT_ACTOR};
+use crate::domain::common::event::{AuditEvent, DetectionEvent, DetectionSource, ThreatDetectedEvent};
+use crate::domain::detection::attack_type::translate;
+use crate::domain::detection::fusion_math::{FusionWindowLengths, fused_confidence};
+use crate::domain::detection::log::DetectionLog;
+use crate::domain::detection::ml_detection::AlertMessage;
+use crate::interface::geo_lookup::GeoLookup;
 
 /// Per-source record within an in-flight dedup entry. Keeps the strongest
 /// confidence per source so multi-hit from one source doesn't inflate the
@@ -70,15 +50,18 @@ struct DedupEntry {
 /// re-emit with the combined confidence `1 − ∏(1 − c_i)`.
 pub struct DetectionOrchestrator {
     rx: mpsc::Receiver<DetectionEvent>,
-    comm: Arc<CommunicationManager>,
-    geoip: Option<Arc<GeoIpService>>,
+    threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+    audit_tx: broadcast::Sender<AuditEvent>,
+    geoip: Option<Arc<dyn GeoLookup>>,
     metrics: Arc<FusionMetrics>,
     // Enrichment state
-    src_ip_counts: lru::LruCache<String, u32>,
-    repeat_tracker: lru::LruCache<String, Instant>,
+    src_ip_counts: LruCache<String, u32>,
+    repeat_tracker: LruCache<String, Instant>,
     // Dedup state — LRU-bounded to prevent unbounded growth under sustained attack.
     dedup: lru::LruCache<(String, String), DedupEntry>,
     dedup_window: Duration,
+    repeat_offender_window: Duration,
+    cleanup_interval_secs: u64,
     /// Per-source fusion window lengths. Future versions may read overrides
     /// from DB; the defaults live in `FusionWindowLengths::default`.
     fusion_windows: FusionWindowLengths,
@@ -86,22 +69,30 @@ pub struct DetectionOrchestrator {
 
 impl DetectionOrchestrator {
     pub fn new(
+        app_config: &Arc<ArcSwap<AppConfig>>,
         rx: mpsc::Receiver<DetectionEvent>,
-        comm: Arc<CommunicationManager>,
-        geoip: Option<Arc<GeoIpService>>,
+        threat_tx: broadcast::Sender<ThreatDetectedEvent>,
+        audit_tx: broadcast::Sender<AuditEvent>,
+        geoip: Option<Arc<dyn GeoLookup>>,
         metrics: Arc<FusionMetrics>,
     ) -> Self {
+        let cfg = app_config.load();
+        let fusion = &cfg.detection.fusion;
+        let source_count_max_entries = nonzero_cache_size(fusion.source_count_max_entries);
+        let repeat_tracker_max_entries = nonzero_cache_size(fusion.repeat_tracker_max_entries);
+        let max_dedup = nonzero_cache_size(fusion.max_dedup_entries);
         Self {
             rx,
-            comm,
+            threat_tx,
+            audit_tx,
             geoip,
             metrics,
-            // SAFETY: NonZero::new on non-zero literals; MAX_DEDUP_ENTRIES is
-            // already a NonZero const so no unwrap needed for that one.
-            src_ip_counts: LruCache::new(NonZero::new(10_000).unwrap()),
-            repeat_tracker: LruCache::new(NonZero::new(5_000).unwrap()),
-            dedup: LruCache::new(MAX_DEDUP_ENTRIES),
-            dedup_window: Duration::from_secs(DEDUP_WINDOW_SECS),
+            src_ip_counts: LruCache::new(source_count_max_entries),
+            repeat_tracker: LruCache::new(repeat_tracker_max_entries),
+            dedup: LruCache::new(max_dedup),
+            dedup_window: Duration::from_secs(fusion.dedup_window_secs),
+            repeat_offender_window: Duration::from_secs(fusion.repeat_offender_window_secs),
+            cleanup_interval_secs: cfg.detection.cleanup_interval_secs,
             fusion_windows: FusionWindowLengths::default(),
         }
     }
@@ -113,7 +104,7 @@ impl DetectionOrchestrator {
     async fn run(mut self) {
         log!(DetectionLog::OrchestratorStarted);
 
-        let mut cleanup_interval = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut cleanup_interval = interval(Duration::from_secs(self.cleanup_interval_secs));
 
         loop {
             tokio::select! {
@@ -264,9 +255,7 @@ impl DetectionOrchestrator {
         self.publish_fusion_audit(trigger_event, fused, &per_source_samples)
             .await;
 
-        if let Err(e) = self.comm.publish_event(threat_event).await {
-            log!(SystemError::MlSoarBridgeFailed(e));
-        }
+        let _ = self.threat_tx.send(threat_event);
     }
 
     /// Emit a WORM AuditEvent so the eventual "why was this IP blocked?"
@@ -280,9 +269,7 @@ impl DetectionOrchestrator {
             detail: build_fusion_audit_detail(&trigger_event.source_ip, &trigger_event.attack_type, fused, per_source),
         };
 
-        if let Err(e) = self.comm.publish_event(audit).await {
-            log!(DetectionLog::FusionAuditPublishFailed(e.to_string()));
-        }
+        let _ = self.audit_tx.send(audit);
     }
 
     async fn enrich(&mut self, event: &DetectionEvent) -> ThreatDetectedEvent {
@@ -305,17 +292,15 @@ impl DetectionOrchestrator {
             }
         };
 
-        let repeat_window = Duration::from_secs(REPEAT_OFFENDER_WINDOW_SECS);
         let now = Instant::now();
-        let is_repeat = self
-            .repeat_tracker
-            .get(src_ip)
-            .is_some_and(|last| now.checked_duration_since(*last).unwrap_or(Duration::ZERO) < repeat_window);
+        let is_repeat = self.repeat_tracker.get(src_ip).is_some_and(|last| {
+            now.checked_duration_since(*last).unwrap_or(Duration::ZERO) < self.repeat_offender_window
+        });
         self.repeat_tracker.put(src_ip.clone(), now);
 
         let geoip_country = if let Some(ref svc) = self.geoip {
             if let Ok(ip) = src_ip.parse() {
-                svc.lookup(ip).await.ok().flatten().and_then(|loc| loc.country_code)
+                svc.lookup(ip).await.and_then(|loc| loc.country_code)
             } else {
                 None
             }
@@ -371,9 +356,53 @@ impl DetectionOrchestrator {
     }
 }
 
+fn nonzero_cache_size(value: usize) -> NonZero<usize> {
+    NonZero::new(value.max(1)).unwrap_or(NonZero::<usize>::MIN)
+}
+
+pub async fn bridge_ml_to_detection(mut rx: broadcast::Receiver<AlertMessage>, tx: mpsc::Sender<DetectionEvent>) {
+    log!(DetectionLog::MlBridgeStarted);
+
+    loop {
+        match rx.recv().await {
+            Ok(alert) => {
+                let raw_type = alert.attack_type.as_deref().unwrap_or("unknown");
+
+                if raw_type.eq_ignore_ascii_case("normal") {
+                    continue;
+                }
+
+                let event = DetectionEvent {
+                    source: DetectionSource::ML,
+                    attack_type: raw_type.to_string(),
+                    confidence: alert.confidence,
+                    source_ip: alert.src_ip,
+                    dest_ip: alert.dst_ip,
+                    protocol: alert.protocol,
+                    packet_count: alert.packet_count,
+                    flow_duration_us: alert.flow_duration_us,
+                    ae_score: alert.ae_score,
+                    anomaly_score: alert.anomaly_score,
+                    c2_score: alert.c2_score,
+                };
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                log!(DetectionLog::MlBridgeLagged(n));
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                log!(DetectionLog::MlAlertChannelClosed);
+                break;
+            }
+        }
+    }
+}
+
 /// Serialize the WORM audit evidence payload for a fused threat emission.
 /// Extracted as a free function so tests can cover schema shape without a
-/// live CommunicationManager harness.
+/// live broadcast harness.
 fn build_fusion_audit_detail(src_ip: &str, attack_type: &str, fused: f32, per_source: &[SourceSample]) -> String {
     let per_source_json: Vec<serde_json::Value> = per_source
         .iter()
@@ -396,8 +425,7 @@ fn build_fusion_audit_detail(src_ip: &str, attack_type: &str, fused: f32, per_so
 
 #[cfg(test)]
 mod tests {
-    //! Orchestrator integration tests require an in-memory CommunicationManager
-    //! harness. Until then, the fusion math lives in `fusion_math::tests`,
+    //! Orchestrator unit tests. The fusion math lives in `fusion_math::tests`,
     //! canonical translation in `model::detection::attack_type::tests`, and
     //! the audit evidence schema is covered below.
 

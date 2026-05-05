@@ -30,20 +30,13 @@ net-guardia/static/web
 *.profraw
 *.profdata
 
-# License keys
-license-generator/target/
 *.hex
-license.key
-license_priv.key
-license_pub.key
 .gstack/
 interfaces.txt
 traffic_log.csv
 
-# Project docs (local only)
-# CLAUDE.md — tracked on dev branches; MUST be untracked before PR to master
-#             (see CLAUDE.md "Branch discipline" section)
-# CLAUDE.md
+CLAUDE.md
+AGENT.md
 DESIGN.md
 TODOS.md
 VERSION
@@ -51,11 +44,7 @@ CHANGELOG.md
 
 # Benchmark data/results (local only)
 benchmark/
-
-# Generated docs
-# docs/ — tracked on dev branches; MUST be untracked before PR to master
-#         (see CLAUDE.md "Branch discipline" section)
-# docs/
+docs/
 
 # SQLite database files
 *.db

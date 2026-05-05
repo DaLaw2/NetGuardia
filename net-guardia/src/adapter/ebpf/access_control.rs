@@ -7,12 +7,12 @@ use common::model::ip_address::{IPv4, IPv6, Port};
 use common::model::port_rule::PortRule;
 use parking_lot::RwLock;
 
-use crate::interface::port::access_control_admin::AccessControlAdminPort;
-use crate::model::access_control::ip_address::NativeConvert;
-use crate::model::access_control::list_type::ListType;
-use crate::model::error::Error;
-use crate::model::error::ebpf::EbpfError;
-use crate::model::monitoring::direction::FlowDirection;
+use crate::domain::common::error::Error;
+use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::error::EbpfError;
+use crate::domain::data_plane::ip_address::NativeConvert;
+use crate::domain::data_plane::list_type::ListType;
+use crate::interface::access_control_admin::AccessControlAdminPort;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,
@@ -40,9 +40,6 @@ impl AccessControl {
         Ok(access_control)
     }
 
-    /// Construct an AccessControl backed by no eBPF maps. Used when eBPF
-    /// failed to load at startup; every mutating call returns `EbpfError::NotLoaded`,
-    /// and list queries return empty maps.
     pub fn unavailable() -> Self {
         Self {
             ipv4_src_whitelist: RwLock::new(MapWrapper::unavailable()),
@@ -146,12 +143,22 @@ impl AccessControl {
 }
 
 impl AccessControlAdminPort for AccessControl {
+    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
+        self.get_ipv4_list(direction, list_type)
+    }
+
+    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
+        self.get_ipv6_list(direction, list_type)
+    }
+
     fn add_ipv4_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV4) -> Result<(), Error> {
         self.add_ipv4_list(direction, list_type, address)
     }
+
     fn add_ipv6_list(&self, direction: FlowDirection, list_type: ListType, address: SocketAddrV6) -> Result<(), Error> {
         self.add_ipv6_list(direction, list_type, address)
     }
+
     fn remove_ipv4_list(
         &self,
         direction: FlowDirection,
@@ -160,6 +167,7 @@ impl AccessControlAdminPort for AccessControl {
     ) -> Result<(), Error> {
         self.remove_ipv4_list(direction, list_type, address)
     }
+
     fn remove_ipv6_list(
         &self,
         direction: FlowDirection,
@@ -167,12 +175,6 @@ impl AccessControlAdminPort for AccessControl {
         address: SocketAddrV6,
     ) -> Result<(), Error> {
         self.remove_ipv6_list(direction, list_type, address)
-    }
-    fn get_ipv4_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv4Addr, Vec<Port>> {
-        self.get_ipv4_list(direction, list_type)
-    }
-    fn get_ipv6_list(&self, direction: FlowDirection, list_type: ListType) -> HashMap<Ipv6Addr, Vec<Port>> {
-        self.get_ipv6_list(direction, list_type)
     }
 }
 

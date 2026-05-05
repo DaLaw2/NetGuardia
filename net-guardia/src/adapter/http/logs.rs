@@ -1,27 +1,14 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use actix_web::{HttpResponse, Scope, web};
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::core::observability::log_buffer::{self, LogEntry};
-
-/// Hardcoded log directory — not configurable via API to prevent directory traversal.
-const LOG_DIR: &str = "logs";
-
-/// Maximum downloadable log file size (50 MB). Prevents OOM from reading huge files.
-const MAX_DOWNLOAD_SIZE: u64 = 50 * 1024 * 1024;
-
-/// Default page size for `/live` when the client does not specify `limit`.
-/// Chosen so a 2 s poll against a DEBUG-chatty deployment catches up in
-/// one round-trip without being absurd payload-wise.
-const LIVE_DEFAULT_LIMIT: usize = 500;
-
-/// Hard cap on `/live?limit=` — prevents pathological clients from asking
-/// for the entire buffer at once.
-const LIVE_MAX_LIMIT: usize = 2_000;
+use crate::domain::common::config::AppConfig;
+use crate::infrastructure::log_buffer::{self, LogBuffer, LogEntry};
 
 /// Validate log filename: only alphanumeric, dots, underscores, hyphens.
 /// Prevents path traversal.
@@ -58,16 +45,24 @@ struct LiveResponse {
     dropped_oldest: bool,
 }
 
-async fn live_logs(query: web::Query<LiveQuery>) -> HttpResponse {
+async fn live_logs(
+    query: web::Query<LiveQuery>,
+    app_config: web::Data<ArcSwap<AppConfig>>,
+    buf: web::Data<LogBuffer>,
+) -> HttpResponse {
     let since_id = query.since_id.unwrap_or(0);
-    let limit = query.limit.unwrap_or(LIVE_DEFAULT_LIMIT).clamp(1, LIVE_MAX_LIMIT);
+    let obs = app_config.load().observability.clone();
+    let limit = query
+        .limit
+        .unwrap_or(obs.log_live_default_limit)
+        .clamp(1, obs.log_live_max_limit.max(1));
     let min_severity = query
         .min_level
         .as_deref()
         .map(|s| log_buffer::level_severity(&s.to_ascii_uppercase()))
         .unwrap_or(log_buffer::level_severity("TRACE"));
 
-    let snap = log_buffer::snapshot(since_id, min_severity, limit);
+    let snap = buf.snapshot(since_id, min_severity, limit);
     // Signal to the UI that it lagged enough for the ring to evict rows
     // between polls. Frontend can warn "older entries dropped" without
     // silently skipping a gap.
@@ -89,9 +84,9 @@ struct LogFileEntry {
     modified: Option<u64>,
 }
 
-async fn list_logs() -> HttpResponse {
-    let log_dir = LOG_DIR;
-    let entries = match fs::read_dir(log_dir) {
+async fn list_logs(app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
+    let log_dir = app_config.load().system.log_dir.clone();
+    let entries = match fs::read_dir(&log_dir) {
         Ok(dir) => dir
             .filter_map(|e| e.ok())
             .filter_map(|e| {
@@ -118,7 +113,10 @@ async fn list_logs() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({ "files": entries }))
 }
 
-async fn download_log(path: web::Path<String>) -> HttpResponse {
+async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
+    let config = app_config.load();
+    let max_download_size = config.observability.log_max_download_size;
+    let log_dir = PathBuf::from(&config.system.log_dir);
     let filename = path.into_inner();
 
     if !is_valid_log_filename(&filename) {
@@ -127,7 +125,7 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
         }));
     }
 
-    let file_path = Path::new(LOG_DIR).join(&filename);
+    let file_path = log_dir.join(&filename);
 
     // Canonicalize to prevent symlink traversal
     let canonical = match fs::canonicalize(&file_path) {
@@ -138,7 +136,7 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
             }));
         }
     };
-    if let Ok(log_dir_canonical) = fs::canonicalize(LOG_DIR)
+    if let Ok(log_dir_canonical) = fs::canonicalize(&log_dir)
         && !canonical.starts_with(&log_dir_canonical)
     {
         return HttpResponse::Forbidden().json(serde_json::json!({
@@ -148,9 +146,9 @@ async fn download_log(path: web::Path<String>) -> HttpResponse {
 
     // Check file size before reading to prevent OOM on large logs
     match fs::metadata(&canonical) {
-        Ok(meta) if meta.len() > MAX_DOWNLOAD_SIZE => {
+        Ok(meta) if meta.len() > max_download_size => {
             return HttpResponse::PayloadTooLarge().json(serde_json::json!({
-                "error": format!("Log file exceeds maximum download size ({}MB)", MAX_DOWNLOAD_SIZE / 1024 / 1024)
+                "error": format!("Log file exceeds maximum download size ({}MB)", max_download_size / 1024 / 1024)
             }));
         }
         Err(e) if e.kind() == ErrorKind::NotFound => {

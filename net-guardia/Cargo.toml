@@ -1,11 +1,11 @@
 [package]
 name = "net-guardia"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-common = { path = "../common", features = ["user"] }
-macros = { path = "../macros" }
+common = { workspace = true, features = ["user"] }
+macros = { workspace = true }
 
 # eBPF userspace
 aya = { workspace = true }
@@ -20,19 +20,19 @@ actix = { workspace = true }
 actix-web = { workspace = true }
 actix-cors = { workspace = true }
 actix-ws = { workspace = true }
-actix-multipart = "0.7"
-actix-files = "0.6"
-uuid = { version = "1", features = ["v4"] }
-rust-embed = "8.11.0"
-mime_guess = "2.0.5"
-url = "2.5.8"
-tokio-tungstenite = "0.28.0"
+actix-multipart = { workspace = true }
+actix-files = { workspace = true }
+uuid = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+url = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-toml = "1.0.7"
+toml = { workspace = true }
 
 # Async
 tokio = { workspace = true }
@@ -48,18 +48,21 @@ tracing-subscriber = { workspace = true }
 tract-onnx = { workspace = true }
 
 # Email
-lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+lettre = { workspace = true }
+chrono = { workspace = true }
 
 # HTTP client (Telegram, MCP proxy)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["env"] }
 
 # Architecture
-async-trait = "0.1"
-dashmap = "6"
-arc-swap = "1"
-moka = { version = "0.12", features = ["sync"] }
-notify = "7"
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+arc-swap = { workspace = true }
+moka = { workspace = true }
+notify = { workspace = true }
 
 # Utilities
 parking_lot = { workspace = true }
@@ -68,17 +71,16 @@ sysinfo = { workspace = true }
 maxminddb = { workspace = true }
 ipnetwork = { workspace = true }
 lru = { workspace = true }
-rusqlite = { version = "0.34", features = ["bundled-sqlcipher"] }
-r2d2 = "0.8"
-r2d2_sqlite = "0.27"
+rusqlite = { workspace = true }
+async-sqlite = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
-sha2 = "0.10"
-hmac = "0.12"
-aes-gcm = "0.10"
-hkdf = "0.12"
+sha2 = { workspace = true }
+hmac = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
 base64 = { workspace = true }
-sd-notify = "0.4"
+sd-notify = { workspace = true }
 rand = { workspace = true }
 
 [features]
@@ -87,7 +89,7 @@ default = []
 [build-dependencies]
 cargo_metadata = { workspace = true }
 which = { workspace = true }
-dotenvy = "0.15.7"
+dotenvy = { workspace = true }
 
 [[bin]]
 name = "net-guardia"
