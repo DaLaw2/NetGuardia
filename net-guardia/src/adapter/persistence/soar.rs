@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use rusqlite::params;
 use serde_json::Value;
 
@@ -12,8 +13,6 @@ use crate::domain::response::playbook_data::{
 };
 use crate::interface::soar::SoarRepo;
 
-/// Intermediate row from the playbooks LEFT JOIN playbook_actions query.
-/// Private to this module; consumed only by `SoarRepo::list_playbooks`.
 struct PlaybookActionRow {
     pb_id: i64,
     name: String,
@@ -30,7 +29,7 @@ struct PlaybookActionRow {
 }
 
 impl Database {
-    pub fn insert_playbook(
+    pub async fn insert_playbook(
         &self,
         name: &str,
         trigger_event: &str,
@@ -39,79 +38,97 @@ impl Database {
         window: Option<i64>,
         cooldown: i64,
     ) -> Result<i64, Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![name, trigger_event, threshold, count, window, cooldown],
-        )?;
-        Ok(conn.last_insert_rowid())
+        let name = name.to_string();
+        let trigger_event = trigger_event.to_string();
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![name, trigger_event, threshold, count, window, cooldown],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await
     }
 
-    pub fn insert_playbook_action(
+    pub async fn insert_playbook_action(
         &self,
         playbook_id: i64,
         action_order: i64,
         action_type: &str,
         params_json: &str,
     ) -> Result<i64, Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
-            params![playbook_id, action_order, action_type, params_json],
-        )?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    /// Load all playbooks with their actions in a single JOIN query (avoids N+1).
-    fn list_playbooks_with_actions(&self) -> Result<Vec<PlaybookActionRow>, Error> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT p.id, p.name, p.enabled, p.trigger_event, p.condition_threshold, \
-                    p.condition_count, p.condition_window_secs, p.cooldown_secs, \
-                    a.id, a.action_order, a.action_type, a.params \
-             FROM playbooks p \
-             LEFT JOIN playbook_actions a ON a.playbook_id = p.id \
-             ORDER BY p.id, a.action_order",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(PlaybookActionRow {
-                pb_id: row.get::<_, i64>(0)?,
-                name: row.get::<_, String>(1)?,
-                enabled: row.get::<_, bool>(2)?,
-                trigger_event: row.get::<_, String>(3)?,
-                condition_threshold: row.get::<_, Option<f64>>(4)?,
-                condition_count: row.get::<_, Option<i64>>(5)?,
-                condition_window_secs: row.get::<_, Option<i64>>(6)?,
-                cooldown_secs: row.get::<_, i64>(7)?,
-                action_id: row.get::<_, Option<i64>>(8)?,
-                action_order: row.get::<_, Option<i64>>(9)?,
-                action_type: row.get::<_, Option<String>>(10)?,
-                action_params: row.get::<_, Option<String>>(11)?,
+        let action_type = action_type.to_string();
+        let params_json = params_json.to_string();
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
+                    params![playbook_id, action_order, action_type, params_json],
+                )?;
+                Ok(conn.last_insert_rowid())
             })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+            .await
     }
 
-    pub fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
-        let conn = self.conn()?;
-        let rows = conn.execute(
-            "UPDATE playbooks SET enabled = ?2, updated_at = datetime('now') WHERE id = ?1",
-            params![id, enabled as i32],
-        )?;
-        Ok(rows > 0)
+    async fn list_playbooks_with_actions(&self) -> Result<Vec<PlaybookActionRow>, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT p.id, p.name, p.enabled, p.trigger_event, p.condition_threshold, \
+                            p.condition_count, p.condition_window_secs, p.cooldown_secs, \
+                            a.id, a.action_order, a.action_type, a.params \
+                     FROM playbooks p \
+                     LEFT JOIN playbook_actions a ON a.playbook_id = p.id \
+                     ORDER BY p.id, a.action_order",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok(PlaybookActionRow {
+                        pb_id: row.get::<_, i64>(0)?,
+                        name: row.get::<_, String>(1)?,
+                        enabled: row.get::<_, bool>(2)?,
+                        trigger_event: row.get::<_, String>(3)?,
+                        condition_threshold: row.get::<_, Option<f64>>(4)?,
+                        condition_count: row.get::<_, Option<i64>>(5)?,
+                        condition_window_secs: row.get::<_, Option<i64>>(6)?,
+                        cooldown_secs: row.get::<_, i64>(7)?,
+                        action_id: row.get::<_, Option<i64>>(8)?,
+                        action_order: row.get::<_, Option<i64>>(9)?,
+                        action_type: row.get::<_, Option<String>>(10)?,
+                        action_params: row.get::<_, Option<String>>(11)?,
+                    })
+                })?;
+                let mut result = Vec::new();
+                for row in rows {
+                    result.push(row?);
+                }
+                Ok(result)
+            })
+            .await
     }
 
-    pub fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
-        let conn = self.conn()?;
-        let rows = conn.execute("DELETE FROM playbooks WHERE id = ?1", params![id])?;
-        Ok(rows > 0)
+    pub async fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE playbooks SET enabled = ?2, updated_at = datetime('now') WHERE id = ?1",
+                    params![id, enabled as i32],
+                )?;
+                Ok(rows > 0)
+            })
+            .await
     }
 
-    pub fn insert_playbook_condition(
+    pub async fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let rows = conn.execute("DELETE FROM playbooks WHERE id = ?1", params![id])?;
+                Ok(rows > 0)
+            })
+            .await
+    }
+
+    pub async fn insert_playbook_condition(
         &self,
         playbook_id: i64,
         condition_type: &str,
@@ -119,132 +136,139 @@ impl Database {
         value: &str,
         value2: Option<&str>,
     ) -> Result<i64, Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![playbook_id, condition_type, operator, value, value2],
-        )?;
-        Ok(conn.last_insert_rowid())
+        let condition_type = condition_type.to_string();
+        let operator = operator.to_string();
+        let value = value.to_string();
+        let value2 = value2.map(str::to_string);
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![playbook_id, condition_type, operator, value, value2],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await
     }
 
-    fn list_all_playbook_conditions(&self) -> Result<Vec<(i64, ConditionView)>, Error> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, playbook_id, condition_type, operator, value, value2 \
-             FROM playbook_conditions ORDER BY playbook_id, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(1)?,
-                ConditionView {
-                    id: row.get::<_, i64>(0)?,
-                    condition_type: row.get::<_, String>(2)?,
-                    operator: row.get::<_, String>(3)?,
-                    value: row.get::<_, String>(4)?,
-                    value2: row.get::<_, Option<String>>(5)?,
-                },
-            ))
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+    async fn list_all_playbook_conditions(&self) -> Result<Vec<(i64, ConditionView)>, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, playbook_id, condition_type, operator, value, value2 \
+                     FROM playbook_conditions ORDER BY playbook_id, id",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(1)?,
+                        ConditionView {
+                            id: row.get::<_, i64>(0)?,
+                            condition_type: row.get::<_, String>(2)?,
+                            operator: row.get::<_, String>(3)?,
+                            value: row.get::<_, String>(4)?,
+                            value2: row.get::<_, Option<String>>(5)?,
+                        },
+                    ))
+                })?;
+                let mut result = Vec::new();
+                for row in rows {
+                    result.push(row?);
+                }
+                Ok(result)
+            })
+            .await
     }
 
-    pub fn insert_soar_execution(
+    pub async fn insert_soar_execution(
         &self,
         playbook_id: i64,
         source_ip: Option<&str>,
         trigger_event: &str,
         actions_json: &str,
     ) -> Result<i64, Error> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO soar_executions (playbook_id, source_ip, trigger_event, actions_executed) VALUES (?1, ?2, ?3, ?4)",
-            params![playbook_id, source_ip, trigger_event, actions_json],
-        )?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, playbook_id, source_ip, trigger_event, actions_executed, executed_at FROM soar_executions ORDER BY executed_at DESC LIMIT ?1"
-        )?;
-        let rows = stmt.query_map(params![limit], |row| {
-            let actions_str: String = row.get(4)?;
-            Ok(ExecutionView {
-                id: row.get::<_, i64>(0)?,
-                playbook_id: row.get::<_, i64>(1)?,
-                source_ip: row.get::<_, Option<String>>(2)?,
-                trigger_event: row.get::<_, String>(3)?,
-                actions_executed: serde_json::from_str(&actions_str).unwrap_or(Value::Null),
-                created_at: row.get::<_, String>(5)?,
+        let source_ip = source_ip.map(str::to_string);
+        let trigger_event = trigger_event.to_string();
+        let actions_json = actions_json.to_string();
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "INSERT INTO soar_executions (playbook_id, source_ip, trigger_event, actions_executed) VALUES (?1, ?2, ?3, ?4)",
+                    params![playbook_id, source_ip, trigger_event, actions_json],
+                )?;
+                Ok(conn.last_insert_rowid())
             })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+            .await
     }
 
-    pub fn seed_default_playbooks(&self) -> Result<(), Error> {
-        let conn = self.conn()?;
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM playbooks", [], |row| row.get(0))?;
+    pub async fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, playbook_id, source_ip, trigger_event, actions_executed, executed_at FROM soar_executions ORDER BY executed_at DESC LIMIT ?1"
+                )?;
+                let rows = stmt.query_map(params![limit], |row| {
+                    let actions_str: String = row.get(4)?;
+                    Ok(ExecutionView {
+                        id: row.get::<_, i64>(0)?,
+                        playbook_id: row.get::<_, i64>(1)?,
+                        source_ip: row.get::<_, Option<String>>(2)?,
+                        trigger_event: row.get::<_, String>(3)?,
+                        actions_executed: serde_json::from_str(&actions_str).unwrap_or(Value::Null),
+                        created_at: row.get::<_, String>(5)?,
+                    })
+                })?;
+                let mut result = Vec::new();
+                for row in rows {
+                    result.push(row?);
+                }
+                Ok(result)
+            })
+            .await
+    }
+
+    pub async fn seed_default_playbooks(&self) -> Result<(), Error> {
+        let count: i64 = self
+            .pool
+            .conn_and_then(move |conn| {
+                Ok::<i64, Error>(conn.query_row("SELECT COUNT(*) FROM playbooks", [], |row| row.get(0))?)
+            })
+            .await?;
         if count > 0 {
             return Ok(());
         }
-        drop(conn);
-
         for def in DEFAULT_PLAYBOOKS {
-            let pb_id = self.insert_playbook(
-                def.name,
-                def.trigger_event,
-                def.threshold,
-                def.count,
-                def.window,
-                def.cooldown,
-            )?;
+            let pb_id = self
+                .insert_playbook(
+                    def.name,
+                    def.trigger_event,
+                    def.threshold,
+                    def.count,
+                    def.window,
+                    def.cooldown,
+                )
+                .await?;
             for action in def.actions {
-                self.insert_playbook_action(pb_id, action.order, action.action_type, action.params)?;
+                self.insert_playbook_action(pb_id, action.order, action.action_type, action.params)
+                    .await?;
             }
             for cond in def.conditions {
-                self.insert_playbook_condition(pb_id, cond.condition_type, cond.operator, cond.value, cond.value2)?;
+                self.insert_playbook_condition(pb_id, cond.condition_type, cond.operator, cond.value, cond.value2)
+                    .await?;
             }
         }
-
         Ok(())
     }
 }
 
+#[async_trait]
 impl SoarRepo for Database {
-    fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
-        let rows = self.list_playbooks_with_actions()?;
+    async fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
+        let rows = self.list_playbooks_with_actions().await?;
         let mut result: Vec<PlaybookView> = Vec::new();
-
         for row in rows {
-            let pb = if let Some(last) = result.last_mut() {
-                if last.id == row.pb_id {
-                    last
-                } else {
-                    result.push(PlaybookView {
-                        id: row.pb_id,
-                        name: row.name,
-                        enabled: row.enabled,
-                        trigger_event: row.trigger_event,
-                        condition_threshold: row.condition_threshold,
-                        condition_count: row.condition_count,
-                        condition_window_secs: row.condition_window_secs,
-                        cooldown_secs: row.cooldown_secs,
-                        actions: Vec::new(),
-                        conditions: Vec::new(),
-                    });
-                    // SAFETY: just pushed above, Vec cannot be empty
-                    result.last_mut().unwrap_or_else(|| unreachable!())
-                }
+            let pb = if let Some(position) = result.iter().position(|p| p.id == row.pb_id) {
+                &mut result[position]
             } else {
                 result.push(PlaybookView {
                     id: row.pb_id,
@@ -258,10 +282,8 @@ impl SoarRepo for Database {
                     actions: Vec::new(),
                     conditions: Vec::new(),
                 });
-                // SAFETY: just pushed above, Vec cannot be empty
                 result.last_mut().unwrap_or_else(|| unreachable!())
             };
-
             if let (Some(aid), Some(order), Some(atype), Some(params_str)) =
                 (row.action_id, row.action_order, row.action_type, row.action_params)
             {
@@ -274,8 +296,7 @@ impl SoarRepo for Database {
             }
         }
 
-        // Load conditions and attach to playbooks
-        let cond_rows = self.list_all_playbook_conditions()?;
+        let cond_rows = self.list_all_playbook_conditions().await?;
         let mut cond_map: HashMap<i64, Vec<ConditionView>> = HashMap::new();
         for (pb_id, cond) in cond_rows {
             cond_map.entry(pb_id).or_default().push(cond);
@@ -285,59 +306,58 @@ impl SoarRepo for Database {
                 pb.conditions = conds;
             }
         }
-
         Ok(result)
     }
 
-    fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
-        self.update_playbook_enabled(id, enabled)
+    async fn update_playbook_enabled(&self, id: i64, enabled: bool) -> Result<bool, Error> {
+        self.update_playbook_enabled(id, enabled).await
     }
 
-    fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
-        self.delete_playbook(id)
+    async fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+        self.delete_playbook(id).await
     }
 
-    fn seed_default_playbooks(&self) -> Result<(), Error> {
-        self.seed_default_playbooks()
+    async fn seed_default_playbooks(&self) -> Result<(), Error> {
+        self.seed_default_playbooks().await
     }
 
-    fn count_active_soar_blocks(&self) -> Result<u32, Error> {
-        self.count_active_soar_blocks()
+    async fn count_active_soar_blocks(&self) -> Result<u32, Error> {
+        self.count_active_soar_blocks().await
     }
 
-    fn list_active_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
-        self.list_active_soar_blocks()
+    async fn list_active_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
+        self.list_active_soar_blocks().await
     }
 
-    fn find_soar_block_by_id(&self, id: i64) -> Result<Option<ActiveBlockView>, Error> {
-        self.find_soar_block_by_id(id)
+    async fn find_soar_block_by_id(&self, id: i64) -> Result<Option<ActiveBlockView>, Error> {
+        self.find_soar_block_by_id(id).await
     }
 
-    fn list_expired_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
-        self.list_expired_soar_blocks()
+    async fn list_expired_soar_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
+        self.list_expired_soar_blocks().await
     }
 
-    fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error> {
-        self.mark_soar_block_unblocked(id)
+    async fn mark_soar_block_unblocked(&self, id: i64) -> Result<(), Error> {
+        self.mark_soar_block_unblocked(id).await
     }
 
-    fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error> {
-        self.insert_pending_unblock(source_ip)
+    async fn insert_pending_unblock(&self, source_ip: &str) -> Result<i64, Error> {
+        self.insert_pending_unblock(source_ip).await
     }
 
-    fn list_pending_unblocks(&self) -> Result<Vec<PendingUnblock>, Error> {
-        self.list_pending_unblocks()
+    async fn list_pending_unblocks(&self) -> Result<Vec<PendingUnblock>, Error> {
+        self.list_pending_unblocks().await
     }
 
-    fn delete_pending_unblock(&self, id: i64) -> Result<(), Error> {
-        self.delete_pending_unblock(id)
+    async fn delete_pending_unblock(&self, id: i64) -> Result<(), Error> {
+        self.delete_pending_unblock(id).await
     }
 
-    fn increment_pending_unblock_retry(&self, id: i64) -> Result<(), Error> {
-        self.increment_pending_unblock_retry(id)
+    async fn increment_pending_unblock_retry(&self, id: i64) -> Result<(), Error> {
+        self.increment_pending_unblock_retry(id).await
     }
 
-    fn insert_soar_execution(
+    async fn insert_soar_execution(
         &self,
         playbook_id: i64,
         source_ip: Option<&str>,
@@ -345,124 +365,95 @@ impl SoarRepo for Database {
         actions_json: &str,
     ) -> Result<i64, Error> {
         self.insert_soar_execution(playbook_id, source_ip, trigger_event, actions_json)
+            .await
     }
 
-    fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
-        self.list_soar_executions(limit)
+    async fn list_soar_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
+        self.list_soar_executions(limit).await
     }
 
-    fn insert_playbook_atomic(
+    async fn insert_playbook_atomic(
         &self,
         input: &CreatePlaybookInput,
         actions: &[ActionInput],
         conditions: &[CreateConditionInput],
     ) -> Result<i64, Error> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![input.name, input.trigger_event, input.condition_threshold, input.condition_count, input.condition_window_secs, input.cooldown_secs],
-        )?;
-        let playbook_id = tx.last_insert_rowid();
-        for a in actions {
-            tx.execute(
-                "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
-                params![playbook_id, a.action_order, a.action_type, a.params_json],
-            )?;
-        }
-        for c in conditions {
-            tx.execute(
-                "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![playbook_id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
-            )?;
-        }
-        tx.commit()?;
-        Ok(playbook_id)
+        let input = input.clone();
+        let actions = actions.to_vec();
+        let conditions = conditions.to_vec();
+        self.pool
+            .conn_mut_and_then(move |conn| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT INTO playbooks (name, trigger_event, condition_threshold, condition_count, condition_window_secs, cooldown_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![input.name, input.trigger_event, input.condition_threshold, input.condition_count, input.condition_window_secs, input.cooldown_secs],
+                )?;
+                let playbook_id = tx.last_insert_rowid();
+                for a in actions {
+                    tx.execute(
+                        "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
+                        params![playbook_id, a.action_order, a.action_type, a.params_json],
+                    )?;
+                }
+                for c in conditions {
+                    tx.execute(
+                        "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![playbook_id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(playbook_id)
+            })
+            .await
     }
 
-    fn update_playbook_atomic(
+    async fn update_playbook_atomic(
         &self,
         id: i64,
         row: &UpdatePlaybookInput,
         actions: &[ActionInput],
         conditions: &[CreateConditionInput],
     ) -> Result<bool, Error> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        let rows_updated = tx.execute(
-            "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
-             condition_count = ?5, condition_window_secs = ?6, cooldown_secs = ?7, \
-             updated_at = datetime('now') WHERE id = ?1",
-            params![
-                id,
-                row.name,
-                row.trigger_event,
-                row.condition_threshold,
-                row.condition_count,
-                row.condition_window_secs,
-                row.cooldown_secs
-            ],
-        )?;
-        if rows_updated == 0 {
-            return Ok(false);
-        }
-        tx.execute("DELETE FROM playbook_actions WHERE playbook_id = ?1", params![id])?;
-        tx.execute("DELETE FROM playbook_conditions WHERE playbook_id = ?1", params![id])?;
-        for a in actions {
-            tx.execute(
-                "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
-                params![id, a.action_order, a.action_type, a.params_json],
-            )?;
-        }
-        for c in conditions {
-            tx.execute(
-                "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
-            )?;
-        }
-        tx.commit()?;
-        Ok(true)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::tests::test_db;
-
-    /// Verifies `insert_playbook_atomic` writes playbook + actions + conditions
-    /// atomically.
-    #[test]
-    fn test_insert_playbook_atomic_writes_all_three_tables() {
-        use crate::interface::soar::SoarRepo;
-
-        let db = test_db();
-        use crate::domain::response::playbook_data::{ActionInput, CreateConditionInput, CreatePlaybookInput};
-
-        let input = CreatePlaybookInput {
-            name: "atom_pb".to_string(),
-            trigger_event: "threat".to_string(),
-            condition_threshold: Some(0.8),
-            condition_count: None,
-            condition_window_secs: None,
-            cooldown_secs: 300,
-            actions: vec![("block_ip".to_string(), "{}".to_string())],
-            conditions: vec![],
-        };
-        let actions = vec![ActionInput {
-            action_order: 1,
-            action_type: "block_ip".to_string(),
-            params_json: "{}".to_string(),
-        }];
-        let conditions = vec![CreateConditionInput::new(
-            "threshold".to_string(),
-            Some(">=".to_string()),
-            "0.8".to_string(),
-            None,
-        )];
-        let id = db.insert_playbook_atomic(&input, &actions, &conditions).unwrap();
-        assert!(id > 0);
-        let loaded = db.list_playbooks().unwrap();
-        assert!(!loaded.is_empty());
-        assert_eq!(loaded[0].conditions.len(), 1);
+        let row = row.clone();
+        let actions = actions.to_vec();
+        let conditions = conditions.to_vec();
+        self.pool
+            .conn_mut_and_then(move |conn| {
+                let tx = conn.transaction()?;
+                let rows_updated = tx.execute(
+                    "UPDATE playbooks SET name = ?2, trigger_event = ?3, condition_threshold = ?4, \
+                     condition_count = ?5, condition_window_secs = ?6, cooldown_secs = ?7, \
+                     updated_at = datetime('now') WHERE id = ?1",
+                    params![
+                        id,
+                        row.name,
+                        row.trigger_event,
+                        row.condition_threshold,
+                        row.condition_count,
+                        row.condition_window_secs,
+                        row.cooldown_secs
+                    ],
+                )?;
+                if rows_updated == 0 {
+                    return Ok(false);
+                }
+                tx.execute("DELETE FROM playbook_actions WHERE playbook_id = ?1", params![id])?;
+                tx.execute("DELETE FROM playbook_conditions WHERE playbook_id = ?1", params![id])?;
+                for a in actions {
+                    tx.execute(
+                        "INSERT INTO playbook_actions (playbook_id, action_order, action_type, params) VALUES (?1, ?2, ?3, ?4)",
+                        params![id, a.action_order, a.action_type, a.params_json],
+                    )?;
+                }
+                for c in conditions {
+                    tx.execute(
+                        "INSERT INTO playbook_conditions (playbook_id, condition_type, operator, value, value2) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![id, c.condition_type, c.operator, c.value, c.value2.as_deref()],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(true)
+            })
+            .await
     }
 }

@@ -1,14 +1,14 @@
 use std::str::FromStr;
 
 use crate::domain::common::error::Error;
-use crate::interface::setting::SettingRepo;
+use crate::interface::config_repo::ConfigRepo;
 
-pub(in crate::domain) fn override_parsed<T: FromStr>(
+pub(in crate::domain) async fn override_parsed<T: FromStr>(
     target: &mut T,
-    repo: &dyn SettingRepo,
+    repo: &dyn ConfigRepo,
     key: &str,
 ) -> Result<(), Error> {
-    if let Some(v) = repo.get_setting(key)?
+    if let Some(v) = repo.get_config_value(key).await?
         && let Ok(parsed) = v.parse()
     {
         *target = parsed;
@@ -16,19 +16,19 @@ pub(in crate::domain) fn override_parsed<T: FromStr>(
     Ok(())
 }
 
-pub(in crate::domain) fn override_bool(target: &mut bool, repo: &dyn SettingRepo, key: &str) -> Result<(), Error> {
-    if let Some(v) = repo.get_setting(key)? {
+pub(in crate::domain) async fn override_bool(target: &mut bool, repo: &dyn ConfigRepo, key: &str) -> Result<(), Error> {
+    if let Some(v) = repo.get_config_value(key).await? {
         *target = v == "true" || v == "1";
     }
     Ok(())
 }
 
-pub(in crate::domain) fn override_string_nonempty(
+pub(in crate::domain) async fn override_string_nonempty(
     target: &mut String,
-    repo: &dyn SettingRepo,
+    repo: &dyn ConfigRepo,
     key: &str,
 ) -> Result<(), Error> {
-    if let Some(v) = repo.get_setting(key)?
+    if let Some(v) = repo.get_config_value(key).await?
         && !v.is_empty()
     {
         *target = v;
@@ -36,12 +36,12 @@ pub(in crate::domain) fn override_string_nonempty(
     Ok(())
 }
 
-pub(in crate::domain) fn override_csv(
+pub(in crate::domain) async fn override_csv(
     target: &mut Vec<String>,
-    repo: &dyn SettingRepo,
+    repo: &dyn ConfigRepo,
     key: &str,
 ) -> Result<(), Error> {
-    if let Some(v) = repo.get_setting(key)? {
+    if let Some(v) = repo.get_config_value(key).await? {
         *target = if v.is_empty() {
             Vec::new()
         } else {
@@ -51,9 +51,9 @@ pub(in crate::domain) fn override_csv(
     Ok(())
 }
 
-pub(in crate::domain) fn seed_key(repo: &dyn SettingRepo, key: &str, value: &str) -> Result<(), Error> {
-    if repo.get_setting(key)?.is_none() {
-        repo.set_setting(key, value)?;
+pub(in crate::domain) async fn seed_key(repo: &dyn ConfigRepo, key: &str, value: &str) -> Result<(), Error> {
+    if repo.get_config_value(key).await?.is_none() {
+        repo.set_config_value(key, value).await?;
     }
     Ok(())
 }

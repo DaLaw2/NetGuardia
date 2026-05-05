@@ -13,14 +13,14 @@ use crate::domain::common::error::Error;
 use crate::domain::common::error::notification::NotificationError;
 use crate::domain::common::log::system::SystemLog;
 use crate::domain::common::notification::AlertPayload;
+use crate::interface::config_repo::ConfigRepo;
 use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 
 /// Telegram Bot API adapter implementing AlertNotifier.
 pub struct TelegramAdapter {
     client: Client,
-    notif: Arc<dyn SettingRepo + Send + Sync>,
+    notif: Arc<dyn ConfigRepo + Send + Sync>,
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
     /// Packed rate-limit state: high 32 bits = window-start unix seconds,
@@ -31,7 +31,7 @@ pub struct TelegramAdapter {
 
 impl TelegramAdapter {
     pub fn new(
-        notif: Arc<dyn SettingRepo + Send + Sync>,
+        notif: Arc<dyn ConfigRepo + Send + Sync>,
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Result<Self, Error> {
@@ -51,8 +51,8 @@ impl TelegramAdapter {
 
     /// Get bot token and chat ID from DB. Returns None if not configured.
     /// If the bot_token in JSON is `"__encrypted__"`, reads from the secret store.
-    fn get_config(&self) -> Result<Option<(String, String)>, Error> {
-        match self.notif.get_notification_config("telegram")? {
+    async fn get_config(&self) -> Result<Option<(String, String)>, Error> {
+        match self.notif.get_notification_config("telegram").await? {
             Some(json_str) => {
                 let config: serde_json::Value =
                     serde_json::from_str(&json_str).map_err(NotificationError::TelegramRequestFailed)?;
@@ -60,11 +60,10 @@ impl TelegramAdapter {
                 let chat_id = config.get("chat_id").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                 // If token is the encrypted sentinel, resolve from secret store
-                if token.as_deref() == Some("__encrypted__") {
-                    token = self
-                        .secrets
-                        .as_ref()
-                        .and_then(|ss| ss.get_secret("telegram_bot_token").ok().flatten());
+                if token.as_deref() == Some("__encrypted__")
+                    && let Some(ss) = self.secrets.as_ref()
+                {
+                    token = ss.get_secret("telegram_bot_token").await?;
                 }
 
                 match (token, chat_id) {
@@ -218,7 +217,7 @@ impl TelegramAdapter {
 #[async_trait]
 impl AlertNotifier for TelegramAdapter {
     async fn send_alert(&self, payload: &AlertPayload) -> Result<(), Error> {
-        let (bot_token, chat_id) = match self.get_config()? {
+        let (bot_token, chat_id) = match self.get_config().await? {
             Some(config) => config,
             None => {
                 log!(SystemLog::TelegramNotConfiguredSkipped);
@@ -240,7 +239,7 @@ impl AlertNotifier for TelegramAdapter {
     }
 
     async fn send_test_message(&self) -> Result<(), Error> {
-        let (bot_token, chat_id) = match self.get_config()? {
+        let (bot_token, chat_id) = match self.get_config().await? {
             Some(config) => config,
             None => Err(NotificationError::NotConfigured("telegram"))?,
         };
@@ -259,14 +258,14 @@ impl AlertNotifier for TelegramAdapter {
 /// call instantiates a fresh `TelegramAdapter` so the test path observes
 /// whatever config the user just saved.
 pub struct TelegramAdapterFactory {
-    notif: Arc<dyn SettingRepo + Send + Sync>,
+    notif: Arc<dyn ConfigRepo + Send + Sync>,
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
 }
 
 impl TelegramAdapterFactory {
     pub fn new(
-        notif: Arc<dyn SettingRepo + Send + Sync>,
+        notif: Arc<dyn ConfigRepo + Send + Sync>,
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Option<Arc<dyn SecretStorePort>>,
     ) -> Self {

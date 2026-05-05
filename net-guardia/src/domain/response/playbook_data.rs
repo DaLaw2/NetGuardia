@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 /// Input for updating a playbook row (without actions/conditions).
+#[derive(Clone)]
 pub struct UpdatePlaybookInput {
     pub name: String,
     pub trigger_event: String,
@@ -11,6 +12,7 @@ pub struct UpdatePlaybookInput {
 }
 
 /// Input for a single playbook action in atomic create/update operations.
+#[derive(Clone)]
 pub struct ActionInput {
     pub action_order: i64,
     pub action_type: String,
@@ -18,6 +20,7 @@ pub struct ActionInput {
 }
 
 /// Input for creating a single playbook condition.
+#[derive(Clone)]
 pub struct CreateConditionInput {
     pub condition_type: String,
     pub operator: String,
@@ -47,6 +50,7 @@ fn default_operator_for(condition_type: &str) -> &'static str {
 }
 
 /// Input for creating a new playbook.
+#[derive(Clone)]
 pub struct CreatePlaybookInput {
     pub name: String,
     pub trigger_event: String,

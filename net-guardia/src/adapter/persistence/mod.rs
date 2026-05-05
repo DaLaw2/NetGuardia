@@ -1,18 +1,19 @@
 mod acl;
 mod api_key;
 mod audit;
+mod config;
 mod enforcement;
-mod setting;
+mod report_snapshot;
 mod soar;
 mod soar_block;
 mod stats;
+mod system_state;
 mod user;
 
 use std::env;
 
+use async_sqlite::{Client, ClientBuilder};
 use macros::log;
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{self, Connection, params};
 
 use crate::domain::common::error::Error;
@@ -30,6 +31,12 @@ impl From<rusqlite::Error> for Error {
         Self::Database(DatabaseError::from(e))
     }
 }
+
+impl From<async_sqlite::Error> for Error {
+    fn from(e: async_sqlite::Error) -> Self {
+        Self::Database(DatabaseError::QueryFailed(e))
+    }
+}
 use crate::domain::identity::auth::{ADMIN_PERMISSIONS, GROUP_ADMIN, GROUP_VIEWER, VIEWER_PERMISSIONS};
 
 /// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
@@ -41,85 +48,51 @@ fn db_encryption_key() -> Option<String> {
     }
 }
 
-/// Applies the SQLCipher PRAGMA key (if configured) and standard PRAGMAs
-/// to every new connection obtained from the pool.
-#[derive(Debug, Clone)]
-struct SqlitePragmaCustomizer {
-    /// `None` means no encryption (dev mode).
-    encryption_key: Option<String>,
-}
-
-impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SqlitePragmaCustomizer {
-    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
-        // SQLCipher: the very first statement on a connection MUST be PRAGMA key.
-        if let Some(ref key) = self.encryption_key {
-            // Use a parameterised query to avoid SQL-injection via the key value.
-            conn.pragma_update(None, "key", key)?;
-        }
-        // PRAGMA tuning notes:
-        // - `journal_mode=WAL`: many concurrent readers + one writer; the only
-        //   journal mode that survives crashes without losing committed rows.
-        // - `synchronous=NORMAL`: canonical pairing with WAL — `FULL` adds an
-        //   extra fsync per commit that buys no durability guarantees beyond
-        //   what WAL already provides for a power-loss event.
-        // - `busy_timeout=5000`: WAL still serializes writers (SOAR, audit,
-        //   drift, SQL hooks all share one DB), and the default 0ms returns
-        //   SQLITE_BUSY immediately on any contention. 5s gives the loser
-        //   enough time to wait out a normal commit (sub-ms) without masking
-        //   genuine deadlocks.
-        // - `foreign_keys=ON`: enforce FK constraints at the connection
-        //   level (SQLite's default is OFF for backwards compatibility).
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA busy_timeout=5000; \
-             PRAGMA foreign_keys=ON;",
-        )?;
-        Ok(())
-    }
-}
-
 pub struct Database {
-    pool: Pool<SqliteConnectionManager>,
+    pool: Client,
     /// HMAC-SHA256 key for API key hashing, derived from NETGUARDIA_SECRETS_KEY.
     api_key_hmac: [u8; 32],
 }
 
 impl Database {
-    pub fn new(path: &str) -> Result<Self, Error> {
+    pub async fn new(path: &str) -> Result<Self, Error> {
         let encryption_key = db_encryption_key();
 
         if path != ":memory:" && encryption_key.is_none() {
             log!(MiscLog::DbEncryptionDisabled);
         }
 
-        let manager = if path == ":memory:" {
-            SqliteConnectionManager::memory()
+        let builder = if path == ":memory:" {
+            ClientBuilder::new()
         } else {
-            SqliteConnectionManager::file(path)
+            ClientBuilder::new().path(path)
         };
 
-        let customizer = SqlitePragmaCustomizer {
-            encryption_key: encryption_key.clone(),
-        };
-
-        let pool = Pool::builder()
-            .max_size(if path == ":memory:" { 1 } else { 6 })
-            .connection_customizer(Box::new(customizer))
-            .build(manager)
-            .map_err(DatabaseError::QueryFailed)?;
+        let pool = builder.open().await.map_err(DatabaseError::QueryFailed)?;
+        let key_for_pragmas = encryption_key.clone();
+        pool.conn(move |conn| {
+            if let Some(ref key) = key_for_pragmas {
+                conn.pragma_update(None, "key", key)?;
+            }
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; \
+                     PRAGMA synchronous=NORMAL; \
+                     PRAGMA busy_timeout=5000; \
+                     PRAGMA foreign_keys=ON;",
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(DatabaseError::QueryFailed)?;
 
         // Verify the pool is actually usable (catches wrong key / corrupt DB early).
-        {
-            let test_conn = pool.get().map_err(DatabaseError::QueryFailed)?;
-            test_conn
-                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-                .map_err(|_| DatabaseError::EncryptionKeyInvalid)?;
-        }
+        pool.conn(|conn| conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())))
+            .await
+            .map_err(|_| DatabaseError::EncryptionKeyInvalid)?;
 
         let api_key_hmac = Self::derive_api_key_hmac();
         let db = Self { pool, api_key_hmac };
-        db.create_tables()?;
+        db.create_tables().await?;
         Ok(db)
     }
 
@@ -177,14 +150,11 @@ impl Database {
         Ok(())
     }
 
-    fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, Error> {
-        self.pool.get().map_err(|e| DatabaseError::QueryFailed(e).into())
-    }
-
-    fn create_tables(&self) -> Result<(), Error> {
-        let conn = self.conn()?;
-        conn.execute_batch(
-            "
+    async fn create_tables(&self) -> Result<(), Error> {
+        self.pool
+            .conn_mut_and_then(|conn| {
+                conn.execute_batch(
+                    "
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -215,6 +185,19 @@ impl Database {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS system_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS report_snapshots (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                username TEXT PRIMARY KEY,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER
             );
             CREATE TABLE IF NOT EXISTS user_groups (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -267,7 +250,9 @@ impl Database {
                 playbook_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 expires_at TEXT NOT NULL,
-                unblocked_at TEXT
+                unblocked_at TEXT,
+                created_acl_rule INTEGER NOT NULL DEFAULT 1,
+                preserve_acl_on_unblock INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS soar_executions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,26 +327,109 @@ impl Database {
                 SELECT RAISE(ABORT, 'audit_log is append-only (WORM)');
             END;
         ",
-        )?;
+                )?;
 
-        let conn_ref = &*conn;
+                if !Self::column_exists(conn, "soar_block_rules", "created_acl_rule")? {
+                    conn.execute(
+                        "ALTER TABLE soar_block_rules ADD COLUMN created_acl_rule INTEGER NOT NULL DEFAULT 1",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(conn, "soar_block_rules", "preserve_acl_on_unblock")? {
+                    conn.execute(
+                        "ALTER TABLE soar_block_rules ADD COLUMN preserve_acl_on_unblock INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )?;
+                }
 
-        // Seed default user groups on first install (empty table)
-        let group_count: i64 = conn_ref.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
-        if group_count == 0 {
-            let all_permissions = serde_json::to_string(&ADMIN_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
-            let viewer_permissions = serde_json::to_string(&VIEWER_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+                Self::migrate_legacy_settings_state(conn)?;
 
-            conn_ref.execute(
-                "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
-                params![GROUP_ADMIN, "Full system access with all permissions", &all_permissions],
-            )?;
-            conn_ref.execute(
-                "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
-                params![GROUP_VIEWER, "Read-only access to all modules", &viewer_permissions],
-            )?;
+                let group_count: i64 = conn.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
+                if group_count == 0 {
+                    let all_permissions =
+                        serde_json::to_string(&ADMIN_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+                    let viewer_permissions =
+                        serde_json::to_string(&VIEWER_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+
+                    conn.execute(
+                        "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
+                        params![GROUP_ADMIN, "Full system access with all permissions", &all_permissions],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
+                        params![GROUP_VIEWER, "Read-only access to all modules", &viewer_permissions],
+                    )?;
+                }
+
+                Ok(())
+            })
+            .await
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, Error> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            if row? == column {
+                return Ok(true);
+            }
         }
+        Ok(false)
+    }
 
+    fn migrate_legacy_settings_state(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(
+            "
+            INSERT OR IGNORE INTO system_state (key, value)
+                SELECT key, value FROM settings WHERE key = 'setup_complete';
+
+            INSERT OR IGNORE INTO report_snapshots (key, value)
+                SELECT key, value FROM settings
+                WHERE key IN (
+                    'weekly_threats_count',
+                    'weekly_top_ips',
+                    'weekly_threat_breakdown',
+                    'weekly_system_health',
+                    'system_uptime_percent',
+                    'active_rules_count',
+                    'weekly_geo_distribution',
+                    'weekly_soar_blocks',
+                    'weekly_soar_triggers',
+                    'weekly_soar_unblocks',
+                    'weekly_blocked_count'
+                );
+
+            INSERT OR IGNORE INTO login_attempts (username, failure_count)
+                SELECT substr(key, length('login_failures:') + 1), CAST(value AS INTEGER)
+                FROM settings
+                WHERE key LIKE 'login_failures:%';
+
+            INSERT INTO login_attempts (username, locked_until)
+                SELECT substr(key, length('login_locked_until:') + 1), CAST(value AS INTEGER)
+                FROM settings
+                WHERE key LIKE 'login_locked_until:%'
+                ON CONFLICT(username) DO UPDATE SET
+                    locked_until = COALESCE(login_attempts.locked_until, excluded.locked_until);
+
+            DELETE FROM settings
+            WHERE key = 'setup_complete'
+               OR key IN (
+                    'weekly_threats_count',
+                    'weekly_top_ips',
+                    'weekly_threat_breakdown',
+                    'weekly_system_health',
+                    'system_uptime_percent',
+                    'active_rules_count',
+                    'weekly_geo_distribution',
+                    'weekly_soar_blocks',
+                    'weekly_soar_triggers',
+                    'weekly_soar_unblocks',
+                    'weekly_blocked_count'
+               )
+               OR key LIKE 'login_failures:%'
+               OR key LIKE 'login_locked_until:%';
+            ",
+        )?;
         Ok(())
     }
 }
@@ -369,42 +437,111 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::acl::AclRepo;
-    use crate::interface::identity::UserRepo;
-    use crate::interface::setting::SettingRepo;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    pub(super) fn test_db() -> Database {
-        Database::new(":memory:").expect("Failed to create test database")
+    use crate::interface::acl::AclRepo;
+    use crate::interface::config_repo::ConfigRepo;
+    use crate::interface::identity::UserRepo;
+
+    pub(super) async fn test_db() -> Database {
+        Database::new(":memory:").await.expect("Failed to create test database")
     }
 
-    #[test]
-    fn test_create_tables() {
-        let _db = test_db();
+    #[tokio::test]
+    async fn test_create_tables() {
+        let _db = test_db().await;
     }
 
     /// Verify that Database satisfies each aggregate Repo trait contract
-    /// (AclRepo / SettingRepo / UserRepo). Exercises the trait-object
+    /// (AclRepo / ConfigRepo / UserRepo). Exercises the trait-object
     /// path so callers that take `Arc<dyn XxxRepo>` compile end-to-end.
-    #[test]
-    fn test_aggregate_repo_trait_objects() {
-        let db = test_db();
+    #[tokio::test]
+    async fn test_aggregate_repo_trait_objects() {
+        let db = test_db().await;
 
-        let setting: &dyn SettingRepo = &db;
-        setting.set_setting("test_key", "test_value").unwrap();
-        assert_eq!(setting.get_setting("test_key").unwrap(), Some("test_value".to_string()));
+        let setting: &dyn ConfigRepo = &db;
+        setting.set_config_value("test_key", "test_value").await.unwrap();
+        assert_eq!(
+            setting.get_config_value("test_key").await.unwrap(),
+            Some("test_value".to_string())
+        );
 
         let acl: &dyn AclRepo = &db;
-        acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443).unwrap();
+        acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443)
+            .await
+            .unwrap();
         // load_acl_rules is an inherent Database method (not on AclRepo),
         // so go through `&db` directly for this read-back assertion.
-        let rules = db.list_acl_rules().unwrap();
+        let rules = db.list_acl_rules().await.unwrap();
         assert_eq!(rules.len(), 1);
 
         let identity: &dyn UserRepo = &db;
         // user_count is inherent — inserts still go through the trait so
         // the vtable has something to exercise.
-        assert_eq!(db.user_count().unwrap(), 0);
-        identity.insert_user("test", "hash", "viewer", false).unwrap();
-        assert_eq!(db.user_count().unwrap(), 1);
+        assert_eq!(db.user_count().await.unwrap(), 0);
+        identity.insert_user("test", "hash", "viewer", false).await.unwrap();
+        assert_eq!(db.user_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_non_config_settings_are_backfilled() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("netguardia-legacy-settings-{}-{unique}.db", std::process::id()));
+        let locked_until = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600;
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                params!["setup_complete", "true"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                params!["weekly_threats_count", "7"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                params!["login_failures:alice", "4"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                params!["login_locked_until:alice", locked_until.to_string()],
+            )
+            .unwrap();
+        }
+
+        let db = Database::new(path.to_str().unwrap()).await.unwrap();
+
+        assert_eq!(
+            db.get_system_state("setup_complete").await.unwrap(),
+            Some("true".to_string())
+        );
+        assert_eq!(
+            db.get_report_snapshot("weekly_threats_count").await.unwrap(),
+            Some("7".to_string())
+        );
+        assert_eq!(db.get_config_value("setup_complete").await.unwrap(), None);
+        assert_eq!(db.get_config_value("weekly_threats_count").await.unwrap(), None);
+
+        let remaining_lock = db.check_login_locked("alice").await.unwrap();
+        assert!(remaining_lock.is_some_and(|remaining| remaining > 0));
+        assert_eq!(db.get_config_value("login_failures:alice").await.unwrap(), None);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

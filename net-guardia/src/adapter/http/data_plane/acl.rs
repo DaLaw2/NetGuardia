@@ -44,7 +44,7 @@ async fn add_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    ok_or_error(acl.add_ipv4(direction, list_type, address.into_inner()))
+    ok_or_error(acl.add_ipv4(direction, list_type, address.into_inner()).await)
 }
 
 async fn add_ipv6_list(
@@ -53,7 +53,7 @@ async fn add_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    ok_or_error(acl.add_ipv6(direction, list_type, address.into_inner()))
+    ok_or_error(acl.add_ipv6(direction, list_type, address.into_inner()).await)
 }
 
 async fn remove_ipv4_list(
@@ -62,7 +62,7 @@ async fn remove_ipv4_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    ok_or_error(acl.remove_ipv4(direction, list_type, address.into_inner()))
+    ok_or_error(acl.remove_ipv4(direction, list_type, address.into_inner()).await)
 }
 
 async fn remove_ipv6_list(
@@ -71,7 +71,7 @@ async fn remove_ipv6_list(
     acl: web::Data<AclService>,
 ) -> impl Responder {
     let (direction, list_type) = path.into_inner();
-    ok_or_error(acl.remove_ipv6(direction, list_type, address.into_inner()))
+    ok_or_error(acl.remove_ipv6(direction, list_type, address.into_inner()).await)
 }
 
 async fn get_geo_blocked(acl: web::Data<AclService>) -> impl Responder {
@@ -80,7 +80,7 @@ async fn get_geo_blocked(acl: web::Data<AclService>) -> impl Responder {
 
 async fn block_geo_countries(body: web::Json<CountryCodesRequest>, acl: web::Data<AclService>) -> impl Responder {
     let codes = body.into_inner().country_codes;
-    match acl.block_geo_countries(&codes) {
+    match acl.block_geo_countries(&codes).await {
         Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
             "blocked_countries": acl.get_blocked_countries(),
             "total_prefixes": total_prefixes,
@@ -91,7 +91,7 @@ async fn block_geo_countries(body: web::Json<CountryCodesRequest>, acl: web::Dat
 
 async fn unblock_geo_countries(body: web::Json<CountryCodesRequest>, acl: web::Data<AclService>) -> impl Responder {
     let codes = body.into_inner().country_codes;
-    match acl.unblock_geo_countries(&codes) {
+    match acl.unblock_geo_countries(&codes).await {
         Ok(total_prefixes) => HttpResponse::Ok().json(serde_json::json!({
             "blocked_countries": acl.get_blocked_countries(),
             "total_prefixes": total_prefixes,

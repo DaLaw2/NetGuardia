@@ -27,11 +27,11 @@ impl PlaybookService {
         }
     }
 
-    pub fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
-        self.db.list_playbooks()
+    pub async fn list_playbooks(&self) -> Result<Vec<PlaybookView>, Error> {
+        self.db.list_playbooks().await
     }
 
-    pub fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
+    pub async fn create_playbook(&self, input: &CreatePlaybookInput) -> Result<i64, Error> {
         // Single atomic insert (playbook + actions + conditions).
         let actions: Vec<ActionInput> = input
             .actions
@@ -43,12 +43,15 @@ impl PlaybookService {
                 params_json: params.clone(),
             })
             .collect();
-        let playbook_id = self.db.insert_playbook_atomic(input, &actions, &input.conditions)?;
-        self.soar_engine.reload_cache()?;
+        let playbook_id = self
+            .db
+            .insert_playbook_atomic(input, &actions, &input.conditions)
+            .await?;
+        self.soar_engine.reload_cache().await?;
         Ok(playbook_id)
     }
 
-    pub fn update_playbook(&self, id: i64, input: &CreatePlaybookInput) -> Result<bool, Error> {
+    pub async fn update_playbook(&self, id: i64, input: &CreatePlaybookInput) -> Result<bool, Error> {
         let row = UpdatePlaybookInput {
             name: input.name.clone(),
             trigger_event: input.trigger_event.clone(),
@@ -68,32 +71,35 @@ impl PlaybookService {
                 params_json: params.clone(),
             })
             .collect();
-        let updated = self.db.update_playbook_atomic(id, &row, &actions, &input.conditions)?;
+        let updated = self
+            .db
+            .update_playbook_atomic(id, &row, &actions, &input.conditions)
+            .await?;
         if !updated {
             return Ok(false);
         }
-        self.soar_engine.reload_cache()?;
+        self.soar_engine.reload_cache().await?;
         Ok(true)
     }
 
-    pub fn toggle_playbook(&self, id: i64, enabled: bool) -> Result<bool, Error> {
-        let updated = self.db.update_playbook_enabled(id, enabled)?;
+    pub async fn toggle_playbook(&self, id: i64, enabled: bool) -> Result<bool, Error> {
+        let updated = self.db.update_playbook_enabled(id, enabled).await?;
         if updated {
-            self.soar_engine.reload_cache()?;
+            self.soar_engine.reload_cache().await?;
         }
         Ok(updated)
     }
 
-    pub fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
-        let deleted = self.db.delete_playbook(id)?;
+    pub async fn delete_playbook(&self, id: i64) -> Result<bool, Error> {
+        let deleted = self.db.delete_playbook(id).await?;
         if deleted {
-            self.soar_engine.reload_cache()?;
+            self.soar_engine.reload_cache().await?;
         }
         Ok(deleted)
     }
 
-    pub fn list_active_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
-        self.db.list_active_soar_blocks()
+    pub async fn list_active_blocks(&self) -> Result<Vec<ActiveBlockView>, Error> {
+        self.db.list_active_soar_blocks().await
     }
 
     /// Manually unblock an IP: remove from eBPF, atomically clear both DB
@@ -103,7 +109,8 @@ impl PlaybookService {
         // Look up the block to get source_ip
         let block = self
             .db
-            .find_soar_block_by_id(id)?
+            .find_soar_block_by_id(id)
+            .await?
             .ok_or_else(|| SoarError::UnblockRuleNotFound(id))?;
         let source_ip = &block.source_ip;
 
@@ -113,7 +120,7 @@ impl PlaybookService {
         // Atomically drop acl_rules entry AND mark soar_block_rules
         // unblocked in one transaction.
         let ip_version = ip_version_from_str(source_ip);
-        self.db.commit_soar_unblock_to_db(id, ip_version, source_ip)?;
+        self.db.commit_soar_unblock_to_db(id, ip_version, source_ip).await?;
 
         // Decrement active block counter
         self.soar_engine.decrement_block_count();
@@ -121,23 +128,23 @@ impl PlaybookService {
         Ok(())
     }
 
-    pub fn list_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
-        self.db.list_soar_executions(limit)
+    pub async fn list_executions(&self, limit: i64) -> Result<Vec<ExecutionView>, Error> {
+        self.db.list_soar_executions(limit).await
     }
 
-    pub fn list_whitelist(&self) -> Result<Vec<String>, Error> {
-        self.db.list_admin_whitelist()
+    pub async fn list_whitelist(&self) -> Result<Vec<String>, Error> {
+        self.db.list_admin_whitelist().await
     }
 
-    pub fn add_whitelist(&self, ip: &str) -> Result<(), Error> {
-        self.db.insert_admin_whitelist(ip)?;
-        self.soar_engine.reload_cache()?;
+    pub async fn add_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.db.insert_admin_whitelist(ip).await?;
+        self.soar_engine.reload_cache().await?;
         Ok(())
     }
 
-    pub fn remove_whitelist(&self, ip: &str) -> Result<(), Error> {
-        self.db.delete_admin_whitelist(ip)?;
-        self.soar_engine.reload_cache()?;
+    pub async fn remove_whitelist(&self, ip: &str) -> Result<(), Error> {
+        self.db.delete_admin_whitelist(ip).await?;
+        self.soar_engine.reload_cache().await?;
         Ok(())
     }
 }

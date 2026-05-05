@@ -13,8 +13,8 @@ use crate::adapter::persistence::Database;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::crypto::{CryptoError, EnvelopeField};
 use crate::domain::common::log::crypto::CryptoLog;
+use crate::interface::config_repo::ConfigRepo;
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 
 pub struct SecretStore {
     database: Arc<Database>,
@@ -119,19 +119,20 @@ impl SecretStore {
     }
 }
 
+#[async_trait::async_trait]
 impl SecretStorePort for SecretStore {
-    fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
-        let repo: &dyn SettingRepo = self.database.as_ref();
-        match repo.get_app_secret(key)? {
+    async fn get_secret(&self, key: &str) -> Result<Option<String>, Error> {
+        let repo: &dyn ConfigRepo = self.database.as_ref();
+        match repo.get_app_secret(key).await? {
             Some(envelope_json) => Ok(Some(self.decrypt(&envelope_json)?)),
             None => Ok(None),
         }
     }
 
-    fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
+    async fn set_secret(&self, key: &str, plaintext: &str) -> Result<(), Error> {
         let envelope = self.encrypt(plaintext)?;
-        let repo: &dyn SettingRepo = self.database.as_ref();
-        repo.set_app_secret(key, &envelope)
+        let repo: &dyn ConfigRepo = self.database.as_ref();
+        repo.set_app_secret(key, &envelope).await
     }
 
     fn encrypt_envelope(&self, plaintext: &str) -> Result<String, Error> {
@@ -143,36 +144,36 @@ impl SecretStorePort for SecretStore {
 mod tests {
     use super::*;
 
-    fn store_with_cipher() -> SecretStore {
+    async fn store_with_cipher() -> SecretStore {
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), b"test-key-for-unit-tests");
         let mut okm = [0u8; 32];
         hk.expand(b"netguardia-envelope-v1", &mut okm).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&okm).unwrap();
         SecretStore {
-            database: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").await.unwrap()),
             cipher: Some(cipher),
         }
     }
 
-    fn store_without_cipher() -> SecretStore {
+    async fn store_without_cipher() -> SecretStore {
         SecretStore {
-            database: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").await.unwrap()),
             cipher: None,
         }
     }
 
-    #[test]
-    fn encrypt_decrypt_round_trip() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn encrypt_decrypt_round_trip() {
+        let store = store_with_cipher().await;
         let original = "my-smtp-password-123!@#";
         let encrypted = store.encrypt(original).unwrap();
         let decrypted = store.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, original);
     }
 
-    #[test]
-    fn encrypt_produces_different_ciphertext_each_time() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn encrypt_produces_different_ciphertext_each_time() {
+        let store = store_with_cipher().await;
         let plaintext = "same-value";
         let e1 = store.encrypt(plaintext).unwrap();
         let e2 = store.encrypt(plaintext).unwrap();
@@ -181,9 +182,9 @@ mod tests {
         assert_eq!(store.decrypt(&e2).unwrap(), plaintext);
     }
 
-    #[test]
-    fn wrong_key_fails_decrypt() {
-        let store1 = store_with_cipher();
+    #[tokio::test]
+    async fn wrong_key_fails_decrypt() {
+        let store1 = store_with_cipher().await;
         let encrypted = store1.encrypt("secret-value").unwrap();
 
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), b"different-key");
@@ -191,7 +192,7 @@ mod tests {
         hk.expand(b"netguardia-envelope-v1", &mut okm).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&okm).unwrap();
         let store2 = SecretStore {
-            database: Arc::new(Database::new(":memory:").unwrap()),
+            database: Arc::new(Database::new(":memory:").await.unwrap()),
             cipher: Some(cipher),
         };
 
@@ -199,9 +200,9 @@ mod tests {
         assert!(result.is_err(), "Decrypting with wrong key should fail");
     }
 
-    #[test]
-    fn alg_none_rejected_in_production_mode() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn alg_none_rejected_in_production_mode() {
+        let store = store_with_cipher().await;
         let fake_envelope = serde_json::json!({
             "v": 1,
             "alg": "none",
@@ -213,30 +214,30 @@ mod tests {
         assert!(result.is_err(), "alg:none should be rejected when cipher is present");
     }
 
-    #[test]
-    fn alg_none_allowed_in_dev_mode() {
-        let store = store_without_cipher();
+    #[tokio::test]
+    async fn alg_none_allowed_in_dev_mode() {
+        let store = store_without_cipher().await;
         let encrypted = store.encrypt("dev-mode-secret").unwrap();
         let decrypted = store.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, "dev-mode-secret");
     }
 
-    #[test]
-    fn invalid_envelope_json_fails() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn invalid_envelope_json_fails() {
+        let store = store_with_cipher().await;
         assert!(store.decrypt("not-json").is_err());
     }
 
-    #[test]
-    fn unsupported_version_fails() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn unsupported_version_fails() {
+        let store = store_with_cipher().await;
         let envelope = serde_json::json!({"v": 99, "alg": "aes-256-gcm", "ct": "abc"}).to_string();
         assert!(store.decrypt(&envelope).is_err());
     }
 
-    #[test]
-    fn unsupported_algorithm_fails() {
-        let store = store_with_cipher();
+    #[tokio::test]
+    async fn unsupported_algorithm_fails() {
+        let store = store_with_cipher().await;
         let envelope = serde_json::json!({"v": 1, "alg": "chacha20", "ct": "abc"}).to_string();
         assert!(store.decrypt(&envelope).is_err());
     }

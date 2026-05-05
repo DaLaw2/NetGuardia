@@ -96,7 +96,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn list_playbooks(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    ok_json_or_error(svc.list_playbooks())
+    ok_json_or_error(svc.list_playbooks().await)
 }
 
 async fn create_playbook(
@@ -106,7 +106,7 @@ async fn create_playbook(
     body: web::Json<CreatePlaybookRequest>,
 ) -> HttpResponse {
     let input = map_request_to_input(&body, app_config.load().soar.fallback_cooldown_secs);
-    match svc.create_playbook(&input) {
+    match svc.create_playbook(&input).await {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({"id": id})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -121,7 +121,7 @@ async fn update_playbook(
 ) -> HttpResponse {
     let id = path.into_inner();
     let input = map_request_to_input(&body, app_config.load().soar.fallback_cooldown_secs);
-    match svc.update_playbook(id, &input) {
+    match svc.update_playbook(id, &input).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"updated": true})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Playbook not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -139,7 +139,7 @@ async fn toggle_playbook(
     path: web::Path<i64>,
     body: web::Json<TogglePlaybookRequest>,
 ) -> HttpResponse {
-    match svc.toggle_playbook(path.into_inner(), body.enabled) {
+    match svc.toggle_playbook(path.into_inner(), body.enabled).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"updated": true})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Playbook not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -147,7 +147,7 @@ async fn toggle_playbook(
 }
 
 async fn delete_playbook(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<i64>) -> HttpResponse {
-    match svc.delete_playbook(path.into_inner()) {
+    match svc.delete_playbook(path.into_inner()).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Playbook not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -155,7 +155,7 @@ async fn delete_playbook(_auth: AuthClaims, svc: web::Data<PlaybookService>, pat
 }
 
 async fn list_active_blocks(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    ok_json_or_error(svc.list_active_blocks())
+    ok_json_or_error(svc.list_active_blocks().await)
 }
 
 async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<i64>) -> HttpResponse {
@@ -163,11 +163,11 @@ async fn manual_unblock(_auth: AuthClaims, svc: web::Data<PlaybookService>, path
 }
 
 async fn list_executions(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    ok_json_or_error(svc.list_executions(100))
+    ok_json_or_error(svc.list_executions(100).await)
 }
 
 async fn list_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>) -> HttpResponse {
-    ok_json_or_error(svc.list_whitelist())
+    ok_json_or_error(svc.list_whitelist().await)
 }
 
 #[derive(Deserialize)]
@@ -180,14 +180,14 @@ async fn add_whitelist(
     svc: web::Data<PlaybookService>,
     body: web::Json<WhitelistRequest>,
 ) -> HttpResponse {
-    match svc.add_whitelist(&body.ip) {
+    match svc.add_whitelist(&body.ip).await {
         Ok(()) => HttpResponse::Created().json(serde_json::json!({"added": true})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
 async fn remove_whitelist(_auth: AuthClaims, svc: web::Data<PlaybookService>, path: web::Path<String>) -> HttpResponse {
-    ok_or_error(svc.remove_whitelist(&path.into_inner()))
+    ok_or_error(svc.remove_whitelist(&path.into_inner()).await)
 }
 
 /// Client shape for `POST /api/soar/dry-run`. Only the fields a SOAR

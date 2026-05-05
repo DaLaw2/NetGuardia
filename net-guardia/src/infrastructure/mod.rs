@@ -8,6 +8,7 @@ pub mod inference_runtime;
 pub mod log_buffer;
 pub mod logger;
 pub mod readiness;
+pub mod runtime_state;
 pub mod secret_store;
 pub mod service_factory;
 pub mod suricata_manager;

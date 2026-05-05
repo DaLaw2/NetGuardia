@@ -15,6 +15,7 @@ use crate::domain::identity::password;
 use crate::infrastructure::http_server::SetupCompleteFlag;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::interface::secret_store::SecretStorePort;
+use crate::interface::system_state::SystemStateRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/setup")
@@ -133,7 +134,7 @@ async fn complete_setup(
     }
 
     // Save configuration to database
-    if let Err(e) = save_config(&db, secret_store.as_ref(), &body) {
+    if let Err(e) = save_config(&db, secret_store.as_ref(), &body).await {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("Failed to save configuration: {}", e)
         }));
@@ -143,12 +144,12 @@ async fn complete_setup(
     match password::hash_password(&body.admin_password) {
         Ok(hash) => {
             // Find admin user and update password
-            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME) {
-                if let Err(e) = db.update_user_password(user.id, &hash) {
+            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME).await {
+                if let Err(e) = db.update_user_password(user.id, &hash).await {
                     log!(SystemError::SetupPasswordUpdateFailed(e));
                 }
                 // Clear force_password_change since setup wizard set the password
-                if let Err(e) = db.reset_user_password(user.id, &hash) {
+                if let Err(e) = db.reset_user_password(user.id, &hash).await {
                     log!(SystemError::SetupPasswordUpdateFailed(e));
                 }
             }
@@ -161,7 +162,8 @@ async fn complete_setup(
     }
 
     // Mark setup as complete
-    if let Err(e) = db.set_setting("setup_complete", "true") {
+    let state_repo = db.get_ref() as &dyn SystemStateRepo;
+    if let Err(e) = state_repo.set_system_state("setup_complete", "true").await {
         log!(SystemError::SetupCompleteFlagFailed(e));
     }
     setup_flag.0.store(true, Ordering::SeqCst);
@@ -176,43 +178,43 @@ async fn complete_setup(
     }))
 }
 
-fn save_config(db: &Database, secrets: &dyn SecretStorePort, req: &SetupRequest) -> Result<(), Error> {
+async fn save_config(db: &Database, secrets: &dyn SecretStorePort, req: &SetupRequest) -> Result<(), Error> {
     // Save network config
-    db.set_setting("ingress_interface", &req.ingress_interface)?;
-    db.set_setting("egress_interface", &req.egress_interface)?;
+    db.set_config_value("ingress_interface", &req.ingress_interface).await?;
+    db.set_config_value("egress_interface", &req.egress_interface).await?;
 
     if let Some(port) = req.http_port {
-        db.set_setting("http_port", &port.to_string())?;
+        db.set_config_value("http_port", &port.to_string()).await?;
     }
 
     // Save SMTP config (non-secret fields go to settings)
     if let Some(host) = &req.smtp_host {
-        db.set_setting("smtp_host", host)?;
+        db.set_config_value("smtp_host", host).await?;
     }
     if let Some(port) = req.smtp_port {
-        db.set_setting("smtp_port", &port.to_string())?;
+        db.set_config_value("smtp_port", &port.to_string()).await?;
     }
     if let Some(user) = &req.smtp_username {
-        db.set_setting("smtp_username", user)?;
+        db.set_config_value("smtp_username", user).await?;
     }
     if let Some(pass) = &req.smtp_password {
         // Store password through secret store (encrypted)
-        secrets.set_secret("smtp_password", pass)?;
-        db.set_setting("smtp_password", "__encrypted__")?;
+        secrets.set_secret("smtp_password", pass).await?;
+        db.set_config_value("smtp_password", "__encrypted__").await?;
     }
     if let Some(recipient) = &req.smtp_recipient {
-        db.set_setting("smtp_recipient", recipient)?;
+        db.set_config_value("smtp_recipient", recipient).await?;
     }
 
     // Save Telegram config (bot_token through secret store, chat_id in JSON)
     if let (Some(token), Some(chat_id)) = (&req.telegram_bot_token, &req.telegram_chat_id) {
-        secrets.set_secret("telegram_bot_token", token)?;
+        secrets.set_secret("telegram_bot_token", token).await?;
         let config_json = serde_json::json!({
             "bot_token": "__encrypted__",
             "chat_id": chat_id,
         })
         .to_string();
-        db.set_notification_config("telegram", &config_json)?;
+        db.set_notification_config("telegram", &config_json).await?;
     }
 
     Ok(())

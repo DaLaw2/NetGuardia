@@ -267,7 +267,7 @@ fn gen_mapped_default(mp: &MappedParent) -> TokenStream2 {
     quote! { #ident: #ty { #(#sub_fields,)* } }
 }
 
-// ── Code generation: from_settings() ───────────────────────────────
+// ── Code generation: from_config_repo() ───────────────────────────────
 
 fn gen_override(f: &SettingField) -> TokenStream2 {
     let ident = &f.ident;
@@ -278,25 +278,25 @@ fn gen_override(f: &SettingField) -> TokenStream2 {
         quote! {
             crate::domain::common::config::helpers::override_string_nonempty(
                 &mut cfg.#ident, repo, #key,
-            )?;
+            ).await?;
         }
     } else if is_type(ty, "bool") {
         quote! {
             crate::domain::common::config::helpers::override_bool(
                 &mut cfg.#ident, repo, #key,
-            )?;
+            ).await?;
         }
     } else if is_vec_string(ty) {
         quote! {
             crate::domain::common::config::helpers::override_csv(
                 &mut cfg.#ident, repo, #key,
-            )?;
+            ).await?;
         }
     } else {
         quote! {
             crate::domain::common::config::helpers::override_parsed(
                 &mut cfg.#ident, repo, #key,
-            )?;
+            ).await?;
         }
     }
 }
@@ -304,7 +304,7 @@ fn gen_override(f: &SettingField) -> TokenStream2 {
 fn gen_flatten_override(f: &FlattenField) -> TokenStream2 {
     let ident = &f.ident;
     let ty = &f.ty;
-    quote! { cfg.#ident = #ty::from_settings(repo)?; }
+    quote! { cfg.#ident = #ty::from_config_repo(repo).await?; }
 }
 
 fn gen_mapped_overrides(mp: &MappedParent) -> TokenStream2 {
@@ -318,14 +318,14 @@ fn gen_mapped_overrides(mp: &MappedParent) -> TokenStream2 {
             quote! {
                 crate::domain::common::config::helpers::override_parsed(
                     &mut cfg.#parent.#sub, repo, #key,
-                )?;
+                ).await?;
             }
         })
         .collect();
     quote! { #(#calls)* }
 }
 
-// ── Code generation: seed_defaults() ───────────────────────────────
+// ── Code generation: seed_config_defaults() ───────────────────────────────
 
 fn gen_seed(f: &SettingField) -> TokenStream2 {
     let key = &f.key;
@@ -336,17 +336,17 @@ fn gen_seed(f: &SettingField) -> TokenStream2 {
             crate::domain::common::config::helpers::seed_key(
                 repo, #key,
                 if cfg!(debug_assertions) { #dbg } else { #default },
-            )?;
+            ).await?;
         },
         None => quote! {
-            crate::domain::common::config::helpers::seed_key(repo, #key, #default)?;
+            crate::domain::common::config::helpers::seed_key(repo, #key, #default).await?;
         },
     }
 }
 
 fn gen_flatten_seed(f: &FlattenField) -> TokenStream2 {
     let ty = &f.ty;
-    quote! { #ty::seed_defaults(repo)?; }
+    quote! { #ty::seed_config_defaults(repo).await?; }
 }
 
 fn gen_mapped_seeds(mp: &MappedParent) -> TokenStream2 {
@@ -361,10 +361,10 @@ fn gen_mapped_seeds(mp: &MappedParent) -> TokenStream2 {
                     crate::domain::common::config::helpers::seed_key(
                         repo, #key,
                         if cfg!(debug_assertions) { #dbg } else { #default },
-                    )?;
+                    ).await?;
                 },
                 None => quote! {
-                    crate::domain::common::config::helpers::seed_key(repo, #key, #default)?;
+                    crate::domain::common::config::helpers::seed_key(repo, #key, #default).await?;
                 },
             }
         })
@@ -421,6 +421,56 @@ fn gen_keys_consts(fields: &[ConfigField]) -> TokenStream2 {
         .collect()
 }
 
+// ── Code generation: api_values() ─────────────────────────────────
+
+fn value_to_string_expr(ty: &Type, expr: TokenStream2) -> TokenStream2 {
+    if is_type(ty, "String") {
+        quote! { #expr.clone() }
+    } else if is_vec_string(ty) {
+        quote! { #expr.join(",") }
+    } else {
+        quote! { #expr.to_string() }
+    }
+}
+
+fn gen_api_values(fields: &[ConfigField]) -> TokenStream2 {
+    let entries: Vec<_> = fields
+        .iter()
+        .flat_map(|f| match f {
+            ConfigField::Setting(s) if s.api => {
+                let key = &s.key;
+                let ident = &s.ident;
+                let value = value_to_string_expr(&s.ty, quote! { self.#ident });
+                vec![quote! { values.push((#key, #value)); }]
+            }
+            ConfigField::Flatten(f) => {
+                let ident = &f.ident;
+                vec![quote! { values.extend(self.#ident.api_values()); }]
+            }
+            ConfigField::MappedParent(mp) => mp
+                .settings
+                .iter()
+                .filter(|s| s.api)
+                .map(|s| {
+                    let key = &s.key;
+                    let parent = &mp.ident;
+                    let sub = format_ident!("{}", s.sub_field);
+                    quote! { values.push((#key, self.#parent.#sub.to_string())); }
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+
+    quote! {
+        pub fn api_values(&self) -> Vec<(&'static str, String)> {
+            let mut values = Vec::new();
+            #(#entries)*
+            values
+        }
+    }
+}
+
 // ── Entry point ────────────────────────────────────────────────────
 
 pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -456,6 +506,7 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
 
     let struct_name = &input.ident;
     let keys_consts = gen_keys_consts(&config_fields);
+    let api_values = gen_api_values(&config_fields);
 
     let default_fields: Vec<_> = config_fields
         .iter()
@@ -489,6 +540,7 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
 
         impl #struct_name {
             #keys_consts
+            #api_values
 
             pub fn defaults() -> Self {
                 Self {
@@ -496,16 +548,16 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
             }
 
-            pub fn from_settings(
-                repo: &dyn crate::interface::setting::SettingRepo,
+            pub async fn from_config_repo(
+                repo: &dyn crate::interface::config_repo::ConfigRepo,
             ) -> Result<Self, crate::domain::common::error::Error> {
                 let mut cfg = Self::defaults();
                 #(#override_calls)*
                 Ok(cfg)
             }
 
-            pub fn seed_defaults(
-                repo: &dyn crate::interface::setting::SettingRepo,
+            pub async fn seed_config_defaults(
+                repo: &dyn crate::interface::config_repo::ConfigRepo,
             ) -> Result<(), crate::domain::common::error::Error> {
                 #(#seed_calls)*
                 Ok(())

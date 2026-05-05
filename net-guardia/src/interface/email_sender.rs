@@ -6,8 +6,9 @@ pub trait EmailSender: Send + Sync {
     fn send(&self, to: &str, subject: &str, html_body: &str) -> Result<(), Error>;
 }
 
+#[async_trait::async_trait]
 pub trait EmailSenderFactory: Send + Sync {
-    fn build_smtp_sender(
+    async fn build_smtp_sender(
         &self,
         cfg: &SmtpConfig,
         secrets: Option<&dyn SecretStorePort>,

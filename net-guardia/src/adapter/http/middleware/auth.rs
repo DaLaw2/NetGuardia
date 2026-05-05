@@ -63,12 +63,13 @@ fn required_permission(path: &str, method: &Method) -> Option<String> {
         "rate_limit"
     } else if path.starts_with("/api/system/") {
         "system"
+    } else if path.starts_with("/api/api-keys/") {
+        return Some("api_keys:admin".to_string());
     } else if path.contains("/soar/blocks/") && path.ends_with("/unblock") {
         return Some("access_control:write".to_string());
     } else if path.starts_with("/api/soar/")
         || path.starts_with("/api/notifications/")
         || path.starts_with("/api/report/")
-        || path.starts_with("/api/api-keys/")
         || path.starts_with("/api/logs/")
         || path.starts_with("/api/audit/")
     {
@@ -165,7 +166,7 @@ where
                     "apikey:{}",
                     req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default()
                 );
-                if let Ok(Some(remaining)) = repo.check_login_locked(&rate_key) {
+                if let Ok(Some(remaining)) = repo.check_login_locked(&rate_key).await {
                     let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
                         "error": "Too many failed API key attempts",
                         "retry_after_secs": remaining,
@@ -173,15 +174,15 @@ where
                     return Ok(req.into_response(resp).map_into_right_body());
                 }
 
-                match api_key_port.validate_api_key(api_key) {
+                match api_key_port.validate_api_key(api_key).await {
                     Ok(Some(key_claims)) => {
-                        if let Err(e) = repo.clear_login_failures(&rate_key) {
+                        if let Err(e) = repo.clear_login_failures(&rate_key).await {
                             log!(AuthError::LoginClearError(e));
                         }
                         key_claims
                     }
                     Ok(None) => {
-                        if let Err(e) = repo.record_login_failure(&rate_key) {
+                        if let Err(e) = repo.record_login_failure(&rate_key).await {
                             log!(AuthError::LoginFailureTrackingError(e));
                         }
                         let resp = HttpResponse::Unauthorized()

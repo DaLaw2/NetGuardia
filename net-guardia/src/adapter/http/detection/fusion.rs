@@ -48,7 +48,10 @@ async fn explain_ip(
     };
 
     let obs = app_config.load().observability.clone();
-    let entries = match audit.list_audit_logs_by_action(FUSION_AUDIT_ACTION, obs.fusion_explain_scan_limit) {
+    let entries = match audit
+        .list_audit_logs_by_action(FUSION_AUDIT_ACTION, obs.fusion_explain_scan_limit)
+        .await
+    {
         Ok(e) => e,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({

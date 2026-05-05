@@ -82,15 +82,15 @@ mod tests {
     use crate::adapter::persistence::Database;
     use crate::infrastructure::secret_store::SecretStore;
 
-    fn test_jwt_service() -> JwtService {
-        let db = Arc::new(Database::new(":memory:").unwrap());
+    async fn test_jwt_service() -> JwtService {
+        let db = Arc::new(Database::new(":memory:").await.unwrap());
         let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
         JwtService::new(&secrets, 24).unwrap()
     }
 
-    #[test]
-    fn test_create_and_validate_token() {
-        let jwt = test_jwt_service();
+    #[tokio::test]
+    async fn test_create_and_validate_token() {
+        let jwt = test_jwt_service().await;
         let perms = vec!["dashboard:read".to_string()];
         let token = jwt.create_token(1, "admin", "admin", perms.clone()).unwrap();
         let claims = jwt.validate_token(&token).unwrap();
@@ -100,16 +100,16 @@ mod tests {
         assert_eq!(claims.permissions, perms);
     }
 
-    #[test]
-    fn test_invalid_token() {
-        let jwt = test_jwt_service();
+    #[tokio::test]
+    async fn test_invalid_token() {
+        let jwt = test_jwt_service().await;
         let result = jwt.validate_token("invalid.token.here");
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_expired_token() {
-        let db = Arc::new(Database::new(":memory:").unwrap());
+    #[tokio::test]
+    async fn test_expired_token() {
+        let db = Arc::new(Database::new(":memory:").await.unwrap());
         let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
         let jwt = JwtService::new(&secrets, 0).unwrap(); // 0 hours = immediate expiry
 
@@ -126,9 +126,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_jwt_secret_changes_on_new_instance() {
-        let db = Arc::new(Database::new(":memory:").unwrap());
+    #[tokio::test]
+    async fn test_jwt_secret_changes_on_new_instance() {
+        let db = Arc::new(Database::new(":memory:").await.unwrap());
         let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db));
 
         let jwt1 = JwtService::new(&secrets, 24).unwrap();
@@ -140,10 +140,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_different_secrets_reject() {
-        let jwt1 = test_jwt_service();
-        let jwt2 = test_jwt_service(); // different in-memory DB = different secret
+    #[tokio::test]
+    async fn test_different_secrets_reject() {
+        let jwt1 = test_jwt_service().await;
+        let jwt2 = test_jwt_service().await; // different in-memory DB = different secret
 
         let token = jwt1.create_token(1, "admin", "admin", vec![]).unwrap();
         let result = jwt2.validate_token(&token);

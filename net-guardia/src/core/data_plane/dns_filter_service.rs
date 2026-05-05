@@ -25,7 +25,7 @@ impl DnsFilterService {
         self.dns_filter.list_domains()
     }
 
-    pub fn add_domains(&self, domains: &[String]) -> Result<usize, Error> {
+    pub async fn add_domains(&self, domains: &[String]) -> Result<usize, Error> {
         let max_domains = self.config.load().dns_filter.max_domains_per_request;
         if domains.len() > max_domains {
             Err(MiscError::ValidationError(format!(
@@ -39,19 +39,19 @@ impl DnsFilterService {
         }
         // Then DB
         for domain in domains {
-            self.db.insert_dns_domain(domain)?;
+            self.db.insert_dns_domain(domain).await?;
         }
         Ok(domains.len())
     }
 
-    pub fn remove_domains(&self, domains: &[String]) -> Result<usize, Error> {
+    pub async fn remove_domains(&self, domains: &[String]) -> Result<usize, Error> {
         // eBPF first
         for domain in domains {
             self.dns_filter.remove_domain(domain)?;
         }
         // Then DB
         for domain in domains {
-            self.db.delete_dns_domain(domain)?;
+            self.db.delete_dns_domain(domain).await?;
         }
         Ok(domains.len())
     }

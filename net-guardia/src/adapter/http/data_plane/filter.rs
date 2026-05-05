@@ -46,7 +46,7 @@ async fn add_dns_blacklist(
     service: web::Data<DnsFilterService>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
-    match service.add_domains(&domains) {
+    match service.add_domains(&domains).await {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({"added": count})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -57,7 +57,7 @@ async fn remove_dns_blacklist(
     service: web::Data<DnsFilterService>,
 ) -> impl Responder {
     let domains = payload.into_inner().domains;
-    match service.remove_domains(&domains) {
+    match service.remove_domains(&domains).await {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({"removed": count})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }

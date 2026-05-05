@@ -36,17 +36,20 @@ use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::system::{ShutdownMode, System};
 use crate::interface::app_repo::AppRepo;
 use crate::interface::secret_store::SecretStorePort;
+use crate::interface::system_state::SystemStateRepo;
 use crate::interface::token_minter::TokenMinter;
 
-fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
-    if database.user_count().unwrap_or(0) != 0 {
+async fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
+    if database.user_count().await.unwrap_or(0) != 0 {
         return Ok(());
     }
     let hash = password::hash_password(DEFAULT_ADMIN_USERNAME)?;
-    let admin_user_id = database.insert_user(DEFAULT_ADMIN_USERNAME, &hash, ROLE_ADMIN, false)?;
-    if let Ok(groups) = database.list_user_groups()
+    let admin_user_id = database
+        .insert_user(DEFAULT_ADMIN_USERNAME, &hash, ROLE_ADMIN, false)
+        .await?;
+    if let Ok(groups) = database.list_user_groups().await
         && let Some(g) = groups.into_iter().find(|g| g.name == GROUP_ADMIN)
-        && let Err(err) = database.set_user_groups(admin_user_id, &[g.id])
+        && let Err(err) = database.set_user_groups(admin_user_id, &[g.id]).await
     {
         log!(SystemError::SetUserGroupsFailed(err));
     }
@@ -54,9 +57,11 @@ fn seed_default_admin(database: &Arc<Database>) -> Result<(), Error> {
     Ok(())
 }
 
-fn is_setup_complete(database: &Arc<Database>) -> Result<bool, Error> {
-    Ok(database
-        .get_setting("setup_complete")?
+async fn is_setup_complete(database: &Arc<Database>) -> Result<bool, Error> {
+    let state_repo = database.as_ref() as &dyn SystemStateRepo;
+    Ok(state_repo
+        .get_system_state("setup_complete")
+        .await?
         .map(|v| v == "true")
         .unwrap_or(false))
 }
@@ -136,18 +141,18 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     if cli.command.is_some() {
         Logger::initialize_cli()?;
-        return handle_subcommand(&cli);
+        return handle_subcommand(&cli).await;
     }
 
-    let database = Arc::new(Database::new(&cli.db_path)?);
-    let obs_config = ObservabilityConfig::from_settings(database.as_ref())?;
+    let database = Arc::new(Database::new(&cli.db_path).await?);
+    let obs_config = ObservabilityConfig::from_config_repo(database.as_ref()).await?;
     let (logger, log_buffer) = Logger::initialize(&obs_config)?;
     let logger = Arc::new(logger);
     let log_buffer = Arc::new(log_buffer);
 
-    seed_default_admin(&database)?;
+    seed_default_admin(&database).await?;
 
-    if !is_setup_complete(&database)? {
+    if !is_setup_complete(&database).await? {
         run_setup_wizard(&database).await?;
     }
 

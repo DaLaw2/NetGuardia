@@ -10,12 +10,12 @@ use crate::domain::common::error::io::IOError;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::log::system::SystemLog;
 use crate::domain::report::data::ReportData;
-use crate::interface::setting::SettingRepo;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 
 /// Generate a self-contained HTML security report and write to disk.
 /// Returns the path to the generated HTML file.
-pub fn generate_html_report(db: &dyn SettingRepo, output_dir: &str) -> Result<PathBuf, Error> {
-    let data = build_report_data(db)?;
+pub async fn generate_html_report(db: &dyn ReportSnapshotRepo, output_dir: &str) -> Result<PathBuf, Error> {
+    let data = build_report_data(db).await?;
     let html = render_html_report(&data);
 
     let html_path = PathBuf::from(output_dir).join(format!(
@@ -39,9 +39,9 @@ fn render_html_report(data: &ReportData) -> String {
     for item in &data.threat_breakdown {
         breakdown_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
-            html_escape(&item.threat_type),
+            super::html::escape(&item.threat_type),
             item.count,
-            html_escape(&item.trend)
+            super::html::escape(&item.trend)
         ));
     }
     if data.threat_breakdown.is_empty() {
@@ -54,9 +54,9 @@ fn render_html_report(data: &ReportData) -> String {
     for ip in &data.top_blocked_ips {
         ip_rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td class=\"num\">{}</td><td>{}</td></tr>",
-            html_escape(&ip.ip),
+            super::html::escape(&ip.ip),
             ip.count,
-            html_escape(&ip.country)
+            super::html::escape(&ip.country)
         ));
     }
     if data.top_blocked_ips.is_empty() {
@@ -68,7 +68,7 @@ fn render_html_report(data: &ReportData) -> String {
     for geo in &data.geo_distribution {
         geo_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td></tr>",
-            html_escape(&geo.country),
+            super::html::escape(&geo.country),
             geo.threat_count
         ));
     }
@@ -79,7 +79,7 @@ fn render_html_report(data: &ReportData) -> String {
     // Recommendations
     let mut rec_items = String::new();
     for rec in &data.recommendations {
-        rec_items.push_str(&format!("<li>{}</li>", html_escape(rec)));
+        rec_items.push_str(&format!("<li>{}</li>", super::html::escape(rec)));
     }
 
     format!(
@@ -174,8 +174,8 @@ fn render_html_report(data: &ReportData) -> String {
 </div>
 </body>
 </html>"#,
-        period = html_escape(&data.period),
-        generated_at = html_escape(&data.generated_at),
+        period = super::html::escape(&data.period),
+        generated_at = super::html::escape(&data.generated_at),
         total_threats = data.executive_summary.total_threats,
         total_blocked = data.executive_summary.total_blocked,
         uptime = data.executive_summary.uptime_percent,
@@ -189,21 +189,13 @@ fn render_html_report(data: &ReportData) -> String {
         avg_cpu = data.system_health.avg_cpu_percent,
         avg_mem = data.system_health.avg_memory_percent,
         disk = data.system_health.disk_usage_percent,
-        ebpf_status = html_escape(&data.system_health.ebpf_status),
+        ebpf_status = super::html::escape(&data.system_health.ebpf_status),
         rec_items = rec_items,
     )
 }
 
-/// Basic HTML escaping for report content.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 /// Generate report data and format as JSON (for API responses).
-pub fn generate_report_json(db: &dyn SettingRepo) -> Result<serde_json::Value, Error> {
-    let data = build_report_data(db)?;
+pub async fn generate_report_json(db: &dyn ReportSnapshotRepo) -> Result<serde_json::Value, Error> {
+    let data = build_report_data(db).await?;
     serde_json::to_value(&data).map_err(|e| MiscError::SerializeError(e).into())
 }

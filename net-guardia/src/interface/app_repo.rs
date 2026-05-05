@@ -1,12 +1,14 @@
 use crate::interface::acl::AclRepo;
 use crate::interface::api_key::ApiKeyRepo;
 use crate::interface::audit::AuditRepo;
+use crate::interface::config_repo::ConfigRepo;
 use crate::interface::db_admin::DbAdminRepo;
 use crate::interface::enforcement::EnforcementRepo;
 use crate::interface::identity::{LoginAttemptRepo, UserGroupRepo, UserRepo};
-use crate::interface::setting::SettingRepo;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 use crate::interface::soar::SoarRepo;
 use crate::interface::stats::StatsRepo;
+use crate::interface::system_state::SystemStateRepo;
 
 /// Composition-root supertrait bundling every aggregate Repo trait +
 /// `DbAdminRepo`.
@@ -26,9 +28,11 @@ pub trait AppRepo:
     + UserRepo
     + UserGroupRepo
     + LoginAttemptRepo
-    + SettingRepo
+    + ConfigRepo
+    + SystemStateRepo
     + SoarRepo
     + StatsRepo
+    + ReportSnapshotRepo
     + Send
     + Sync
 {
@@ -43,9 +47,11 @@ impl<T> AppRepo for T where
         + UserRepo
         + UserGroupRepo
         + LoginAttemptRepo
-        + SettingRepo
+        + ConfigRepo
+        + SystemStateRepo
         + SoarRepo
         + StatsRepo
+        + ReportSnapshotRepo
         + Send
         + Sync
         + ?Sized

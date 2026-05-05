@@ -13,7 +13,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn list_keys(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>) -> HttpResponse {
-    match db.list_api_keys() {
+    match db.list_api_keys().await {
         Ok(keys) => {
             let responses: Vec<serde_json::Value> = keys
                 .into_iter()
@@ -62,7 +62,7 @@ async fn generate_key(
         }));
     };
 
-    match db.insert_api_key(&key_hash, &body.name, level.as_str()) {
+    match db.insert_api_key(&key_hash, &body.name, level.as_str()).await {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({
             "id": id,
             "key": raw_key,
@@ -75,7 +75,7 @@ async fn generate_key(
 
 async fn delete_key(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>, path: web::Path<i64>) -> HttpResponse {
     let id = path.into_inner();
-    match db.delete_api_key(id) {
+    match db.delete_api_key(id).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Key not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),

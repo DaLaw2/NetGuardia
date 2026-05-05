@@ -6,15 +6,15 @@ use serde_json::Value;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
+use crate::interface::config_repo::ConfigRepo;
 use crate::interface::email_sender::EmailSenderFactory;
 use crate::interface::notification::AlertNotifierFactory;
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 
 /// Domain service for notification config (Telegram, SMTP).
 /// Coordinates DB persistence and external service testing.
 pub struct NotificationService {
-    notif: Arc<dyn SettingRepo + Send + Sync>,
+    notif: Arc<dyn ConfigRepo + Send + Sync>,
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Arc<dyn SecretStorePort>,
     alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
@@ -23,7 +23,7 @@ pub struct NotificationService {
 
 impl NotificationService {
     pub fn new(
-        notif: Arc<dyn SettingRepo + Send + Sync>,
+        notif: Arc<dyn ConfigRepo + Send + Sync>,
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Arc<dyn SecretStorePort>,
         alert_notifier_factory: Arc<dyn AlertNotifierFactory>,
@@ -39,13 +39,13 @@ impl NotificationService {
     }
 
     /// Get Telegram config with redacted bot_token.
-    pub fn get_telegram_config(&self) -> Result<serde_json::Value, Error> {
-        match self.notif.get_notification_config("telegram")? {
+    pub async fn get_telegram_config(&self) -> Result<serde_json::Value, Error> {
+        match self.notif.get_notification_config("telegram").await? {
             Some(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(mut config) => {
                     // Resolve the actual token for redaction display
                     let token = match config.get("bot_token").and_then(|t| t.as_str()) {
-                        Some("__encrypted__") => self.secrets.get_secret("telegram_bot_token")?,
+                        Some("__encrypted__") => self.secrets.get_secret("telegram_bot_token").await?,
                         Some(t) => Some(t.to_string()),
                         None => None,
                     };
@@ -69,14 +69,14 @@ impl NotificationService {
     /// Save Telegram bot_token + chat_id to DB.
     /// The bot_token is stored encrypted in the secret store; the config JSON
     /// holds the `"__encrypted__"` sentinel.
-    pub fn set_telegram_config(&self, bot_token: &str, chat_id: &str) -> Result<(), Error> {
-        self.secrets.set_secret("telegram_bot_token", bot_token)?;
+    pub async fn set_telegram_config(&self, bot_token: &str, chat_id: &str) -> Result<(), Error> {
+        self.secrets.set_secret("telegram_bot_token", bot_token).await?;
         let config_json = serde_json::json!({
             "bot_token": "__encrypted__",
             "chat_id": chat_id,
         })
         .to_string();
-        self.notif.set_notification_config("telegram", &config_json)
+        self.notif.set_notification_config("telegram", &config_json).await
     }
 
     /// Send a test Telegram message using current config. The factory
@@ -89,11 +89,12 @@ impl NotificationService {
     }
 
     /// Send a test email using current SMTP config.
-    pub fn test_smtp(&self) -> Result<String, Error> {
+    pub async fn test_smtp(&self) -> Result<String, Error> {
         let smtp_cfg = self.config.load().notification.smtp.clone();
         let smtp = self
             .email_sender_factory
-            .build_smtp_sender(&smtp_cfg, Some(self.secrets.as_ref()))?
+            .build_smtp_sender(&smtp_cfg, Some(self.secrets.as_ref()))
+            .await?
             .ok_or_else(|| {
                 MiscError::ValidationError(
                     "SMTP not configured. Set smtp_host, smtp_port, smtp_username, smtp_password first. \

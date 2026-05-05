@@ -10,11 +10,11 @@ use super::email_report as report;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::log::system::SystemLog;
 use crate::interface::email_sender::EmailSenderFactory;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 
 pub struct ReportScheduler {
-    db: Arc<dyn SettingRepo + Send + Sync>,
+    db: Arc<dyn ReportSnapshotRepo>,
     config: Arc<ArcSwap<AppConfig>>,
     secrets: Option<Arc<dyn SecretStorePort>>,
     email_sender_factory: Arc<dyn EmailSenderFactory>,
@@ -22,7 +22,7 @@ pub struct ReportScheduler {
 
 impl ReportScheduler {
     pub fn new(
-        db: Arc<dyn SettingRepo + Send + Sync>,
+        db: Arc<dyn ReportSnapshotRepo>,
         config: Arc<ArcSwap<AppConfig>>,
         secrets: Option<Arc<dyn SecretStorePort>>,
         email_sender_factory: Arc<dyn EmailSenderFactory>,
@@ -55,7 +55,10 @@ impl ReportScheduler {
 
                 let smtp_cfg = config.load().notification.smtp.clone();
 
-                let smtp = match email_sender_factory.build_smtp_sender(&smtp_cfg, secrets.as_deref()) {
+                let smtp = match email_sender_factory
+                    .build_smtp_sender(&smtp_cfg, secrets.as_deref())
+                    .await
+                {
                     Ok(Some(client)) => client,
                     Ok(None) => {
                         log!(SystemLog::SmtpNotConfigured);
@@ -73,7 +76,7 @@ impl ReportScheduler {
                     continue;
                 }
 
-                let html = match report::generate_weekly_report(&*db) {
+                let html = match report::generate_weekly_report(&*db).await {
                     Ok(h) => h,
                     Err(e) => {
                         log!(SystemLog::WeeklyReportGenerationFailed(e.to_string()));

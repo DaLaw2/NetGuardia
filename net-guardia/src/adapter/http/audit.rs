@@ -13,7 +13,7 @@ pub fn initialize() -> Scope {
 }
 
 async fn list_audit_logs(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
-    match db.list_audit_logs() {
+    match db.list_audit_logs().await {
         Ok(entries) => {
             let json: Vec<serde_json::Value> = entries
                 .into_iter()
@@ -40,7 +40,7 @@ async fn list_audit_logs(_auth: AuthClaims, db: web::Data<Database>) -> HttpResp
 /// integrity without shell access. Any mismatch returns the offending
 /// row id inside `error` so the dashboard can link straight to it.
 async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> HttpResponse {
-    match audit.verify_audit_log_chain(0) {
+    match audit.verify_audit_log_chain(0).await {
         Ok((count, _last_id)) => HttpResponse::Ok().json(serde_json::json!({
             "chain_intact": true,
             "verified": count,

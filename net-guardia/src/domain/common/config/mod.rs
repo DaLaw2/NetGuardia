@@ -16,6 +16,8 @@ pub mod soar;
 pub mod suricata;
 pub mod system;
 
+use std::collections::HashMap;
+
 use crate::domain::common::config::acl::AclConfig;
 use crate::domain::common::config::correlation::CorrelationConfig;
 use crate::domain::common::config::detection::DetectionConfig;
@@ -32,7 +34,7 @@ use crate::domain::common::config::suricata::SuricataConfig;
 use crate::domain::common::config::system::SystemConfig;
 use crate::domain::common::error::Error;
 use crate::domain::common::error::system::SystemError;
-use crate::interface::setting::SettingRepo;
+use crate::interface::config_repo::ConfigRepo;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -53,43 +55,59 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn from_settings(repo: &dyn SettingRepo) -> Result<Self, Error> {
+    pub async fn from_config_repo(repo: &dyn ConfigRepo) -> Result<Self, Error> {
         let cfg = Self {
-            acl: AclConfig::from_settings(repo)?,
-            correlation: CorrelationConfig::from_settings(repo)?,
-            detection: DetectionConfig::from_settings(repo)?,
-            dns_filter: DnsFilterConfig::from_settings(repo)?,
-            ebpf: EbpfConfig::from_settings(repo)?,
-            health: HealthConfig::from_settings(repo)?,
-            http_server: HttpServerConfig::from_settings(repo)?,
-            ml: MlConfig::from_settings(repo)?,
-            notification: NotificationConfig::from_settings(repo)?,
-            observability: ObservabilityConfig::from_settings(repo)?,
-            pipeline: PipelineConfig::from_settings(repo)?,
-            soar: SoarConfig::from_settings(repo)?,
-            suricata: SuricataConfig::from_settings(repo)?,
-            system: SystemConfig::from_settings(repo)?,
+            acl: AclConfig::from_config_repo(repo).await?,
+            correlation: CorrelationConfig::from_config_repo(repo).await?,
+            detection: DetectionConfig::from_config_repo(repo).await?,
+            dns_filter: DnsFilterConfig::from_config_repo(repo).await?,
+            ebpf: EbpfConfig::from_config_repo(repo).await?,
+            health: HealthConfig::from_config_repo(repo).await?,
+            http_server: HttpServerConfig::from_config_repo(repo).await?,
+            ml: MlConfig::from_config_repo(repo).await?,
+            notification: NotificationConfig::from_config_repo(repo).await?,
+            observability: ObservabilityConfig::from_config_repo(repo).await?,
+            pipeline: PipelineConfig::from_config_repo(repo).await?,
+            soar: SoarConfig::from_config_repo(repo).await?,
+            suricata: SuricataConfig::from_config_repo(repo).await?,
+            system: SystemConfig::from_config_repo(repo).await?,
         };
         cfg.validate()?;
         Ok(cfg)
     }
 
-    pub fn seed_defaults(repo: &dyn SettingRepo) -> Result<(), Error> {
-        AclConfig::seed_defaults(repo)?;
-        CorrelationConfig::seed_defaults(repo)?;
-        DetectionConfig::seed_defaults(repo)?;
-        DnsFilterConfig::seed_defaults(repo)?;
-        EbpfConfig::seed_defaults(repo)?;
-        HealthConfig::seed_defaults(repo)?;
-        HttpServerConfig::seed_defaults(repo)?;
-        MlConfig::seed_defaults(repo)?;
-        NotificationConfig::seed_defaults(repo)?;
-        ObservabilityConfig::seed_defaults(repo)?;
-        PipelineConfig::seed_defaults(repo)?;
-        SoarConfig::seed_defaults(repo)?;
-        SuricataConfig::seed_defaults(repo)?;
-        SystemConfig::seed_defaults(repo)?;
+    pub async fn seed_config_defaults(repo: &dyn ConfigRepo) -> Result<(), Error> {
+        AclConfig::seed_config_defaults(repo).await?;
+        CorrelationConfig::seed_config_defaults(repo).await?;
+        DetectionConfig::seed_config_defaults(repo).await?;
+        DnsFilterConfig::seed_config_defaults(repo).await?;
+        EbpfConfig::seed_config_defaults(repo).await?;
+        HealthConfig::seed_config_defaults(repo).await?;
+        HttpServerConfig::seed_config_defaults(repo).await?;
+        MlConfig::seed_config_defaults(repo).await?;
+        NotificationConfig::seed_config_defaults(repo).await?;
+        ObservabilityConfig::seed_config_defaults(repo).await?;
+        PipelineConfig::seed_config_defaults(repo).await?;
+        SoarConfig::seed_config_defaults(repo).await?;
+        SuricataConfig::seed_config_defaults(repo).await?;
+        SystemConfig::seed_config_defaults(repo).await?;
         Ok(())
+    }
+
+    pub fn api_setting_values(&self) -> HashMap<&'static str, String> {
+        let mut values = HashMap::new();
+        values.extend(self.acl.api_values());
+        values.extend(self.correlation.api_values());
+        values.extend(self.detection.api_values());
+        values.extend(self.dns_filter.api_values());
+        values.extend(self.ebpf.api_values());
+        values.extend(self.http_server.api_values());
+        values.extend(self.ml.api_values());
+        values.extend(self.notification.api_values());
+        values.extend(self.observability.api_values());
+        values.extend(self.soar.api_values());
+        values.extend(self.suricata.api_values());
+        values
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -245,15 +263,17 @@ mod tests {
     use super::*;
     use crate::adapter::persistence::Database;
 
-    fn test_db() -> Database {
+    async fn test_db() -> Database {
         // SAFETY: in-memory SQLite open is infallible under standard library features.
-        Database::new(":memory:").expect("in-memory DB")
+        Database::new(":memory:").await.expect("in-memory DB")
     }
 
-    #[test]
-    fn defaults_are_valid() {
-        let db = test_db();
-        let cfg = AppConfig::from_settings(&db).expect("defaults should be valid");
+    #[tokio::test]
+    async fn defaults_are_valid() {
+        let db = test_db().await;
+        let cfg = AppConfig::from_config_repo(&db)
+            .await
+            .expect("defaults should be valid");
         assert_eq!(cfg.http_server.port, 8080);
         assert_eq!(cfg.ebpf.ingress_ifname, "eth0");
         assert_eq!(cfg.ebpf.egress_ifname, "eth1");
@@ -262,116 +282,127 @@ mod tests {
         assert_eq!(cfg.http_server.jwt_expiry_hours, 24);
     }
 
-    #[test]
-    fn db_overrides_interface_names() {
-        let db = test_db();
-        db.set_setting("ingress_interface", "ens33").unwrap();
-        db.set_setting("egress_interface", "ens34").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_interface_names() {
+        let db = test_db().await;
+        db.set_config_value("ingress_interface", "ens33").await.unwrap();
+        db.set_config_value("egress_interface", "ens34").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.ebpf.ingress_ifname, "ens33");
         assert_eq!(cfg.ebpf.egress_ifname, "ens34");
     }
 
-    #[test]
-    fn db_overrides_http_port() {
-        let db = test_db();
-        db.set_setting("http_port", "9090").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_http_port() {
+        let db = test_db().await;
+        db.set_config_value("http_port", "9090").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.http_server.port, 9090);
     }
 
-    #[test]
-    fn db_overrides_xdp_tuning() {
-        let db = test_db();
-        db.set_setting("frame_size", "8192").unwrap();
-        db.set_setting("combined_queue_count", "4").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_xdp_tuning() {
+        let db = test_db().await;
+        db.set_config_value("frame_size", "8192").await.unwrap();
+        db.set_config_value("combined_queue_count", "4").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.ebpf.frame_size, 8192);
         assert_eq!(cfg.ebpf.combined_queue_count, 4);
     }
 
-    #[test]
-    fn invalid_db_values_ignored() {
-        let db = test_db();
-        db.set_setting("http_port", "not_a_number").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn invalid_db_values_ignored() {
+        let db = test_db().await;
+        db.set_config_value("http_port", "not_a_number").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.http_server.port, 8080);
     }
 
-    #[test]
-    fn empty_db_uses_all_defaults() {
-        let db = test_db();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn empty_db_uses_all_defaults() {
+        let db = test_db().await;
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.ml.inference_interval_secs, 5);
         assert_eq!(cfg.ml.inference_batch_size, 200);
         assert_eq!(cfg.system.database_path, "net-guardia.db");
     }
 
-    #[test]
-    fn seed_defaults_populates_empty_db() {
-        let db = test_db();
-        AppConfig::seed_defaults(&db).expect("seed should succeed");
-        assert_eq!(db.get_setting("http_port").unwrap(), Some("8080".to_string()));
+    #[tokio::test]
+    async fn seed_config_defaults_populates_empty_db() {
+        let db = test_db().await;
+        AppConfig::seed_config_defaults(&db).await.expect("seed should succeed");
         assert_eq!(
-            db.get_setting("traffic_logging_mode").unwrap(),
+            db.get_config_value("http_port").await.unwrap(),
+            Some("8080".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("traffic_logging_mode").await.unwrap(),
             Some("false".to_string())
         );
         assert_eq!(
-            db.get_setting("pipeline_ingress").unwrap(),
+            db.get_config_value("pipeline_ingress").await.unwrap(),
             Some("access_control,rate_limit,service".to_string())
         );
         assert_eq!(
-            db.get_setting("geoip_db_name").unwrap(),
+            db.get_config_value("geoip_db_name").await.unwrap(),
             Some("net-guardia/static/geo/dbip-city-lite.mmdb".to_string())
         );
         assert_eq!(
-            db.get_setting("soar_max_auto_block_cap").unwrap(),
+            db.get_config_value("soar_max_auto_block_cap").await.unwrap(),
             Some("100".to_string())
         );
-        assert_eq!(db.get_setting("soar_max_ttl_secs").unwrap(), Some("86400".to_string()));
         assert_eq!(
-            db.get_setting("ml_drift_window_secs").unwrap(),
+            db.get_config_value("soar_max_ttl_secs").await.unwrap(),
+            Some("86400".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("ml_drift_window_secs").await.unwrap(),
             Some("3600".to_string())
         );
     }
 
-    #[test]
-    fn seed_defaults_does_not_overwrite_existing() {
-        let db = test_db();
-        db.set_setting("http_port", "9090").unwrap();
-        AppConfig::seed_defaults(&db).expect("seed should succeed");
-        assert_eq!(db.get_setting("http_port").unwrap(), Some("9090".to_string()));
+    #[tokio::test]
+    async fn seed_config_defaults_does_not_overwrite_existing() {
+        let db = test_db().await;
+        db.set_config_value("http_port", "9090").await.unwrap();
+        AppConfig::seed_config_defaults(&db).await.expect("seed should succeed");
+        assert_eq!(
+            db.get_config_value("http_port").await.unwrap(),
+            Some("9090".to_string())
+        );
     }
 
-    #[test]
-    fn db_overrides_traffic_logging_mode() {
-        let db = test_db();
-        db.set_setting("traffic_logging_mode", "true").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_traffic_logging_mode() {
+        let db = test_db().await;
+        db.set_config_value("traffic_logging_mode", "true").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert!(cfg.ml.traffic_logging_mode);
     }
 
-    #[test]
-    fn default_traffic_logging_mode_is_false() {
-        let db = test_db();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn default_traffic_logging_mode_is_false() {
+        let db = test_db().await;
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert!(!cfg.ml.traffic_logging_mode);
     }
 
-    #[test]
-    fn db_overrides_pipeline() {
-        let db = test_db();
-        db.set_setting("pipeline_ingress", "access_control,service").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_pipeline() {
+        let db = test_db().await;
+        db.set_config_value("pipeline_ingress", "access_control,service")
+            .await
+            .unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.pipeline.ingress, vec!["access_control", "service"]);
     }
 
-    #[test]
-    fn db_overrides_soar_and_drift() {
-        let db = test_db();
-        db.set_setting("soar_max_ttl_secs", "3600").unwrap();
-        db.set_setting("ml_drift_window_secs", "900").unwrap();
-        let cfg = AppConfig::from_settings(&db).unwrap();
+    #[tokio::test]
+    async fn db_overrides_soar_and_drift() {
+        let db = test_db().await;
+        db.set_config_value("soar_max_ttl_secs", "3600").await.unwrap();
+        db.set_config_value("ml_drift_window_secs", "900").await.unwrap();
+        let cfg = AppConfig::from_config_repo(&db).await.unwrap();
         assert_eq!(cfg.soar.max_ttl_secs, 3600);
         assert_eq!(cfg.ml.drift_window_secs, 900);
     }

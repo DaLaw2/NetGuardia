@@ -50,7 +50,7 @@ pub struct SoarEngineDeps {
 }
 
 impl SoarEngine {
-    pub fn new(deps: SoarEngineDeps) -> Result<Self, Error> {
+    pub async fn new(deps: SoarEngineDeps) -> Result<Self, Error> {
         let SoarEngineDeps {
             db,
             config,
@@ -79,13 +79,13 @@ impl SoarEngine {
             secrets,
             email_sender_factory,
         };
-        engine.reload_cache()?;
+        engine.reload_cache().await?;
         Ok(engine)
     }
 
     /// Load playbooks and admin whitelist from DB into memory.
-    pub fn reload_cache(&self) -> Result<(), Error> {
-        let views = self.db.list_playbooks()?;
+    pub async fn reload_cache(&self) -> Result<(), Error> {
+        let views = self.db.list_playbooks().await?;
         let mut playbooks: Vec<Playbook> = Vec::new();
 
         for view in views {
@@ -162,13 +162,13 @@ impl SoarEngine {
         self.matcher.playbooks.store(Arc::new(playbooks));
 
         // Load admin whitelist
-        let whitelist = self.db.list_admin_whitelist()?;
+        let whitelist = self.db.list_admin_whitelist().await?;
         let whitelist: HashSet<String> = whitelist.into_iter().collect();
         let whitelist_count = whitelist.len();
         self.matcher.admin_whitelist.store(Arc::new(whitelist));
 
         // Initialize block counter from DB
-        let count = self.db.count_active_soar_blocks()?;
+        let count = self.db.count_active_soar_blocks().await?;
         self.matcher.active_block_count.store(count, Ordering::SeqCst);
 
         log!(SoarLog::CacheLoaded(playbook_count, whitelist_count, count));
@@ -244,7 +244,7 @@ impl SoarEngine {
         // First, retry any pending unblocks from previous orphan failures
         self.retry_pending_unblocks().await;
 
-        let active_blocks = self.db.list_active_soar_blocks()?;
+        let active_blocks = self.db.list_active_soar_blocks().await?;
         let count = active_blocks.len();
 
         for block in &active_blocks {
@@ -263,7 +263,7 @@ impl SoarEngine {
 
     /// Retry pending unblocks that failed during previous runs.
     async fn retry_pending_unblocks(&self) {
-        let pending = match self.db.list_pending_unblocks() {
+        let pending = match self.db.list_pending_unblocks().await {
             Ok(p) => p,
             Err(e) => {
                 log!(SoarLog::EventHandlingFailed(format!(
@@ -281,13 +281,13 @@ impl SoarEngine {
                     pu.source_ip, pu.retry_count
                 )));
                 // Remove from queue to avoid infinite retries
-                let _ = self.db.delete_pending_unblock(pu.id);
+                let _ = self.db.delete_pending_unblock(pu.id).await;
                 continue;
             }
 
             match self.access_control.unblock_ip(&pu.source_ip) {
                 Ok(()) => {
-                    let _ = self.db.delete_pending_unblock(pu.id);
+                    let _ = self.db.delete_pending_unblock(pu.id).await;
                     log!(SoarLog::EventHandlingFailed(format!(
                         "Successfully unblocked orphan IP {} on retry #{}",
                         pu.source_ip,
@@ -295,7 +295,7 @@ impl SoarEngine {
                     )));
                 }
                 Err(e) => {
-                    let _ = self.db.increment_pending_unblock_retry(pu.id);
+                    let _ = self.db.increment_pending_unblock_retry(pu.id).await;
                     log!(SoarLog::EventHandlingFailed(format!(
                         "Retry #{} failed to unblock orphan IP {}: {}",
                         pu.retry_count + 1,
@@ -363,8 +363,9 @@ mod tests {
 
     struct NoopEmailSenderFactory;
 
+    #[async_trait::async_trait]
     impl EmailSenderFactoryTrait for NoopEmailSenderFactory {
-        fn build_smtp_sender(
+        async fn build_smtp_sender(
             &self,
             _cfg: &SmtpConfig,
             _secrets: Option<&dyn crate::interface::secret_store::SecretStorePort>,
@@ -408,18 +409,20 @@ mod tests {
         }
     }
 
-    fn test_db() -> Arc<crate::adapter::persistence::Database> {
+    async fn test_db() -> Arc<crate::adapter::persistence::Database> {
         use crate::adapter::persistence::Database;
-        Arc::new(Database::new(":memory:").expect("Failed to create test database"))
+        Arc::new(Database::new(":memory:").await.expect("Failed to create test database"))
     }
 
-    fn test_engine(ac: Arc<dyn AccessControlPort>) -> SoarEngine {
-        let db = test_db();
-        db.seed_default_playbooks().ok();
-        db.set_setting("enforce_mode", "enforce").ok();
+    async fn test_engine(ac: Arc<dyn AccessControlPort>) -> SoarEngine {
+        let db = test_db().await;
+        db.seed_default_playbooks().await.ok();
+        db.set_config_value("enforce_mode", "enforce").await.ok();
         let cache = Arc::new(AtomicU8::new(2));
-        AppConfig::seed_defaults(&*db).expect("seed config defaults");
-        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        AppConfig::seed_config_defaults(&*db)
+            .await
+            .expect("seed config defaults");
+        let cfg = AppConfig::from_config_repo(&*db).await.expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         SoarEngine::new(SoarEngineDeps {
             db: db as Arc<dyn AppRepo>,
@@ -432,13 +435,14 @@ mod tests {
             secrets: None,
             email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
+        .await
         .expect("Failed to create SOAR engine")
     }
 
     #[tokio::test]
     async fn block_ip_calls_access_control_port() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock.clone());
+        let engine = test_engine(mock.clone()).await;
 
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
@@ -475,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn block_ip_ipv6_calls_access_control_port() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock.clone());
+        let engine = test_engine(mock.clone()).await;
 
         let event = ThreatDetectedEvent {
             source_ip: "::1".to_string(),
@@ -512,18 +516,20 @@ mod tests {
     #[tokio::test]
     async fn recover_active_blocks_uses_port() {
         let mock = Arc::new(MockAccessControl::new());
-        let db = test_db();
-        db.seed_default_playbooks().ok();
+        let db = test_db().await;
+        db.seed_default_playbooks().await.ok();
 
         // Insert a fake active block
         let expires = (Utc::now() + ChronoDuration::hours(1))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
-        db.insert_soar_block_rule("192.168.1.100", 1, &expires).ok();
+        db.commit_soar_block_to_db("192.168.1.100", 4, 1, &expires).await.ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        AppConfig::seed_defaults(&*db).expect("seed config defaults");
-        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        AppConfig::seed_config_defaults(&*db)
+            .await
+            .expect("seed config defaults");
+        let cfg = AppConfig::from_config_repo(&*db).await.expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         let engine = SoarEngine::new(SoarEngineDeps {
             db: db as Arc<dyn AppRepo>,
@@ -536,6 +542,7 @@ mod tests {
             secrets: None,
             email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
+        .await
         .expect("Failed to create engine");
         engine.recover_active_blocks().await.expect("Recovery should succeed");
 
@@ -548,17 +555,19 @@ mod tests {
     async fn recover_logs_warning_on_failure() {
         let mock = Arc::new(MockAccessControl::new());
         mock.should_fail.store(true, Ordering::SeqCst);
-        let db = test_db();
-        db.seed_default_playbooks().ok();
+        let db = test_db().await;
+        db.seed_default_playbooks().await.ok();
 
         let expires = (Utc::now() + ChronoDuration::hours(1))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
-        db.insert_soar_block_rule("10.0.0.1", 1, &expires).ok();
+        db.commit_soar_block_to_db("10.0.0.1", 4, 1, &expires).await.ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        AppConfig::seed_defaults(&*db).expect("seed config defaults");
-        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        AppConfig::seed_config_defaults(&*db)
+            .await
+            .expect("seed config defaults");
+        let cfg = AppConfig::from_config_repo(&*db).await.expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         let engine = SoarEngine::new(SoarEngineDeps {
             db: db as Arc<dyn AppRepo>,
@@ -571,6 +580,7 @@ mod tests {
             secrets: None,
             email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
+        .await
         .expect("Failed to create engine");
 
         // Should not panic — errors are logged, not propagated
@@ -584,7 +594,7 @@ mod tests {
     #[tokio::test]
     async fn block_ip_respects_cap() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock.clone());
+        let engine = test_engine(mock.clone()).await;
 
         // Set counter to max (default cap is 100)
         engine.matcher.active_block_count.store(100, Ordering::SeqCst);
@@ -624,7 +634,7 @@ mod tests {
     #[tokio::test]
     async fn cooldown_prevents_duplicate_execution() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock.clone());
+        let engine = test_engine(mock.clone()).await;
 
         let event = ThreatDetectedEvent {
             source_ip: "1.2.3.4".to_string(),
@@ -667,13 +677,15 @@ mod tests {
     #[tokio::test]
     async fn whitelist_prevents_execution() {
         let mock = Arc::new(MockAccessControl::new());
-        let db = test_db();
-        db.seed_default_playbooks().ok();
-        db.insert_admin_whitelist("1.2.3.4").ok();
+        let db = test_db().await;
+        db.seed_default_playbooks().await.ok();
+        db.insert_admin_whitelist("1.2.3.4").await.ok();
 
         let cache = Arc::new(AtomicU8::new(2));
-        AppConfig::seed_defaults(&*db).expect("seed config defaults");
-        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        AppConfig::seed_config_defaults(&*db)
+            .await
+            .expect("seed config defaults");
+        let cfg = AppConfig::from_config_repo(&*db).await.expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         let engine = SoarEngine::new(SoarEngineDeps {
             db: db as Arc<dyn AppRepo>,
@@ -686,6 +698,7 @@ mod tests {
             secrets: None,
             email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
+        .await
         .expect("Failed to create engine");
 
         let event = ThreatDetectedEvent {
@@ -717,10 +730,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decrement_block_count_no_underflow() {
+    #[tokio::test]
+    async fn decrement_block_count_no_underflow() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
 
         // Start at 0
         assert_eq!(engine.matcher.active_block_count.load(Ordering::SeqCst), 0);
@@ -741,15 +754,17 @@ mod tests {
         assert_eq!(engine.matcher.active_block_count.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
-    fn reload_cache_loads_playbooks_via_join() {
+    #[tokio::test]
+    async fn reload_cache_loads_playbooks_via_join() {
         let mock = Arc::new(MockAccessControl::new());
-        let db = test_db();
-        db.seed_default_playbooks().ok();
+        let db = test_db().await;
+        db.seed_default_playbooks().await.ok();
 
         let cache = Arc::new(AtomicU8::new(0));
-        AppConfig::seed_defaults(&*db).expect("seed config defaults");
-        let cfg = AppConfig::from_settings(&*db).expect("load config");
+        AppConfig::seed_config_defaults(&*db)
+            .await
+            .expect("seed config defaults");
+        let cfg = AppConfig::from_config_repo(&*db).await.expect("load config");
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         let engine = SoarEngine::new(SoarEngineDeps {
             db: db.clone() as Arc<dyn AppRepo>,
@@ -762,6 +777,7 @@ mod tests {
             secrets: None,
             email_sender_factory: Arc::new(NoopEmailSenderFactory),
         })
+        .await
         .expect("Failed to create engine");
 
         // Should have loaded default playbooks
@@ -769,13 +785,15 @@ mod tests {
         assert!(count > 0, "Should have loaded default playbooks");
 
         // Add a new playbook directly to DB
-        db.insert_playbook("test_pb", "port_scan", None, None, None, 60).ok();
+        db.insert_playbook("test_pb", "port_scan", None, None, None, 60)
+            .await
+            .ok();
 
         // Cache should not have it yet
         assert_eq!(engine.matcher.playbooks.load().len(), count);
 
         // After reload, should have one more
-        engine.reload_cache().expect("reload should succeed");
+        engine.reload_cache().await.expect("reload should succeed");
         assert_eq!(engine.matcher.playbooks.load().len(), count + 1);
     }
 
@@ -811,10 +829,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn condition_threshold_gte_passes() {
+    #[tokio::test]
+    async fn condition_threshold_gte_passes() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::Threshold,
             operator: ">=".to_string(),
@@ -825,10 +843,10 @@ mod tests {
         assert!(engine.evaluate_conditions(&pb, &event));
     }
 
-    #[test]
-    fn condition_threshold_gte_fails() {
+    #[tokio::test]
+    async fn condition_threshold_gte_fails() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::Threshold,
             operator: ">=".to_string(),
@@ -839,10 +857,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &event));
     }
 
-    #[test]
-    fn condition_threshold_lte() {
+    #[tokio::test]
+    async fn condition_threshold_lte() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::Threshold,
             operator: "<=".to_string(),
@@ -853,10 +871,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.7, None, "1.2.3.4", false)));
     }
 
-    #[test]
-    fn condition_source_country_in() {
+    #[tokio::test]
+    async fn condition_source_country_in() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::SourceCountry,
             operator: "in".to_string(),
@@ -868,10 +886,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.9, None, "1.2.3.4", false)));
     }
 
-    #[test]
-    fn condition_source_country_not_in() {
+    #[tokio::test]
+    async fn condition_source_country_not_in() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::SourceCountry,
             operator: "not_in".to_string(),
@@ -882,10 +900,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.9, Some("TW"), "1.2.3.4", false)));
     }
 
-    #[test]
-    fn condition_ip_pattern_in() {
+    #[tokio::test]
+    async fn condition_ip_pattern_in() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::IpPattern,
             operator: "in".to_string(),
@@ -896,10 +914,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.9, None, "192.168.1.1", false)));
     }
 
-    #[test]
-    fn condition_repeat_offender() {
+    #[tokio::test]
+    async fn condition_repeat_offender() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::RepeatOffender,
             operator: "==".to_string(),
@@ -910,10 +928,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.9, None, "1.2.3.4", false)));
     }
 
-    #[test]
-    fn condition_and_logic_all_must_pass() {
+    #[tokio::test]
+    async fn condition_and_logic_all_must_pass() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![
             PlaybookCondition {
                 condition_type: ConditionType::Threshold,
@@ -936,10 +954,10 @@ mod tests {
         assert!(!engine.evaluate_conditions(&pb, &test_event(0.5, Some("CN"), "1.2.3.4", false)));
     }
 
-    #[test]
-    fn frequency_condition_counts_events() {
+    #[tokio::test]
+    async fn frequency_condition_counts_events() {
         let mock = Arc::new(MockAccessControl::new());
-        let engine = test_engine(mock);
+        let engine = test_engine(mock).await;
         let pb = make_playbook(vec![PlaybookCondition {
             condition_type: ConditionType::Frequency,
             operator: ">=".to_string(),

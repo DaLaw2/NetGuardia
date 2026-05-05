@@ -36,12 +36,12 @@ pub enum Command {
     VerifyAuditLog,
 }
 
-pub fn handle_subcommand(cli: &Cli) -> Result<(), Error> {
+pub async fn handle_subcommand(cli: &Cli) -> Result<(), Error> {
     let db_path = cli.db_path.as_str();
     match cli.command.as_ref() {
         Some(Command::DecryptDb { dest }) => run_decrypt(db_path, dest),
         Some(Command::EncryptDb { dest }) => run_encrypt(db_path, dest),
-        Some(Command::VerifyAuditLog) => run_verify(db_path),
+        Some(Command::VerifyAuditLog) => run_verify(db_path).await,
         None => Ok(()),
     }
 }
@@ -86,16 +86,16 @@ fn run_encrypt(db_path: &str, dest: &str) -> Result<(), Error> {
     }
 }
 
-fn run_verify(db_path: &str) -> Result<(), Error> {
+async fn run_verify(db_path: &str) -> Result<(), Error> {
     log!(CliLog::VerifyStarted(db_path.to_string()));
-    let db = match Database::new(db_path) {
+    let db = match Database::new(db_path).await {
         Ok(db) => db,
         Err(e) => {
             log!(CliLog::DbOpenFailed(db_path.to_string(), e.to_string()));
             process::exit(EXIT_OP_FAILED);
         }
     };
-    match db.verify_audit_log_chain(0) {
+    match db.verify_audit_log_chain(0).await {
         Ok((count, _last_id)) => {
             log!(CliLog::VerifyOk(count));
             Ok(())

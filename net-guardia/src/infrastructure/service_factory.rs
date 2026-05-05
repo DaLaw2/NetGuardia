@@ -35,7 +35,7 @@ use crate::core::response::engine::{SoarEngine, SoarEngineDeps};
 use crate::core::response::playbook_service::PlaybookService;
 use crate::core::response::scheduler::TtlScheduler;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::{ENFORCE_MODE_MONITOR, EVENT_CHANNEL_CAPACITY, enforce_mode_to_u8};
+use crate::domain::common::config::constants::{EVENT_CHANNEL_CAPACITY, enforce_mode_to_u8};
 use crate::domain::common::error::Error;
 use crate::domain::common::error::misc::MiscError;
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent, ThreatDetectedEvent};
@@ -54,11 +54,13 @@ use crate::infrastructure::ebpf_preflight;
 use crate::infrastructure::geoip::GeoIpService;
 use crate::infrastructure::health::SystemHealth;
 use crate::infrastructure::inference_runtime::InferenceRuntime;
+use crate::infrastructure::runtime_state::RuntimeState;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::interface::access_control::AccessControlPort;
 use crate::interface::access_control_admin::AccessControlAdminPort;
 use crate::interface::app_repo::AppRepo;
+use crate::interface::config_repo::ConfigRepo;
 use crate::interface::dns_filter_api::DnsFilterPort;
 use crate::interface::dns_query_filter::DnsQueryFilter;
 use crate::interface::email_sender::EmailSenderFactory;
@@ -66,12 +68,13 @@ use crate::interface::geo_block_api::GeoBlockPort;
 use crate::interface::geo_lookup::GeoLookup;
 use crate::interface::notification::{AlertNotifier, AlertNotifierFactory};
 use crate::interface::rate_limit_api::RateLimitPort;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 use crate::interface::soar::SoarRepo;
 
 pub struct AppState {
     pub app_config: Arc<ArcSwap<AppConfig>>,
+    pub runtime_state: Arc<ArcSwap<RuntimeState>>,
     pub inference_config: Arc<MLInferenceConfig>,
 
     pub database: Arc<Database>,
@@ -132,8 +135,9 @@ impl ServiceFactory {
     /// Only called when setup is complete — all config values are in DB.
     pub async fn build(db: Arc<Database>) -> Result<AppState, Error> {
         // Ensure DB has all default config keys (INSERT OR IGNORE — never overwrites)
-        AppConfig::seed_defaults(db.as_ref())?;
-        let app_config = Arc::new(ArcSwap::from_pointee(AppConfig::from_settings(db.as_ref())?));
+        AppConfig::seed_config_defaults(db.as_ref()).await?;
+        let app_config = Arc::new(ArcSwap::from_pointee(AppConfig::from_config_repo(db.as_ref()).await?));
+        let runtime_state = Arc::new(ArcSwap::from_pointee(RuntimeState::default()));
 
         // Prefer `models/manifest.yaml` when present (v12 BYO-model path). The manifest
         // is the user-authored source of truth for features, labels, thresholds, and
@@ -191,11 +195,6 @@ impl ServiceFactory {
                 }
             };
 
-        // Ensure enforce_mode setting exists (default: monitor)
-        if db.get_setting("enforce_mode")?.is_none() {
-            db.set_setting("enforce_mode", ENFORCE_MODE_MONITOR)?;
-        }
-
         let secret_store = Arc::new(SecretStore::new(db.clone()));
         let secret_store_port: Arc<dyn SecretStorePort> = secret_store.clone();
 
@@ -222,8 +221,8 @@ impl ServiceFactory {
 
         // Create AtomicU8 enforce-level cache (Monitor=0, MlOnly=1, Enforce=2)
         let enforce_level_cache = Arc::new(AtomicU8::new({
-            let mode_str = db.get_setting("enforce_mode")?.unwrap_or_default();
-            enforce_mode_to_u8(&mode_str)
+            let mode = app_config.load().system.enforce_mode.clone();
+            enforce_mode_to_u8(&mode)
         }));
 
         // Named broadcast channels replace the old TypeId-based CommunicationManager.
@@ -248,22 +247,23 @@ impl ServiceFactory {
 
         let enforce_handler = Arc::new(EnforceModeHandler::new(
             db.clone() as Arc<dyn AppRepo>,
+            app_config.clone(),
             audit_tx.clone(),
             enforce_level_cache.clone(),
         ));
 
         // Seed default SOAR playbooks if empty
-        (db.as_ref() as &dyn SoarRepo).seed_default_playbooks()?;
+        (db.as_ref() as &dyn SoarRepo).seed_default_playbooks().await?;
 
         // Restore persisted state from database
-        Self::restore_dns_blacklist(&db, dns_filter_port.as_ref());
-        Self::restore_geo_countries(&db, &ebpf_services);
-        Self::restore_rate_limits(&db, &ebpf_services);
+        Self::restore_dns_blacklist(&db, dns_filter_port.as_ref()).await;
+        Self::restore_geo_countries(&db, &ebpf_services).await;
+        Self::restore_rate_limits(&db, &ebpf_services).await;
         Self::restore_acl_rules(&db, &ebpf_services).await;
 
         // Create TelegramAdapter as alert notifier (may fail if not configured yet)
         let alert_notifier: Option<Arc<dyn AlertNotifier>> = match TelegramAdapter::new(
-            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            db.clone() as Arc<dyn ConfigRepo + Send + Sync>,
             app_config.clone(),
             Some(secret_store_port.clone()),
         ) {
@@ -294,24 +294,27 @@ impl ServiceFactory {
 
         // Create SOAR engine
         let rate_limit_port: Arc<dyn RateLimitPort> = ebpf_services.rate_limit.clone();
-        let soar_engine = Arc::new(SoarEngine::new(SoarEngineDeps {
-            db: db.clone(),
-            config: app_config.clone(),
-            access_control: access_control_port.clone(),
-            alert_notifier: alert_notifier.clone(),
-            geoip: geoip.clone(),
-            rate_limit: Some(rate_limit_port.clone()),
-            enforce_level_cache,
-            secrets: Some(secret_store_port.clone()),
-            email_sender_factory: email_sender_factory.clone(),
-        })?);
+        let soar_engine = Arc::new(
+            SoarEngine::new(SoarEngineDeps {
+                db: db.clone(),
+                config: app_config.clone(),
+                access_control: access_control_port.clone(),
+                alert_notifier: alert_notifier.clone(),
+                geoip: geoip.clone(),
+                rate_limit: Some(rate_limit_port.clone()),
+                enforce_level_cache,
+                secrets: Some(secret_store_port.clone()),
+                email_sender_factory: email_sender_factory.clone(),
+            })
+            .await?,
+        );
 
         // Create TTL scheduler
         let ttl_scheduler = TtlScheduler::new(db.clone(), access_control_port.clone(), soar_engine.clone());
 
         // Create Report scheduler
         let report_scheduler = ReportScheduler::new(
-            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            db.clone() as Arc<dyn ReportSnapshotRepo>,
             app_config.clone(),
             Some(secret_store_port.clone()),
             email_sender_factory.clone(),
@@ -342,12 +345,12 @@ impl ServiceFactory {
                 .with_secret_store(secret_store_port.clone()),
         );
         let notifier_factory: Arc<dyn AlertNotifierFactory> = Arc::new(TelegramAdapterFactory::new(
-            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            db.clone() as Arc<dyn ConfigRepo + Send + Sync>,
             app_config.clone(),
             Some(secret_store_port.clone()),
         ));
         let notification_service = Arc::new(NotificationService::new(
-            db.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            db.clone() as Arc<dyn ConfigRepo + Send + Sync>,
             app_config.clone(),
             secret_store_port,
             notifier_factory,
@@ -358,6 +361,7 @@ impl ServiceFactory {
 
         Ok(AppState {
             app_config,
+            runtime_state,
             inference_config,
 
             database: db,
@@ -567,8 +571,8 @@ impl ServiceFactory {
 
     // --- State restoration helpers ---
 
-    fn restore_dns_blacklist(db: &Database, dns_filter_port: &dyn DnsFilterPort) {
-        if let Ok(domains) = db.load_dns_domains() {
+    async fn restore_dns_blacklist(db: &Database, dns_filter_port: &dyn DnsFilterPort) {
+        if let Ok(domains) = db.load_dns_domains().await {
             for domain in &domains {
                 if let Err(e) = dns_filter_port.add_domain(domain) {
                     log!(SystemLog::DnsRestoreFailed(domain.clone(), e.to_string()));
@@ -580,8 +584,8 @@ impl ServiceFactory {
         }
     }
 
-    fn restore_geo_countries(db: &Database, ebpf_services: &EbpfServices) {
-        if let Ok(countries) = db.load_geo_countries()
+    async fn restore_geo_countries(db: &Database, ebpf_services: &EbpfServices) {
+        if let Ok(countries) = db.load_geo_countries().await
             && !countries.is_empty()
         {
             if let Err(e) = ebpf_services.geo_block.block_countries(&countries) {
@@ -592,8 +596,8 @@ impl ServiceFactory {
         }
     }
 
-    fn restore_rate_limits(db: &Database, ebpf_services: &EbpfServices) {
-        if let Ok(configs) = db.load_rate_limit_config() {
+    async fn restore_rate_limits(db: &Database, ebpf_services: &EbpfServices) {
+        if let Ok(configs) = db.load_rate_limit_config().await {
             for (key, value) in &configs {
                 let result = match key.as_str() {
                     "packet_rate" => ebpf_services.rate_limit.set_packet_rate(*value),
@@ -614,7 +618,7 @@ impl ServiceFactory {
     }
 
     async fn restore_acl_rules(db: &Database, ebpf_services: &EbpfServices) {
-        if let Ok(rules) = db.list_acl_rules() {
+        if let Ok(rules) = db.list_acl_rules().await {
             let mut restored = 0u32;
             for rule in &rules {
                 let dir = match rule.direction.as_str() {

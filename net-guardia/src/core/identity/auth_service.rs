@@ -53,18 +53,18 @@ impl AuthService {
         Self { db, jwt }
     }
 
-    pub fn login(&self, username: &str, raw_password: &str) -> Result<LoginResult, LoginError> {
-        if let Ok(Some(remaining)) = self.db.check_login_locked(username) {
+    pub async fn login(&self, username: &str, raw_password: &str) -> Result<LoginResult, LoginError> {
+        if let Ok(Some(remaining)) = self.db.check_login_locked(username).await {
             return Err(LoginError::Locked {
                 retry_after_secs: remaining,
             });
         }
 
-        let user = match self.db.find_user(username) {
+        let user = match self.db.find_user(username).await {
             Ok(Some(u)) => u,
             _ => {
                 let _ = password::verify_password(raw_password, DUMMY_HASH);
-                if let Err(e) = self.db.record_login_failure(username) {
+                if let Err(e) = self.db.record_login_failure(username).await {
                     log!(AuthError::LoginFailureTrackingError(e));
                 }
                 return Err(LoginError::InvalidCredentials);
@@ -74,19 +74,19 @@ impl AuthService {
         match password::verify_password(raw_password, &user.password_hash) {
             Ok(true) => {}
             _ => {
-                if let Err(e) = self.db.record_login_failure(username) {
+                if let Err(e) = self.db.record_login_failure(username).await {
                     log!(AuthError::LoginFailureTrackingError(e));
                 }
                 return Err(LoginError::InvalidCredentials);
             }
         }
 
-        if let Err(e) = self.db.clear_login_failures(username) {
+        if let Err(e) = self.db.clear_login_failures(username).await {
             log!(AuthError::LoginClearError(e));
         }
 
-        let permissions = self.db.list_user_permissions(user.id).unwrap_or_default();
-        let role = self.derive_role(user.id);
+        let permissions = self.db.list_user_permissions(user.id).await.unwrap_or_default();
+        let role = self.derive_role(user.id).await;
 
         let token = self
             .jwt
@@ -100,7 +100,7 @@ impl AuthService {
         })
     }
 
-    pub fn register(
+    pub async fn register(
         &self,
         username: &str,
         raw_password: &str,
@@ -122,12 +122,13 @@ impl AuthService {
         let new_id = self
             .db
             .insert_user(username, &hash, role, false)
+            .await
             .map_err(RegisterError::Conflict)?;
 
         let default_group = if role == ROLE_ADMIN { GROUP_ADMIN } else { GROUP_VIEWER };
-        if let Ok(groups) = self.db.list_user_groups()
+        if let Ok(groups) = self.db.list_user_groups().await
             && let Some(g) = groups.into_iter().find(|g| g.name == default_group)
-            && let Err(e) = self.db.set_user_groups(new_id, &[g.id])
+            && let Err(e) = self.db.set_user_groups(new_id, &[g.id]).await
         {
             log!(AuthError::GroupAssignmentFailed(e));
         }
@@ -135,15 +136,15 @@ impl AuthService {
         Ok(new_id)
     }
 
-    pub fn user_profile(&self, user_id: i64, username: &str) -> UserProfile {
-        let groups_raw = self.db.list_groups_for_user(user_id).unwrap_or_default();
+    pub async fn user_profile(&self, user_id: i64, username: &str) -> UserProfile {
+        let groups_raw = self.db.list_groups_for_user(user_id).await.unwrap_or_default();
         let group_names: Vec<String> = groups_raw.iter().map(|g| g.name.clone()).collect();
         let role = if group_names.iter().any(|n| n == GROUP_ADMIN) {
             ROLE_ADMIN.to_string()
         } else {
             ROLE_VIEWER.to_string()
         };
-        let permissions = self.db.list_user_permissions(user_id).unwrap_or_default();
+        let permissions = self.db.list_user_permissions(user_id).await.unwrap_or_default();
 
         UserProfile {
             id: user_id,
@@ -154,8 +155,8 @@ impl AuthService {
         }
     }
 
-    pub fn derive_role(&self, user_id: i64) -> String {
-        let groups = self.db.list_groups_for_user(user_id).unwrap_or_default();
+    pub async fn derive_role(&self, user_id: i64) -> String {
+        let groups = self.db.list_groups_for_user(user_id).await.unwrap_or_default();
         if groups.iter().any(|g| g.name == GROUP_ADMIN) {
             ROLE_ADMIN.to_string()
         } else {

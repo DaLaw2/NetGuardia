@@ -14,8 +14,8 @@ use crate::core::reporting::report_engine;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::error::misc::MiscError;
 use crate::infrastructure::secret_store::SecretStore;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 use crate::interface::secret_store::SecretStorePort;
-use crate::interface::setting::SettingRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/report")
@@ -36,7 +36,7 @@ async fn generate_report(
         }));
     }
     let db_ref = db.get_ref();
-    match report_engine::generate_html_report(db_ref as &dyn SettingRepo, &report_dir) {
+    match report_engine::generate_html_report(db_ref as &dyn ReportSnapshotRepo, &report_dir).await {
         Ok(path) => match fs::read(&path) {
             Ok(content) => HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
@@ -62,7 +62,7 @@ async fn generate_report(
 
 async fn report_data(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
     let db_ref = db.get_ref();
-    ok_json_or_error(report_engine::generate_report_json(db_ref as &dyn SettingRepo))
+    ok_json_or_error(report_engine::generate_report_json(db_ref as &dyn ReportSnapshotRepo).await)
 }
 
 /// Manually trigger: generate the weekly report and send it via SMTP now.
@@ -72,11 +72,11 @@ async fn send_report(
     config: web::Data<ArcSwap<AppConfig>>,
     secrets: web::Data<SecretStore>,
 ) -> HttpResponse {
-    let db_ref = db.get_ref() as &dyn SettingRepo;
+    let db_ref = db.get_ref() as &dyn ReportSnapshotRepo;
     let secrets_ref = secrets.get_ref() as &dyn SecretStorePort;
     let smtp_cfg = config.load().notification.smtp.clone();
 
-    let smtp = match SmtpClient::from_config(&smtp_cfg, Some(secrets_ref)) {
+    let smtp = match SmtpClient::from_config(&smtp_cfg, Some(secrets_ref)).await {
         Ok(Some(client)) => client,
         Ok(None) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -100,7 +100,7 @@ async fn send_report(
         }));
     }
 
-    let html = match generate_weekly_report(db_ref) {
+    let html = match generate_weekly_report(db_ref).await {
         Ok(h) => h,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({

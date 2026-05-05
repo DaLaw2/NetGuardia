@@ -8,11 +8,9 @@ use crate::domain::common::config::constants::{
     ENFORCE_MODE_ENFORCE, ENFORCE_MODE_ML_ONLY, ENFORCE_MODE_MONITOR, PERMISSION_SYSTEM_ADMIN,
 };
 use crate::infrastructure::logger::Logger;
+use crate::infrastructure::runtime_state::RuntimeState;
 use crate::infrastructure::system::{ShutdownHandle, ShutdownMode};
-use crate::interface::app_repo::AppRepo;
 use crate::utils::boot_time;
-
-type Repo = dyn AppRepo;
 
 #[derive(Deserialize)]
 struct EnforceModeRequest {
@@ -38,10 +36,7 @@ async fn get_boot_time() -> impl Responder {
 }
 
 async fn get_enforce_mode(handler: web::Data<EnforceModeHandler>) -> impl Responder {
-    match handler.get_mode() {
-        Ok(mode) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    }
+    HttpResponse::Ok().json(serde_json::json!({"mode": handler.get_mode()}))
 }
 
 async fn set_enforce_mode(
@@ -54,33 +49,23 @@ async fn set_enforce_mode(
             .json(serde_json::json!({"error": "Mode must be 'monitor', 'ml_only', or 'enforce'"}));
     }
 
-    match handler.change_mode(mode.clone()) {
+    match handler.change_mode(mode.clone()).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"mode": mode})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
-async fn get_xdp_mode(db: web::Data<Repo>) -> impl Responder {
-    // todo get from config, not db
-    let ingress = db
-        .get_setting("xdp_ingress_mode")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown".to_string());
-    let egress = db
-        .get_setting("xdp_egress_mode")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown".to_string());
+async fn get_xdp_mode(runtime_state: web::Data<arc_swap::ArcSwap<RuntimeState>>) -> impl Responder {
+    let xdp = runtime_state.load().xdp.clone();
 
     HttpResponse::Ok().json(serde_json::json!({
-        "ingress_mode": ingress,
-        "egress_mode": egress,
+        "ingress_mode": xdp.ingress_mode,
+        "egress_mode": xdp.egress_mode,
     }))
 }
 
 async fn get_config(svc: web::Data<ConfigService>) -> impl Responder {
-    HttpResponse::Ok().json(svc.get_config())
+    HttpResponse::Ok().json(svc.get_config().await)
 }
 
 async fn get_log_level(logging: web::Data<Logger>) -> impl Responder {
@@ -112,7 +97,7 @@ async fn update_config(
     svc: web::Data<ConfigService>,
     handle: web::Data<ShutdownHandle>,
 ) -> impl Responder {
-    match svc.update_config(&body) {
+    match svc.update_config(&body).await {
         Ok(updated) => {
             let needs_restart = updated.iter().any(|k| HTTP_RELOAD_KEYS.contains(&k.as_str()));
             if needs_restart {

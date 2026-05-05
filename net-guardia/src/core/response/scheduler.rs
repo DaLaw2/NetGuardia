@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use macros::log;
 use tokio::task::JoinHandle;
+use tokio::task::spawn_blocking;
 use tokio::time::{self, Duration};
 
 use crate::core::response::engine::SoarEngine;
@@ -56,7 +57,7 @@ impl TtlScheduler {
         // Clean up expired cooldown + frequency tracker entries to prevent unbounded memory growth
         self.soar_engine.cleanup_expired_cooldowns();
 
-        let expired = self.db.list_expired_soar_blocks()?;
+        let expired = self.db.list_expired_soar_blocks().await?;
 
         if expired.is_empty() {
             return Ok(());
@@ -67,11 +68,11 @@ impl TtlScheduler {
 
         for block in &expired {
             // Check if a manual ACL rule exists for this IP
-            let has_manual_rule = self.db.has_manual_acl_rule(&block.source_ip)?;
+            let has_manual_rule = self.db.has_manual_acl_rule(&block.source_ip).await?;
 
             if has_manual_rule {
                 // Only mark as unblocked in SOAR records, don't remove from eBPF
-                self.db.mark_soar_block_unblocked(block.id)?;
+                self.db.mark_soar_block_unblocked(block.id).await?;
                 self.soar_engine.decrement_block_count();
                 skipped += 1;
                 log!(SoarLog::WhitelistSkipped(
@@ -82,18 +83,22 @@ impl TtlScheduler {
             }
 
             // Remove from eBPF ACL via AccessControlPort
-            if let Err(e) = self.access_control.unblock_ip(&block.source_ip) {
+            if let Err(e) = unblock_ip_blocking(Arc::clone(&self.access_control), block.source_ip.clone()).await {
                 log!(SoarLog::RecoveryFailed(
                     block.source_ip.clone(),
                     format!("unblock failed: {}", e)
                 ));
+                self.db.insert_pending_unblock(&block.source_ip).await?;
+                skipped += 1;
+                continue;
             }
 
             // Atomically drop acl_rules entry AND mark soar_block_rules
             // unblocked in one transaction.
             let ip_version = ip_version_from_str(&block.source_ip);
             self.db
-                .commit_soar_unblock_to_db(block.id, ip_version, &block.source_ip)?;
+                .commit_soar_unblock_to_db(block.id, ip_version, &block.source_ip)
+                .await?;
             self.soar_engine.decrement_block_count();
             removed += 1;
         }
@@ -104,4 +109,10 @@ impl TtlScheduler {
 
         Ok(())
     }
+}
+
+async fn unblock_ip_blocking(access_control: Arc<dyn AccessControlPort>, source_ip: String) -> Result<(), Error> {
+    spawn_blocking(move || access_control.unblock_ip(&source_ip))
+        .await
+        .map_err(|e| crate::domain::response::error::SoarError::ActionFailed("unblock_ip", e))?
 }

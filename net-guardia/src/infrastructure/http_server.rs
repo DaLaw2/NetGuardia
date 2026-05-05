@@ -48,6 +48,7 @@ use crate::infrastructure::inference_runtime::InferenceRuntime;
 use crate::infrastructure::log_buffer::LogBuffer;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::readiness::ReadinessState;
+use crate::infrastructure::runtime_state::RuntimeState;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::suricata_manager::SuricataManager;
 use crate::infrastructure::system::ShutdownHandle;
@@ -68,6 +69,7 @@ pub struct ForceHttpsFlag(pub Arc<AtomicBool>);
 
 pub struct HttpServerParams {
     pub app_config: Arc<ArcSwap<AppConfig>>,
+    pub runtime_state: Arc<ArcSwap<RuntimeState>>,
     pub inference_config: Arc<MLInferenceConfig>,
 
     pub database: Arc<Database>,
@@ -223,6 +225,7 @@ pub fn start_setup_server(params: SetupServerParams) -> Result<ServerHandle, Err
 
 pub async fn run(params: HttpServerParams) -> Result<(), Error> {
     let app_config = params.app_config;
+    let runtime_state = params.runtime_state;
     let inference_config = params.inference_config;
 
     let database = params.database;
@@ -274,6 +277,7 @@ pub async fn run(params: HttpServerParams) -> Result<(), Error> {
             .wrap(HttpsRedirect)
             .wrap(cors(app_config.load().http_server.cors_allowed_origins.clone()))
             .app_data(web::Data::from(app_config.clone()))
+            .app_data(web::Data::from(runtime_state.clone()))
             .app_data(web::Data::from(inference_config.clone()))
             .app_data(web::Data::from(database.clone() as Arc<dyn AppRepo>))
             .app_data(web::Data::from(database.clone() as Arc<dyn ApiKeyRepo>))

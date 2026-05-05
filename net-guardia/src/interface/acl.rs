@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::domain::common::error::Error;
 
 /// Data Plane BC — ACL aggregate repository.
@@ -5,8 +7,9 @@ use crate::domain::common::error::Error;
 /// Owns ACL rules (user-managed block/allow lists) and the admin whitelist that
 /// SOAR must not block. Kept disjoint from `EnforcementRepo` (rate-limit / DNS /
 /// geo) so policy tables can evolve independently of packet-matching tables.
+#[async_trait]
 pub trait AclRepo: Send + Sync {
-    fn insert_acl_rule(
+    async fn insert_acl_rule(
         &self,
         ip_version: u8,
         direction: &str,
@@ -15,7 +18,7 @@ pub trait AclRepo: Send + Sync {
         port: u16,
     ) -> Result<(), Error>;
 
-    fn delete_acl_rule(
+    async fn delete_acl_rule(
         &self,
         ip_version: u8,
         direction: &str,
@@ -27,9 +30,9 @@ pub trait AclRepo: Send + Sync {
     /// Returns true if a manual (non-SOAR) ACL rule exists for this IP.
     /// Used by the TTL scheduler to avoid removing an eBPF block that the user
     /// explicitly installed.
-    fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error>;
+    async fn has_manual_acl_rule(&self, ip_address: &str) -> Result<bool, Error>;
 
-    fn list_admin_whitelist(&self) -> Result<Vec<String>, Error>;
-    fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
-    fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
+    async fn list_admin_whitelist(&self) -> Result<Vec<String>, Error>;
+    async fn insert_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
+    async fn delete_admin_whitelist(&self, ip: &str) -> Result<(), Error>;
 }

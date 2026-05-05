@@ -74,28 +74,12 @@ impl AuditLogger {
         // Always emit a structured log line
         log!(AuditLog::AuditEvent(event.actor.clone(), event.action.clone(),));
 
-        // SQLite insert via r2d2 is blocking; offload so it can't stall the
-        // tokio worker that drains the broadcast channel. The actor/action
-        // strings are cloned for the log call above; the event itself moves
-        // into the blocking task.
-        let db = self.db.clone();
-        let join = tokio::task::spawn_blocking(move || {
-            db.insert_audit_log(&event.actor, &event.action, &event.detail)
-                .map_err(|e| (e.to_string(), event.actor, event.action))
-        })
-        .await;
-        match join {
-            Ok(Ok(())) => {}
-            Ok(Err((err, actor, action))) => {
-                log!(AuditLog::AuditDbWriteFailed(err, actor, action));
-            }
-            Err(join_err) => {
-                log!(AuditLog::AuditDbWriteFailed(
-                    format!("blocking task join failed: {join_err}"),
-                    "<lost>".to_string(),
-                    "<lost>".to_string(),
-                ));
-            }
+        if let Err(e) = self
+            .db
+            .insert_audit_log(&event.actor, &event.action, &event.detail)
+            .await
+        {
+            log!(AuditLog::AuditDbWriteFailed(e.to_string(), event.actor, event.action));
         }
     }
 
@@ -108,22 +92,8 @@ impl AuditLogger {
 
         log!(AuditLog::AuditDriftEvent(event.drifted_features.len()));
 
-        let db = self.db.clone();
-        let join = tokio::task::spawn_blocking(move || {
-            db.insert_audit_log("system", "ml_drift_detected", &detail)
-                .map_err(|e| e.to_string())
-        })
-        .await;
-        match join {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                log!(AuditLog::AuditDriftDbWriteFailed(err));
-            }
-            Err(join_err) => {
-                log!(AuditLog::AuditDriftDbWriteFailed(format!(
-                    "blocking task join failed: {join_err}"
-                )));
-            }
+        if let Err(e) = self.db.insert_audit_log("system", "ml_drift_detected", &detail).await {
+            log!(AuditLog::AuditDriftDbWriteFailed(e.to_string()));
         }
     }
 }

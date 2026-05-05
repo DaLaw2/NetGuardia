@@ -61,6 +61,7 @@ pub const ADMIN_PERMISSIONS: &[&str] = &[
     "system:read",
     "system:write",
     "system:admin",
+    "api_keys:admin",
     "users:read",
     "users:write",
     "users:admin",

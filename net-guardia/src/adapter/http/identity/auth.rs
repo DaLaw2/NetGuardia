@@ -54,7 +54,7 @@ pub fn initialize() -> Scope {
 
 async fn login(body: web::Json<LoginRequest>, auth_svc: web::Data<AuthService>) -> impl Responder {
     let req = body.into_inner();
-    match auth_svc.login(&req.username, &req.password) {
+    match auth_svc.login(&req.username, &req.password).await {
         Ok(result) => HttpResponse::Ok().json(result),
         Err(LoginError::Locked { retry_after_secs }) => HttpResponse::TooManyRequests().json(serde_json::json!({
             "error": "Account temporarily locked due to too many failed login attempts",
@@ -75,7 +75,10 @@ async fn register(
     auth_svc: web::Data<AuthService>,
 ) -> impl Responder {
     let reg = body.into_inner();
-    match auth_svc.register(&reg.username, &reg.password, &reg.role, &auth.role) {
+    match auth_svc
+        .register(&reg.username, &reg.password, &reg.role, &auth.role)
+        .await
+    {
         Ok(_) => HttpResponse::Created().json(serde_json::json!({"username": reg.username, "role": reg.role})),
         Err(RegisterError::Validation(msg)) => HttpResponse::BadRequest().json(serde_json::json!({"error": msg})),
         Err(RegisterError::InvalidRole) => {
@@ -91,7 +94,7 @@ async fn register(
 }
 
 async fn me(auth: AuthClaims, auth_svc: web::Data<AuthService>) -> impl Responder {
-    let profile = auth_svc.user_profile(auth.sub, &auth.username);
+    let profile = auth_svc.user_profile(auth.sub, &auth.username).await;
     HttpResponse::Ok().json(profile)
 }
 
@@ -106,7 +109,7 @@ async fn change_password(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
     }
 
-    let user = match db.find_user(&auth.username) {
+    let user = match db.find_user(&auth.username).await {
         Ok(Some(u)) => u,
         _ => {
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "User not found"}));
@@ -127,14 +130,14 @@ async fn change_password(
         }
     };
 
-    match db.update_user_password(auth.sub, &new_hash) {
+    match db.update_user_password(auth.sub, &new_hash).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"message": "Password changed successfully"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
 }
 
 async fn list_users(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
-    match db.list_users_with_groups() {
+    match db.list_users_with_groups().await {
         Ok(users) => {
             let result: Vec<serde_json::Value> = users
                 .into_iter()
@@ -172,7 +175,7 @@ async fn delete_user(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Cannot delete your own account"}));
     }
 
-    match db.find_user_by_id(user_id) {
+    match db.find_user_by_id(user_id).await {
         Ok(Some(ref u)) if u.username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot delete the built-in admin account"}));
@@ -180,7 +183,7 @@ async fn delete_user(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo
         _ => {}
     }
 
-    match db.delete_user(user_id) {
+    match db.delete_user(user_id).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"message": "User deleted successfully"})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "User not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -206,7 +209,7 @@ async fn update_role(
         }
     };
 
-    match db.find_user_by_id(user_id) {
+    match db.find_user_by_id(user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({"error": "User not found"}));
@@ -216,7 +219,7 @@ async fn update_role(
         }
     }
 
-    match db.update_user_role(user_id, role) {
+    match db.update_user_role(user_id, role).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"message": "Role updated successfully", "role": role})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -245,7 +248,7 @@ async fn reset_password(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": msg}));
     }
 
-    match db.find_user_by_id(user_id) {
+    match db.find_user_by_id(user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({"error": "User not found"}));
@@ -262,32 +265,31 @@ async fn reset_password(
         }
     };
 
-    ok_or_error(db.reset_user_password(user_id, &hash))
+    ok_or_error(db.reset_user_password(user_id, &hash).await)
 }
 
 async fn list_groups(_auth: AuthClaims, db: web::Data<Repo>) -> impl Responder {
-    match db.list_user_groups() {
+    match db.list_user_groups().await {
         Ok(groups) => {
-            let result: Vec<serde_json::Value> = groups
-                .into_iter()
-                .map(|g| {
-                    let perms: serde_json::Value = parse_permissions(&g.permissions);
-                    let members: Vec<serde_json::Value> = db
-                        .list_group_members(g.id)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|m| serde_json::json!({"id": m.id, "username": m.username}))
-                        .collect();
-                    serde_json::json!({
-                        "id": g.id,
-                        "name": g.name,
-                        "description": g.description,
-                        "permissions": perms,
-                        "created_at": g.created_at,
-                        "members": members,
-                    })
-                })
-                .collect();
+            let mut result = Vec::with_capacity(groups.len());
+            for g in groups {
+                let perms: serde_json::Value = parse_permissions(&g.permissions);
+                let members: Vec<serde_json::Value> = db
+                    .list_group_members(g.id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| serde_json::json!({"id": m.id, "username": m.username}))
+                    .collect();
+                result.push(serde_json::json!({
+                    "id": g.id,
+                    "name": g.name,
+                    "description": g.description,
+                    "permissions": perms,
+                    "created_at": g.created_at,
+                    "members": members,
+                }));
+            }
             HttpResponse::Ok().json(result)
         }
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -308,7 +310,7 @@ async fn create_group(_auth: AuthClaims, body: web::Json<serde_json::Value>, db:
         _ => "[]".to_string(),
     };
 
-    match db.create_user_group(name, description, &permissions) {
+    match db.create_user_group(name, description, &permissions).await {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({
             "id": id,
             "name": name,
@@ -322,10 +324,10 @@ async fn create_group(_auth: AuthClaims, body: web::Json<serde_json::Value>, db:
 async fn get_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>) -> impl Responder {
     let group_id = path.into_inner();
 
-    match db.get_user_group(group_id) {
+    match db.get_user_group(group_id).await {
         Ok(Some(g)) => {
             let perms: serde_json::Value = parse_permissions(&g.permissions);
-            let members = db.list_group_member_ids(group_id).unwrap_or_default();
+            let members = db.list_group_member_ids(group_id).await.unwrap_or_default();
             HttpResponse::Ok().json(serde_json::json!({
                 "id": g.id,
                 "name": g.name,
@@ -348,7 +350,7 @@ async fn update_group(
 ) -> impl Responder {
     let group_id = path.into_inner();
 
-    let existing = match db.get_user_group(group_id) {
+    let existing = match db.get_user_group(group_id).await {
         Ok(Some(g)) => {
             if g.name == GROUP_ADMIN || g.name == GROUP_VIEWER {
                 return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot modify built-in groups"}));
@@ -373,7 +375,7 @@ async fn update_group(
         _ => existing.permissions.clone(),
     };
 
-    match db.update_user_group(group_id, name, description, &permissions) {
+    match db.update_user_group(group_id, name, description, &permissions).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({
             "id": group_id,
             "name": name,
@@ -387,14 +389,14 @@ async fn update_group(
 async fn delete_group(_auth: AuthClaims, path: web::Path<i64>, db: web::Data<Repo>) -> impl Responder {
     let group_id = path.into_inner();
 
-    match db.get_user_group(group_id) {
+    match db.get_user_group(group_id).await {
         Ok(Some(ref g)) if g.name == GROUP_ADMIN || g.name == GROUP_VIEWER => {
             return HttpResponse::Forbidden().json(serde_json::json!({"error": "Cannot delete built-in groups"}));
         }
         _ => {}
     }
 
-    match db.delete_user_group(group_id) {
+    match db.delete_user_group(group_id).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"message": "Group deleted successfully"})),
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Group not found"})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -409,7 +411,7 @@ async fn set_user_groups(
 ) -> impl Responder {
     let user_id = path.into_inner();
 
-    match db.find_user_by_id(user_id) {
+    match db.find_user_by_id(user_id).await {
         Ok(Some(ref u)) if u.username == DEFAULT_ADMIN_USERNAME => {
             return HttpResponse::Forbidden()
                 .json(serde_json::json!({"error": "Cannot modify groups for the built-in admin account"}));
@@ -430,7 +432,7 @@ async fn set_user_groups(
         }
     };
 
-    match db.set_user_groups(user_id, &group_ids) {
+    match db.set_user_groups(user_id, &group_ids).await {
         Ok(_) => HttpResponse::Ok()
             .json(serde_json::json!({"message": "User groups updated successfully", "group_ids": group_ids})),
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),

@@ -17,12 +17,16 @@ pub struct SmtpClient {
 }
 
 impl SmtpClient {
-    pub fn from_config(cfg: &SmtpConfig, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
+    pub async fn from_config(cfg: &SmtpConfig, secrets: Option<&dyn SecretStorePort>) -> Result<Option<Self>, Error> {
         if cfg.host.is_empty() || cfg.username.is_empty() {
             return Ok(None);
         }
 
-        let password = match secrets.and_then(|ss| ss.get_secret("smtp_password").ok().flatten()) {
+        let secret = match secrets {
+            Some(ss) => ss.get_secret("smtp_password").await?,
+            None => None,
+        };
+        let password = match secret {
             Some(pw) if !pw.is_empty() => pw,
             _ => return Ok(None),
         };
@@ -94,12 +98,15 @@ impl EmailSender for SmtpClient {
 
 pub struct SmtpClientFactory;
 
+#[async_trait::async_trait]
 impl EmailSenderFactory for SmtpClientFactory {
-    fn build_smtp_sender(
+    async fn build_smtp_sender(
         &self,
         cfg: &SmtpConfig,
         secrets: Option<&dyn SecretStorePort>,
     ) -> Result<Option<Box<dyn EmailSender>>, Error> {
-        SmtpClient::from_config(cfg, secrets).map(|opt| opt.map(|c| Box::new(c) as Box<dyn EmailSender>))
+        SmtpClient::from_config(cfg, secrets)
+            .await
+            .map(|opt| opt.map(|c| Box::new(c) as Box<dyn EmailSender>))
     }
 }

@@ -55,6 +55,7 @@ use crate::infrastructure::inference_runtime::InferenceRuntime;
 use crate::infrastructure::log_buffer::LogBuffer;
 use crate::infrastructure::logger::Logger;
 use crate::infrastructure::readiness::ReadinessState;
+use crate::infrastructure::runtime_state::RuntimeState;
 use crate::infrastructure::secret_store::SecretStore;
 use crate::infrastructure::service_factory::ServiceFactory;
 use crate::infrastructure::suricata_manager::SuricataManager;
@@ -62,7 +63,7 @@ use crate::infrastructure::suricata_monitor::SuricataMonitor;
 use crate::interface::audit::AuditRepo;
 use crate::interface::geo_lookup::GeoLookup;
 use crate::interface::packet_sink::PacketSinkFactory;
-use crate::interface::setting::SettingRepo;
+use crate::interface::report_snapshot::ReportSnapshotRepo;
 use crate::interface::stats::StatsRepo;
 use crate::utils::staging;
 
@@ -88,6 +89,7 @@ impl ShutdownHandle {
 
 pub struct System {
     pub app_config: Arc<ArcSwap<AppConfig>>,
+    pub runtime_state: Arc<ArcSwap<RuntimeState>>,
     pub inference_config: Arc<MLInferenceConfig>,
 
     pub database: Arc<Database>,
@@ -134,6 +136,7 @@ impl System {
         let state = ServiceFactory::build(database).await?;
         Ok(System {
             app_config: state.app_config,
+            runtime_state: state.runtime_state,
             inference_config: state.inference_config,
 
             database: state.database,
@@ -187,7 +190,7 @@ impl System {
         self.boot_response().await?;
         let suricata_detection_tx = self.boot_detection();
         self.boot_observability().await;
-        let mut shutdown_rx = self.boot_http_server(logger, log_buffer);
+        let mut shutdown_rx = self.boot_http_server(logger, log_buffer).await;
         self.boot_external(suricata_detection_tx);
 
         tokio::select! {
@@ -203,7 +206,7 @@ impl System {
                 log!(SystemLog::EbpfBringupFailed(format!("{:?}", health)));
             }
             log!(SystemLog::InitializeComplete);
-            self.attach_ebpf()?;
+            self.attach_ebpf().await?;
         } else {
             log!(SystemLog::InitializeComplete);
         }
@@ -302,7 +305,7 @@ impl System {
         let health_query: Arc<dyn crate::interface::health_query::HealthQuery> = self.health.clone();
         let stats_aggregator = StatsAggregator::new(
             self.database.clone() as Arc<dyn StatsRepo>,
-            self.database.clone() as Arc<dyn SettingRepo + Send + Sync>,
+            self.database.clone() as Arc<dyn ReportSnapshotRepo>,
             health_query,
         );
         stats_aggregator.start();
@@ -318,14 +321,13 @@ impl System {
         }
     }
 
-    fn boot_http_server(&mut self, logger: Arc<Logger>, log_buffer: Arc<LogBuffer>) -> mpsc::Receiver<ShutdownMode> {
+    async fn boot_http_server(
+        &mut self,
+        logger: Arc<Logger>,
+        log_buffer: Arc<LogBuffer>,
+    ) -> mpsc::Receiver<ShutdownMode> {
         let force_https = ForceHttpsFlag(Arc::new(AtomicBool::new(
-            self.database
-                .get_setting("force_https")
-                .ok()
-                .flatten()
-                .map(|v| v == "true")
-                .unwrap_or(false),
+            self.app_config.load().http_server.force_https,
         )));
 
         let readiness_state = self.readiness_state.clone();
@@ -338,6 +340,7 @@ impl System {
         let ready_flag_for_set = ready_flag.0.clone();
         let params = HttpServerParams {
             app_config: self.app_config.clone(),
+            runtime_state: self.runtime_state.clone(),
             inference_config: self.inference_config.clone(),
 
             database: self.database.clone(),
@@ -421,7 +424,7 @@ impl System {
         Ok(())
     }
 
-    fn attach_ebpf(&mut self) -> Result<(), Error> {
+    async fn attach_ebpf(&mut self) -> Result<(), Error> {
         let cfg = self.app_config.load();
         let ingress_ifname = cfg.ebpf.ingress_ifname.clone();
         let egress_ifname = cfg.ebpf.egress_ifname.clone();
@@ -437,12 +440,10 @@ impl System {
 
         match (ingress_result, egress_result) {
             (Ok(ingress_mode), Ok(egress_mode)) => {
-                if let Err(e) = self.database.set_setting("xdp_ingress_mode", &ingress_mode) {
-                    log!(SystemError::XdpModeStoreFailed(e));
-                }
-                if let Err(e) = self.database.set_setting("xdp_egress_mode", &egress_mode) {
-                    log!(SystemError::XdpModeStoreFailed(e));
-                }
+                let mut next_state = (**self.runtime_state.load()).clone();
+                next_state.xdp.ingress_mode = ingress_mode;
+                next_state.xdp.egress_mode = egress_mode;
+                self.runtime_state.store(Arc::new(next_state));
             }
             (ingress_res, egress_res) => {
                 let (err, iface) = match (&ingress_res, &egress_res) {

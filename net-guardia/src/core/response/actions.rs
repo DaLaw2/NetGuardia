@@ -25,7 +25,6 @@ use crate::domain::response::error::SoarError;
 use crate::domain::response::log::SoarLog;
 use crate::domain::response::playbook::{Playbook, PlaybookAction};
 use crate::interface::access_control::AccessControlPort;
-use crate::interface::app_repo::AppRepo;
 use crate::utils::ip_address::{ip_version_from_str, is_private_ip};
 
 /// Lower bound on the rate-limit factor — anything below 1% of current
@@ -91,7 +90,8 @@ impl SoarEngine {
         // Write audit trail
         let actions_json = serde_json::to_string(&action_results).unwrap_or_default();
         self.db
-            .insert_soar_execution(playbook.id, Some(&event.source_ip), &event.attack_type, &actions_json)?;
+            .insert_soar_execution(playbook.id, Some(&event.source_ip), &event.attack_type, &actions_json)
+            .await?;
 
         log!(SoarLog::PlaybookExecuted(
             playbook.name.clone(),
@@ -190,17 +190,12 @@ impl SoarEngine {
         let expires_str = expires_at.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Atomically write soar_block_rules + acl_rules. Either both commit
-        // or both roll back — no half-state possible. Offloaded so the
-        // SQLite WAL fsync can't block the tokio worker.
+        // or both roll back — no half-state possible.
         let ip_version = ip_version_from_str(&event.source_ip);
-        let commit_result = commit_block_blocking(
-            self.db.clone(),
-            event.source_ip.clone(),
-            ip_version,
-            playbook_id,
-            expires_str.clone(),
-        )
-        .await;
+        let commit_result = self
+            .db
+            .commit_soar_block_to_db(&event.source_ip, ip_version, playbook_id, &expires_str)
+            .await;
         if let Err(e) = commit_result {
             // DB tx rolled back both rows; now roll back the eBPF block.
             let unblock_outcome = unblock_ip_blocking(Arc::clone(&self.access_control), event.source_ip.clone()).await;
@@ -210,7 +205,7 @@ impl SoarEngine {
                     event.source_ip, unblock_err
                 )));
                 // Write to pending_unblock table so recovery can retry later
-                if let Err(pend_err) = insert_pending_unblock_blocking(self.db.clone(), event.source_ip.clone()).await {
+                if let Err(pend_err) = self.db.insert_pending_unblock(&event.source_ip).await {
                     log!(SoarLog::EventHandlingFailed(format!(
                         "CRITICAL: Failed to queue pending unblock for IP {}: {}",
                         event.source_ip, pend_err
@@ -298,7 +293,8 @@ impl SoarEngine {
         let smtp_cfg = self.matcher.config.load().notification.smtp.clone();
         match self
             .email_sender_factory
-            .build_smtp_sender(&smtp_cfg, self.secrets.as_deref())?
+            .build_smtp_sender(&smtp_cfg, self.secrets.as_deref())
+            .await?
         {
             Some(smtp) => {
                 let subject = format!(
@@ -472,35 +468,18 @@ impl SoarEngine {
         self.record_cooldown(FALLBACK_PLAYBOOK_ID, &event.source_ip);
 
         // Audit trail under the fallback synthetic playbook id
-        self.db.insert_soar_execution(
-            FALLBACK_PLAYBOOK_ID,
-            Some(&event.source_ip),
-            &event.attack_type,
-            &serde_json::to_string(&[result_json]).unwrap_or_default(),
-        )?;
+        self.db
+            .insert_soar_execution(
+                FALLBACK_PLAYBOOK_ID,
+                Some(&event.source_ip),
+                &event.attack_type,
+                &serde_json::to_string(&[result_json]).unwrap_or_default(),
+            )
+            .await?;
 
         log!(SoarLog::FallbackExecuted(event.source_ip.clone()));
         Ok(())
     }
-}
-
-async fn commit_block_blocking(
-    db: Arc<dyn AppRepo>,
-    source_ip: String,
-    ip_version: u8,
-    playbook_id: i64,
-    expires_str: String,
-) -> Result<(), Error> {
-    spawn_blocking(move || db.commit_soar_block_to_db(&source_ip, ip_version, playbook_id, &expires_str))
-        .await
-        .map_err(|e| SoarError::ActionFailed("commit_soar_block_to_db", e))??;
-    Ok(())
-}
-
-async fn insert_pending_unblock_blocking(db: Arc<dyn AppRepo>, source_ip: String) -> Result<i64, Error> {
-    spawn_blocking(move || db.insert_pending_unblock(&source_ip))
-        .await
-        .map_err(|e| SoarError::ActionFailed("insert_pending_unblock", e))?
 }
 
 /// Offload `AccessControlPort::block_ip` onto a blocking thread. The port is

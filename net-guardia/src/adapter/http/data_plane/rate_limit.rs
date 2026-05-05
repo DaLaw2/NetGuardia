@@ -22,5 +22,5 @@ async fn get_config(service: web::Data<RateLimitService>) -> impl Responder {
 }
 
 async fn set_config(settings: web::Json<RateLimitSettings>, service: web::Data<RateLimitService>) -> impl Responder {
-    ok_or_error(service.update(&settings.into_inner()))
+    ok_or_error(service.update(&settings.into_inner()).await)
 }
