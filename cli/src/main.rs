@@ -1,9 +1,15 @@
+use std::fs;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use reqwest::Client;
 use serde_json::Value;
+
+const CSRF_HEADER: &str = "X-CSRF-Token";
 
 /// NetGuardia CLI management tool.
 #[derive(Parser)]
@@ -94,14 +100,14 @@ impl ApiClient {
     }
 
     fn load_token(&self) -> Option<String> {
-        std::fs::read_to_string(&self.token_path).ok()
+        fs::read_to_string(&self.token_path).ok()
     }
 
-    fn save_token(&self, token: &str) {
+    fn save_token(&self, token: &str) -> Result<(), String> {
         if let Some(parent) = self.token_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create token directory: {}", e))?;
         }
-        let _ = std::fs::write(&self.token_path, token);
+        fs::write(&self.token_path, token).map_err(|e| format!("Failed to save token: {}", e))
     }
 
     async fn get(&self, path: &str) -> Result<Value, String> {
@@ -127,9 +133,13 @@ impl ApiClient {
 
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
+        let include_csrf = should_send_csrf(&method);
         let mut req = self.client.request(method, &url);
         if let Some(token) = self.load_token() {
             req = req.header("Authorization", format!("Bearer {}", token.trim()));
+        }
+        if include_csrf {
+            req = req.header(CSRF_HEADER, "ng-cli");
         }
         if let Some(b) = body {
             req = req.json(&b);
@@ -187,11 +197,17 @@ fn print_json(data: &Value) {
     println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
 }
 
+fn should_send_csrf(method: &reqwest::Method) -> bool {
+    !matches!(
+        *method,
+        reqwest::Method::GET | reqwest::Method::HEAD | reqwest::Method::OPTIONS
+    )
+}
+
 fn read_password() -> String {
     // Disable echo for password input
     #[cfg(unix)]
     {
-        use std::os::unix::io::AsRawFd;
         let fd = std::io::stdin().as_raw_fd();
         let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
         unsafe { libc::tcgetattr(fd, &mut termios) };
@@ -285,21 +301,24 @@ async fn main() {
         },
         Commands::Login => {
             print!("Username: ");
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            let mut stdout = std::io::stdout();
+            stdout.flush().unwrap();
             let mut username = String::new();
             std::io::stdin().read_line(&mut username).unwrap();
             let username = username.trim();
 
             print!("Password: ");
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            stdout.flush().unwrap();
             let password = read_password();
 
             match api.login(username, &password).await {
-                Ok(token) => {
-                    api.save_token(&token);
-                    println!("Login successful. Token saved to ~/.ng/token");
-                    Ok(())
-                }
+                Ok(token) => match api.save_token(&token) {
+                    Ok(()) => {
+                        println!("Login successful. Token saved to ~/.ng/token");
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
             }
         }
@@ -359,5 +378,20 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csrf_header_is_only_needed_for_state_changing_methods() {
+        assert!(!should_send_csrf(&reqwest::Method::GET));
+        assert!(!should_send_csrf(&reqwest::Method::HEAD));
+        assert!(!should_send_csrf(&reqwest::Method::OPTIONS));
+        assert!(should_send_csrf(&reqwest::Method::POST));
+        assert!(should_send_csrf(&reqwest::Method::PUT));
+        assert!(should_send_csrf(&reqwest::Method::DELETE));
     }
 }

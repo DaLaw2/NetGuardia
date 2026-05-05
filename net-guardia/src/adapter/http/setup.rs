@@ -144,14 +144,10 @@ async fn complete_setup(
     match password::hash_password(&body.admin_password) {
         Ok(hash) => {
             // Find admin user and update password
-            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME).await {
-                if let Err(e) = db.update_user_password(user.id, &hash).await {
-                    log!(SystemError::SetupPasswordUpdateFailed(e));
-                }
-                // Clear force_password_change since setup wizard set the password
-                if let Err(e) = db.reset_user_password(user.id, &hash).await {
-                    log!(SystemError::SetupPasswordUpdateFailed(e));
-                }
+            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME).await
+                && let Err(e) = db.update_user_password(user.id, &hash).await
+            {
+                log!(SystemError::SetupPasswordUpdateFailed(e));
             }
         }
         Err(e) => {

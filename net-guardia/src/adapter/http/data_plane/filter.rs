@@ -157,7 +157,9 @@ async fn remove_ssh_service(
 }
 
 async fn is_ssh_white_list_enable(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {
-    HttpResponse::Ok().json(service.is_ssh_white_list_enable())
+    HttpResponse::Ok().json(serde_json::json!({
+        "enabled": service.is_ssh_white_list_enable(),
+    }))
 }
 
 async fn enable_ssh_white_list(service: web::Data<dyn ProtocolFilterPort>) -> impl Responder {

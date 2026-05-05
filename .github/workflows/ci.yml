@@ -37,7 +37,7 @@ jobs:
           cache-dependency-path: net-guardia-frontend/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
         working-directory: net-guardia-frontend
 
       - name: Install Rust stable toolchain
@@ -72,14 +72,25 @@ jobs:
           ls -la "$HOME/.cargo/bin/bpf-linker"
         timeout-minutes: 45
 
-      - name: cargo check
-        run: cargo check --package net-guardia
+      - name: cargo check default workspace members
+        run: cargo check
 
-      - name: cargo test
-        run: cargo test --package net-guardia
+      - name: cargo test default workspace members
+        run: cargo test
 
-      - name: cargo clippy
-        run: cargo clippy --package net-guardia -- -D warnings
+      - name: cargo clippy default workspace members
+        run: cargo clippy -- -D warnings
+
+      - name: Frontend build
+        run: npm run build
+        working-directory: net-guardia-frontend
+
+      - name: Frontend tests
+        run: npm test
+        working-directory: net-guardia-frontend
+
+      - name: Trainer Python compile check
+        run: python3 -m compileall -q net-guardia-trainer/src
 
   integration-test:
     name: Integration Test (placeholder)
