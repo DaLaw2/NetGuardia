@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(any(target_arch = "bpf", target_os = "none"), no_std)]
 #![no_main]
 
 use aya_ebpf::bindings::xdp_action;
@@ -7,9 +7,9 @@ use aya_ebpf::maps::{Array, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
-use common::ebpf::parsing;
-use common::ebpf::symmetric_hash::symmetric_queue_id;
-use common::model::parsed_packet::ParsedPacket;
+use net_guardia_abi::ebpf::parsing;
+use net_guardia_abi::ebpf::symmetric_hash::symmetric_queue_id;
+use net_guardia_abi::model::parsed_packet::ParsedPacket;
 
 #[map]
 static NUM_QUEUES: Array<u32> = Array::with_max_entries(1, 0);
@@ -30,13 +30,13 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 unsafe fn compute_symmetric_queue_id(ctx: &XdpContext) -> Option<u32> {
     unsafe {
         let mut pkt = core::mem::zeroed::<ParsedPacket>();
-        parsing::parse_packet(ctx.data(), ctx.data_end(), &mut pkt).ok()?;
+        parsing::parse_packet(ctx.data(), ctx.data_end(), &mut pkt)?;
         let num_q = *NUM_QUEUES.get(0)?;
         symmetric_queue_id(&pkt, num_q)
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), any(target_arch = "bpf", target_os = "none")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }

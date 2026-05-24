@@ -1,54 +1,45 @@
-//! Inference pipeline — state-aware, adapter-dispatched.
-//!
-//! The pipeline holds `ArcSwap<ModelSourceState>` so the engine can take a
-//! lock-free snapshot per tick and `infer_batch` dispatches on whichever
-//! `MLModelAdapter` variant the active state carries.
-//!
-//! The MultiTask arm fires on any of: anomaly head above threshold,
-//! classifier picking a non-Normal class at ≥ `class_min_confidence`, or the
-//! C2 head elevated above its own threshold — so AE reconstruction error
-//! can't mask a stealthy attack the classifier does recognize.
-
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use macros::log;
-use tract_onnx::prelude::*;
 
-use crate::core::inference::model_adapter::{MLModelAdapter, ModelSourceState, RunnableModel};
+use crate::core::inference::model_adapter::{MLModelAdapter, ModelSourceState, PipelineStageAdapter};
 use crate::domain::common::config::AppConfig;
-use crate::domain::detection::flow_features::FlowFeatures;
-use crate::domain::detection::flow_tracker::FlowData;
+use crate::domain::common::event::DetectionSource;
+use crate::domain::detection::attack_type::{CanonicalAttackType, translate};
+use crate::domain::detection::error::MLError;
+use crate::domain::detection::flow_tracker::FlowSnapshot;
 use crate::domain::detection::log::MLLog;
-use crate::domain::detection::manifest::LabelSpec;
+use crate::domain::detection::manifest::{
+    AttackMappingSpec, DetectionRuleSpec, LabelSpec, OutputRole, PipelineOutputSpec, PreprocessingStep,
+    StageInputSource, output_matches_ref, stage_output_key,
+};
 use crate::domain::detection::ml_detection::DetectionResult;
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 use crate::domain::detection::model_source::ModelSourceStatus;
-
-/// (anomaly_scores, per_class_probs, c2_scores) — MultiTask batch output.
-type ClassifierBatchOutput = (Vec<f32>, Vec<Vec<f32>>, Vec<f32>);
+use crate::interface::detection::model_runtime::RuntimeTensor;
 
 pub struct Inference {
     state: ArcSwap<ModelSourceState>,
     pub config: Arc<MLInferenceConfig>,
     app_config: Arc<ArcSwap<AppConfig>>,
-    /// Rolling-window QPS estimate, published in `ModelInfo.qps_recent`.
-    /// Stored as u32 (integer QPS) for lock-free update; fractional QPS
-    /// information is not useful at the UI grain we're publishing.
     qps_recent: AtomicU32,
-    failure_count: AtomicU32,
-    failure_window_start: AtomicU64,
-    circuit_open_since: AtomicU64,
+    cb_phase: AtomicU8,
+    cb_failure_count: AtomicU32,
+    cb_window_start_secs: AtomicU64,
+    cb_open_since_secs: AtomicU64,
 }
 
+const CB_CLOSED: u8 = 0;
+const CB_OPEN: u8 = 1;
+const CB_HALF_OPEN: u8 = 2;
+
 impl Inference {
-    /// Build a new Inference with the given initial state. Use
-    /// `ModelSourceState::Dormant` when no model is loaded (Day 1 default).
     pub fn new(
         initial_state: ModelSourceState,
         config: Arc<MLInferenceConfig>,
@@ -59,27 +50,25 @@ impl Inference {
             config,
             app_config,
             qps_recent: AtomicU32::new(0),
-            failure_count: AtomicU32::new(0),
-            failure_window_start: AtomicU64::new(0),
-            circuit_open_since: AtomicU64::new(0),
+            cb_phase: AtomicU8::new(CB_CLOSED),
+            cb_failure_count: AtomicU32::new(0),
+            cb_window_start_secs: AtomicU64::new(0),
+            cb_open_since_secs: AtomicU64::new(0),
         }
     }
 
-    /// Atomically swap in a new state. Any transition INTO `Active` resets
-    /// the circuit breaker so a freshly loaded model starts with a clean
-    /// failure record; `Error ↔ Dormant` transitions leave the CB alone.
     pub fn swap_state(&self, new_state: ModelSourceState) {
         let new_is_active = new_state.is_active();
         self.state.store(Arc::new(new_state));
         if new_is_active {
-            self.failure_count.store(0, Ordering::Relaxed);
-            self.failure_window_start.store(0, Ordering::Relaxed);
-            self.circuit_open_since.store(0, Ordering::Relaxed);
+            self.record_success();
         }
     }
 
-    /// Current state snapshot for wire broadcast. Merges the in-memory
-    /// `qps_recent` atomic into the Active info so the UI sees live QPS.
+    pub fn model_source_state(&self) -> ModelSourceState {
+        self.state.load().as_ref().clone()
+    }
+
     pub fn model_source_status(&self) -> ModelSourceStatus {
         let guard = self.state.load();
         let mut status = guard.to_status();
@@ -93,24 +82,27 @@ impl Inference {
         self.state.load().is_active()
     }
 
-    /// Per-attack-type confirmations from the active manifest's labels.
-    /// Returns `None` when the source is Dormant/Error or when the label has
-    /// no `confirmations` override; callers apply their own fallback.
-    pub fn confirmations_for_attack_type(&self, attack_type_name: &str) -> Option<usize> {
+    pub fn confirmations_for_attack_type(&self, attack_type: CanonicalAttackType) -> Option<usize> {
         match self.state.load().as_ref() {
-            ModelSourceState::Active { adapter, .. } => adapter.confirmations_for(attack_type_name),
+            ModelSourceState::Active { adapter, .. } => adapter.confirmations_for(attack_type),
             ModelSourceState::Dormant | ModelSourceState::Error { .. } => None,
         }
     }
 
-    /// Batched inference with circuit breaker protection + state dispatch.
-    /// Returns an empty Vec when Dormant / Error / circuit-open.
-    pub fn infer_batch(&self, flows: &[FlowData]) -> Vec<DetectionResult> {
+    pub fn attack_type_count(&self) -> usize {
+        match self.state.load().as_ref() {
+            ModelSourceState::Active { adapter, .. } => match adapter {
+                MLModelAdapter::Pipeline { labels, .. } => labels.len(),
+            },
+            ModelSourceState::Dormant | ModelSourceState::Error { .. } => 0,
+        }
+    }
+
+    pub fn infer_batch(&self, flows: &[FlowSnapshot]) -> Vec<DetectionResult> {
         if self.is_circuit_open() {
             return Vec::new();
         }
 
-        // Snapshot the state once so the whole batch sees a consistent adapter.
         let guard = self.state.load();
         let adapter = match guard.as_ref() {
             ModelSourceState::Active { adapter, .. } => adapter,
@@ -121,8 +113,7 @@ impl Inference {
 
         match panic::catch_unwind(AssertUnwindSafe(|| self.infer_batch_inner(adapter, flows))) {
             Ok(results) => {
-                self.failure_count.store(0, Ordering::Relaxed);
-                self.failure_window_start.store(0, Ordering::Relaxed);
+                self.record_success();
                 results
             }
             Err(_) => {
@@ -136,321 +127,261 @@ impl Inference {
         }
     }
 
-    /// Dispatch on adapter variant.
-    fn infer_batch_inner(&self, adapter: &MLModelAdapter, flows: &[FlowData]) -> Vec<DetectionResult> {
+    fn infer_batch_inner(&self, adapter: &MLModelAdapter, flows: &[FlowSnapshot]) -> Vec<DetectionResult> {
         match adapter {
-            MLModelAdapter::MultiTask { .. } => self.infer_multitask(adapter, flows),
-            MLModelAdapter::AutoencoderOnly {
-                model,
-                batch_size,
-                n_features,
-            } => self.infer_autoencoder_only(model, *batch_size, *n_features, flows),
-            MLModelAdapter::ClassifierOnly {
-                model,
-                batch_size,
-                n_features,
+            MLModelAdapter::Pipeline {
+                stages,
+                outputs,
+                detection_rules,
                 labels,
-                normal_idx,
-            } => self.infer_classifier_only(model, *batch_size, *n_features, labels, *normal_idx, flows),
+                normal_label,
+            } => self.infer_pipeline(stages, outputs, detection_rules, labels, normal_label, flows),
         }
     }
 
-    /// MultiTask path. Runs the AE batch → computes per-flow MSE → feeds the
-    /// classifier over (ae_features ++ ae_score) → fires on anomaly OR
-    /// non-Normal classifier agreement OR elevated C2 head.
-    fn infer_multitask(&self, adapter: &MLModelAdapter, flows: &[FlowData]) -> Vec<DetectionResult> {
-        let MLModelAdapter::MultiTask {
-            ae,
-            classifier,
-            batch_size,
-            n_ae,
-            n_cls,
-            labels,
-            normal_idx,
-            c2_idx,
-        } = adapter
-        else {
-            unreachable!()
-        };
-        let (batch_size, n_ae, n_cls) = (*batch_size, *n_ae, *n_cls);
-        let (normal_idx, c2_idx) = (*normal_idx, *c2_idx);
-        let n = flows.len();
-
-        let mut flat_ae: Vec<f32> = Vec::with_capacity(n * n_ae);
-        for f in flows {
-            flat_ae.extend(self.preprocess_ae_features(f));
-        }
-
-        let mut ae_scores = Vec::with_capacity(n);
-        for chunk_start in (0..n).step_by(batch_size) {
-            let chunk_end = (chunk_start + batch_size).min(n);
-            let actual = chunk_end - chunk_start;
-            let ae_input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_ae), |(i, j)| {
-                if i < actual {
-                    flat_ae[(chunk_start + i) * n_ae + j]
-                } else {
-                    0.0
-                }
-            });
-
-            match run_ae_batch(ae, &ae_input, actual, n_ae) {
-                Ok(scores) => ae_scores.extend_from_slice(&scores),
-                Err(e) => {
-                    log!(MLLog::InferenceFailed("DeepAutoEncoder".to_string(), e.to_string()));
-                    self.record_failure();
-                    return Vec::new();
-                }
-            }
-        }
-
-        let mut all_anomaly = Vec::with_capacity(n);
-        let mut all_class_probs = Vec::with_capacity(n);
-        let mut all_c2_scores = Vec::with_capacity(n);
-
-        for chunk_start in (0..n).step_by(batch_size) {
-            let chunk_end = (chunk_start + batch_size).min(n);
-            let actual = chunk_end - chunk_start;
-
-            let cls_input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_cls), |(i, j)| {
-                if i < actual {
-                    if j < n_ae {
-                        flat_ae[(chunk_start + i) * n_ae + j]
-                    } else {
-                        ae_scores[chunk_start + i]
-                    }
-                } else {
-                    0.0
-                }
-            });
-
-            match run_classifier_batch(classifier, cls_input, actual) {
-                Ok((anomaly, class_probs, c2)) => {
-                    all_anomaly.extend_from_slice(&anomaly);
-                    all_class_probs.extend(class_probs);
-                    all_c2_scores.extend_from_slice(&c2);
-                }
-                Err(e) => {
-                    log!(MLLog::InferenceFailed("MultiTaskModel".to_string(), e.to_string()));
-                    self.record_failure();
-                    return Vec::new();
-                }
-            }
-        }
-
-        let mut results = Vec::with_capacity(n);
-        let class_min_conf = self.config.class_min_confidence;
-        let anomaly_thr = self.config.anomaly_threshold;
-        let c2_thr = self.config.c2_threshold;
-
-        for i in 0..n {
-            let flow = &flows[i];
-            let class_probs = &all_class_probs[i];
-            let anomaly = all_anomaly[i];
-            let c2 = all_c2_scores[i];
-
-            let (predicted_class, class_confidence) = argmax(class_probs);
-            let attack_type_name = labels
-                .get(&predicted_class.to_string())
-                .map(|l| l.name.clone())
-                .unwrap_or_else(|| "UNKNOWN".to_string());
-
-            let classifier_fires =
-                normal_idx.is_none_or(|ni| predicted_class != ni) && class_confidence >= class_min_conf;
-            let c2_fires = c2 > c2_thr;
-            let mut is_attack = anomaly > anomaly_thr || classifier_fires || c2_fires;
-
-            // "Normal" with no C2 elevation stays benign regardless of AE noise.
-            if normal_idx == Some(predicted_class) && !c2_fires {
-                is_attack = false;
-            }
-
-            // When the manifest declares a C2 class and its head score beats
-            // the classifier's probability for that same class, relabel the
-            // event with the manifest's C2 label and use the head score as
-            // the outgoing confidence. Manifests without a C2 class keep the
-            // argmax label and class-confidence untouched.
-            let mut attack_type = attack_type_name;
-            let mut confidence = class_confidence;
-            if c2_fires
-                && let Some(idx) = c2_idx
-                && let Some(c2_class_prob) = class_probs.get(idx).copied()
-                && c2 > c2_class_prob
-            {
-                if let Some(spec) = labels.get(&idx.to_string()) {
-                    attack_type = spec.name.clone();
-                }
-                confidence = c2;
-            }
-
-            results.push(DetectionResult {
-                flow_key: if is_attack {
-                    build_flow_key_label(flow)
-                } else {
-                    String::new()
-                },
-                flow_key_raw: flow.flow_key,
-                direction: flow.direction,
-                is_attack,
-                attack_type: if is_attack { Some(attack_type) } else { None },
-                confidence,
-                ae_score: ae_scores[i],
-                anomaly_score: anomaly,
-                c2_score: c2,
-                packet_count: flow.packet_count() as u64,
-                flow_duration_us: flow.duration_us(),
-            });
-        }
-
-        results
-    }
-
-    /// AutoencoderOnly path. Output is reconstruction MSE; when it exceeds
-    /// `anomaly_threshold` the flow is marked as a generic `anomaly`. There
-    /// are no classifier outputs, so no per-class gating happens here.
-    fn infer_autoencoder_only(
+    fn infer_pipeline(
         &self,
-        model: &RunnableModel,
-        batch_size: usize,
-        n_features: usize,
-        flows: &[FlowData],
-    ) -> Vec<DetectionResult> {
-        let n = flows.len();
-        let mut scores = Vec::with_capacity(n);
-
-        for chunk_start in (0..n).step_by(batch_size) {
-            let chunk_end = (chunk_start + batch_size).min(n);
-            let actual = chunk_end - chunk_start;
-            let chunk_features: Vec<Vec<f32>> = flows[chunk_start..chunk_end]
-                .iter()
-                .map(|f| self.preprocess_ae_features(f))
-                .collect();
-            let input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_features), |(i, j)| {
-                if i < actual { chunk_features[i][j] } else { 0.0 }
-            });
-            match run_ae_batch(model, &input, actual, n_features) {
-                Ok(s) => scores.extend_from_slice(&s),
-                Err(e) => {
-                    log!(MLLog::InferenceFailed("AutoencoderOnly".to_string(), e.to_string()));
-                    self.record_failure();
-                    return Vec::new();
-                }
-            }
-        }
-
-        let thr = self.config.anomaly_threshold;
-        flows
-            .iter()
-            .zip(scores.iter())
-            .map(|(flow, &score)| {
-                let is_attack = score > thr;
-                DetectionResult {
-                    flow_key: if is_attack {
-                        build_flow_key_label(flow)
-                    } else {
-                        String::new()
-                    },
-                    flow_key_raw: flow.flow_key,
-                    direction: flow.direction,
-                    is_attack,
-                    attack_type: if is_attack { Some("anomaly".to_string()) } else { None },
-                    // AE-only has no separate classifier confidence; reuse the score.
-                    confidence: score,
-                    ae_score: score,
-                    anomaly_score: score,
-                    c2_score: 0.0,
-                    packet_count: flow.packet_count() as u64,
-                    flow_duration_us: flow.duration_us(),
-                }
-            })
-            .collect()
-    }
-
-    /// ClassifierOnly path. Output is per-class softmax; the manifest's
-    /// labels drive attack_type and the flow fires when the argmax class
-    /// isn't Normal and confidence ≥ `class_min_confidence`.
-    fn infer_classifier_only(
-        &self,
-        model: &RunnableModel,
-        batch_size: usize,
-        n_features: usize,
+        stages: &[PipelineStageAdapter],
+        outputs: &[PipelineOutputSpec],
+        detection_rules: &[DetectionRuleSpec],
         labels: &BTreeMap<String, LabelSpec>,
-        normal_idx: Option<usize>,
-        flows: &[FlowData],
+        normal_label: &str,
+        flows: &[FlowSnapshot],
     ) -> Vec<DetectionResult> {
         let n = flows.len();
-        let class_min_conf = self.config.class_min_confidence;
-        let mut results = Vec::with_capacity(n);
+        let mut scalar_outputs: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut matrix_outputs: HashMap<String, Vec<Vec<f32>>> = HashMap::new();
+        let mut thresholds: HashMap<String, f32> = HashMap::new();
+        let mut min_confidences: HashMap<String, f32> = HashMap::new();
 
-        for chunk_start in (0..n).step_by(batch_size) {
-            let chunk_end = (chunk_start + batch_size).min(n);
-            let actual = chunk_end - chunk_start;
-            let chunk_features: Vec<Vec<f32>> = flows[chunk_start..chunk_end]
-                .iter()
-                .map(|f| self.preprocess_ae_features(f))
-                .collect();
-            let input = tract_ndarray::Array2::<f32>::from_shape_fn((batch_size, n_features), |(i, j)| {
-                if i < actual { chunk_features[i][j] } else { 0.0 }
-            });
-            let class_probs = match run_classifier_only_batch(model, input, actual) {
-                Ok(cp) => cp,
-                Err(e) => {
-                    log!(MLLog::InferenceFailed("ClassifierOnly".to_string(), e.to_string()));
+        for stage in stages {
+            let rows = match self.pipeline_stage_rows(stage, flows, &scalar_outputs) {
+                Ok(rows) => rows,
+                Err(err) => {
+                    log!(MLLog::InferenceFailed(stage.id.clone(), err.to_string()));
                     self.record_failure();
                     return Vec::new();
                 }
             };
 
-            for (i, probs) in class_probs.into_iter().enumerate() {
-                let flow = &flows[chunk_start + i];
-                let (predicted_class, confidence) = argmax(&probs);
-                let is_attack = normal_idx.is_none_or(|ni| predicted_class != ni) && confidence >= class_min_conf;
-                let attack_type = if is_attack {
-                    labels
-                        .get(&predicted_class.to_string())
-                        .map(|l| l.name.clone())
-                        .unwrap_or_else(|| "UNKNOWN".to_string())
-                } else {
-                    "Normal".to_string()
+            let mut chunk_start = 0usize;
+            let mut stage_scalars: HashMap<String, Vec<f32>> = HashMap::new();
+            let mut stage_matrices: HashMap<String, Vec<Vec<f32>>> = HashMap::new();
+            while chunk_start < n {
+                let chunk_end = (chunk_start + stage.batch_size).min(n);
+                let chunk = &rows[chunk_start..chunk_end];
+                let tensors = match stage.model.run_stage_batch(
+                    chunk,
+                    stage.batch_size,
+                    stage.n_features,
+                    stage.kind.clone(),
+                    &stage.output_heads,
+                ) {
+                    Ok(tensors) => tensors,
+                    Err(err) => {
+                        log!(MLLog::InferenceFailed(stage.id.clone(), err.to_string()));
+                        self.record_failure();
+                        return Vec::new();
+                    }
                 };
-                results.push(DetectionResult {
-                    flow_key: if is_attack {
-                        build_flow_key_label(flow)
-                    } else {
-                        String::new()
-                    },
-                    flow_key_raw: flow.flow_key,
-                    direction: flow.direction,
-                    is_attack,
-                    attack_type: if is_attack { Some(attack_type) } else { None },
-                    confidence,
-                    ae_score: 0.0,
-                    anomaly_score: 0.0,
-                    c2_score: 0.0,
-                    packet_count: flow.packet_count() as u64,
-                    flow_duration_us: flow.duration_us(),
-                });
+                append_stage_tensors(&mut stage_scalars, &mut stage_matrices, tensors);
+                chunk_start = chunk_end;
+            }
+            for head in &stage.output_heads {
+                let key = stage_output_key(&stage.id, &head.name);
+                if let Some(threshold) = head.threshold {
+                    thresholds.insert(key.clone(), threshold);
+                }
+                if let Some(min_confidence) = head.min_confidence {
+                    min_confidences.insert(key.clone(), min_confidence);
+                }
+                if let Some(values) = stage_scalars.remove(&head.name) {
+                    scalar_outputs.insert(key, values);
+                } else if let Some(rows) = stage_matrices.remove(&head.name) {
+                    matrix_outputs.insert(key, rows);
+                }
             }
         }
 
+        self.pipeline_detection_results(
+            flows,
+            outputs,
+            detection_rules,
+            labels,
+            normal_label,
+            PipelineOutputs {
+                scalars: &scalar_outputs,
+                matrices: &matrix_outputs,
+                thresholds: &thresholds,
+                min_confidences: &min_confidences,
+            },
+        )
+    }
+
+    fn pipeline_stage_rows(
+        &self,
+        stage: &PipelineStageAdapter,
+        flows: &[FlowSnapshot],
+        scalar_outputs: &HashMap<String, Vec<f32>>,
+    ) -> Result<Vec<Vec<f32>>, MLError> {
+        let mut rows = Vec::with_capacity(flows.len());
+        for (row_idx, flow) in flows.iter().enumerate() {
+            let mut row = Vec::with_capacity(stage.inputs.len());
+            for input in &stage.inputs {
+                match input.source {
+                    StageInputSource::Feature => {
+                        row.push(self.preprocess_pipeline_feature(flow, &input.name, &stage.preprocessing)? as f32);
+                    }
+                    StageInputSource::StageOutput => {
+                        let Some(source_stage) = input.stage.as_ref() else {
+                            return Err(MLError::ConfigInvalid("pipeline input missing source stage"));
+                        };
+                        let Some(source_output) = input.output.as_ref() else {
+                            return Err(MLError::ConfigInvalid("pipeline input missing source output"));
+                        };
+                        let key = stage_output_key(source_stage, source_output);
+                        let Some(values) = scalar_outputs.get(&key) else {
+                            return Err(MLError::ConfigInvalid(format!(
+                                "pipeline input references missing scalar output {key}"
+                            )));
+                        };
+                        let Some(value) = values.get(row_idx).copied() else {
+                            return Err(MLError::ConfigInvalid(format!(
+                                "pipeline output {key} has no value for row {row_idx}"
+                            )));
+                        };
+                        row.push(value);
+                    }
+                }
+            }
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    fn preprocess_pipeline_feature(
+        &self,
+        flow: &FlowSnapshot,
+        feature_name: &str,
+        steps: &[PreprocessingStep],
+    ) -> Result<f64, MLError> {
+        let mut value = flow.feature_stats.get(feature_name);
+        for step in steps {
+            value = self.apply_preprocessing_step(feature_name, value, step)?;
+        }
+        Ok(value)
+    }
+
+    fn apply_preprocessing_step(
+        &self,
+        feature_name: &str,
+        value: f64,
+        step: &PreprocessingStep,
+    ) -> Result<f64, MLError> {
+        match step {
+            PreprocessingStep::StandardScaler { .. } => {
+                let Some(idx) = self
+                    .config
+                    .ae_feature_names
+                    .iter()
+                    .position(|name| name == feature_name)
+                else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "standard_scaler missing feature '{feature_name}' in sidecar"
+                    )));
+                };
+                let Some(mean) = self.config.ae_scaler_mean.get(idx) else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "standard_scaler missing mean for feature '{feature_name}'"
+                    )));
+                };
+                let Some(std) = self.config.ae_scaler_std.get(idx) else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "standard_scaler missing std for feature '{feature_name}'"
+                    )));
+                };
+                if *std > 0.0 { Ok((value - mean) / std) } else { Ok(0.0) }
+            }
+            PreprocessingStep::MinMaxScaler { .. } => {
+                let Some(params) = self.config.minmax_params.get(feature_name) else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "minmax_scaler missing params for feature '{feature_name}'"
+                    )));
+                };
+                let range = params.max - params.min;
+                if range > 0.0 {
+                    Ok((value - params.min) / range)
+                } else {
+                    Ok(0.0)
+                }
+            }
+            PreprocessingStep::RobustScaler { .. } => {
+                let Some(params) = self.config.robust_params.get(feature_name) else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "robust_scaler missing params for feature '{feature_name}'"
+                    )));
+                };
+                if params.scale > 0.0 {
+                    Ok((value - params.center) / params.scale)
+                } else {
+                    Ok(0.0)
+                }
+            }
+            PreprocessingStep::LogTransform { offset } => {
+                let shifted = value + f64::from(*offset);
+                if shifted <= 0.0 {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "log_transform input for feature '{feature_name}' must be > 0 after offset"
+                    )));
+                }
+                Ok(shifted.ln())
+            }
+            PreprocessingStep::Clip { min, max } => Ok(value.clamp(f64::from(*min), f64::from(*max))),
+            PreprocessingStep::Quantile { .. } => {
+                let Some(params) = self.config.quantile_params.get(feature_name) else {
+                    return Err(MLError::ConfigInvalid(format!(
+                        "quantile preprocessing missing params for feature '{feature_name}'"
+                    )));
+                };
+                quantile_transform(value, &params.values, &params.quantiles, feature_name)
+            }
+        }
+    }
+
+    fn pipeline_detection_results(
+        &self,
+        flows: &[FlowSnapshot],
+        outputs: &[PipelineOutputSpec],
+        detection_rules: &[DetectionRuleSpec],
+        labels: &BTreeMap<String, LabelSpec>,
+        normal_label: &str,
+        pipeline_outputs: PipelineOutputs<'_>,
+    ) -> Vec<DetectionResult> {
+        let mut results = Vec::with_capacity(flows.len());
+        for (idx, flow) in flows.iter().enumerate() {
+            let scores = detection_scores_from_roles(outputs, pipeline_outputs, idx);
+            let candidate = best_rule_candidate(detection_rules, outputs, labels, normal_label, pipeline_outputs, idx);
+
+            results.push(detection_result(
+                flow,
+                candidate.is_some(),
+                candidate.as_ref().map(|c| c.attack_type),
+                DetectionScores {
+                    confidence: candidate.as_ref().map(|c| c.confidence).unwrap_or(scores.confidence),
+                    alert_threshold: candidate.as_ref().map(|c| c.alert_threshold).unwrap_or(1.0),
+                    ae: scores.ae,
+                    anomaly: scores.anomaly,
+                    c2: scores.c2,
+                },
+            ));
+        }
         results
     }
 
-    fn preprocess_ae_features(&self, flow: &FlowData) -> Vec<f32> {
-        let mut features = FlowFeatures::extract(flow, &self.config.ae_feature_names);
-        features.winsorize(&self.config.ae_clip_params, &self.config.ae_feature_names);
-        features.normalize(&self.config.ae_scaler_mean, &self.config.ae_scaler_std);
-        features.clip(self.config.ae_post_clip_min, self.config.ae_post_clip_max);
-        features.features.iter().map(|&x| x as f32).collect()
-    }
-
-    /// Publish a rolling QPS estimate visible in `current_status().info.qps_recent`.
-    /// Called by the engine after each inference tick completes.
     pub fn record_tick_qps(&self, flows_per_second: f32) {
         self.qps_recent
             .store(flows_per_second.max(0.0) as u32, Ordering::Relaxed);
     }
-
-    // -- Circuit breaker ---------------------------------------------------------
 
     fn now_secs() -> u64 {
         SystemTime::now()
@@ -460,44 +391,80 @@ impl Inference {
     }
 
     fn is_circuit_open(&self) -> bool {
-        let open_since = self.circuit_open_since.load(Ordering::Relaxed);
-        if open_since == 0 {
-            return false;
+        let phase = self.cb_phase.load(Ordering::Acquire);
+        match phase {
+            CB_OPEN => {
+                let cooldown = self.app_config.load().ml.circuit_breaker.cooldown_secs;
+                let since_secs = self.cb_open_since_secs.load(Ordering::Acquire);
+                let elapsed = Self::now_secs().saturating_sub(since_secs);
+                if elapsed >= cooldown {
+                    if self
+                        .cb_phase
+                        .compare_exchange(CB_OPEN, CB_HALF_OPEN, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        log!(MLLog::CircuitBreakerReset(cooldown));
+                    }
+                    return false;
+                }
+                true
+            }
+            CB_HALF_OPEN => true,
+            _ => false,
         }
-        let cooldown = self.app_config.load().ml.circuit_breaker_cooldown_secs;
-        let elapsed = Self::now_secs().saturating_sub(open_since);
-        if elapsed >= cooldown {
-            self.circuit_open_since.store(0, Ordering::Relaxed);
-            self.failure_count.store(0, Ordering::Relaxed);
-            self.failure_window_start.store(0, Ordering::Relaxed);
-            log!(MLLog::CircuitBreakerReset(cooldown));
-            return false;
-        }
-        true
+    }
+
+    fn record_success(&self) {
+        self.cb_phase.store(CB_CLOSED, Ordering::Release);
+        self.cb_failure_count.store(0, Ordering::Release);
+        self.cb_window_start_secs.store(0, Ordering::Release);
     }
 
     fn record_failure(&self) {
         let now = Self::now_secs();
-        let window_start = self.failure_window_start.load(Ordering::Relaxed);
         let cfg = self.app_config.load();
-        let window_secs = cfg.ml.circuit_breaker_window_secs;
-        let threshold = cfg.ml.circuit_breaker_threshold;
+        let window_secs = cfg.ml.circuit_breaker.window_secs;
+        let threshold = cfg.ml.circuit_breaker.threshold;
 
-        if window_start == 0 || now.saturating_sub(window_start) > window_secs {
-            self.failure_window_start.store(now, Ordering::Relaxed);
-            self.failure_count.store(1, Ordering::Relaxed);
-            return;
+        let phase = self.cb_phase.load(Ordering::Acquire);
+        match phase {
+            CB_OPEN => return,
+            CB_HALF_OPEN => {
+                if self
+                    .cb_phase
+                    .compare_exchange(CB_HALF_OPEN, CB_OPEN, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    self.cb_open_since_secs.store(now, Ordering::Release);
+                    self.cb_failure_count.store(threshold.max(1), Ordering::Release);
+                    self.cb_window_start_secs.store(now, Ordering::Release);
+                    log!(MLLog::CircuitBreakerOpen(threshold.max(1), window_secs));
+                }
+                return;
+            }
+            _ => {}
         }
 
-        let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count >= threshold {
-            self.circuit_open_since.store(now, Ordering::Relaxed);
+        let window_start = self.cb_window_start_secs.load(Ordering::Acquire);
+        if window_start == 0 || now.saturating_sub(window_start) > window_secs {
+            self.cb_window_start_secs.store(now, Ordering::Release);
+            self.cb_failure_count.store(1, Ordering::Release);
+        } else {
+            self.cb_failure_count.fetch_add(1, Ordering::AcqRel);
+        }
+
+        let count = self.cb_failure_count.load(Ordering::Acquire);
+        if count >= threshold
+            && self
+                .cb_phase
+                .compare_exchange(CB_CLOSED, CB_OPEN, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            self.cb_open_since_secs.store(now, Ordering::Release);
             log!(MLLog::CircuitBreakerOpen(count, window_secs));
         }
     }
 }
-
-// -- Free helpers (can be unit-tested without an Inference) -------------------
 
 fn argmax(probs: &[f32]) -> (usize, f32) {
     probs
@@ -508,7 +475,182 @@ fn argmax(probs: &[f32]) -> (usize, f32) {
         .unwrap_or((0, 0.0))
 }
 
-fn build_flow_key_label(flow: &FlowData) -> String {
+fn quantile_transform(value: f64, values: &[f64], quantiles: &[f64], feature_name: &str) -> Result<f64, MLError> {
+    if values.len() != quantiles.len() || values.len() < 2 {
+        return Err(MLError::ConfigInvalid(format!(
+            "quantile preprocessing for feature '{feature_name}' requires equal-length values/quantiles with at least two points"
+        )));
+    }
+    if value <= values[0] {
+        return Ok(quantiles[0]);
+    }
+    for idx in 1..values.len() {
+        if value <= values[idx] {
+            let low_value = values[idx - 1];
+            let high_value = values[idx];
+            let low_quantile = quantiles[idx - 1];
+            let high_quantile = quantiles[idx];
+            let span = high_value - low_value;
+            if span <= 0.0 {
+                return Ok(high_quantile);
+            }
+            let ratio = (value - low_value) / span;
+            return Ok(low_quantile + ratio * (high_quantile - low_quantile));
+        }
+    }
+    Ok(*quantiles.last().unwrap_or(&1.0))
+}
+
+#[derive(Clone, Copy)]
+struct PipelineOutputs<'a> {
+    scalars: &'a HashMap<String, Vec<f32>>,
+    matrices: &'a HashMap<String, Vec<Vec<f32>>>,
+    thresholds: &'a HashMap<String, f32>,
+    min_confidences: &'a HashMap<String, f32>,
+}
+
+#[derive(Clone, Copy)]
+struct RuleCandidate {
+    confidence: f32,
+    alert_threshold: f32,
+    attack_type: CanonicalAttackType,
+}
+
+fn append_stage_tensors(
+    scalars: &mut HashMap<String, Vec<f32>>,
+    matrices: &mut HashMap<String, Vec<Vec<f32>>>,
+    tensors: Vec<RuntimeTensor>,
+) {
+    for tensor in tensors {
+        match tensor {
+            RuntimeTensor::Scalar { name, values } => {
+                scalars.entry(name).or_default().extend(values);
+            }
+            RuntimeTensor::Matrix { name, rows } => {
+                matrices.entry(name).or_default().extend(rows);
+            }
+        }
+    }
+}
+
+fn pipeline_output_key(outputs: &[PipelineOutputSpec], reference: &str) -> Option<String> {
+    outputs
+        .iter()
+        .find(|output| output_matches_ref(output, reference))
+        .map(|output| stage_output_key(&output.stage, &output.output))
+}
+
+fn detection_scores_from_roles(
+    outputs: &[PipelineOutputSpec],
+    pipeline_outputs: PipelineOutputs<'_>,
+    row_idx: usize,
+) -> DetectionScores {
+    let mut scores = DetectionScores {
+        confidence: 0.0,
+        alert_threshold: 1.0,
+        ae: 0.0,
+        anomaly: 0.0,
+        c2: 0.0,
+    };
+    for output in outputs {
+        let key = stage_output_key(&output.stage, &output.output);
+        let value = pipeline_outputs
+            .scalars
+            .get(&key)
+            .and_then(|values| values.get(row_idx))
+            .copied();
+        match (output.role, value) {
+            (OutputRole::AnomalyScore, Some(v)) => scores.ae = scores.ae.max(v),
+            (OutputRole::BinaryScore, Some(v)) => scores.anomaly = scores.anomaly.max(v),
+            (OutputRole::C2Score, Some(v)) => scores.c2 = scores.c2.max(v),
+            _ => {}
+        }
+    }
+    scores.confidence = scores.ae.max(scores.anomaly).max(scores.c2);
+    scores
+}
+
+fn best_rule_candidate(
+    rules: &[DetectionRuleSpec],
+    outputs: &[PipelineOutputSpec],
+    labels: &BTreeMap<String, LabelSpec>,
+    normal_label: &str,
+    pipeline_outputs: PipelineOutputs<'_>,
+    row_idx: usize,
+) -> Option<RuleCandidate> {
+    rules
+        .iter()
+        .filter_map(|rule| evaluate_rule(rule, outputs, labels, normal_label, pipeline_outputs, row_idx))
+        .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(CmpOrdering::Equal))
+}
+
+fn evaluate_rule(
+    rule: &DetectionRuleSpec,
+    outputs: &[PipelineOutputSpec],
+    labels: &BTreeMap<String, LabelSpec>,
+    normal_label: &str,
+    pipeline_outputs: PipelineOutputs<'_>,
+    row_idx: usize,
+) -> Option<RuleCandidate> {
+    match rule {
+        DetectionRuleSpec::Threshold { output, attack, .. } => {
+            let key = pipeline_output_key(outputs, output)?;
+            let value = pipeline_outputs.scalars.get(&key)?.get(row_idx).copied()?;
+            let threshold = pipeline_outputs.thresholds.get(&key).copied()?;
+            if value <= threshold {
+                return None;
+            }
+            attack_type_from_mapping(attack, outputs, labels, normal_label, pipeline_outputs, row_idx).map(
+                |attack_type| RuleCandidate {
+                    confidence: value,
+                    alert_threshold: threshold,
+                    attack_type,
+                },
+            )
+        }
+        DetectionRuleSpec::ClassConfidence { output, attack, .. } => {
+            let key = pipeline_output_key(outputs, output)?;
+            let row = pipeline_outputs.matrices.get(&key)?.get(row_idx)?;
+            let (_, confidence) = argmax(row);
+            let min_confidence = pipeline_outputs.min_confidences.get(&key).copied()?;
+            if confidence < min_confidence {
+                return None;
+            }
+            attack_type_from_mapping(attack, outputs, labels, normal_label, pipeline_outputs, row_idx).map(
+                |attack_type| RuleCandidate {
+                    confidence,
+                    alert_threshold: min_confidence,
+                    attack_type,
+                },
+            )
+        }
+    }
+}
+
+fn attack_type_from_mapping(
+    attack: &AttackMappingSpec,
+    outputs: &[PipelineOutputSpec],
+    labels: &BTreeMap<String, LabelSpec>,
+    normal_label: &str,
+    pipeline_outputs: PipelineOutputs<'_>,
+    row_idx: usize,
+) -> Option<CanonicalAttackType> {
+    match attack {
+        AttackMappingSpec::PredictedClass { output, exclude_normal } => {
+            let key = pipeline_output_key(outputs, output)?;
+            let row = pipeline_outputs.matrices.get(&key)?.get(row_idx)?;
+            let (predicted_class, _) = argmax(row);
+            let label = labels.get(&predicted_class.to_string())?;
+            if *exclude_normal && label.name.eq_ignore_ascii_case(normal_label) {
+                return None;
+            }
+            Some(translate(DetectionSource::ML, &label.name))
+        }
+        AttackMappingSpec::FixedLabel { label } => Some(translate(DetectionSource::ML, label)),
+    }
+}
+
+fn build_flow_key_label(flow: &FlowSnapshot) -> String {
     format!(
         "{}:{} -> {}:{} (proto {}) [{}]",
         flow.flow_key.src_ip_string(),
@@ -520,73 +662,50 @@ fn build_flow_key_label(flow: &FlowData) -> String {
     )
 }
 
-/// Run an autoencoder-style model: output shape == input shape, score is
-/// per-row mean squared error between input and reconstruction.
-fn run_ae_batch(
-    model: &RunnableModel,
-    input: &tract_ndarray::Array2<f32>,
-    actual: usize,
-    n_features: usize,
-) -> TractResult<Vec<f32>> {
-    let result = model.run(tvec![input.clone().into_tensor().into()])?;
-    let output = result[0]
-        .to_array_view::<f32>()?
-        .into_dimensionality::<tract_ndarray::Ix2>()?;
-    let diff = input - &output;
-    let sq = &diff * &diff;
+struct DetectionScores {
+    confidence: f32,
+    alert_threshold: f32,
+    ae: f32,
+    anomaly: f32,
+    c2: f32,
+}
 
-    let mut scores = Vec::with_capacity(actual);
-    let n_f = n_features as f32;
-    for i in 0..actual {
-        scores.push(sq.row(i).sum() / n_f);
+fn detection_result(
+    flow: &FlowSnapshot,
+    is_attack: bool,
+    attack_type: Option<CanonicalAttackType>,
+    scores: DetectionScores,
+) -> DetectionResult {
+    DetectionResult {
+        flow_key: if is_attack {
+            build_flow_key_label(flow)
+        } else {
+            String::new()
+        },
+        flow_key_raw: flow.flow_key,
+        direction: flow.direction,
+        is_attack,
+        attack_type,
+        confidence: scores.confidence,
+        alert_threshold: scores.alert_threshold,
+        ae_score: scores.ae,
+        anomaly_score: scores.anomaly,
+        c2_score: scores.c2,
+        packet_count: flow.packet_count as u64,
+        flow_duration_us: flow.duration_us(),
     }
-    Ok(scores)
-}
-
-/// Run a 3-output multi-task classifier: (anomaly, class_probs, c2_score).
-fn run_classifier_batch(
-    model: &RunnableModel,
-    input: tract_ndarray::Array2<f32>,
-    actual: usize,
-) -> TractResult<ClassifierBatchOutput> {
-    let result = model.run(tvec![input.into_tensor().into()])?;
-
-    let anomaly_view = result[0].to_array_view::<f32>()?;
-    let anomaly: Vec<f32> = (0..actual)
-        .map(|i| anomaly_view.as_slice().map(|s| s[i]).unwrap_or(0.0))
-        .collect();
-
-    let class_view = result[1]
-        .to_array_view::<f32>()?
-        .into_dimensionality::<tract_ndarray::Ix2>()?;
-    let class_probs: Vec<Vec<f32>> = (0..actual)
-        .map(|i| class_view.row(i).iter().copied().collect())
-        .collect();
-
-    let c2_view = result[2].to_array_view::<f32>()?;
-    let c2: Vec<f32> = (0..actual)
-        .map(|i| c2_view.as_slice().map(|s| s[i]).unwrap_or(0.0))
-        .collect();
-
-    Ok((anomaly, class_probs, c2))
-}
-
-/// Run a single-output classifier (ClassifierOnly adapter).
-fn run_classifier_only_batch(
-    model: &RunnableModel,
-    input: tract_ndarray::Array2<f32>,
-    actual: usize,
-) -> TractResult<Vec<Vec<f32>>> {
-    let result = model.run(tvec![input.into_tensor().into()])?;
-    let view = result[0]
-        .to_array_view::<f32>()?
-        .into_dimensionality::<tract_ndarray::Ix2>()?;
-    Ok((0..actual).map(|i| view.row(i).iter().copied().collect()).collect())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
     use super::*;
+    use crate::domain::detection::manifest::{
+        AttackMappingSpec, DetectionRuleSpec, LabelSpec, OutputRole, PipelineOutputSpec,
+    };
+    use crate::domain::detection::ml_detection::ClipParams;
+    use crate::domain::detection::ml_inference_config::{MinMaxParams, QuantileParams, RobustParams};
 
     #[test]
     fn argmax_picks_highest() {
@@ -602,11 +721,234 @@ mod tests {
 
     #[test]
     fn argmax_equal_picks_last() {
-        // Iterator::max_by returns the LAST element when comparisons are
-        // equal (in contrast to min_by). Ties in softmax probabilities are
-        // rare in practice, and "last wins" is a consistent contract across
-        // this codebase.
         let (idx, _) = argmax(&[0.25, 0.25, 0.25, 0.25]);
         assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn detection_rules_use_manifest_output_aliases() {
+        let outputs = vec![
+            PipelineOutputSpec {
+                stage: "detector".to_string(),
+                output: "raw_score".to_string(),
+                alias: Some("threat_score".to_string()),
+                role: OutputRole::BinaryScore,
+            },
+            PipelineOutputSpec {
+                stage: "classifier".to_string(),
+                output: "probabilities".to_string(),
+                alias: Some("family_probs".to_string()),
+                role: OutputRole::ClassProbabilities,
+            },
+        ];
+        let rules = vec![DetectionRuleSpec::Threshold {
+            id: "threat_score_threshold".to_string(),
+            output: "threat_score".to_string(),
+            attack: AttackMappingSpec::PredictedClass {
+                output: "family_probs".to_string(),
+                exclude_normal: true,
+            },
+        }];
+        let labels = BTreeMap::from([
+            (
+                "0".to_string(),
+                LabelSpec {
+                    name: "Normal".to_string(),
+                    confirmations: None,
+                    playbook: None,
+                },
+            ),
+            (
+                "1".to_string(),
+                LabelSpec {
+                    name: "Bot".to_string(),
+                    confirmations: Some(1),
+                    playbook: None,
+                },
+            ),
+        ]);
+        let scalars = HashMap::from([("detector.raw_score".to_string(), vec![0.92])]);
+        let matrices = HashMap::from([("classifier.probabilities".to_string(), vec![vec![0.1, 0.9]])]);
+        let thresholds = HashMap::from([("detector.raw_score".to_string(), 0.7)]);
+        let min_confidences = HashMap::new();
+        let pipeline_outputs = PipelineOutputs {
+            scalars: &scalars,
+            matrices: &matrices,
+            thresholds: &thresholds,
+            min_confidences: &min_confidences,
+        };
+
+        let candidate = best_rule_candidate(&rules, &outputs, &labels, "Normal", pipeline_outputs, 0)
+            .expect("threshold should fire");
+
+        assert_eq!(candidate.attack_type, CanonicalAttackType::BotActivity);
+        assert!((candidate.confidence - 0.92).abs() < 1e-6);
+        assert!((candidate.alert_threshold - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn predicted_class_mapping_can_exclude_normal() {
+        let outputs = vec![PipelineOutputSpec {
+            stage: "classifier".to_string(),
+            output: "probabilities".to_string(),
+            alias: Some("family_probs".to_string()),
+            role: OutputRole::ClassProbabilities,
+        }];
+        let rules = vec![DetectionRuleSpec::ClassConfidence {
+            id: "class_confidence".to_string(),
+            output: "family_probs".to_string(),
+            attack: AttackMappingSpec::PredictedClass {
+                output: "family_probs".to_string(),
+                exclude_normal: true,
+            },
+        }];
+        let labels = BTreeMap::from([(
+            "0".to_string(),
+            LabelSpec {
+                name: "Normal".to_string(),
+                confirmations: None,
+                playbook: None,
+            },
+        )]);
+        let scalars = HashMap::new();
+        let matrices = HashMap::from([("classifier.probabilities".to_string(), vec![vec![0.99]])]);
+        let thresholds = HashMap::new();
+        let min_confidences = HashMap::from([("classifier.probabilities".to_string(), 0.4)]);
+        let pipeline_outputs = PipelineOutputs {
+            scalars: &scalars,
+            matrices: &matrices,
+            thresholds: &thresholds,
+            min_confidences: &min_confidences,
+        };
+
+        assert!(best_rule_candidate(&rules, &outputs, &labels, "Normal", pipeline_outputs, 0).is_none());
+    }
+
+    #[test]
+    fn manifest_preprocessing_steps_are_executed_in_order() {
+        let mut config = test_inference_config();
+        config.ae_feature_names = vec!["flow_duration".to_string()];
+        config.ae_scaler_mean = vec![10.0];
+        config.ae_scaler_std = vec![2.0];
+        config
+            .minmax_params
+            .insert("flow_duration".to_string(), MinMaxParams { min: 0.0, max: 10.0 });
+        config.robust_params.insert(
+            "flow_duration".to_string(),
+            RobustParams {
+                center: 0.5,
+                scale: 0.5,
+            },
+        );
+        config.quantile_params.insert(
+            "flow_duration".to_string(),
+            QuantileParams {
+                values: vec![0.0, 1.0],
+                quantiles: vec![0.0, 100.0],
+            },
+        );
+        let inference = Inference::new(
+            ModelSourceState::Dormant,
+            Arc::new(config),
+            Arc::new(ArcSwap::from_pointee(AppConfig::defaults())),
+        );
+
+        let steps = [
+            PreprocessingStep::StandardScaler {
+                sidecar: "inference_config.json".to_string(),
+            },
+            PreprocessingStep::Clip { min: 0.0, max: 10.0 },
+            PreprocessingStep::MinMaxScaler {
+                sidecar: "inference_config.json".to_string(),
+            },
+            PreprocessingStep::RobustScaler {
+                sidecar: "inference_config.json".to_string(),
+            },
+            PreprocessingStep::Quantile {
+                sidecar: "inference_config.json".to_string(),
+            },
+        ];
+
+        let value = steps.iter().try_fold(30.0, |value, step| {
+            inference.apply_preprocessing_step("flow_duration", value, step)
+        });
+
+        assert_eq!(value.expect("preprocess"), 100.0);
+    }
+
+    #[test]
+    fn first_failure_opens_circuit_when_threshold_is_one() {
+        let mut app_config = AppConfig::defaults();
+        app_config.ml.circuit_breaker.threshold = 1;
+        app_config.ml.circuit_breaker.cooldown_secs = 60;
+
+        let inference = Inference::new(
+            ModelSourceState::Dormant,
+            Arc::new(test_inference_config()),
+            Arc::new(ArcSwap::from_pointee(app_config)),
+        );
+
+        inference.record_failure();
+
+        assert!(inference.is_circuit_open());
+    }
+
+    #[test]
+    fn cooldown_allows_only_one_half_open_trial() {
+        let mut app_config = AppConfig::defaults();
+        app_config.ml.circuit_breaker.threshold = 1;
+        app_config.ml.circuit_breaker.cooldown_secs = 0;
+
+        let inference = Inference::new(
+            ModelSourceState::Dormant,
+            Arc::new(test_inference_config()),
+            Arc::new(ArcSwap::from_pointee(app_config)),
+        );
+
+        inference.record_failure();
+
+        assert!(!inference.is_circuit_open());
+        assert!(inference.is_circuit_open());
+    }
+
+    #[test]
+    fn half_open_failure_reopens_circuit() {
+        let mut app_config = AppConfig::defaults();
+        app_config.ml.circuit_breaker.threshold = 1;
+        app_config.ml.circuit_breaker.cooldown_secs = 0;
+
+        let inference = Inference::new(
+            ModelSourceState::Dormant,
+            Arc::new(test_inference_config()),
+            Arc::new(ArcSwap::from_pointee(app_config)),
+        );
+
+        inference.record_failure();
+        assert!(!inference.is_circuit_open());
+        inference.record_failure();
+
+        assert!(!inference.is_circuit_open());
+        assert!(inference.is_circuit_open());
+    }
+
+    fn test_inference_config() -> MLInferenceConfig {
+        MLInferenceConfig {
+            ae_feature_names: vec!["Destination Port".to_string()],
+            ae_clip_params: HashMap::from([(
+                "Destination Port".to_string(),
+                ClipParams {
+                    lower: 0.0,
+                    upper: 65_535.0,
+                },
+            )]),
+            ae_scaler_mean: vec![0.0],
+            ae_scaler_std: vec![1.0],
+            ae_post_clip_min: -5.0,
+            ae_post_clip_max: 5.0,
+            classifier_feature_names: vec!["Destination Port".to_string()],
+            minmax_params: HashMap::new(),
+            robust_params: HashMap::new(),
+            quantile_params: HashMap::new(),
+        }
     }
 }

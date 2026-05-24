@@ -6,15 +6,17 @@ use tracing::level_filters::LevelFilter;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::Directive;
 use tracing_subscriber::filter::EnvFilter;
-use tracing_subscriber::fmt::layer as fmt_layer;
+use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, filter, reload};
 
+use crate::common::error::Error;
+use crate::common::error::io::IOError;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::io::IOError;
 use crate::infrastructure::log_buffer::{LogBuffer, LogBufferLayer};
+use crate::interface::system::system_control::LogLevelControl;
+
 pub trait FilterControl: Send + Sync {
     fn reload_filter(&self, filter: EnvFilter) -> Result<(), String>;
     fn current_filter(&self) -> String;
@@ -33,14 +35,14 @@ impl Logger {
 
         let file_appender = RollingFileAppender::new(Rotation::DAILY, log_directory, "NetGuardia");
 
-        let stdout_layer = fmt_layer()
+        let stdout_layer = fmt::layer()
             .with_file(true)
             .with_line_number(true)
             .with_thread_ids(true)
             .with_target(false)
             .with_ansi(true);
 
-        let file_layer = fmt_layer()
+        let file_layer = fmt::layer()
             .with_file(false)
             .with_line_number(false)
             .with_thread_ids(false)
@@ -92,7 +94,7 @@ impl Logger {
     }
 
     pub fn initialize_cli() -> Result<(), Error> {
-        let stdout_layer = fmt_layer()
+        let stdout_layer = fmt::layer()
             .without_time()
             .with_level(false)
             .with_target(false)
@@ -103,7 +105,7 @@ impl Logger {
             .with_writer(io::stdout)
             .with_filter(LevelFilter::INFO);
 
-        let stderr_layer = fmt_layer()
+        let stderr_layer = fmt::layer()
             .without_time()
             .with_level(false)
             .with_target(false)
@@ -146,6 +148,16 @@ impl Logger {
     }
 }
 
+impl LogLevelControl for Logger {
+    fn current_level(&self) -> String {
+        Logger::current_level(self)
+    }
+
+    fn set_level(&self, level: &str) -> Result<String, String> {
+        Logger::set_level(self, level)
+    }
+}
+
 impl<L> FilterControl for reload::Handle<EnvFilter, L> {
     fn reload_filter(&self, filter: EnvFilter) -> Result<(), String> {
         self.reload(filter).map_err(|e| e.to_string())
@@ -161,7 +173,7 @@ fn extract_main_level(raw: &str) -> String {
     raw.split(',')
         .map(str::trim)
         .find(|d| !d.is_empty() && !d.contains('='))
-        .unwrap_or(raw)
+        .unwrap_or("info")
         .to_lowercase()
 }
 
@@ -177,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_when_no_bare_level() {
-        assert_eq!(extract_main_level("maxminddb=warn"), "maxminddb=warn");
+    fn falls_back_to_info_when_no_bare_level() {
+        assert_eq!(extract_main_level("maxminddb=warn"), "info");
     }
 }

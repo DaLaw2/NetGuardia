@@ -1,11 +1,13 @@
+use core::slice;
+
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::{Array, HashMap};
-use common::define::setting::MAX_RULES;
-use common::define::tcp_flags::*;
-use common::model::http_method::HttpMethodBitmap;
-use common::model::ip_address::*;
-use common::model::parsed_packet::ParsedPacket;
-use common::model::placeholder::PlaceHolder;
+use net_guardia_abi::define::setting::MAX_RULES;
+use net_guardia_abi::define::tcp_flags::*;
+use net_guardia_abi::model::empty::EmptyMapValue;
+use net_guardia_abi::model::http_method::HttpMethodBitmap;
+use net_guardia_abi::model::ip_address::*;
+use net_guardia_abi::model::parsed_packet::ParsedPacket;
 use network_types::ip::IpProto;
 
 #[map]
@@ -13,19 +15,19 @@ static IPV4_HTTP_SERVICE: HashMap<AddrPortV4, HttpMethodBitmap> = HashMap::with_
 #[map]
 static IPV6_HTTP_SERVICE: HashMap<AddrPortV6, HttpMethodBitmap> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static SSH_WHITE_LIST_ENABLE: Array<PlaceHolder> = Array::with_max_entries(1, 0);
+static SSH_WHITE_LIST_ENABLE: Array<EmptyMapValue> = Array::with_max_entries(1, 0);
 #[map]
-static IPV4_SSH_SERVICE: HashMap<AddrPortV4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV4_SSH_SERVICE: HashMap<AddrPortV4, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_SERVICE: HashMap<AddrPortV6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV6_SSH_SERVICE: HashMap<AddrPortV6, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_SSH_WHITE_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV4_SSH_WHITE_LIST: HashMap<IPv4, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_WHITE_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV6_SSH_WHITE_LIST: HashMap<IPv6, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV4_SSH_BLACK_LIST: HashMap<IPv4, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV4_SSH_BLACK_LIST: HashMap<IPv4, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 #[map]
-static IPV6_SSH_BLACK_LIST: HashMap<IPv6, PlaceHolder> = HashMap::with_max_entries(MAX_RULES as u32, 0);
+static IPV6_SSH_BLACK_LIST: HashMap<IPv6, EmptyMapValue> = HashMap::with_max_entries(MAX_RULES as u32, 0);
 
 pub fn ipv4_service_rule_violation(start: usize, end: usize, pkt: &ParsedPacket) -> bool {
     let source = pkt.src_addr_v4();
@@ -51,7 +53,7 @@ fn http_service_violation<K>(
 ) -> bool {
     match map.get_ptr_mut(destination) {
         Some(allow_method) => {
-            if !matches!(pkt.protocol, IpProto::Tcp) {
+            if pkt.protocol != IpProto::Tcp as u8 {
                 return false;
             }
             if pkt.tcp_flags & (TCP_SYN | TCP_RST | TCP_FIN) != 0 {
@@ -64,15 +66,17 @@ fn http_service_violation<K>(
                 return false;
             }
             let l4_offset = match pkt.ip_version {
-                4 => 14 + ((unsafe { *((start + 14) as *const u8) } & 0x0F) as usize) * 4,
-                6 => 14 + 40,
+                value if value == IpVersion::V4.as_u8() => {
+                    14 + ((unsafe { *((start + 14) as *const u8) } & 0x0F) as usize) * 4
+                }
+                value if value == IpVersion::V6.as_u8() => 14 + 40,
                 _ => return false,
             };
             if start + l4_offset + 13 > end {
                 return false;
             }
             let doff = (unsafe { *((start + l4_offset + 12) as *const u8) } >> 4) as usize;
-            if doff < 5 || doff > 15 {
+            if !(5..=15).contains(&doff) {
                 return false;
             }
             let payload_offset = l4_offset + doff * 4;
@@ -90,7 +94,7 @@ fn get_http_request_method(start: usize, end: usize, offset: usize) -> Option<Ht
     if start + offset + 8 > end {
         return None;
     }
-    let data = unsafe { core::slice::from_raw_parts((start + offset) as *const u8, 8) };
+    let data = unsafe { slice::from_raw_parts((start + offset) as *const u8, 8) };
     match &data[..4] {
         b"GET " => Some(1 << 0),
         b"POST" if &data[4..5] == b" " => Some(1 << 1),

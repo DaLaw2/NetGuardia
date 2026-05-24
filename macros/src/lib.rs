@@ -1,5 +1,6 @@
 mod config;
 mod error_enum;
+mod fallible;
 mod log;
 mod loggable;
 mod traceable;
@@ -9,6 +10,11 @@ use proc_macro::TokenStream;
 #[proc_macro_attribute]
 pub fn config_settings(attr: TokenStream, item: TokenStream) -> TokenStream {
     config::config_settings_impl(attr, item)
+}
+
+#[proc_macro]
+pub fn fallible(input: TokenStream) -> TokenStream {
+    fallible::fallible_impl(input)
 }
 
 #[proc_macro]

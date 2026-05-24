@@ -1,10 +1,9 @@
-use async_trait::async_trait;
-use rusqlite::params;
+use rusqlite::{Error as RusqliteError, params};
 
 use super::Database;
-use crate::domain::common::error::Error;
-use crate::domain::response::playbook_data::{ActiveBlockView, PendingUnblock};
-use crate::interface::db_admin::DbAdminRepo;
+use crate::common::error::Error;
+use crate::domain::data_plane::ip_version::IpVersion;
+use crate::interface::response::playbook_data::{ActiveBlockView, PendingUnblock};
 
 fn active_block_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActiveBlockView> {
     Ok(ActiveBlockView {
@@ -35,12 +34,10 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE expires_at <= datetime('now') AND unblocked_at IS NULL",
                 )?;
-                let rows = stmt.query_map([], active_block_from_row)?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                let rows = stmt
+                    .query_map([], active_block_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
             })
             .await
     }
@@ -55,7 +52,7 @@ impl Database {
                 );
                 match result {
                     Ok(block) => Ok(Some(block)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(e.into()),
                 }
             })
@@ -80,12 +77,10 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, source_ip, playbook_id, expires_at FROM soar_block_rules WHERE unblocked_at IS NULL AND expires_at > datetime('now')"
                 )?;
-                let rows = stmt.query_map([], active_block_from_row)?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                let rows = stmt
+                    .query_map([], active_block_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
             })
             .await
     }
@@ -106,19 +101,20 @@ impl Database {
     pub async fn list_pending_unblocks(&self) -> Result<Vec<PendingUnblock>, Error> {
         self.pool
             .conn_and_then(move |conn| {
-                let mut stmt = conn.prepare("SELECT id, source_ip, retry_count FROM pending_unblock ORDER BY id")?;
+                let mut stmt = conn.prepare(
+                    "SELECT id, source_ip, retry_count, exhausted_at, last_error
+                     FROM pending_unblock ORDER BY id",
+                )?;
                 let rows = stmt.query_map([], |row| {
                     Ok(PendingUnblock {
                         id: row.get::<_, i64>(0)?,
                         source_ip: row.get::<_, String>(1)?,
                         retry_count: row.get::<_, i64>(2)?,
+                        exhausted_at: row.get::<_, Option<String>>(3)?,
+                        last_error: row.get::<_, Option<String>>(4)?,
                     })
                 })?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -127,6 +123,21 @@ impl Database {
         self.pool
             .conn_and_then(move |conn| {
                 conn.execute("DELETE FROM pending_unblock WHERE id = ?1", params![id])?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn mark_pending_unblock_exhausted(&self, id: i64, last_error: &str) -> Result<(), Error> {
+        let last_error = last_error.to_string();
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "UPDATE pending_unblock
+                     SET exhausted_at = datetime('now'), last_error = ?2
+                     WHERE id = ?1",
+                    params![id, last_error],
+                )?;
                 Ok(())
             })
             .await
@@ -147,10 +158,11 @@ impl Database {
     pub async fn commit_soar_block_to_db(
         &self,
         source_ip: &str,
-        ip_version: u8,
+        ip_version: IpVersion,
         playbook_id: i64,
         expires_at: &str,
     ) -> Result<i64, Error> {
+        let ip_version = ip_version.as_u8();
         let source_ip = source_ip.to_string();
         let expires_at = expires_at.to_string();
         self.pool
@@ -192,9 +204,10 @@ impl Database {
     pub async fn commit_soar_unblock_to_db(
         &self,
         soar_block_id: i64,
-        ip_version: u8,
+        ip_version: IpVersion,
         source_ip: &str,
     ) -> Result<(), Error> {
+        let ip_version = ip_version.as_u8();
         let source_ip = source_ip.to_string();
         self.pool
             .conn_mut_and_then(move |conn| {
@@ -231,58 +244,35 @@ impl Database {
     }
 }
 
-#[async_trait]
-impl DbAdminRepo for Database {
-    async fn commit_soar_block_to_db(
-        &self,
-        source_ip: &str,
-        ip_version: u8,
-        playbook_id: i64,
-        expires_at: &str,
-    ) -> Result<i64, Error> {
-        self.commit_soar_block_to_db(source_ip, ip_version, playbook_id, expires_at)
-            .await
-    }
-
-    async fn commit_soar_unblock_to_db(
-        &self,
-        soar_block_id: i64,
-        ip_version: u8,
-        source_ip: &str,
-    ) -> Result<(), Error> {
-        self.commit_soar_unblock_to_db(soar_block_id, ip_version, source_ip)
-            .await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::data_plane::acl_rule::AclRuleView;
+    use crate::domain::data_plane::direction::FlowDirection;
+    use crate::domain::data_plane::list_type::ListType;
 
     const SOURCE_IP: &str = "198.51.100.42";
     const ACTIVE_UNTIL: &str = "2999-01-01 00:00:00";
 
-    fn acl_contains(rules: &[AclRuleViewForTest], ip: &str) -> bool {
-        rules
-            .iter()
-            .any(|rule| rule.ip_address == ip && rule.direction == "source" && rule.list_type == "blacklist")
+    fn acl_contains(rules: &[AclRuleView], ip: &str) -> bool {
+        rules.iter().any(|rule| {
+            rule.ip_address == ip && rule.direction == FlowDirection::Source && rule.list_type == ListType::Black
+        })
     }
-
-    type AclRuleViewForTest = crate::domain::data_plane::acl_rule::AclRuleView;
 
     #[tokio::test]
     async fn overlapping_soar_blocks_keep_acl_until_last_block_unblocks() {
         let db = Database::new(":memory:").await.expect("database");
         let first = db
-            .commit_soar_block_to_db(SOURCE_IP, 4, 1, ACTIVE_UNTIL)
+            .commit_soar_block_to_db(SOURCE_IP, IpVersion::V4, 1, ACTIVE_UNTIL)
             .await
             .expect("first block");
         let second = db
-            .commit_soar_block_to_db(SOURCE_IP, 4, 2, ACTIVE_UNTIL)
+            .commit_soar_block_to_db(SOURCE_IP, IpVersion::V4, 2, ACTIVE_UNTIL)
             .await
             .expect("second block");
 
-        db.commit_soar_unblock_to_db(first, 4, SOURCE_IP)
+        db.commit_soar_unblock_to_db(first, IpVersion::V4, SOURCE_IP)
             .await
             .expect("first unblock");
         assert!(
@@ -290,7 +280,7 @@ mod tests {
             "ACL row must stay while an overlapping SOAR block is active"
         );
 
-        db.commit_soar_unblock_to_db(second, 4, SOURCE_IP)
+        db.commit_soar_unblock_to_db(second, IpVersion::V4, SOURCE_IP)
             .await
             .expect("second unblock");
         assert!(
@@ -302,15 +292,22 @@ mod tests {
     #[tokio::test]
     async fn manual_acl_existing_before_soar_block_is_preserved_on_unblock() {
         let db = Database::new(":memory:").await.expect("database");
-        db.insert_acl_rule(4, "source", "blacklist", SOURCE_IP, 0)
-            .await
-            .expect("manual acl");
+        db.insert_acl_rule(
+            IpVersion::V4,
+            FlowDirection::Source,
+            ListType::Black,
+            SOURCE_IP,
+            0,
+            false,
+        )
+        .await
+        .expect("manual acl");
         let block = db
-            .commit_soar_block_to_db(SOURCE_IP, 4, 1, ACTIVE_UNTIL)
+            .commit_soar_block_to_db(SOURCE_IP, IpVersion::V4, 1, ACTIVE_UNTIL)
             .await
             .expect("soar block");
 
-        db.commit_soar_unblock_to_db(block, 4, SOURCE_IP)
+        db.commit_soar_unblock_to_db(block, IpVersion::V4, SOURCE_IP)
             .await
             .expect("unblock");
 

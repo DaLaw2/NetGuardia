@@ -1,15 +1,19 @@
+use std::cmp::Reverse;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use moka::sync::Cache;
 
 use crate::core::inference::engine::Engine;
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::flow_stats::{
     FlowPushPayload, FlowStatsEntry, FlowStatsLimits, FlowSubscription, FlowSummary, StatsSummary,
 };
+use crate::domain::data_plane::ip_version::IpVersion;
 use crate::domain::detection::flow_tracker::FlowData;
 
-/// Conversion from core::ml::FlowData to model::FlowStatsEntry.
-/// Placed here (core layer) to maintain dependency rule: model/ must not import core/.
+const FLOW_PAYLOAD_CACHE_MAX_ENTRIES: u64 = 256;
+
 impl From<&FlowData> for FlowStatsEntry {
     fn from(flow: &FlowData) -> Self {
         Self {
@@ -33,11 +37,39 @@ impl From<&FlowData> for FlowStatsEntry {
 pub struct FlowStatistics {
     engine: Arc<Engine>,
     limits: FlowStatsLimits,
+    payload_cache: Cache<FlowSnapshotKey, CachedFlowPayload>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FlowSnapshotKey {
+    direction: Option<Direction>,
+    window_secs: Option<u64>,
+    top_n: Option<usize>,
+}
+
+impl FlowSnapshotKey {
+    fn from_subscription(sub: &FlowSubscription) -> Self {
+        Self {
+            direction: sub.direction,
+            window_secs: sub.window_secs,
+            top_n: sub.top_n,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CachedFlowPayload {
+    generated_at: Instant,
+    json: String,
 }
 
 impl FlowStatistics {
     pub fn new(engine: Arc<Engine>, limits: FlowStatsLimits) -> Self {
-        Self { engine, limits }
+        Self {
+            engine,
+            limits,
+            payload_cache: Cache::builder().max_capacity(FLOW_PAYLOAD_CACHE_MAX_ENTRIES).build(),
+        }
     }
 
     pub fn get_all_flows(&self) -> Vec<FlowStatsEntry> {
@@ -64,19 +96,27 @@ impl FlowStatistics {
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
 
-        let mut flows = self.collect_flows(None);
-
-        if let Some(dir) = &sub.direction {
-            flows.retain(|f| &f.direction == dir);
+        let direction = sub.direction;
+        let cutoff = sub
+            .window_secs
+            .map(|window_secs| flow_window_cutoff_us(now_us, window_secs));
+        let mut flows = Vec::new();
+        for tracker in self.engine.trackers() {
+            flows.extend(tracker.get_filtered_flow_stats(
+                |flow| {
+                    direction.is_none_or(|dir| flow.direction == dir)
+                        && cutoff.is_none_or(|cutoff| flow.last_time_us >= cutoff)
+                },
+                |flow| FlowStatsEntry::from(flow),
+            ));
         }
 
-        if let Some(window_secs) = sub.window_secs {
-            let cutoff = now_us.saturating_sub(window_secs * 1_000_000);
-            flows.retain(|f| f.last_seen_us >= cutoff);
+        let limit = self.limits.result_limit(sub.top_n);
+        if flows.len() > limit {
+            flows.select_nth_unstable_by_key(limit, |f| Reverse(total_flow_bytes(f)));
+            flows.truncate(limit);
         }
-
-        flows.sort_by_key(|f| std::cmp::Reverse(f.fwd_bytes + f.bwd_bytes));
-        flows.truncate(self.limits.result_limit(sub.top_n));
+        flows.sort_by_key(|f| Reverse(total_flow_bytes(f)));
 
         flows
     }
@@ -100,12 +140,20 @@ impl FlowStatistics {
         let mut egress_bytes_v6: u64 = 0;
 
         for f in &flows {
-            let bytes = f.fwd_bytes + f.bwd_bytes;
+            let bytes = total_flow_bytes(f);
             match (f.direction, f.ip_version) {
-                (Direction::Ingress, 6) => ingress_bytes_v6 += bytes,
-                (Direction::Ingress, _) => ingress_bytes_v4 += bytes,
-                (Direction::Egress, 6) => egress_bytes_v6 += bytes,
-                (Direction::Egress, _) => egress_bytes_v4 += bytes,
+                (Direction::Ingress, IpVersion::V6) => {
+                    ingress_bytes_v6 = ingress_bytes_v6.saturating_add(bytes);
+                }
+                (Direction::Ingress, _) => {
+                    ingress_bytes_v4 = ingress_bytes_v4.saturating_add(bytes);
+                }
+                (Direction::Egress, IpVersion::V6) => {
+                    egress_bytes_v6 = egress_bytes_v6.saturating_add(bytes);
+                }
+                (Direction::Egress, _) => {
+                    egress_bytes_v4 = egress_bytes_v4.saturating_add(bytes);
+                }
             }
         }
 
@@ -127,15 +175,111 @@ impl FlowStatistics {
         FlowPushPayload { summary, flows }
     }
 
+    pub fn get_flow_payload_json(
+        &self,
+        sub: &FlowSubscription,
+        max_cache_age: Duration,
+    ) -> Result<String, serde_json::Error> {
+        let key = FlowSnapshotKey::from_subscription(sub);
+        let now = Instant::now();
+        if let Some(cached) = self.payload_cache.get(&key)
+            && now.duration_since(cached.generated_at) <= max_cache_age
+        {
+            return Ok(cached.json);
+        }
+
+        let json = serde_json::to_string(&self.get_flow_payload(sub))?;
+        self.payload_cache.insert(
+            key,
+            CachedFlowPayload {
+                generated_at: now,
+                json: json.clone(),
+            },
+        );
+        Ok(json)
+    }
+
     pub fn get_summary(&self) -> StatsSummary {
-        let flows = self.collect_flows(None);
-        let total_flows = flows.len();
-        let total_bytes: u64 = flows.iter().map(|f| f.fwd_bytes + f.bwd_bytes).sum();
-        let total_packets: usize = flows.iter().map(|f| f.fwd_packets + f.bwd_packets).sum();
+        let mut total_flows = 0usize;
+        let mut total_bytes = 0u64;
+        let mut total_packets = 0usize;
+
+        for tracker in self.engine.trackers() {
+            let (flows, bytes, packets) = tracker.summary_stats();
+            total_flows += flows;
+            total_bytes += bytes;
+            total_packets += packets;
+        }
+
         StatsSummary {
             total_flows,
             total_bytes,
             total_packets,
         }
+    }
+}
+
+fn flow_window_cutoff_us(now_us: u64, window_secs: u64) -> u64 {
+    now_us.saturating_sub(window_secs.saturating_mul(1_000_000))
+}
+
+fn total_flow_bytes(flow: &FlowStatsEntry) -> u64 {
+    flow.fwd_bytes.saturating_add(flow.bwd_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    fn flow_window_cutoff_uses_saturating_arithmetic() {
+        assert_eq!(flow_window_cutoff_us(10_000_000, 5), 5_000_000);
+        assert_eq!(flow_window_cutoff_us(10_000_000, u64::MAX), 0);
+    }
+
+    #[test]
+    fn flow_payload_cache_has_bounded_key_cardinality() {
+        let now = Instant::now();
+        let cache = Cache::builder().max_capacity(FLOW_PAYLOAD_CACHE_MAX_ENTRIES).build();
+
+        for i in 0..(FLOW_PAYLOAD_CACHE_MAX_ENTRIES + 10) {
+            cache.insert(
+                FlowSnapshotKey {
+                    direction: None,
+                    window_secs: Some(i),
+                    top_n: Some(i as usize),
+                },
+                CachedFlowPayload {
+                    generated_at: now,
+                    json: format!("payload-{i}"),
+                },
+            );
+        }
+        cache.run_pending_tasks();
+
+        assert!(cache.entry_count() <= FLOW_PAYLOAD_CACHE_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn total_flow_bytes_saturates_on_counter_overflow() {
+        let flow = FlowStatsEntry {
+            direction: Direction::Ingress,
+            ip_version: IpVersion::V4,
+            src_ip: "192.0.2.1".to_string(),
+            dst_ip: "198.51.100.1".to_string(),
+            src_port: 1,
+            dst_port: 2,
+            protocol: 6,
+            fwd_packets: 1,
+            bwd_packets: 1,
+            fwd_bytes: u64::MAX,
+            bwd_bytes: 1,
+            duration_us: 1,
+            last_seen_us: 1,
+        };
+
+        assert_eq!(total_flow_bytes(&flow), u64::MAX);
     }
 }

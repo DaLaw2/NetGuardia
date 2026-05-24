@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["net-guardia", "common", "macros", "ingress-ebpf", "egress-ebpf", "mcp-server", "cli"]
-default-members = ["net-guardia", "common", "mcp-server", "cli"]
+members = ["net-guardia", "net-guardia-abi", "macros", "ingress-ebpf", "egress-ebpf", "net-guardia-cli"]
+default-members = ["net-guardia", "net-guardia-abi", "net-guardia-cli"]
 
 [workspace.dependencies]
 # Local crates
-common = { path = "common" }
+net-guardia-abi = { path = "net-guardia-abi" }
 macros = { path = "macros" }
 
 # eBPF - kernel side (pinned: aya-ebpf 0.1.2 was yanked, see aya-rs/aya#1400)
@@ -15,7 +15,7 @@ aya-log-ebpf = { version = "=0.1.0", default-features = false }
 # eBPF - userspace side
 aya = { version = "0.13.1", default-features = false }
 aya-log = { version = "0.2.1", default-features = false }
-network-types = "0.1.0"
+network-types = { version = "0.2.0", default-features = false }
 
 # XDP
 xsk-rs = { version = "0.8.0", default-features = false }
@@ -27,7 +27,8 @@ serde_json = "1.0.149"
 serde_yaml_ng = "0.10.0"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs", "signal"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "io-std", "fs", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
 
 # Web framework
 actix = "0.13.5"
@@ -36,7 +37,8 @@ actix-cors = "0.7.1"
 actix-ws = "0.4.0"
 actix-multipart = "0.7"
 actix-files = "0.6"
-tokio-tungstenite = "0.28.0"
+tokio-tungstenite = "0.29.0"
+zip = "8.6.0"
 
 # Logging / tracing
 tracing = "0.1.44"
@@ -54,15 +56,14 @@ futures-util = "0.3.32"
 crossbeam = "0.8.4"
 
 # System
-sysinfo = "0.38.4"
-maxminddb = "0.27.3"
+sysinfo = "0.39.0"
+maxminddb = "0.28.1"
 ipnetwork = "0.21.1"
-lru = "0.16.3"
+lru = "0.18.0"
 rusqlite = { version = "0.39", features = ["bundled-sqlcipher"] }
 async-sqlite = { version = "0.5.7", default-features = false, features = ["bundled-sqlcipher"] }
-jsonwebtoken = "9"
 argon2 = "0.5"
-rand = "0.9"
+rand = "0.10.1"
 ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
@@ -73,17 +74,17 @@ url = "2.5.8"
 toml = "1.0.7"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls"] }
 async-trait = "0.1"
 dashmap = "6"
 arc-swap = "1"
 moka = { version = "0.12", features = ["sync"] }
-notify = "7"
-sha2 = "0.10"
-hmac = "0.12"
+notify = "8.2.0"
+sha2 = "0.11.0"
+hmac = "0.13.0"
 aes-gcm = "0.10"
-hkdf = "0.12"
-sd-notify = "0.4"
+hkdf = "0.13.0"
+sd-notify = "0.5.0"
 
 # Build dependencies
 cargo_metadata = { version = "0.23.1", default-features = false }

@@ -1,7 +1,7 @@
 {
   "created_at": "2026-04-07T02:27:17.281069",
   "framework": "PyTorch",
-  "model_type": "MultiTaskModel",
+  "model_type": "pipeline",
   "model": {
     "deep_autoencoder": {
       "file": "deep_autoencoder.onnx",
@@ -44,7 +44,7 @@
     },
     "classifier": {
       "file": "classifier.onnx",
-      "type": "MultiTaskModel",
+      "type": "classifier",
       "n_features": 32,
       "n_classes": 10,
       "outputs": [

@@ -2,9 +2,9 @@ use aya::Ebpf;
 use aya::maps::{Array, MapData};
 use parking_lot::Mutex;
 
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
 use crate::domain::data_plane::error::EbpfError;
-use crate::interface::rate_limit_api::RateLimitPort;
+use crate::interface::data_plane::rate_limit_api::RateLimitPort;
 
 pub struct RateLimitConfig {
     config_map: Mutex<Option<Array<MapData, u64>>>,
@@ -25,37 +25,18 @@ impl RateLimitConfig {
         }
     }
 
+    fn get_at(&self, index: u32) -> Result<u64, Error> {
+        let guard = self.config_map.lock();
+        let map = guard.as_ref().ok_or(EbpfError::NotLoaded)?;
+        let value = map.get(&index, 0).map_err(EbpfError::MapOperationError)?;
+        Ok(value)
+    }
+
     fn set_at(&self, index: u32, value: u64) -> Result<(), Error> {
         let mut guard = self.config_map.lock();
         let map = guard.as_mut().ok_or(EbpfError::NotLoaded)?;
         map.set(index, value, 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
-    }
-
-    fn get_at(&self, index: u32) -> Result<u64, Error> {
-        let guard = self.config_map.lock();
-        let map = guard.as_ref().ok_or(EbpfError::NotLoaded)?;
-        map.get(&index, 0).map_err(|e| EbpfError::MapOperationError(e).into())
-    }
-
-    pub fn set_packet_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_at(0, rate)
-    }
-
-    pub fn set_syn_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_at(1, rate)
-    }
-
-    pub fn set_udp_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_at(2, rate)
-    }
-
-    pub fn set_dns_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_at(3, rate)
-    }
-
-    pub fn set_window_ns(&self, ns: u64) -> Result<(), Error> {
-        self.set_at(4, ns)
     }
 
     pub fn get_packet_rate(&self) -> Result<u64, Error> {
@@ -77,29 +58,29 @@ impl RateLimitConfig {
     pub fn get_window_ns(&self) -> Result<u64, Error> {
         self.get_at(4)
     }
+
+    pub fn set_packet_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_at(0, rate)
+    }
+
+    pub fn set_syn_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_at(1, rate)
+    }
+
+    pub fn set_udp_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_at(2, rate)
+    }
+
+    pub fn set_dns_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_at(3, rate)
+    }
+
+    pub fn set_window_ns(&self, ns: u64) -> Result<(), Error> {
+        self.set_at(4, ns)
+    }
 }
 
 impl RateLimitPort for RateLimitConfig {
-    fn set_packet_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_packet_rate(rate)
-    }
-
-    fn set_syn_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_syn_rate(rate)
-    }
-
-    fn set_udp_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_udp_rate(rate)
-    }
-
-    fn set_dns_rate(&self, rate: u64) -> Result<(), Error> {
-        self.set_dns_rate(rate)
-    }
-
-    fn set_window_ns(&self, ns: u64) -> Result<(), Error> {
-        self.set_window_ns(ns)
-    }
-
     fn get_packet_rate(&self) -> Result<u64, Error> {
         self.get_packet_rate()
     }
@@ -118,5 +99,25 @@ impl RateLimitPort for RateLimitConfig {
 
     fn get_window_ns(&self) -> Result<u64, Error> {
         self.get_window_ns()
+    }
+
+    fn set_packet_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_packet_rate(rate)
+    }
+
+    fn set_syn_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_syn_rate(rate)
+    }
+
+    fn set_udp_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_udp_rate(rate)
+    }
+
+    fn set_dns_rate(&self, rate: u64) -> Result<(), Error> {
+        self.set_dns_rate(rate)
+    }
+
+    fn set_window_ns(&self, ns: u64) -> Result<(), Error> {
+        self.set_window_ns(ns)
     }
 }

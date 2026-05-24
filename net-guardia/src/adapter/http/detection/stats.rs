@@ -1,7 +1,7 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
 use crate::core::common::statistics::FlowStatistics;
-use crate::interface::drop_stats::DropStatsPort;
+use crate::interface::data_plane::drop_stats::DropStatsPort;
 
 pub fn initialize() -> Scope {
     web::scope("/stats")
@@ -16,8 +16,7 @@ async fn get_all_flows(stats: web::Data<FlowStatistics>) -> impl Responder {
 }
 
 async fn get_top_flows(stats: web::Data<FlowStatistics>, path: web::Path<usize>) -> impl Responder {
-    let n = path.into_inner();
-    HttpResponse::Ok().json(stats.get_top_flows(n))
+    HttpResponse::Ok().json(stats.get_top_flows(path.into_inner()))
 }
 
 async fn get_summary(stats: web::Data<FlowStatistics>) -> impl Responder {

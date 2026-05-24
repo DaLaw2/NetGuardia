@@ -1,4 +1,3 @@
-/// Alert notification data sent by SOAR engine.
 #[derive(Debug, Clone)]
 pub struct AlertPayload {
     pub source_ip: String,
@@ -7,5 +6,5 @@ pub struct AlertPayload {
     pub threat_type: String,
     pub confidence: f32,
     pub action_description: String,
-    pub timestamp: String,
+    pub timestamp: i64,
 }

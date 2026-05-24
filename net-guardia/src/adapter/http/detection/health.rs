@@ -1,7 +1,6 @@
 use actix_web::{HttpResponse, Responder, Scope, web};
 
-use crate::infrastructure::health::SystemHealth;
-use crate::infrastructure::suricata_manager::SuricataManager;
+use crate::interface::system::health_query::{HealthQuery, SuricataHealthQuery};
 
 pub fn initialize() -> Scope {
     web::scope("/health")
@@ -11,22 +10,18 @@ pub fn initialize() -> Scope {
         .route("/suricata", web::get().to(get_suricata_health))
 }
 
-async fn get_current_metrics(health: web::Data<SystemHealth>) -> impl Responder {
-    let metrics = health.get_current_metrics();
-    HttpResponse::Ok().json(metrics)
+async fn get_current_metrics(health: web::Data<dyn HealthQuery>) -> impl Responder {
+    HttpResponse::Ok().json(health.get_current_metrics())
 }
 
-async fn get_health_status(health: web::Data<SystemHealth>) -> impl Responder {
-    let status = health.is_system_healthy();
-    HttpResponse::Ok().json(status)
+async fn get_health_status(health: web::Data<dyn HealthQuery>) -> impl Responder {
+    HttpResponse::Ok().json(health.get_health_status())
 }
 
-async fn get_ebpf_health(health: web::Data<SystemHealth>) -> impl Responder {
-    let ebpf = (**health.ebpf_health().load()).clone();
-    HttpResponse::Ok().json(ebpf)
+async fn get_ebpf_health(health: web::Data<dyn HealthQuery>) -> impl Responder {
+    HttpResponse::Ok().json(health.get_ebpf_health())
 }
 
-async fn get_suricata_health(manager: web::Data<SuricataManager>) -> impl Responder {
-    let state = (**manager.health().load()).clone();
-    HttpResponse::Ok().json(state)
+async fn get_suricata_health(manager: web::Data<dyn SuricataHealthQuery>) -> impl Responder {
+    HttpResponse::Ok().json(manager.get_suricata_health())
 }

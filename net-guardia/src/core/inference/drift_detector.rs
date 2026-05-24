@@ -2,12 +2,17 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use macros::log;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::interval;
 
+use crate::common::log::audit::AuditLog;
 use crate::domain::common::event::DriftDetectedEvent;
-use crate::domain::common::log::system::SystemLog;
 use crate::domain::detection::drift::{DriftReport, FeatureBaselines};
+use crate::domain::detection::log::MLLog;
+
+const DRIFT_AUDIT_ACTOR: &str = "system";
+const DRIFT_AUDIT_ACTION: &str = "ml_drift_detected";
 
 enum DriftCmd {
     Update(Vec<f64>),
@@ -21,38 +26,72 @@ pub struct DriftDetectorHandle {
     tx: mpsc::Sender<DriftCmd>,
 }
 
+pub struct DriftDetectorRunner {
+    rx: mpsc::Receiver<DriftCmd>,
+    baselines: Option<FeatureBaselines>,
+    drift_window: Duration,
+    max_snapshots: usize,
+}
+
 impl DriftDetectorHandle {
-    pub fn spawn(
+    pub fn new(
         baselines: Option<FeatureBaselines>,
         drift_window: Duration,
         max_snapshots: usize,
         channel_capacity: usize,
-    ) -> Self {
-        let (tx, mut rx) = mpsc::channel::<DriftCmd>(channel_capacity);
-        tokio::spawn(async move {
-            let mut detector = DriftDetector::new(baselines, drift_window, max_snapshots);
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    DriftCmd::Update(features) => detector.update(&features),
-                    DriftCmd::CheckDrift { reply } => {
-                        let _ = reply.send(detector.check_drift());
-                    }
+    ) -> (Self, DriftDetectorRunner) {
+        let (tx, rx) = mpsc::channel::<DriftCmd>(channel_capacity);
+        (
+            Self { tx },
+            DriftDetectorRunner {
+                rx,
+                baselines,
+                drift_window,
+                max_snapshots,
+            },
+        )
+    }
+}
+
+impl DriftDetectorRunner {
+    pub async fn run(mut self) {
+        let mut detector = DriftDetector::new(self.baselines, self.drift_window, self.max_snapshots);
+        while let Some(cmd) = self.rx.recv().await {
+            match cmd {
+                DriftCmd::Update(features) => detector.update(features),
+                DriftCmd::CheckDrift { reply } => {
+                    let _ = reply.send(detector.check_drift());
                 }
             }
-        });
-        Self { tx }
+        }
     }
+}
 
+impl DriftDetectorHandle {
     pub fn update(&self, features: Vec<f64>) {
-        let _ = self.tx.try_send(DriftCmd::Update(features));
+        if let Err(err) = self.tx.try_send(DriftCmd::Update(features)) {
+            let reason = match err {
+                TrySendError::Full(_) => "channel full",
+                TrySendError::Closed(_) => "channel closed",
+            };
+            log!(MLLog::DriftUpdateDropped(reason));
+        }
     }
 
     pub async fn check_drift(&self) -> Option<DriftReport> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if self.tx.send(DriftCmd::CheckDrift { reply: reply_tx }).await.is_err() {
+        if let Err(err) = self.tx.try_send(DriftCmd::CheckDrift { reply: reply_tx }) {
+            let reason = match err {
+                TrySendError::Full(_) => "channel full",
+                TrySendError::Closed(_) => "channel closed",
+            };
+            log!(MLLog::DriftCheckFailed(reason));
             return None;
         }
-        reply_rx.await.unwrap_or(None)
+        reply_rx.await.unwrap_or_else(|_| {
+            log!(MLLog::DriftCheckFailed("reply channel closed"));
+            None
+        })
     }
 }
 
@@ -76,9 +115,18 @@ impl DriftDetector {
         }
     }
 
-    pub fn update(&mut self, features: &[f64]) {
+    pub fn update(&mut self, features: Vec<f64>) {
+        if self.num_features > 0 && features.len() != self.num_features {
+            log!(MLLog::DriftUpdateDropped(format!(
+                "feature length {} does not match baseline length {}",
+                features.len(),
+                self.num_features
+            )));
+            return;
+        }
+
         let now = Instant::now();
-        self.snapshots.push_back((now, features.to_vec()));
+        self.snapshots.push_back((now, features));
         self.evict_stale(now);
         while self.snapshots.len() > self.max_snapshots {
             self.snapshots.pop_front();
@@ -150,7 +198,7 @@ pub async fn run_drift_monitor(drift_detector: DriftDetectorHandle, drift_tx: br
     loop {
         tick.tick().await;
         if let Some(report) = drift_detector.check_drift().await {
-            log!(SystemLog::DriftDetected(
+            log!(MLLog::DriftDetected(
                 report.drifted_features.len(),
                 report.max_deviation
             ));
@@ -158,7 +206,13 @@ pub async fn run_drift_monitor(drift_detector: DriftDetectorHandle, drift_tx: br
                 drifted_features: report.drifted_features,
                 max_deviation: report.max_deviation,
             };
-            let _ = drift_tx.send(event);
+            if drift_tx.send(event).is_err() {
+                log!(AuditLog::AuditPublishFailed(
+                    "no active drift audit receivers",
+                    DRIFT_AUDIT_ACTOR,
+                    DRIFT_AUDIT_ACTION,
+                ));
+            }
         }
     }
 }
@@ -167,7 +221,9 @@ pub async fn run_drift_monitor(drift_detector: DriftDetectorHandle, drift_tx: br
 mod tests {
     use std::time::Duration;
 
-    use crate::core::inference::drift_detector::DriftDetector;
+    use tokio::time::timeout;
+
+    use crate::core::inference::drift_detector::{DriftDetector, DriftDetectorHandle};
     use crate::domain::detection::drift::FeatureBaselines;
 
     fn make_baselines(n: usize) -> FeatureBaselines {
@@ -182,8 +238,8 @@ mod tests {
     fn no_drift_when_within_threshold() {
         let baselines = make_baselines(3);
         let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
-        detector.update(&[1.0, -1.0, 2.0]);
-        detector.update(&[0.5, -0.5, 1.5]);
+        detector.update(vec![1.0, -1.0, 2.0]);
+        detector.update(vec![0.5, -0.5, 1.5]);
         assert!(detector.check_drift().is_none());
     }
 
@@ -191,8 +247,8 @@ mod tests {
     fn drift_detected_when_exceeds_threshold() {
         let baselines = make_baselines(3);
         let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
-        detector.update(&[5.0, 0.0, 0.0]);
-        detector.update(&[5.0, 0.0, 0.0]);
+        detector.update(vec![5.0, 0.0, 0.0]);
+        detector.update(vec![5.0, 0.0, 0.0]);
         let report = detector.check_drift().unwrap();
         assert!(report.drifted_features.contains(&"feature_0".to_string()));
         assert!(report.max_deviation > 3.0);
@@ -201,7 +257,7 @@ mod tests {
     #[test]
     fn no_baselines_means_no_drift() {
         let mut detector = DriftDetector::new(None, Duration::from_secs(3600), 10_000);
-        detector.update(&[100.0, 200.0]);
+        detector.update(vec![100.0, 200.0]);
         assert!(detector.check_drift().is_none());
     }
 
@@ -210,5 +266,35 @@ mod tests {
         let baselines = make_baselines(3);
         let detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
         assert!(detector.check_drift().is_none());
+    }
+
+    #[test]
+    fn malformed_snapshot_length_is_ignored() {
+        let baselines = FeatureBaselines {
+            names: vec!["feature_0".to_string(), "feature_1".to_string()],
+            means: vec![0.0, 10.0],
+            stds: vec![1.0, 1.0],
+        };
+        let mut detector = DriftDetector::new(Some(baselines), Duration::from_secs(3600), 10_000);
+
+        detector.update(vec![0.0]);
+        detector.update(vec![0.0]);
+
+        assert!(
+            detector.check_drift().is_none(),
+            "short snapshots must not turn missing features into zero-valued drift"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_drift_does_not_wait_behind_full_update_channel() {
+        let (handle, _runner) = DriftDetectorHandle::new(None, Duration::from_secs(3600), 10, 1);
+        handle.update(vec![1.0]);
+
+        let result = timeout(Duration::from_millis(50), handle.check_drift())
+            .await
+            .expect("check must not wait behind queued updates");
+
+        assert!(result.is_none());
     }
 }

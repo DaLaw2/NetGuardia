@@ -1,0 +1,17 @@
+[package]
+name = "net-guardia-abi"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+user = ["aya", "serde"]
+kernel = []
+
+[dependencies]
+aya = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+network-types = { workspace = true }
+
+[lib]
+path = "src/lib.rs"

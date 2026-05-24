@@ -11,7 +11,6 @@ use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, RingBuf};
 use crossbeam::queue::SegQueue;
-use macros::log;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
@@ -21,12 +20,11 @@ use crate::adapter::ebpf::geo_block::GeoBlock;
 use crate::adapter::ebpf::protocol_filter::ProtocolFilter;
 use crate::adapter::ebpf::rate_limit::RateLimitConfig;
 use crate::adapter::ebpf::xsk_manager::XskManager;
+use crate::common::error::Error;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::system::SystemError;
 use crate::domain::data_plane::error::EbpfError;
-use crate::interface::dns_query_filter::DnsQueryFilter;
-use crate::interface::packet_sink::PacketSinkFactory;
+use crate::interface::data_plane::dns_query_filter::DnsQueryFilter;
+use crate::interface::data_plane::packet_sink::PacketSinkFactory;
 
 pub struct EbpfServices {
     pub xsk_manager: Arc<XskManager>,
@@ -105,9 +103,7 @@ impl EbpfServices {
 
     pub fn terminate(self: Arc<Self>) {
         while let Some(shutdown) = self.shutdowns.pop() {
-            if shutdown.send(()).is_err() {
-                log!(SystemError::ShutdownSignalFailed);
-            }
+            let _ = shutdown.send(());
         }
     }
 }

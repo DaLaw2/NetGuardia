@@ -1,37 +1,21 @@
-use std::fmt::Write;
-
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
 use rusqlite::{Error as RusqliteError, params};
-use sha2::Sha256;
 
 use super::Database;
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
+use crate::common::error::database::DatabaseError;
 use crate::domain::identity::auth::{Claims, PermissionLevel};
 use crate::domain::identity::user::ApiKeyView;
-use crate::interface::api_key::ApiKeyRepo;
-
-type HmacSha256 = Hmac<Sha256>;
+use crate::interface::identity::api_key::ApiKeyRepo;
 
 impl Database {
-    /// Compute HMAC-SHA256 of an API key using the derived secret.
-    pub fn hmac_api_key(&self, raw_key: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(&self.api_key_hmac).unwrap_or_else(|_| unreachable!());
-        mac.update(raw_key.as_bytes());
-        let result = mac.finalize().into_bytes();
-
-        let mut hex = String::with_capacity(64);
-        for byte in result {
-            let _ = write!(&mut hex, "{:02x}", byte);
-        }
-        hex
-    }
-
-    pub async fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error> {
-        let digest = self.hmac_api_key(api_key);
+    pub async fn validate_api_key(&self, key_hash: &str) -> Result<Option<Claims>, Error> {
+        let digest = key_hash.to_string();
         self.pool
-            .conn_and_then(move |conn| {
-                let result = conn.query_row(
+            .conn_mut_and_then(move |conn| {
+                let tx = conn.transaction()?;
+
+                let result = tx.query_row(
                     "SELECT id, name, permission_level FROM api_keys WHERE key_hash = ?1",
                     params![digest],
                     |row| {
@@ -45,12 +29,15 @@ impl Database {
 
                 match result {
                     Ok((id, name, level)) => {
-                        let _ = conn.execute(
+                        tx.execute(
                             "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?1",
                             params![id],
-                        );
+                        )?;
+                        tx.commit()?;
 
-                        let perm_level = PermissionLevel::from_str(&level).unwrap_or(PermissionLevel::ReadOnly);
+                        let perm_level = PermissionLevel::from_str(&level).ok_or_else(|| {
+                            DatabaseError::PersistedValueInvalid("api_keys", "permission_level", level.clone())
+                        })?;
                         let permissions: Vec<String> =
                             perm_level.permissions().iter().map(|s| (*s).to_string()).collect();
 
@@ -59,7 +46,6 @@ impl Database {
                             username: format!("api:{}", name),
                             role: level,
                             permissions,
-                            exp: usize::MAX,
                         }))
                     }
                     Err(RusqliteError::QueryReturnedNoRows) => Ok(None),
@@ -98,11 +84,7 @@ impl Database {
                         last_used_at: row.get(4)?,
                     })
                 })?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -119,20 +101,16 @@ impl Database {
 
 #[async_trait]
 impl ApiKeyRepo for Database {
-    async fn validate_api_key(&self, api_key: &str) -> Result<Option<Claims>, Error> {
-        self.validate_api_key(api_key).await
-    }
-
-    fn hmac_api_key(&self, raw_key: &str) -> String {
-        self.hmac_api_key(raw_key)
-    }
-
-    async fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
-        self.insert_api_key(key_hash, name, permission_level).await
+    async fn validate_api_key(&self, key_hash: &str) -> Result<Option<Claims>, Error> {
+        self.validate_api_key(key_hash).await
     }
 
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyView>, Error> {
         self.list_api_keys().await
+    }
+
+    async fn insert_api_key(&self, key_hash: &str, name: &str, permission_level: &str) -> Result<i64, Error> {
+        self.insert_api_key(key_hash, name, permission_level).await
     }
 
     async fn delete_api_key(&self, id: i64) -> Result<bool, Error> {
@@ -143,16 +121,19 @@ impl ApiKeyRepo for Database {
 #[cfg(test)]
 mod tests {
     use super::Database;
+    use crate::adapter::identity::api_key_hasher::HmacApiKeyHasher;
+    use crate::interface::identity::api_key_hasher::ApiKeyHasher;
 
     #[tokio::test]
     async fn validate_full_access_api_key_grants_admin_permissions() {
         let db = Database::new(":memory:").await.expect("test db");
+        let hasher = HmacApiKeyHasher::new([0xAB; 32]);
         let raw_key = "ng-test-full-access";
-        let digest = db.hmac_api_key(raw_key);
+        let digest = hasher.hash_api_key(raw_key);
 
         db.insert_api_key(&digest, "automation", "full_access").await.unwrap();
 
-        let claims = db.validate_api_key(raw_key).await.unwrap().expect("claims");
+        let claims = db.validate_api_key(&digest).await.unwrap().expect("claims");
         assert!(claims.permissions.contains(&"api_keys:admin".to_string()));
         assert!(claims.permissions.contains(&"system:admin".to_string()));
         assert!(claims.permissions.contains(&"users:admin".to_string()));
@@ -161,14 +142,27 @@ mod tests {
     #[tokio::test]
     async fn validate_read_write_api_key_does_not_grant_admin_permissions() {
         let db = Database::new(":memory:").await.expect("test db");
+        let hasher = HmacApiKeyHasher::new([0xAB; 32]);
         let raw_key = "ng-test-read-write";
-        let digest = db.hmac_api_key(raw_key);
+        let digest = hasher.hash_api_key(raw_key);
 
         db.insert_api_key(&digest, "automation", "read_write").await.unwrap();
 
-        let claims = db.validate_api_key(raw_key).await.unwrap().expect("claims");
+        let claims = db.validate_api_key(&digest).await.unwrap().expect("claims");
         assert!(!claims.permissions.contains(&"api_keys:admin".to_string()));
         assert!(!claims.permissions.contains(&"system:admin".to_string()));
         assert!(!claims.permissions.contains(&"users:admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_api_key_rejects_invalid_persisted_permission_level() {
+        let db = Database::new(":memory:").await.expect("test db");
+        let hasher = HmacApiKeyHasher::new([0xAB; 32]);
+        let raw_key = "ng-test-invalid-level";
+        let digest = hasher.hash_api_key(raw_key);
+
+        db.insert_api_key(&digest, "automation", "owner").await.unwrap();
+
+        assert!(db.validate_api_key(&digest).await.is_err());
     }
 }

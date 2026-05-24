@@ -1,8 +1,17 @@
 pub mod access_control;
 pub mod ebpf;
+pub mod flow_trace_store;
+pub mod geoip;
+pub mod html_report_writer;
 pub mod http;
+pub mod identity;
+pub mod model_change_source;
 pub mod model_loading;
+pub mod model_promotion_store;
 pub mod notification;
 pub mod persistence;
+pub mod secret_store;
+pub mod suricata_monitor;
 pub mod telegram;
+pub mod webhook_sender;
 pub mod websocket;

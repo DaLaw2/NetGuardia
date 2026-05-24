@@ -39,6 +39,9 @@ loggable! {
         #[error("Forward channel disconnected")]
         ForwardChannelDisconnected => tracing::Level::ERROR,
 
+        #[error("Drop event broadcast failed: {error}")]
+        DropBroadcastFailed { error: String } => tracing::Level::WARN,
+
         #[error("Fill queue incomplete: produced {produced}, expected {expected}")]
         FillQueueIncomplete { produced: usize, expected: usize } => tracing::Level::WARN,
 

@@ -1,0 +1,15 @@
+[package]
+name = "net-guardia-cli"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+
+[[bin]]
+name = "net-guardia-cli"
+path = "src/main.rs"

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +19,7 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Hash, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum FlowDirection {
     Source,
@@ -30,6 +31,18 @@ impl FlowDirection {
         match self {
             Self::Source => "source",
             Self::Destination => "destination",
+        }
+    }
+}
+
+impl FromStr for FlowDirection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "source" => Ok(Self::Source),
+            "destination" => Ok(Self::Destination),
+            other => Err(format!("unknown ACL direction: {other}")),
         }
     }
 }

@@ -6,6 +6,9 @@ loggable! {
         #[error("ML models loaded - {info}")]
         ModelsLoaded { info: String } => tracing::Level::INFO,
 
+        #[error("ML model status summary: {summary}")]
+        ModelStatusSummary { summary: String } => tracing::Level::INFO,
+
         #[error("Inference configuration loaded: {features} features, {attacks} attack types")]
         ConfigLoaded { features: usize, attacks: usize } => tracing::Level::INFO,
 
@@ -17,6 +20,9 @@ loggable! {
 
         #[error("Inference returned fewer results: expected {size}, got {len}")]
         InferenceResults { size: usize, len: usize } => tracing::Level::DEBUG,
+
+        #[error("Inference task join failed: {error}")]
+        InferenceTaskJoinFailed { error: String } => tracing::Level::ERROR,
 
         #[error("{model} inference failed: {error}")]
         InferenceFailed { model: String, error: String } => tracing::Level::ERROR,
@@ -35,6 +41,9 @@ loggable! {
 
         #[error("Traffic logger write error: {error}")]
         TrafficLogWriteError { error: String } => tracing::Level::ERROR,
+
+        #[error("Traffic logging mode enabled — writing packets to: {path}")]
+        TrafficLoggingEnabled { path: String } => tracing::Level::INFO,
 
         #[error("Traffic logger channel disconnected")]
         TrafficLogChannelDisconnected => tracing::Level::WARN,
@@ -60,6 +69,9 @@ loggable! {
         #[error("Model watcher started, monitoring models/ for .onnx changes")]
         ModelWatcherStarted => tracing::Level::INFO,
 
+        #[error("Model watcher event error: {error}")]
+        ModelWatcherEventError { error: String } => tracing::Level::WARN,
+
         #[error("Model reload triggered, loading new ONNX models...")]
         ModelReloadStarting => tracing::Level::INFO,
 
@@ -69,8 +81,35 @@ loggable! {
         #[error("Model reload failed, keeping current models: {error}")]
         ModelReloadFailed { error: String } => tracing::Level::ERROR,
 
+        #[error("Model reload task join failed: {error}")]
+        ModelReloadJoinFailed { error: String } => tracing::Level::ERROR,
+
         #[error("Model manifest loaded: name='{name}', adapter={adapter}, features={features}, labels={labels}")]
         ManifestLoaded { name: String, adapter: String, features: usize, labels: usize } => tracing::Level::INFO,
+
+        #[error("Model promotion backup cleanup failed for '{path}': {error}")]
+        ModelPromotionBackupCleanupFailed { path: String, error: String } => tracing::Level::WARN,
+
+        #[error("Model promotion rollback failed for '{path}': {error}")]
+        ModelPromotionRollbackFailed { path: String, error: String } => tracing::Level::ERROR,
+
+        #[error("Model upload staging cleanup failed for '{path}': {error}")]
+        ModelUploadStagingCleanupFailed { path: String, error: String } => tracing::Level::WARN,
+
+        #[error("Cleaned {count} stale model-upload staging directories")]
+        StagingOrphansCleaned { count: u64 } => tracing::Level::INFO,
+
+        #[error("Staging-orphan sweep failed: {error}")]
+        StagingOrphansSweepFailed { error: String } => tracing::Level::WARN,
+
+        #[error("ML drift detected: {count} features drifted, max deviation {deviation:.2}σ")]
+        DriftDetected { count: usize, deviation: f64 } => tracing::Level::WARN,
+
+        #[error("ML drift update dropped: {reason}")]
+        DriftUpdateDropped { reason: String } => tracing::Level::WARN,
+
+        #[error("ML drift check failed: {reason}")]
+        DriftCheckFailed { reason: String } => tracing::Level::WARN,
 
         #[error("ONNX input shape introspected for {model}: declared={declared}, onnx_dim={onnx_dim}, matched={matched}")]
         OnnxShapeChecked { model: String, declared: usize, onnx_dim: usize, matched: bool } => tracing::Level::DEBUG,
@@ -87,6 +126,9 @@ loggable! {
 
         #[error("Detection emitted: {source_ip} {attack_type} confidence={confidence:.2} ae={ae_score:.3} anomaly={anomaly_score:.3} c2={c2_score:.3} sources={sources_count}")]
         DetectionEmitted { source_ip: String, attack_type: String, confidence: f32, ae_score: f32, anomaly_score: f32, c2_score: f32, sources_count: usize } => tracing::Level::DEBUG,
+
+        #[error("Failed to publish threat event: {source_ip} {attack_type} confidence={confidence:.2}")]
+        ThreatPublishFailed { source_ip: String, attack_type: String, confidence: f32 } => tracing::Level::ERROR,
 
         #[error("ML detection bridge started")]
         MlBridgeStarted => tracing::Level::INFO,
@@ -129,39 +171,5 @@ loggable! {
 
         #[error("Detection event dropped (channel full): {detector} {attack_type} from {source_ip}")]
         DetectionChannelDrop { detector: String, attack_type: String, source_ip: String } => tracing::Level::WARN,
-    }
-}
-
-loggable! {
-    SuricataLog {
-        #[error("Suricata bridge disabled by config")]
-        Disabled => tracing::Level::INFO,
-
-        #[error("Spawning Suricata: {binary} -c {config} -i {iface}")]
-        Spawning { binary: String, config: String, iface: String } => tracing::Level::INFO,
-
-        #[error("Suricata subprocess started (pid={pid})")]
-        Started { pid: u32 } => tracing::Level::INFO,
-
-        #[error("Suricata subprocess exited unexpectedly: {reason}. Restart in {backoff}s")]
-        CrashedRestartPending { reason: String, backoff: u64 } => tracing::Level::WARN,
-
-        #[error("Suricata subprocess stopped: {reason}")]
-        Stopped { reason: String } => tracing::Level::INFO,
-
-        #[error("Suricata subprocess sent SIGTERM for graceful shutdown")]
-        ShutdownRequested => tracing::Level::INFO,
-
-        #[error("Suricata eve.json monitor waiting for file: {path}")]
-        MonitorWaitingForFile { path: String } => tracing::Level::INFO,
-
-        #[error("Suricata eve.json monitor attached to {path}")]
-        MonitorAttached { path: String } => tracing::Level::INFO,
-
-        #[error("Suricata eve.json rotated — reopening")]
-        MonitorFileRotated => tracing::Level::INFO,
-
-        #[error("Suricata alert forwarded: sid={sid} {src}->{dst} {signature}")]
-        AlertForwarded { sid: u32, src: String, dst: String, signature: String } => tracing::Level::DEBUG,
     }
 }

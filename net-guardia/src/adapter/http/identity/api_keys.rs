@@ -1,9 +1,14 @@
 use actix_web::{HttpResponse, Scope, web};
+use rand::RngExt;
+use rand::distr::Alphanumeric;
 use serde::Deserialize;
 
+use crate::adapter::http::helpers::{bad_request, internal_error, not_found};
 use crate::adapter::http::middleware::extractor::AuthClaims;
 use crate::domain::identity::auth::PermissionLevel;
-use crate::interface::api_key::ApiKeyRepo;
+use crate::domain::identity::validation::validate_api_key_name;
+use crate::interface::identity::api_key::ApiKeyRepo;
+use crate::interface::identity::api_key_hasher::ApiKeyHasher;
 
 pub fn initialize() -> Scope {
     web::scope("/api-keys")
@@ -29,7 +34,7 @@ async fn list_keys(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>) -> HttpResp
                 .collect();
             HttpResponse::Ok().json(responses)
         }
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => internal_error(e),
     }
 }
 
@@ -42,34 +47,35 @@ struct GenerateKeyRequest {
 async fn generate_key(
     _auth: AuthClaims,
     db: web::Data<dyn ApiKeyRepo>,
+    hasher: web::Data<dyn ApiKeyHasher>,
     body: web::Json<GenerateKeyRequest>,
 ) -> HttpResponse {
-    use rand::Rng;
-    use rand::distr::Alphanumeric;
-
     let raw_key: String = rand::rng()
         .sample_iter(&Alphanumeric)
         .take(32)
         .map(char::from)
         .collect();
 
-    let key_hash = db.hmac_api_key(&raw_key);
+    let key_hash = hasher.hash_api_key(&raw_key);
 
     let raw_level = body.level.as_deref().unwrap_or("read_only");
     let Some(level) = PermissionLevel::from_str(raw_level) else {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Invalid permission level. Must be: read_only, read_write, or full_access"
-        }));
+        return bad_request("Invalid permission level. Must be: read_only, read_write, or full_access");
     };
 
-    match db.insert_api_key(&key_hash, &body.name, level.as_str()).await {
+    let name = body.name.trim();
+    if let Err(message) = validate_api_key_name(name) {
+        return bad_request(message);
+    }
+
+    match db.insert_api_key(&key_hash, name, level.as_str()).await {
         Ok(id) => HttpResponse::Created().json(serde_json::json!({
             "id": id,
             "key": raw_key,
-            "name": body.name,
+            "name": name,
             "permission_level": level.as_str(),
         })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => internal_error(e),
     }
 }
 
@@ -77,7 +83,7 @@ async fn delete_key(_auth: AuthClaims, db: web::Data<dyn ApiKeyRepo>, path: web:
     let id = path.into_inner();
     match db.delete_api_key(id).await {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
-        Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "Key not found"})),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Ok(false) => not_found("Key not found"),
+        Err(e) => internal_error(e),
     }
 }

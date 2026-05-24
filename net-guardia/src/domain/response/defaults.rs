@@ -137,9 +137,62 @@ pub const DEFAULT_PLAYBOOKS: &[DefaultPlaybook] = &[
         ],
         conditions: &[DefaultCondition {
             condition_type: "single_source_high",
-            operator: "==",
+            operator: ">=",
             value: "Suricata",
             value2: Some("0.95"),
         }],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::domain::common::event::DetectionSource;
+    use crate::domain::response::condition::{ConditionType, is_valid_operator};
+
+    #[test]
+    fn default_playbook_conditions_use_valid_domain_operators() {
+        for playbook in DEFAULT_PLAYBOOKS {
+            for condition in playbook.conditions {
+                let condition_type =
+                    ConditionType::from_str(condition.condition_type).expect("default condition type should be known");
+
+                assert!(
+                    is_valid_operator(&condition_type, condition.operator),
+                    "default playbook '{}' condition '{}' uses invalid operator '{}'",
+                    playbook.name,
+                    condition.condition_type,
+                    condition.operator
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_playbook_condition_values_parse() {
+        for playbook in DEFAULT_PLAYBOOKS {
+            for condition in playbook.conditions {
+                let condition_type =
+                    ConditionType::from_str(condition.condition_type).expect("default condition type should be known");
+
+                match condition_type {
+                    ConditionType::Threshold | ConditionType::FusedConfidenceAbove => {
+                        condition.value.parse::<f64>().expect("threshold should parse");
+                    }
+                    ConditionType::Frequency | ConditionType::MultiSourceMin => {
+                        condition.value.parse::<usize>().expect("count should parse");
+                    }
+                    ConditionType::SingleSourceHigh => {
+                        DetectionSource::from_str(condition.value).expect("source should parse");
+                        if let Some(value2) = condition.value2 {
+                            value2.parse::<f32>().expect("confidence should parse");
+                        }
+                    }
+                    ConditionType::SourceCountry | ConditionType::IpPattern | ConditionType::RepeatOffender => {}
+                }
+            }
+        }
+    }
+}

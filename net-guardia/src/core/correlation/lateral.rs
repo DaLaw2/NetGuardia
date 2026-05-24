@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use macros::log;
 
+use crate::common::utils::ip_address::is_internal_ip;
 use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
 use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::flow_observation::FlowObservation;
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::ml_detection::AlertMessage;
-use crate::utils::ip_address::is_internal_ip;
 
 struct TimedDestSet {
     dests: HashSet<String>,
@@ -18,9 +18,7 @@ struct TimedDestSet {
     last_alerted: Option<Instant>,
 }
 
-/// Detects lateral movement: an internal IP reaching many other internal IPs.
 pub struct LateralMovementDetector {
-    /// src_ip → set of unique internal dst_ips within the time window
     state: DashMap<String, TimedDestSet>,
     window: Duration,
     window_secs: u64,
@@ -39,7 +37,7 @@ impl LateralMovementDetector {
         }
     }
 
-    pub fn process(&self, alert: &AlertMessage) -> Option<DetectionEvent> {
+    pub fn process(&self, alert: &FlowObservation) -> Option<DetectionEvent> {
         if !is_internal_ip(&alert.src_ip) || !is_internal_ip(&alert.dst_ip) {
             return None;
         }
@@ -91,8 +89,8 @@ impl LateralMovementDetector {
                 source_ip: key.clone(),
                 dest_ip: alert.dst_ip.clone(),
                 protocol: alert.protocol,
-                packet_count: 0,
-                flow_duration_us: 0,
+                packet_count: alert.packet_count,
+                flow_duration_us: alert.flow_duration_us,
                 ae_score: 0.0,
                 anomaly_score: 0.0,
                 c2_score: 0.0,
@@ -118,7 +116,7 @@ impl LateralMovementDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::ip_address::is_internal_ip;
+    use crate::common::utils::ip_address::is_internal_ip;
 
     #[test]
     fn test_internal_ip_detection() {
@@ -152,21 +150,12 @@ mod tests {
         assert!(!is_internal_ip(""));
     }
 
-    fn make_alert(src_ip: &str, dst_ip: &str) -> AlertMessage {
-        AlertMessage {
-            timestamp: 0,
-            flow_key: String::new(),
+    fn make_alert(src_ip: &str, dst_ip: &str) -> FlowObservation {
+        FlowObservation {
             src_ip: src_ip.to_string(),
             dst_ip: dst_ip.to_string(),
-            src_port: 12345,
             dst_port: 445,
             protocol: 6,
-            is_attack: true,
-            attack_type: Some("Exploitation".to_string()),
-            confidence: 0.8,
-            ae_score: 0.4,
-            anomaly_score: 0.0,
-            c2_score: 0.0,
             packet_count: 50,
             flow_duration_us: 500_000,
         }

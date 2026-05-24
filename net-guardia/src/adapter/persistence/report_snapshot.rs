@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use rusqlite::{Error as RusqliteError, params};
 
 use super::Database;
-use crate::domain::common::error::Error;
-use crate::interface::report_snapshot::ReportSnapshotRepo;
+use crate::common::error::Error;
+use crate::interface::reporting::report_snapshot::ReportSnapshotRepo;
 
 impl Database {
     pub async fn get_report_snapshot(&self, key: &str) -> Result<Option<String>, Error> {

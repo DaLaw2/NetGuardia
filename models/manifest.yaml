@@ -1,54 +1,168 @@
-# NetGuardia model manifest. Structural/semantic fields live here;
-# preprocessing arrays (scaler mean/std, clip params, feature weights) stay
-# in the JSON sidecar referenced by `preprocessing.scaler_sidecar`.
+name: netguardia-v1
+version: 1
 
-name: netguardia-v10
-adapter: multi_task
+runtime:
+  pipeline_mode: dag
+  normal_label: Normal
 
-models:
-  autoencoder: deep_autoencoder.onnx
-  classifier: classifier.onnx
+artifacts:
+  - id: anomaly_detector_onnx
+    file: deep_autoencoder.onnx
+    kind: onnx
+  - id: classifier_onnx
+    file: classifier.onnx
+    kind: onnx
+  - id: preprocessing_sidecar
+    file: inference_config.json
+    kind: sidecar
 
-# 31 AE-input features. Order matters — must match ONNX input column order
-# and inference_config.json `ae_feature_names`. The classifier takes these
-# plus `ae_anomaly_score` appended as the 32nd input (handled in code).
-features:
-  - flow_duration
-  - fwd_packets
-  - bwd_packets
-  - fwd_bytes
-  - bwd_bytes
-  - flow_bytes_per_sec
-  - flow_pkts_per_sec
-  - fwd_win_bytes
-  - bwd_win_bytes
-  - fwd_pkt_len_mean
-  - bwd_pkt_len_mean
-  - fwd_iat_mean
-  - bwd_iat_mean
-  - flow_iat_mean
-  - pkt_len_mean
-  - dst_port
-  - protocol
-  - psh_flag_cnt
-  - ack_flag_cnt
-  - syn_flag_cnt
-  - fin_flag_cnt
-  - rst_flag_cnt
-  - pkt_len_std
-  - fwd_pkt_len_std
-  - bwd_pkt_len_std
-  - fwd_seg_size_min
-  - fwd_act_data_pkts
-  - fwd_iat_std
-  - bwd_iat_std
-  - fwd_bwd_bytes_ratio
-  - iat_cv
+stages:
+  - id: anomaly_detector
+    kind: autoencoder
+    model_file: deep_autoencoder.onnx
+    inputs:
+      - { name: flow_duration, source: feature }
+      - { name: fwd_packets, source: feature }
+      - { name: bwd_packets, source: feature }
+      - { name: fwd_bytes, source: feature }
+      - { name: bwd_bytes, source: feature }
+      - { name: flow_bytes_per_sec, source: feature }
+      - { name: flow_pkts_per_sec, source: feature }
+      - { name: fwd_win_bytes, source: feature }
+      - { name: bwd_win_bytes, source: feature }
+      - { name: fwd_pkt_len_mean, source: feature }
+      - { name: bwd_pkt_len_mean, source: feature }
+      - { name: fwd_iat_mean, source: feature }
+      - { name: bwd_iat_mean, source: feature }
+      - { name: flow_iat_mean, source: feature }
+      - { name: pkt_len_mean, source: feature }
+      - { name: dst_port, source: feature }
+      - { name: protocol, source: feature }
+      - { name: psh_flag_cnt, source: feature }
+      - { name: ack_flag_cnt, source: feature }
+      - { name: syn_flag_cnt, source: feature }
+      - { name: fin_flag_cnt, source: feature }
+      - { name: rst_flag_cnt, source: feature }
+      - { name: pkt_len_std, source: feature }
+      - { name: fwd_pkt_len_std, source: feature }
+      - { name: bwd_pkt_len_std, source: feature }
+      - { name: fwd_seg_size_min, source: feature }
+      - { name: fwd_act_data_pkts, source: feature }
+      - { name: fwd_iat_std, source: feature }
+      - { name: bwd_iat_std, source: feature }
+      - { name: fwd_bwd_bytes_ratio, source: feature }
+      - { name: iat_cv, source: feature }
+    preprocessing:
+      - type: standard_scaler
+        sidecar: inference_config.json
+      - type: clip
+        min: -5.0
+        max: 5.0
+    output_heads:
+      - name: ae_anomaly_score
+        index: 0
+        shape: [1]
+        semantic: anomaly_score
+        threshold: 0.23011694848537445
 
-# `confirmations` sets the per-class aggregator firing threshold. Classes
-# with single-shot semantics (C2 / Bot / DNS tunneling / exploit) use 1 so
-# the aggregator alerts on the first detection; noisier classes can raise
-# it (DoS/DDoS: 2). Absent entries fall back to the engine default.
+  - id: classifier
+    kind: classifier
+    model_file: classifier.onnx
+    depends_on:
+      - anomaly_detector
+    inputs:
+      - { name: flow_duration, source: feature }
+      - { name: fwd_packets, source: feature }
+      - { name: bwd_packets, source: feature }
+      - { name: fwd_bytes, source: feature }
+      - { name: bwd_bytes, source: feature }
+      - { name: flow_bytes_per_sec, source: feature }
+      - { name: flow_pkts_per_sec, source: feature }
+      - { name: fwd_win_bytes, source: feature }
+      - { name: bwd_win_bytes, source: feature }
+      - { name: fwd_pkt_len_mean, source: feature }
+      - { name: bwd_pkt_len_mean, source: feature }
+      - { name: fwd_iat_mean, source: feature }
+      - { name: bwd_iat_mean, source: feature }
+      - { name: flow_iat_mean, source: feature }
+      - { name: pkt_len_mean, source: feature }
+      - { name: dst_port, source: feature }
+      - { name: protocol, source: feature }
+      - { name: psh_flag_cnt, source: feature }
+      - { name: ack_flag_cnt, source: feature }
+      - { name: syn_flag_cnt, source: feature }
+      - { name: fin_flag_cnt, source: feature }
+      - { name: rst_flag_cnt, source: feature }
+      - { name: pkt_len_std, source: feature }
+      - { name: fwd_pkt_len_std, source: feature }
+      - { name: bwd_pkt_len_std, source: feature }
+      - { name: fwd_seg_size_min, source: feature }
+      - { name: fwd_act_data_pkts, source: feature }
+      - { name: fwd_iat_std, source: feature }
+      - { name: bwd_iat_std, source: feature }
+      - { name: fwd_bwd_bytes_ratio, source: feature }
+      - { name: iat_cv, source: feature }
+      - name: ae_anomaly_score
+        source: stage_output
+        stage: anomaly_detector
+        output: ae_anomaly_score
+    output_heads:
+      - name: anomaly
+        index: 0
+        shape: [1]
+        semantic: binary
+        threshold: 0.9179317355155945
+      - name: class_probs
+        index: 1
+        shape: [10]
+        semantic: multiclass
+        min_confidence: 0.4
+      - name: c2_score
+        index: 2
+        shape: [1]
+        semantic: binary
+        threshold: 0.9085615873336792
+
+outputs:
+  - stage: anomaly_detector
+    output: ae_anomaly_score
+    alias: ae_anomaly_score
+    role: anomaly_score
+  - stage: classifier
+    output: anomaly
+    alias: anomaly
+    role: binary_score
+  - stage: classifier
+    output: class_probs
+    alias: class_probs
+    role: class_probabilities
+  - stage: classifier
+    output: c2_score
+    alias: c2_score
+    role: c2_score
+
+detection_rules:
+  - id: classifier_anomaly_threshold
+    type: threshold
+    output: anomaly
+    attack:
+      source: predicted_class
+      output: class_probs
+      exclude_normal: true
+  - id: class_confidence
+    type: class_confidence
+    output: class_probs
+    attack:
+      source: predicted_class
+      output: class_probs
+      exclude_normal: true
+  - id: c2_threshold
+    type: threshold
+    output: c2_score
+    attack:
+      source: fixed_label
+      label: C2 Communication
+
 labels:
   "0": { name: Bot, confirmations: 1 }
   "1": { name: Brute Force }
@@ -61,14 +175,8 @@ labels:
   "8": { name: Reconnaissance }
   "9": { name: Web Attack }
 
-thresholds:
-  anomaly: 0.9179317355155945
-  c2: 0.9085615873336792
-  class_min_confidence: 0.4
-  ae: 0.23011694848537445
-  # Average score must exceed `class_min_confidence * alert_multiplier`
-  # before the aggregator fires. Raising this suppresses borderline hits.
-  alert_multiplier: 1.2
-
-preprocessing:
-  scaler_sidecar: inference_config.json
+alert_rules:
+  - condition: "anomaly > threshold"
+    source_label: anomaly
+  - condition: "class_probs.argmax != Normal AND class_probs.max > min_confidence"
+    source_label: class_probs

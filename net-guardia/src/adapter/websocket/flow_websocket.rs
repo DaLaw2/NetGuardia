@@ -4,12 +4,15 @@ use actix_web::rt::spawn;
 use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::Message;
 use futures_util::StreamExt;
+use macros::log;
 use tokio::time::interval;
 
+use crate::common::error::codec::CodecError;
 use crate::core::common::statistics::FlowStatistics;
 use crate::domain::data_plane::flow_stats::FlowSubscription;
 
-/// Default subscription: all flows, no filter, 5 second interval
+const FLOW_PAYLOAD_CACHE_MAX_AGE: Duration = Duration::from_millis(500);
+
 fn default_subscription() -> FlowSubscription {
     FlowSubscription {
         direction: None,
@@ -19,10 +22,14 @@ fn default_subscription() -> FlowSubscription {
     }
 }
 
-/// Push { summary, flows } payload to the client.
 fn push_payload(stats: &FlowStatistics, sub: &FlowSubscription) -> Option<String> {
-    let payload = stats.get_flow_payload(sub);
-    serde_json::to_string(&payload).ok()
+    match stats.get_flow_payload_json(sub, FLOW_PAYLOAD_CACHE_MAX_AGE) {
+        Ok(json) => Some(json),
+        Err(err) => {
+            log!(CodecError::SerializeFailed(err));
+            None
+        }
+    }
 }
 
 pub async fn flow_stats_ws(

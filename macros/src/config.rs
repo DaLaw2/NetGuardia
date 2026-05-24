@@ -4,9 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Fields, Ident, ItemStruct, LitBool, LitStr, Result, Token, Type};
-
-// ── Attribute parsing ──────────────────────────────────────────────
+use syn::spanned::Spanned;
+use syn::{Error, Fields, Ident, ItemStruct, LitBool, LitStr, Result, Token, Type};
 
 struct StructAttr {
     default_section: Option<String>,
@@ -31,8 +30,6 @@ impl Parse for StructAttr {
         })
     }
 }
-
-// ── Field model ────────────────────────────────────────────────────
 
 enum ConfigField {
     Setting(SettingField),
@@ -71,13 +68,16 @@ struct MappedParent {
     settings: Vec<MappedSetting>,
 }
 
-// ── Parsing ────────────────────────────────────────────────────────
-
-fn parse_struct_mapped_settings(input: &mut ItemStruct, default_section: &Option<String>) -> Vec<MappedSetting> {
+fn parse_struct_mapped_settings(
+    input: &mut ItemStruct,
+    default_section: &Option<String>,
+) -> Result<Vec<MappedSetting>> {
     let mut mapped = Vec::new();
-    input.attrs.retain(|attr| {
+    let mut retained = Vec::new();
+    for attr in input.attrs.drain(..) {
         if !attr.path().is_ident("setting") {
-            return true;
+            retained.push(attr);
+            continue;
         }
         let mut key = None;
         let mut default = None;
@@ -86,7 +86,7 @@ fn parse_struct_mapped_settings(input: &mut ItemStruct, default_section: &Option
         let mut section = None;
         let mut api = true;
 
-        let _ = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("key") {
                 let val: LitStr = meta.value()?.parse()?;
                 key = Some(val.value());
@@ -107,12 +107,12 @@ fn parse_struct_mapped_settings(input: &mut ItemStruct, default_section: &Option
                 api = val.value();
             }
             Ok(())
-        });
+        })?;
 
         if let (Some(key), Some(default), Some(path)) = (key, default, path) {
             let (parent, sub_field) = path
                 .split_once('.')
-                .expect("#[setting] `path` must be `parent.sub_field`");
+                .ok_or_else(|| Error::new(attr.span(), "#[setting] `path` must be `parent.sub_field`"))?;
             mapped.push(MappedSetting {
                 key,
                 default,
@@ -122,16 +122,18 @@ fn parse_struct_mapped_settings(input: &mut ItemStruct, default_section: &Option
                 section: section.or_else(|| default_section.clone()),
                 api,
             });
-            false
         } else {
-            true
+            retained.push(attr);
         }
-    });
-    mapped
+    }
+    input.attrs = retained;
+    Ok(mapped)
 }
 
-fn parse_field(field: &mut syn::Field, default_section: &Option<String>) -> Option<ConfigField> {
-    let idx = field.attrs.iter().position(|a| a.path().is_ident("setting"))?;
+fn parse_field(field: &mut syn::Field, default_section: &Option<String>) -> Result<Option<ConfigField>> {
+    let Some(idx) = field.attrs.iter().position(|a| a.path().is_ident("setting")) else {
+        return Ok(None);
+    };
     let attr = field.attrs.remove(idx);
 
     let mut is_flatten = false;
@@ -161,28 +163,31 @@ fn parse_field(field: &mut syn::Field, default_section: &Option<String>) -> Opti
             api = val.value();
         }
         Ok(())
-    })
-    .unwrap_or_else(|e| panic!("invalid #[setting]: {e}"));
+    })?;
 
-    let ident = field.ident.clone().expect("named field");
+    let ident = field
+        .ident
+        .clone()
+        .ok_or_else(|| Error::new(field.span(), "#[setting] only supports named fields"))?;
     let ty = field.ty.clone();
 
     if is_flatten {
-        return Some(ConfigField::Flatten(FlattenField { ident, ty }));
+        return Ok(Some(ConfigField::Flatten(FlattenField { ident, ty })));
     }
 
-    Some(ConfigField::Setting(SettingField {
+    let key = key.ok_or_else(|| Error::new(attr.span(), "#[setting] requires `key`"))?;
+    let default = default.ok_or_else(|| Error::new(attr.span(), "#[setting] requires `default`"))?;
+
+    Ok(Some(ConfigField::Setting(SettingField {
         ident,
         ty,
-        key: key.expect("#[setting] requires `key`"),
-        default: default.expect("#[setting] requires `default`"),
+        key,
+        default,
         default_debug,
         section: section.or_else(|| default_section.clone()),
         api,
-    }))
+    })))
 }
-
-// ── Type detection ─────────────────────────────────────────────────
 
 fn is_type(ty: &Type, name: &str) -> bool {
     matches!(ty, Type::Path(tp) if tp.path.is_ident(name))
@@ -197,40 +202,47 @@ fn is_vec_string(ty: &Type) -> bool {
     false
 }
 
-// ── Code generation: defaults() ────────────────────────────────────
+fn parse_default_tokens(ty: &Type, default: &str) -> Result<TokenStream2> {
+    default.parse::<TokenStream2>().map_err(|err| {
+        Error::new(
+            ty.span(),
+            format!("invalid #[setting] default literal `{default}`: {err}"),
+        )
+    })
+}
 
-fn make_default_val(ty: &Type, default: &str) -> TokenStream2 {
+fn make_default_val(ty: &Type, default: &str) -> Result<TokenStream2> {
     if is_type(ty, "String") {
-        quote! { #default.to_string() }
+        Ok(quote! { #default.to_string() })
     } else if is_type(ty, "bool") {
         let val = default == "true" || default == "1";
-        quote! { #val }
+        Ok(quote! { #val })
     } else if is_vec_string(ty) {
         if default.is_empty() {
-            quote! { Vec::new() }
+            Ok(quote! { Vec::new() })
         } else {
             let items: Vec<&str> = default.split(',').map(|v| v.trim()).collect();
-            quote! { vec![#(#items.to_string()),*] }
+            Ok(quote! { vec![#(#items.to_string()),*] })
         }
     } else {
-        // SAFETY: literal default, validated by tests
-        quote! { #default.parse().unwrap() }
+        let value = parse_default_tokens(ty, default)?;
+        Ok(quote! { #value })
     }
 }
 
-fn gen_default(f: &SettingField) -> TokenStream2 {
+fn gen_default(f: &SettingField) -> Result<TokenStream2> {
     let ident = &f.ident;
     let ty = &f.ty;
 
     match &f.default_debug {
         Some(dbg) => {
-            let release_val = make_default_val(ty, &f.default);
-            let debug_val = make_default_val(ty, dbg);
-            quote! { #ident: if cfg!(debug_assertions) { #debug_val } else { #release_val } }
+            let release_val = make_default_val(ty, &f.default)?;
+            let debug_val = make_default_val(ty, dbg)?;
+            Ok(quote! { #ident: if cfg!(debug_assertions) { #debug_val } else { #release_val } })
         }
         None => {
-            let val = make_default_val(ty, &f.default);
-            quote! { #ident: #val }
+            let val = make_default_val(ty, &f.default)?;
+            Ok(quote! { #ident: #val })
         }
     }
 }
@@ -241,7 +253,7 @@ fn gen_flatten_default(f: &FlattenField) -> TokenStream2 {
     quote! { #ident: #ty::defaults() }
 }
 
-fn gen_mapped_default(mp: &MappedParent) -> TokenStream2 {
+fn gen_mapped_default(mp: &MappedParent) -> Result<TokenStream2> {
     let ident = &mp.ident;
     let ty = &mp.ty;
     let sub_fields: Vec<_> = mp
@@ -251,63 +263,64 @@ fn gen_mapped_default(mp: &MappedParent) -> TokenStream2 {
             let sub = format_ident!("{}", s.sub_field);
             let val: TokenStream2 = match &s.default_debug {
                 Some(dbg) => {
-                    let release = &s.default;
-                    // SAFETY: literal default, validated by tests
-                    quote! { if cfg!(debug_assertions) { #dbg.parse().unwrap() } else { #release.parse().unwrap() } }
+                    let debug = parse_default_tokens(&mp.ty, dbg)?;
+                    let release = parse_default_tokens(&mp.ty, &s.default)?;
+                    quote! { if cfg!(debug_assertions) { #debug } else { #release } }
                 }
-                None => {
-                    let default = &s.default;
-                    // SAFETY: literal default, validated by tests
-                    quote! { #default.parse().unwrap() }
-                }
+                None => parse_default_tokens(&mp.ty, &s.default)?,
             };
-            quote! { #sub: #val }
+            Ok(quote! { #sub: #val })
         })
-        .collect();
-    quote! { #ident: #ty { #(#sub_fields,)* } }
+        .collect::<Result<Vec<_>>>()?;
+    Ok(quote! { #ident: #ty { #(#sub_fields,)* } })
 }
 
-// ── Code generation: from_config_repo() ───────────────────────────────
-
-fn gen_override(f: &SettingField) -> TokenStream2 {
+fn gen_apply_value(f: &SettingField) -> TokenStream2 {
     let ident = &f.ident;
     let key = &f.key;
     let ty = &f.ty;
 
     if is_type(ty, "String") {
         quote! {
-            crate::domain::common::config::helpers::override_string_nonempty(
-                &mut cfg.#ident, repo, #key,
-            ).await?;
+            if let Some(v) = values.get(#key)
+                && !v.is_empty()
+            {
+                self.#ident = v.clone();
+            }
         }
     } else if is_type(ty, "bool") {
         quote! {
-            crate::domain::common::config::helpers::override_bool(
-                &mut cfg.#ident, repo, #key,
-            ).await?;
+            if let Some(v) = values.get(#key) {
+                self.#ident = v == "true" || v == "1";
+            }
         }
     } else if is_vec_string(ty) {
         quote! {
-            crate::domain::common::config::helpers::override_csv(
-                &mut cfg.#ident, repo, #key,
-            ).await?;
+            if let Some(v) = values.get(#key) {
+                self.#ident = if v.is_empty() {
+                    Vec::new()
+                } else {
+                    v.split(',').map(|s| s.trim().to_string()).collect()
+                };
+            }
         }
     } else {
         quote! {
-            crate::domain::common::config::helpers::override_parsed(
-                &mut cfg.#ident, repo, #key,
-            ).await?;
+            if let Some(v) = values.get(#key)
+                && let Ok(parsed) = v.parse()
+            {
+                self.#ident = parsed;
+            }
         }
     }
 }
 
-fn gen_flatten_override(f: &FlattenField) -> TokenStream2 {
+fn gen_flatten_apply(f: &FlattenField) -> TokenStream2 {
     let ident = &f.ident;
-    let ty = &f.ty;
-    quote! { cfg.#ident = #ty::from_config_repo(repo).await?; }
+    quote! { self.#ident.apply_config_values(values); }
 }
 
-fn gen_mapped_overrides(mp: &MappedParent) -> TokenStream2 {
+fn gen_mapped_apply(mp: &MappedParent) -> TokenStream2 {
     let parent = &mp.ident;
     let calls: Vec<_> = mp
         .settings
@@ -316,40 +329,37 @@ fn gen_mapped_overrides(mp: &MappedParent) -> TokenStream2 {
             let sub = format_ident!("{}", s.sub_field);
             let key = &s.key;
             quote! {
-                crate::domain::common::config::helpers::override_parsed(
-                    &mut cfg.#parent.#sub, repo, #key,
-                ).await?;
+                if let Some(v) = values.get(#key)
+                    && let Ok(parsed) = v.parse()
+                {
+                    self.#parent.#sub = parsed;
+                }
             }
         })
         .collect();
     quote! { #(#calls)* }
 }
 
-// ── Code generation: seed_config_defaults() ───────────────────────────────
-
-fn gen_seed(f: &SettingField) -> TokenStream2 {
+fn gen_default_setting(f: &SettingField) -> TokenStream2 {
     let key = &f.key;
     let default = &f.default;
 
     match &f.default_debug {
         Some(dbg) => quote! {
-            crate::domain::common::config::helpers::seed_key(
-                repo, #key,
-                if cfg!(debug_assertions) { #dbg } else { #default },
-            ).await?;
+            settings.push((#key, if cfg!(debug_assertions) { #dbg.to_string() } else { #default.to_string() }));
         },
         None => quote! {
-            crate::domain::common::config::helpers::seed_key(repo, #key, #default).await?;
+            settings.push((#key, #default.to_string()));
         },
     }
 }
 
-fn gen_flatten_seed(f: &FlattenField) -> TokenStream2 {
+fn gen_flatten_default_settings(f: &FlattenField) -> TokenStream2 {
     let ty = &f.ty;
-    quote! { #ty::seed_config_defaults(repo).await?; }
+    quote! { settings.extend(#ty::default_settings()); }
 }
 
-fn gen_mapped_seeds(mp: &MappedParent) -> TokenStream2 {
+fn gen_mapped_default_settings(mp: &MappedParent) -> TokenStream2 {
     let calls: Vec<_> = mp
         .settings
         .iter()
@@ -358,21 +368,16 @@ fn gen_mapped_seeds(mp: &MappedParent) -> TokenStream2 {
             let default = &s.default;
             match &s.default_debug {
                 Some(dbg) => quote! {
-                    crate::domain::common::config::helpers::seed_key(
-                        repo, #key,
-                        if cfg!(debug_assertions) { #dbg } else { #default },
-                    ).await?;
+                    settings.push((#key, if cfg!(debug_assertions) { #dbg.to_string() } else { #default.to_string() }));
                 },
                 None => quote! {
-                    crate::domain::common::config::helpers::seed_key(repo, #key, #default).await?;
+                    settings.push((#key, #default.to_string()));
                 },
             }
         })
         .collect();
     quote! { #(#calls)* }
 }
-
-// ── Code generation: API_KEYS ──────────────────────────────────────
 
 fn collect_api_keys(fields: &[ConfigField]) -> Vec<(&str, &str)> {
     let mut keys = Vec::new();
@@ -420,8 +425,6 @@ fn gen_keys_consts(fields: &[ConfigField]) -> TokenStream2 {
         })
         .collect()
 }
-
-// ── Code generation: api_values() ─────────────────────────────────
 
 fn value_to_string_expr(ty: &Type, expr: TokenStream2) -> TokenStream2 {
     if is_type(ty, "String") {
@@ -471,13 +474,14 @@ fn gen_api_values(fields: &[ConfigField]) -> TokenStream2 {
     }
 }
 
-// ── Entry point ────────────────────────────────────────────────────
-
 pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_attr = syn::parse_macro_input!(attr as StructAttr);
     let mut input = syn::parse_macro_input!(item as ItemStruct);
 
-    let mapped_settings = parse_struct_mapped_settings(&mut input, &struct_attr.default_section);
+    let mapped_settings = match parse_struct_mapped_settings(&mut input, &struct_attr.default_section) {
+        Ok(settings) => settings,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     let mut mapped_groups: BTreeMap<String, Vec<MappedSetting>> = BTreeMap::new();
     for ms in mapped_settings {
@@ -486,21 +490,34 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
 
     let fields = match &mut input.fields {
         Fields::Named(f) => f,
-        _ => panic!("config_settings only supports named fields"),
+        _ => {
+            return Error::new(input.span(), "config_settings only supports named fields")
+                .to_compile_error()
+                .into();
+        }
     };
 
     let mut config_fields = Vec::new();
     for field in &mut fields.named {
-        let field_name = field.ident.as_ref().expect("named field").to_string();
+        let Some(field_ident) = field.ident.clone() else {
+            return Error::new(field.span(), "config_settings only supports named fields")
+                .to_compile_error()
+                .into();
+        };
+        let field_name = field_ident.to_string();
 
         if let Some(settings) = mapped_groups.remove(&field_name) {
             config_fields.push(ConfigField::MappedParent(MappedParent {
-                ident: field.ident.clone().unwrap(),
+                ident: field_ident,
                 ty: field.ty.clone(),
                 settings,
             }));
-        } else if let Some(cf) = parse_field(field, &struct_attr.default_section) {
-            config_fields.push(cf);
+        } else {
+            match parse_field(field, &struct_attr.default_section) {
+                Ok(Some(cf)) => config_fields.push(cf),
+                Ok(None) => {}
+                Err(err) => return err.to_compile_error().into(),
+            }
         }
     }
 
@@ -508,30 +525,34 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
     let keys_consts = gen_keys_consts(&config_fields);
     let api_values = gen_api_values(&config_fields);
 
-    let default_fields: Vec<_> = config_fields
+    let default_fields: Vec<_> = match config_fields
         .iter()
         .map(|f| match f {
             ConfigField::Setting(s) => gen_default(s),
-            ConfigField::Flatten(s) => gen_flatten_default(s),
+            ConfigField::Flatten(s) => Ok(gen_flatten_default(s)),
             ConfigField::MappedParent(mp) => gen_mapped_default(mp),
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()
+    {
+        Ok(fields) => fields,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
-    let override_calls: Vec<_> = config_fields
+    let apply_calls: Vec<_> = config_fields
         .iter()
         .map(|f| match f {
-            ConfigField::Setting(s) => gen_override(s),
-            ConfigField::Flatten(s) => gen_flatten_override(s),
-            ConfigField::MappedParent(mp) => gen_mapped_overrides(mp),
+            ConfigField::Setting(s) => gen_apply_value(s),
+            ConfigField::Flatten(s) => gen_flatten_apply(s),
+            ConfigField::MappedParent(mp) => gen_mapped_apply(mp),
         })
         .collect();
 
-    let seed_calls: Vec<_> = config_fields
+    let default_setting_calls: Vec<_> = config_fields
         .iter()
         .map(|f| match f {
-            ConfigField::Setting(s) => gen_seed(s),
-            ConfigField::Flatten(s) => gen_flatten_seed(s),
-            ConfigField::MappedParent(mp) => gen_mapped_seeds(mp),
+            ConfigField::Setting(s) => gen_default_setting(s),
+            ConfigField::Flatten(s) => gen_flatten_default_settings(s),
+            ConfigField::MappedParent(mp) => gen_mapped_default_settings(mp),
         })
         .collect();
 
@@ -548,19 +569,20 @@ pub fn config_settings_impl(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
             }
 
-            pub async fn from_config_repo(
-                repo: &dyn crate::interface::config_repo::ConfigRepo,
-            ) -> Result<Self, crate::domain::common::error::Error> {
+            pub fn from_config_values(values: &super::ConfigValues) -> Self {
                 let mut cfg = Self::defaults();
-                #(#override_calls)*
-                Ok(cfg)
+                cfg.apply_config_values(values);
+                cfg
             }
 
-            pub async fn seed_config_defaults(
-                repo: &dyn crate::interface::config_repo::ConfigRepo,
-            ) -> Result<(), crate::domain::common::error::Error> {
-                #(#seed_calls)*
-                Ok(())
+            pub fn apply_config_values(&mut self, values: &super::ConfigValues) {
+                #(#apply_calls)*
+            }
+
+            pub fn default_settings() -> Vec<(&'static str, String)> {
+                let mut settings = Vec::new();
+                #(#default_setting_calls)*
+                settings
             }
         }
     };

@@ -15,6 +15,9 @@ services:
       memlock:
         soft: -1
         hard: -1
+    environment:
+      NETGUARDIA_DB_KEY: netguardia-dev-db-key
+      NETGUARDIA_SECRETS_KEY: netguardia-dev-secrets-key
     dns:
       - 10.10.3.1
       - 8.8.8.8

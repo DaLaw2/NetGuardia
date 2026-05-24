@@ -1,10 +1,70 @@
-use chrono::{Duration as ChronoDuration, Local};
+use std::fmt::Display;
+use std::str::FromStr;
 
-use crate::domain::common::error::Error;
+use chrono::{Duration as ChronoDuration, Local};
+use serde::de::DeserializeOwned;
+
+use crate::common::error::Error;
 use crate::domain::report::data::{
     BlockedIpItem, ExecutiveSummary, GeoItem, ReportData, SoarActivity, SystemHealthSummary, ThreatBreakdownItem,
 };
-use crate::interface::report_snapshot::ReportSnapshotRepo;
+use crate::domain::report::error::ReportError;
+use crate::interface::reporting::report_snapshot::ReportSnapshotRepo;
+
+async fn parsed_snapshot<T>(db: &dyn ReportSnapshotRepo, key: &str, default: T) -> Result<T, Error>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    match db.get_report_snapshot(key).await? {
+        Some(value) => {
+            let parsed = value
+                .parse()
+                .map_err(|err| ReportError::SnapshotParseFailed(key, value, err))?;
+            Ok(parsed)
+        }
+        None => Ok(default),
+    }
+}
+
+async fn json_snapshot<T>(db: &dyn ReportSnapshotRepo, key: &str, default: T) -> Result<T, Error>
+where
+    T: DeserializeOwned,
+{
+    match db.get_report_snapshot(key).await? {
+        Some(value) => {
+            let parsed =
+                serde_json::from_str(&value).map_err(|err| ReportError::SnapshotParseFailed(key, value, err))?;
+            Ok(parsed)
+        }
+        None => Ok(default),
+    }
+}
+
+async fn threat_breakdown_snapshot(db: &dyn ReportSnapshotRepo) -> Result<Vec<ThreatBreakdownItem>, Error> {
+    let key = "weekly_threat_breakdown";
+    let Some(value) = db.get_report_snapshot(key).await? else {
+        return Ok(Vec::new());
+    };
+    let obj: serde_json::Value =
+        serde_json::from_str(&value).map_err(|err| ReportError::SnapshotParseFailed(key, value, err))?;
+    let Some(entries) = obj.as_object() else {
+        return Err(ReportError::SnapshotShapeInvalid(key, "object of threat_type to count").into());
+    };
+
+    let mut items = Vec::with_capacity(entries.len());
+    for (threat_type, count) in entries {
+        let Some(count) = count.as_u64() else {
+            return Err(ReportError::SnapshotShapeInvalid(key, "object of threat_type to unsigned count").into());
+        };
+        items.push(ThreatBreakdownItem {
+            threat_type: threat_type.clone(),
+            count,
+            trend: "—".into(),
+        });
+    }
+    Ok(items)
+}
 
 pub async fn build_report_data(db: &dyn ReportSnapshotRepo) -> Result<ReportData, Error> {
     let now = Local::now();
@@ -14,52 +74,23 @@ pub async fn build_report_data(db: &dyn ReportSnapshotRepo) -> Result<ReportData
         now.format("%Y-%m-%d")
     );
 
-    let threats_count: u64 = db
-        .get_report_snapshot("weekly_threats_count")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let threats_count = parsed_snapshot(db, "weekly_threats_count", 0_u64).await?;
 
-    let top_ips: Vec<BlockedIpItem> = db
-        .get_report_snapshot("weekly_top_ips")
-        .await?
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_else(|| {
-            vec![BlockedIpItem {
-                ip: "—".into(),
-                count: 0,
-                country: "N/A".into(),
-            }]
-        });
+    let top_ips = json_snapshot(db, "weekly_top_ips", Vec::<BlockedIpItem>::new()).await?;
 
-    let breakdown: Vec<ThreatBreakdownItem> = db
-        .get_report_snapshot("weekly_threat_breakdown")
-        .await?
-        .and_then(|v| {
-            let obj: serde_json::Value = serde_json::from_str(&v).ok()?;
-            let items = obj
-                .as_object()?
-                .iter()
-                .map(|(k, v)| ThreatBreakdownItem {
-                    threat_type: k.clone(),
-                    count: v.as_u64().unwrap_or(0),
-                    trend: "—".into(),
-                })
-                .collect();
-            Some(items)
-        })
-        .unwrap_or_default();
+    let breakdown = threat_breakdown_snapshot(db).await?;
 
-    let health: SystemHealthSummary = db
-        .get_report_snapshot("weekly_system_health")
-        .await?
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or(SystemHealthSummary {
+    let health = json_snapshot(
+        db,
+        "weekly_system_health",
+        SystemHealthSummary {
             avg_cpu_percent: 0.0,
             avg_memory_percent: 0.0,
             disk_usage_percent: 0.0,
             ebpf_status: "running".into(),
-        });
+        },
+    )
+    .await?;
 
     let mut recommendations = Vec::new();
     if threats_count > 10 {
@@ -72,45 +103,17 @@ pub async fn build_report_data(db: &dyn ReportSnapshotRepo) -> Result<ReportData
         recommendations.push("No action needed — your network security posture is healthy".into());
     }
 
-    let uptime_percent: f64 = db
-        .get_report_snapshot("system_uptime_percent")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
+    let uptime_percent = parsed_snapshot(db, "system_uptime_percent", 0.0_f64).await?;
 
-    let active_rules: u64 = db
-        .get_report_snapshot("active_rules_count")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let active_rules = parsed_snapshot(db, "active_rules_count", 0_u64).await?;
 
-    let geo_distribution: Vec<GeoItem> = db
-        .get_report_snapshot("weekly_geo_distribution")
-        .await?
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default();
+    let geo_distribution = json_snapshot(db, "weekly_geo_distribution", Vec::<GeoItem>::new()).await?;
 
-    let auto_blocks: u64 = db
-        .get_report_snapshot("weekly_soar_blocks")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let playbooks_triggered: u64 = db
-        .get_report_snapshot("weekly_soar_triggers")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let auto_unblocks: u64 = db
-        .get_report_snapshot("weekly_soar_unblocks")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let auto_blocks = parsed_snapshot(db, "weekly_soar_blocks", 0_u64).await?;
+    let playbooks_triggered = parsed_snapshot(db, "weekly_soar_triggers", 0_u64).await?;
+    let auto_unblocks = parsed_snapshot(db, "weekly_soar_unblocks", 0_u64).await?;
 
-    let blocked_count: u64 = db
-        .get_report_snapshot("weekly_blocked_count")
-        .await?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(auto_blocks);
+    let blocked_count = parsed_snapshot(db, "weekly_blocked_count", auto_blocks).await?;
 
     Ok(ReportData {
         period,
@@ -132,4 +135,81 @@ pub async fn build_report_data(db: &dyn ReportSnapshotRepo) -> Result<ReportData
         system_health: health,
         recommendations,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    struct FakeSnapshots {
+        values: HashMap<String, String>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReportSnapshotRepo for FakeSnapshots {
+        async fn get_report_snapshot(&self, key: &str) -> Result<Option<String>, Error> {
+            Ok(self.values.get(key).cloned())
+        }
+
+        async fn set_report_snapshot(&self, _key: &str, _value: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_snapshots_use_defaults() {
+        let repo = FakeSnapshots { values: HashMap::new() };
+
+        let data = build_report_data(&repo)
+            .await
+            .expect("missing snapshots should default");
+
+        assert_eq!(data.executive_summary.total_threats, 0);
+        assert!(data.top_blocked_ips.is_empty());
+        assert!(data.threat_breakdown.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_numeric_snapshot_is_an_error() {
+        let mut values = HashMap::new();
+        values.insert("weekly_threats_count".to_string(), "not-a-number".to_string());
+        let repo = FakeSnapshots { values };
+
+        let err = build_report_data(&repo)
+            .await
+            .expect_err("invalid numeric snapshot should fail");
+
+        assert!(err.to_string().contains("weekly_threats_count"));
+    }
+
+    #[tokio::test]
+    async fn invalid_json_snapshot_is_an_error() {
+        let mut values = HashMap::new();
+        values.insert("weekly_top_ips".to_string(), "{bad json".to_string());
+        let repo = FakeSnapshots { values };
+
+        let err = build_report_data(&repo)
+            .await
+            .expect_err("invalid JSON snapshot should fail");
+
+        assert!(err.to_string().contains("weekly_top_ips"));
+    }
+
+    #[tokio::test]
+    async fn invalid_threat_breakdown_shape_is_an_error() {
+        let mut values = HashMap::new();
+        values.insert(
+            "weekly_threat_breakdown".to_string(),
+            r#"{"port_scan":"many"}"#.to_string(),
+        );
+        let repo = FakeSnapshots { values };
+
+        let err = build_report_data(&repo)
+            .await
+            .expect_err("invalid breakdown shape should fail");
+
+        assert!(err.to_string().contains("weekly_threat_breakdown"));
+    }
 }

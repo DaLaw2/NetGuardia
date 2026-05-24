@@ -2,12 +2,26 @@ use async_trait::async_trait;
 use rusqlite::params;
 
 use super::Database;
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
+use crate::domain::common::config::constants::FUSION_AUDIT_ACTION;
 use crate::domain::report::data::{ThreatBreakdownEntry, TopIpEntry};
-use crate::interface::stats::StatsRepo;
+use crate::interface::reporting::stats::StatsRepo;
 
 impl Database {
-    pub async fn count_weekly_executions(&self, days: i64) -> Result<u64, Error> {
+    pub async fn count_weekly_threat_events(&self, days: i64) -> Result<u64, Error> {
+        self.pool
+            .conn_and_then(move |conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = ?1 AND ts >= datetime('now', ?2)",
+                    params![FUSION_AUDIT_ACTION, format!("-{} days", days)],
+                    |row| row.get(0),
+                )?;
+                Ok(count as u64)
+            })
+            .await
+    }
+
+    pub async fn count_weekly_playbook_executions(&self, days: i64) -> Result<u64, Error> {
         self.pool
             .conn_and_then(move |conn| {
                 let count: i64 = conn.query_row(
@@ -50,19 +64,19 @@ impl Database {
         self.pool
             .conn_and_then(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT trigger_event, COUNT(*) FROM soar_executions WHERE executed_at >= datetime('now', ?1) GROUP BY trigger_event ORDER BY COUNT(*) DESC"
+                    "SELECT attack_type, COUNT(*) FROM ( \
+                         SELECT COALESCE(NULLIF(CAST(json_extract(detail, '$.attack_type') AS TEXT), ''), 'unknown') AS attack_type \
+                         FROM audit_log \
+                         WHERE action = ?1 AND ts >= datetime('now', ?2) AND json_valid(detail) \
+                     ) GROUP BY attack_type ORDER BY COUNT(*) DESC"
                 )?;
-                let rows = stmt.query_map(params![format!("-{} days", days)], |row| {
+                let rows = stmt.query_map(params![FUSION_AUDIT_ACTION, format!("-{} days", days)], |row| {
                     Ok(ThreatBreakdownEntry {
                         threat_type: row.get(0)?,
                         count: row.get::<_, i64>(1)? as u64,
                     })
                 })?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -79,11 +93,7 @@ impl Database {
                         count: row.get::<_, i64>(1)? as u64,
                     })
                 })?;
-                let mut result = Vec::new();
-                for row in rows {
-                    result.push(row?);
-                }
-                Ok(result)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -100,8 +110,12 @@ impl Database {
 
 #[async_trait]
 impl StatsRepo for Database {
-    async fn count_weekly_executions(&self, days: i64) -> Result<u64, Error> {
-        self.count_weekly_executions(days).await
+    async fn count_weekly_threat_events(&self, days: i64) -> Result<u64, Error> {
+        self.count_weekly_threat_events(days).await
+    }
+
+    async fn count_weekly_playbook_executions(&self, days: i64) -> Result<u64, Error> {
+        self.count_weekly_playbook_executions(days).await
     }
 
     async fn count_weekly_blocks(&self, days: i64) -> Result<u64, Error> {

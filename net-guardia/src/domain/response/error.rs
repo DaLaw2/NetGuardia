@@ -10,6 +10,14 @@ traceable! {
         #[error("Invalid TTL: {ttl_secs}s exceeds maximum of {max_secs}s")]
         InvalidTtl { ttl_secs: u64, max_secs: u64 } => tracing::Level::WARN,
 
+        #[no_source]
+        #[error("Invalid TTL: {ttl_secs}s must be greater than 0")]
+        InvalidTtlNonPositive { ttl_secs: u64 } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Invalid TTL: {ttl_secs}s is too large to schedule safely")]
+        TtlTooLarge { ttl_secs: u64 } => tracing::Level::WARN,
+
         #[error("SOAR action failed: {action_type} — {err}")]
         ActionFailed { action_type: String } => tracing::Level::ERROR,
 
@@ -34,11 +42,15 @@ traceable! {
         WebhookUrlNoHost => tracing::Level::WARN,
 
         #[no_source]
+        #[error("Webhook URL scheme '{scheme}' is not supported")]
+        WebhookUnsupportedScheme { scheme: String } => tracing::Level::WARN,
+
+        #[no_source]
         #[error("Webhook DNS resolution returned no addresses for '{host}'")]
         WebhookDnsEmpty { host: String } => tracing::Level::WARN,
 
         #[no_source]
-        #[error("Webhook SSRF blocked: host '{host}' resolves to private IP {ip}")]
+        #[error("Webhook SSRF blocked: host '{host}' resolves to non-public IP {ip}")]
         WebhookSsrfBlocked { host: String, ip: String } => tracing::Level::WARN,
 
         #[no_source]
@@ -52,16 +64,26 @@ traceable! {
         #[error("Failed to clean up ACL rule after unblock: {err}")]
         AclCleanupFailed => tracing::Level::WARN,
 
+        #[error("Failed to queue pending unblock for IP {source_ip}: {err}")]
+        PendingUnblockQueueFailed { source_ip: String } => tracing::Level::ERROR,
+
         #[no_source]
         #[error("Unknown SOAR condition type: {condition_type}")]
         UnknownConditionType { condition_type: String } => tracing::Level::WARN,
 
         #[no_source]
+        #[error("Invalid operator '{operator}' for SOAR condition type '{condition_type}'")]
+        InvalidConditionOperator { condition_type: String, operator: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("{reason}")]
+        ValidationFailed { reason: String } => tracing::Level::WARN,
+
+        #[no_source]
         #[error("Rate-limit owner task is unavailable (channel closed)")]
         RateLimitOwnerUnavailable => tracing::Level::ERROR,
 
-        #[no_source]
-        #[error("Rate-limit owner blocking task panicked or was cancelled: {detail}")]
-        RateLimitOwnerJoinFailed { detail: String } => tracing::Level::ERROR,
+        #[error("Rate-limit owner blocking task panicked or was cancelled: {err}")]
+        RateLimitOwnerJoinFailed => tracing::Level::ERROR,
     }
 }

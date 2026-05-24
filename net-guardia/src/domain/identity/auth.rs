@@ -124,7 +124,6 @@ pub struct Claims {
     pub username: String,
     pub role: String,
     pub permissions: Vec<String>,
-    pub exp: usize,
 }
 
 #[cfg(test)]

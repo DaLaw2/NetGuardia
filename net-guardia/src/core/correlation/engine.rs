@@ -10,19 +10,17 @@ use tokio::time::interval;
 use crate::core::correlation::botnet::BotnetDetector;
 use crate::core::correlation::lateral::LateralMovementDetector;
 use crate::core::correlation::scan::ScanDetector;
+use crate::core::detection::send_detection_or_log;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::DetectionEvent;
+use crate::domain::detection::flow_observation::FlowObservation;
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::ml_detection::AlertMessage;
 
-/// Coordinates cross-flow correlation detectors (botnet, scan, lateral movement).
-/// Subscribes to ML AlertMessage broadcast and feeds enriched DetectionEvents
-/// to the DetectionOrchestrator for dedup and SOAR routing.
 pub struct CorrelationEngine {
     botnet: BotnetDetector,
     scan: ScanDetector,
     lateral: LateralMovementDetector,
-    alert_rx: broadcast::Receiver<AlertMessage>,
+    alert_rx: broadcast::Receiver<FlowObservation>,
     detection_tx: mpsc::Sender<DetectionEvent>,
     cleanup_interval_secs: u64,
 }
@@ -30,7 +28,7 @@ pub struct CorrelationEngine {
 impl CorrelationEngine {
     pub fn new(
         app_config: &Arc<ArcSwap<AppConfig>>,
-        alert_rx: broadcast::Receiver<AlertMessage>,
+        alert_rx: broadcast::Receiver<FlowObservation>,
         detection_tx: mpsc::Sender<DetectionEvent>,
     ) -> Self {
         let cfg = app_config.load();
@@ -46,12 +44,7 @@ impl CorrelationEngine {
         }
     }
 
-    /// Spawn the correlation engine as a background task.
-    pub fn start(self) {
-        tokio::spawn(async move { self.run().await });
-    }
-
-    async fn run(mut self) {
+    pub async fn run(mut self) {
         log!(DetectionLog::CorrelationEngineStarted);
 
         let mut cleanup_interval = interval(Duration::from_secs(self.cleanup_interval_secs));
@@ -72,15 +65,15 @@ impl CorrelationEngine {
         }
     }
 
-    fn process_alert(&self, alert: &AlertMessage) {
+    fn process_alert(&self, alert: &FlowObservation) {
         if let Some(event) = self.botnet.process(alert) {
-            send_or_log(&self.detection_tx, event);
+            let _ = send_detection_or_log(&self.detection_tx, event);
         }
         if let Some(event) = self.scan.process(alert) {
-            send_or_log(&self.detection_tx, event);
+            let _ = send_detection_or_log(&self.detection_tx, event);
         }
         if let Some(event) = self.lateral.process(alert) {
-            send_or_log(&self.detection_tx, event);
+            let _ = send_detection_or_log(&self.detection_tx, event);
         }
     }
 
@@ -92,12 +85,49 @@ impl CorrelationEngine {
     }
 }
 
-fn send_or_log(tx: &mpsc::Sender<DetectionEvent>, event: DetectionEvent) {
-    if let Err(mpsc::error::TrySendError::Full(dropped)) = tx.try_send(event) {
-        log!(DetectionLog::DetectionChannelDrop(
-            format!("{:?}", dropped.source),
-            dropped.attack_type,
-            dropped.source_ip,
-        ));
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use crate::core::detection::send_detection_or_log;
+    use crate::domain::common::event::{DetectionEvent, DetectionSource};
+
+    fn detection_event() -> DetectionEvent {
+        DetectionEvent {
+            source: DetectionSource::Correlation,
+            attack_type: "scan".to_string(),
+            confidence: 0.9,
+            source_ip: "192.0.2.10".to_string(),
+            dest_ip: "198.51.100.20".to_string(),
+            protocol: 6,
+            packet_count: 10,
+            flow_duration_us: 1_000,
+            ae_score: 0.0,
+            anomaly_score: 0.0,
+            c2_score: 0.0,
+        }
+    }
+
+    #[test]
+    fn send_detection_or_log_reports_success() {
+        let (tx, _rx) = mpsc::channel(1);
+
+        assert!(send_detection_or_log(&tx, detection_event()));
+    }
+
+    #[test]
+    fn send_detection_or_log_reports_full_channel_drop() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(detection_event()).unwrap();
+
+        assert!(!send_detection_or_log(&tx, detection_event()));
+    }
+
+    #[test]
+    fn send_detection_or_log_reports_closed_channel_drop() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        assert!(!send_detection_or_log(&tx, detection_event()));
     }
 }

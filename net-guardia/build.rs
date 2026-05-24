@@ -13,15 +13,10 @@ fn main() {
     build_frontend();
 }
 
-/// Resolve the absolute path of bpf-linker.
-/// Searches PATH first, then falls back to CARGO_HOME/bin.
 fn find_bpf_linker() -> PathBuf {
-    // Try PATH via which
     if let Ok(path) = which::which("bpf-linker") {
         return path;
     }
-
-    // Fallback: CARGO_HOME/bin (handles CI cache + which v8 issues)
     let cargo_home = env::var("CARGO_HOME").unwrap_or_else(|_| {
         let home = env::var("HOME").unwrap_or_default();
         format!("{home}/.cargo")
@@ -60,8 +55,6 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
     if build_ebpf {
         let arch = env::var_os("CARGO_CFG_TARGET_ARCH").unwrap();
         let target = format!("{target}-unknown-none");
-
-        // Find bpf-linker once, pass its path to the subprocess explicitly.
         let bpf_linker = find_bpf_linker();
         let bpf_linker_str = bpf_linker.to_str().expect("bpf-linker path is not valid UTF-8");
 
@@ -69,7 +62,7 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
         let ebpf_dir = manifest_path.parent().unwrap();
 
         println!("cargo:rerun-if-changed={}", ebpf_dir.as_str());
-        println!("cargo:rerun-if-changed=../common/src");
+        println!("cargo:rerun-if-changed=../net-guardia-abi/src");
 
         let mut cmd = Command::new("cargo");
         cmd.args([
@@ -84,9 +77,6 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
         ]);
 
         cmd.env("CARGO_CFG_BPF_TARGET_ARCH", arch);
-
-        // Tell cargo which linker to use for the BPF targets.
-        // This avoids relying on PATH in the subprocess.
         let linker_env_bpfel = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER";
         let linker_env_bpfeb = "CARGO_TARGET_BPFEB_UNKNOWN_NONE_LINKER";
         cmd.env(linker_env_bpfel, bpf_linker_str);
@@ -120,16 +110,13 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
         let stdout = BufReader::new(stdout);
         let mut executables = Vec::new();
         for message in Message::parse_stream(stdout) {
-            #[allow(clippy::collapsible_match)]
             match message.expect("valid JSON") {
                 Message::CompilerArtifact(Artifact {
-                    executable,
+                    executable: Some(executable),
                     target: Target { name, .. },
                     ..
                 }) => {
-                    if let Some(executable) = executable {
-                        executables.push((name, executable.into_std_path_buf()));
-                    }
+                    executables.push((name, executable.into_std_path_buf()));
                 }
                 Message::CompilerMessage(CompilerMessage { message, .. }) => {
                     for line in message.rendered.unwrap_or_default().split('\n') {
@@ -152,8 +139,6 @@ fn build_ebpf_package(package_name: &str, target_subdir: &str) {
 
         for (name, binary) in executables {
             let dst = out_dir.join(name);
-            // Only copy if content actually changed to avoid updating mtime,
-            // which would cause cargo to unnecessarily relink the binary.
             if !files_equal(&binary, &dst) {
                 let _: u64 =
                     fs::copy(&binary, &dst).unwrap_or_else(|err| panic!("failed to copy {binary:?} to {dst:?}: {err}"));
@@ -186,11 +171,6 @@ fn build_frontend() {
     if !frontend_dir.exists() {
         panic!("Frontend directory {:?} does not exist", frontend_dir);
     }
-
-    // Emit rerun-if-changed for individual files so that edits inside
-    // subdirectories (e.g. src/components/Foo.vue) actually trigger a rebuild.
-    // Directory-level rerun-if-changed only watches the directory mtime, which
-    // doesn't change when files in subdirectories are modified on Linux.
     for dir_name in ["src", "public"] {
         let dir_path = frontend_dir.join(dir_name);
         if dir_path.exists() {
@@ -238,10 +218,6 @@ fn build_frontend() {
     fs::create_dir_all(&static_dir).unwrap_or_else(|err| panic!("failed to create {:?}: {err}", static_dir));
 
     copy_dir_all(&out_dir, &static_dir).unwrap_or_else(|err| panic!("failed to copy frontend build: {err}"));
-
-    // rust_embed embeds static/ at compile time. After copying new frontend
-    // output into static/web/, we must tell cargo to recompile the crate so
-    // the embedded files are refreshed in the binary.
     emit_rerun_if_changed_recursive(&static_dir);
 }
 
@@ -310,7 +286,6 @@ fn get_dir_last_modified(path: &std::path::Path) -> Option<SystemTime> {
     None
 }
 
-/// Returns true if both files exist and have identical contents.
 fn files_equal(a: &std::path::Path, b: &std::path::Path) -> bool {
     let Ok(a_meta) = fs::metadata(a) else { return false };
     let Ok(b_meta) = fs::metadata(b) else { return false };

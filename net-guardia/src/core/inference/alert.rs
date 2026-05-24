@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use macros::log;
 use tokio::sync::broadcast;
 
@@ -21,10 +23,17 @@ impl MLAlert {
 
     pub fn broadcast_alert(&self, result: &DetectionResult) {
         if self.broadcast_tx.receiver_count() > 0 {
-            let alert = AlertMessage::from_detection_result(result);
+            let alert = AlertMessage::from_detection_result(result, current_epoch_secs());
             if let Err(e) = self.broadcast_tx.send(alert) {
                 log!(MLLog::BroadcastAlertFailed(e.to_string()));
             }
         }
     }
+}
+
+fn current_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

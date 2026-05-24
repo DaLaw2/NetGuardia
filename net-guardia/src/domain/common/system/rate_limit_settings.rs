@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitSettings {
     pub packet_rate: Option<u64>,
     pub syn_rate: Option<u64>,

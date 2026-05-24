@@ -3,12 +3,28 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
-/// Key for frequency tracking: (playbook_id, source_ip).
-type FreqKey = (i64, String);
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct FreqKey {
+    playbook_id: i64,
+    source_ip: String,
+}
 
-/// Lock-free frequency tracker using DashMap for concurrent per-IP event counting.
+struct FrequencyEntry {
+    events: VecDeque<Instant>,
+    last_seen: Instant,
+}
+
+impl FrequencyEntry {
+    fn new(now: Instant) -> Self {
+        Self {
+            events: VecDeque::new(),
+            last_seen: now,
+        }
+    }
+}
+
 pub struct FrequencyTracker {
-    events: DashMap<FreqKey, VecDeque<Instant>>,
+    events: DashMap<FreqKey, FrequencyEntry>,
     max_deque_size: usize,
     max_tracked_keys: usize,
     max_retention: Duration,
@@ -24,46 +40,56 @@ impl FrequencyTracker {
         }
     }
 
-    /// Record an event and return the count of events within the given window.
     pub fn record_and_count(&self, playbook_id: i64, source_ip: &str, window_secs: u64) -> u64 {
-        let key = (playbook_id, source_ip.to_string());
+        let key = FreqKey {
+            playbook_id,
+            source_ip: source_ip.to_string(),
+        };
         let now = Instant::now();
         let window = Duration::from_secs(window_secs);
 
-        let mut entry = self.events.entry(key).or_default();
-        let deque = entry.value_mut();
+        let count = {
+            let mut entry = self
+                .events
+                .entry(key.clone())
+                .or_insert_with(|| FrequencyEntry::new(now));
+            let entry = entry.value_mut();
+            entry.last_seen = now;
+            let deque = &mut entry.events;
 
-        // Prune expired entries from the front
-        while let Some(front) = deque.front() {
-            if now.duration_since(*front) > window {
-                deque.pop_front();
-            } else {
-                break;
+            while let Some(front) = deque.front() {
+                if now.duration_since(*front) > window {
+                    deque.pop_front();
+                } else {
+                    break;
+                }
             }
+
+            deque.push_back(now);
+
+            while deque.len() > self.max_deque_size {
+                deque.pop_front();
+            }
+
+            deque.len() as u64
+        };
+
+        if self.events.len() > self.max_tracked_keys {
+            self.evict_oldest_excluding(self.events.len() - self.max_tracked_keys, &key);
         }
 
-        deque.push_back(now);
-
-        // Cap deque size to prevent unbounded growth
-        while deque.len() > self.max_deque_size {
-            deque.pop_front();
-        }
-
-        deque.len() as u64
+        count
     }
 
-    /// Remove empty deques and entries where all timestamps are outside the
-    /// configured retention window.
     pub fn cleanup(&self) -> u32 {
         let now = Instant::now();
         let mut removed = 0u32;
-        self.events.retain(|_, deque| {
-            if deque.is_empty() {
+        self.events.retain(|_, entry| {
+            if entry.events.is_empty() {
                 removed += 1;
                 return false;
             }
-            // If all entries are older than max_retention, remove the whole entry.
-            if let Some(newest) = deque.back()
+            if let Some(newest) = entry.events.back()
                 && now.checked_duration_since(*newest).unwrap_or(Duration::ZERO) > self.max_retention
             {
                 removed += 1;
@@ -72,22 +98,48 @@ impl FrequencyTracker {
             true
         });
 
-        // Enforce max key cap to prevent unbounded growth under DDoS
         if self.events.len() > self.max_tracked_keys {
             let excess = self.events.len() - self.max_tracked_keys;
-            let keys_to_remove: Vec<FreqKey> = self.events.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys_to_remove {
-                self.events.remove(&key);
+            removed += self.evict_oldest(excess);
+        }
+
+        removed
+    }
+
+    fn evict_oldest(&self, count: usize) -> u32 {
+        self.evict_oldest_inner(count, None)
+    }
+
+    fn evict_oldest_excluding(&self, count: usize, exclude: &FreqKey) -> u32 {
+        self.evict_oldest_inner(count, Some(exclude))
+    }
+
+    fn evict_oldest_inner(&self, count: usize, exclude: Option<&FreqKey>) -> u32 {
+        let mut entries: Vec<(FreqKey, Instant)> = self
+            .events
+            .iter()
+            .filter(|entry| exclude.is_none_or(|ex| entry.key() != ex))
+            .map(|entry| (entry.key().clone(), entry.last_seen))
+            .collect();
+        if count < entries.len() {
+            entries.select_nth_unstable_by_key(count, |(_, last_seen)| *last_seen);
+        }
+
+        let mut removed = 0;
+        for (key, _) in entries.into_iter().take(count) {
+            if self.events.remove(&key).is_some() {
                 removed += 1;
             }
         }
-
         removed
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+    use std::time::Duration;
+
     use super::FrequencyTracker;
 
     #[test]
@@ -97,5 +149,24 @@ mod tests {
         assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 1);
         assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 2);
         assert_eq!(tracker.record_and_count(1, "10.0.0.1", 60), 2);
+    }
+
+    #[test]
+    fn key_cap_evicts_oldest_entries() {
+        let tracker = FrequencyTracker::new(2, 2, 60);
+
+        tracker.record_and_count(1, "10.0.0.1", 60);
+        thread::sleep(Duration::from_millis(1));
+        tracker.record_and_count(1, "10.0.0.2", 60);
+        thread::sleep(Duration::from_millis(1));
+        tracker.record_and_count(1, "10.0.0.3", 60);
+
+        assert_eq!(tracker.events.len(), 2);
+        assert!(
+            !tracker
+                .events
+                .iter()
+                .any(|entry| entry.key().playbook_id == 1 && entry.key().source_ip == "10.0.0.1")
+        );
     }
 }

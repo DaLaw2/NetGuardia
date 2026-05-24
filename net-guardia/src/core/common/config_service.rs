@@ -4,26 +4,26 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 
+use crate::common::error::Error;
+use crate::common::error::system::SystemError;
+use crate::core::common::config_loader::load_app_config;
 use crate::domain::common::config::AppConfig;
+use crate::domain::common::config::pipeline::normalize_pipeline_stages;
 use crate::domain::common::config::section::ConfigSection;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::misc::MiscError;
-use crate::interface::app_repo::AppRepo;
-use crate::interface::config_repo::ConfigRepo;
-use crate::interface::secret_store::SecretStorePort;
+use crate::interface::system::config_repo::ConfigRepo;
+use crate::interface::system::secret_store::SecretStorePort;
 
 const SECRET_KEYS: &[&str] = &["smtp_password"];
-
-const VALID_PIPELINE_STAGES: &[&str] = &["access_control", "rate_limit", "service"];
+const CLEARABLE_CONFIG_KEYS: &[&str] = &["smtp_host", "smtp_username", "smtp_sender", "smtp_recipient"];
 
 pub struct ConfigService {
-    db: Arc<dyn AppRepo>,
+    db: Arc<dyn ConfigRepo>,
     secrets: Option<Arc<dyn SecretStorePort>>,
     app_config: Arc<ArcSwap<AppConfig>>,
 }
 
 struct CandidateConfigRepo {
-    base: Arc<dyn AppRepo>,
+    base: Arc<dyn ConfigRepo>,
     values: HashMap<String, String>,
 }
 
@@ -66,7 +66,7 @@ impl ConfigRepo for CandidateConfigRepo {
 }
 
 impl ConfigService {
-    pub fn new(db: Arc<dyn AppRepo>, app_config: Arc<ArcSwap<AppConfig>>) -> Self {
+    pub fn new(db: Arc<dyn ConfigRepo>, app_config: Arc<ArcSwap<AppConfig>>) -> Self {
         Self {
             db,
             secrets: None,
@@ -85,11 +85,11 @@ impl ConfigService {
         let mut root = serde_json::Map::new();
         for section in ConfigSection::ALL {
             let mut section_obj = serde_json::Map::new();
-            for key in section.keys() {
+            section.for_each_key(|key| {
                 let value = values.get(key).cloned().unwrap_or_default();
-                section_obj.insert(key.to_string(), serde_json::Value::String(value));
-            }
-            root.insert(section.name().to_string(), serde_json::Value::Object(section_obj));
+                section_obj.insert(key.to_string(), serde_json::json!(value));
+            });
+            root.insert(section.name().to_string(), section_obj.into());
         }
         root.insert(
             "pipeline".to_string(),
@@ -98,7 +98,7 @@ impl ConfigService {
                 "egress": cfg.pipeline.egress.join(","),
             }),
         );
-        serde_json::Value::Object(root)
+        root.into()
     }
 
     pub async fn update_config(&self, body: &serde_json::Value) -> Result<Vec<String>, Error> {
@@ -108,12 +108,12 @@ impl ConfigService {
 
         for section in ConfigSection::ALL {
             if let Some(section_obj) = body.get(section.name()).and_then(|v| v.as_object()) {
-                for key in section.keys() {
-                    if let Some(val) = section_obj.get(*key).and_then(json_value_as_string) {
+                section.for_each_key(|key| {
+                    if let Some(val) = section_obj.get(key).and_then(|v| config_json_value_as_string(key, v)) {
                         config_values.push((key.to_string(), val));
                         updated.push(key.to_string());
                     }
-                }
+                });
             }
         }
 
@@ -137,19 +137,8 @@ impl ConfigService {
         if let Some(pipeline_obj) = body.get("pipeline").and_then(|v| v.as_object()) {
             for (field, db_key) in [("ingress", "pipeline_ingress"), ("egress", "pipeline_egress")] {
                 if let Some(val) = pipeline_obj.get(field).and_then(|v| v.as_str()) {
-                    if !val.is_empty() {
-                        let stages: Vec<&str> = val.split(',').map(|s| s.trim()).collect();
-                        for stage in &stages {
-                            if !stage.is_empty() && !VALID_PIPELINE_STAGES.contains(stage) {
-                                Err(MiscError::ValidationError(format!(
-                                    "Invalid pipeline stage '{}'. Valid stages: {}",
-                                    stage,
-                                    VALID_PIPELINE_STAGES.join(", ")
-                                )))?;
-                            }
-                        }
-                    }
-                    config_values.push((db_key.to_string(), val.to_string()));
+                    let stages = normalize_pipeline_stages(val)?;
+                    config_values.push((db_key.to_string(), stages.join(",")));
                     updated.push(db_key.to_string());
                 }
             }
@@ -159,7 +148,8 @@ impl ConfigService {
             base: self.db.clone(),
             values: config_values.iter().cloned().collect(),
         };
-        let new_cfg = AppConfig::from_config_repo(&candidate_repo).await?;
+        let new_cfg = load_app_config(&candidate_repo).await?;
+        reject_unapplied_config_values(&config_values, &new_cfg)?;
 
         self.db
             .update_config_values_atomically(config_values, secrets_to_save)
@@ -171,12 +161,46 @@ impl ConfigService {
 }
 
 fn json_value_as_string(v: &serde_json::Value) -> Option<String> {
-    match v {
-        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
+    if let Some(s) = v.as_str()
+        && !s.is_empty()
+    {
+        return Some(s.to_string());
     }
+    if let Some(b) = v.as_bool() {
+        return Some(b.to_string());
+    }
+    v.as_number().map(ToString::to_string)
+}
+
+fn config_json_value_as_string(key: &str, v: &serde_json::Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        if CLEARABLE_CONFIG_KEYS.contains(&key) {
+            return Some(s.trim().to_string());
+        }
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(b) = v.as_bool() {
+        return Some(b.to_string());
+    }
+    v.as_number().map(ToString::to_string)
+}
+
+fn reject_unapplied_config_values(config_values: &[(String, String)], new_cfg: &AppConfig) -> Result<(), Error> {
+    let applied_values = new_cfg.api_setting_values();
+    for (key, value) in config_values {
+        if SECRET_KEYS.contains(&key.as_str()) || matches!(key.as_str(), "pipeline_ingress" | "pipeline_egress") {
+            continue;
+        }
+        let Some(applied) = applied_values.get(key.as_str()) else {
+            continue;
+        };
+        if applied != value {
+            Err(SystemError::InvalidConfigField(key.clone()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -188,9 +212,9 @@ mod tests {
     async fn invalid_config_update_is_not_persisted() {
         let db = Arc::new(Database::new(":memory:").await.expect("test db"));
         let app_config = Arc::new(ArcSwap::from_pointee(
-            AppConfig::from_config_repo(db.as_ref()).await.expect("initial config"),
+            load_app_config(db.as_ref()).await.expect("initial config"),
         ));
-        let service = ConfigService::new(db.clone() as Arc<dyn AppRepo>, app_config);
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config);
 
         let body = serde_json::json!({
             "http": {
@@ -200,5 +224,147 @@ mod tests {
 
         assert!(service.update_config(&body).await.is_err());
         assert_eq!(db.get_config_value("http_port").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn unparsable_config_update_is_not_persisted() {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        let app_config = Arc::new(ArcSwap::from_pointee(
+            load_app_config(db.as_ref()).await.expect("initial config"),
+        ));
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config);
+
+        let body = serde_json::json!({
+            "http": {
+                "http_port": "not_a_number"
+            }
+        });
+
+        assert!(service.update_config(&body).await.is_err());
+        assert_eq!(db.get_config_value("http_port").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn pipeline_update_is_normalized_before_persisting() {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        let app_config = Arc::new(ArcSwap::from_pointee(
+            load_app_config(db.as_ref()).await.expect("initial config"),
+        ));
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config.clone());
+
+        let body = serde_json::json!({
+            "pipeline": {
+                "ingress": " access_control , service ",
+                "egress": "   "
+            }
+        });
+
+        service.update_config(&body).await.expect("pipeline update");
+
+        assert_eq!(
+            db.get_config_value("pipeline_ingress").await.unwrap(),
+            Some("access_control,service".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("pipeline_egress").await.unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(app_config.load().pipeline.ingress, vec!["access_control", "service"]);
+        assert!(app_config.load().pipeline.egress.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_pipeline_update_is_not_persisted() {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        let app_config = Arc::new(ArcSwap::from_pointee(
+            load_app_config(db.as_ref()).await.expect("initial config"),
+        ));
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config);
+
+        let body = serde_json::json!({
+            "pipeline": {
+                "ingress": "access_control,,service"
+            }
+        });
+
+        assert!(service.update_config(&body).await.is_err());
+        assert_eq!(db.get_config_value("pipeline_ingress").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn update_config_allows_clearing_smtp_recipient() {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        db.set_config_value("smtp_recipient", "ops@example.test")
+            .await
+            .expect("seed smtp recipient");
+        let app_config = Arc::new(ArcSwap::from_pointee(
+            load_app_config(db.as_ref()).await.expect("initial config"),
+        ));
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config.clone());
+
+        let body = serde_json::json!({
+            "smtp": {
+                "smtp_recipient": ""
+            }
+        });
+
+        let updated = service.update_config(&body).await.expect("clear smtp recipient");
+
+        assert_eq!(updated, vec!["smtp_recipient".to_string()]);
+        assert_eq!(
+            db.get_config_value("smtp_recipient").await.unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(app_config.load().notification.smtp.recipient, "");
+    }
+
+    #[tokio::test]
+    async fn update_config_trims_clearable_smtp_text_fields() {
+        let db = Arc::new(Database::new(":memory:").await.expect("test db"));
+        let app_config = Arc::new(ArcSwap::from_pointee(
+            load_app_config(db.as_ref()).await.expect("initial config"),
+        ));
+        let service = ConfigService::new(db.clone() as Arc<dyn ConfigRepo>, app_config.clone());
+
+        let body = serde_json::json!({
+            "smtp": {
+                "smtp_host": " smtp.example.test ",
+                "smtp_username": " mailer ",
+                "smtp_sender": " sender@example.test ",
+                "smtp_recipient": " security@example.test "
+            }
+        });
+
+        let updated = service.update_config(&body).await.expect("update smtp config");
+
+        assert_eq!(
+            updated,
+            vec![
+                "smtp_host".to_string(),
+                "smtp_username".to_string(),
+                "smtp_sender".to_string(),
+                "smtp_recipient".to_string()
+            ]
+        );
+        assert_eq!(
+            db.get_config_value("smtp_host").await.unwrap(),
+            Some("smtp.example.test".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("smtp_username").await.unwrap(),
+            Some("mailer".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("smtp_sender").await.unwrap(),
+            Some("sender@example.test".to_string())
+        );
+        assert_eq!(
+            db.get_config_value("smtp_recipient").await.unwrap(),
+            Some("security@example.test".to_string())
+        );
+        assert_eq!(app_config.load().notification.smtp.host, "smtp.example.test");
+        assert_eq!(app_config.load().notification.smtp.username, "mailer");
+        assert_eq!(app_config.load().notification.smtp.sender, "sender@example.test");
+        assert_eq!(app_config.load().notification.smtp.recipient, "security@example.test");
     }
 }

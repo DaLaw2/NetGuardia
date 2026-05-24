@@ -3,9 +3,11 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use actix_web::{HttpResponse, Responder, Scope, web};
 use serde::Deserialize;
 
-use crate::adapter::http::helpers::ok_or_error;
+use crate::adapter::http::helpers::{bad_request, internal_error, ok_or_error};
+use crate::common::error::Error;
 use crate::core::data_plane::acl_service::AclService;
 use crate::domain::data_plane::direction::FlowDirection;
+use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::list_type::ListType;
 
 #[derive(Deserialize)]
@@ -85,7 +87,7 @@ async fn block_geo_countries(body: web::Json<CountryCodesRequest>, acl: web::Dat
             "blocked_countries": acl.get_blocked_countries(),
             "total_prefixes": total_prefixes,
         })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => geo_block_error(e),
     }
 }
 
@@ -96,6 +98,32 @@ async fn unblock_geo_countries(body: web::Json<CountryCodesRequest>, acl: web::D
             "blocked_countries": acl.get_blocked_countries(),
             "total_prefixes": total_prefixes,
         })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => geo_block_error(e),
+    }
+}
+
+fn geo_block_error(error: Error) -> HttpResponse {
+    match &error {
+        Error::Ebpf(EbpfError::InvalidCountryCode { .. }) => bad_request(error),
+        _ => internal_error(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+
+    use super::*;
+
+    #[test]
+    fn geo_block_validation_errors_are_bad_requests() {
+        let response = geo_block_error(
+            EbpfError::InvalidCountryCode {
+                code: "USA".to_string(),
+            }
+            .into(),
+        );
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

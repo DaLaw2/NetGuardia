@@ -2,13 +2,12 @@ use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
 use crate::adapter::ebpf::access_control::AccessControl;
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::list_type::ListType;
-use crate::interface::access_control::AccessControlPort;
+use crate::interface::data_plane::access_control::AccessControlPort;
 
-/// Adapter that implements AccessControlPort by delegating to the eBPF AccessControl.
 pub struct AccessControlAdapter {
     access_control: Arc<AccessControl>,
 }
@@ -19,11 +18,14 @@ impl AccessControlAdapter {
     }
 }
 
+fn parse_ip(ip: &str) -> Result<IpAddr, Error> {
+    let addr = ip.parse().map_err(|_| EbpfError::InvalidIpAddress(ip.to_string()))?;
+    Ok(addr)
+}
+
 impl AccessControlPort for AccessControlAdapter {
     fn block_ip(&self, ip: &str) -> Result<(), Error> {
-        let addr: IpAddr = ip
-            .parse()
-            .map_err(|_| Error::from(EbpfError::InvalidIpAddress(ip.to_string())))?;
+        let addr = parse_ip(ip)?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);
@@ -39,9 +41,7 @@ impl AccessControlPort for AccessControlAdapter {
     }
 
     fn unblock_ip(&self, ip: &str) -> Result<(), Error> {
-        let addr: IpAddr = ip
-            .parse()
-            .map_err(|_| Error::from(EbpfError::InvalidIpAddress(ip.to_string())))?;
+        let addr = parse_ip(ip)?;
         match addr {
             IpAddr::V4(v4) => {
                 let socket = SocketAddrV4::new(v4, 0);

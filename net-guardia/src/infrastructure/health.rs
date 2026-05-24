@@ -4,34 +4,28 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use macros::log;
-use sysinfo::{Components, Networks, System};
+use sysinfo::{Components, Disks, Networks, System};
 use tokio::sync::{broadcast, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::interval;
 
+use crate::common::error::Error;
+use crate::common::log::health::Health;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::error::Error;
-use crate::domain::common::log::health::Health;
 use crate::domain::common::system::health::{
     ConfiguredNetworkStats, CpuCoreInfo, CpuDetails, EbpfHealth, LoadAverage, MemoryUsage, NetworkStats,
     SystemHealthMetrics, SystemHealthStatus, SystemInfo,
 };
-use crate::interface::health_query::HealthQuery;
+use crate::interface::system::health_query::HealthQuery;
 
-/// Lock-free system health.
-///
-/// A single owner task on the tokio runtime owns the sysinfo handles
-/// (`System`, `Networks`, `Components`). It refreshes them on a tick,
-/// computes a fresh `SystemHealthMetrics`, publishes the snapshot via
-/// `ArcSwap`, and broadcasts to streaming subscribers. Readers
-/// (`get_current_metrics`, `is_system_healthy`, HTTP handlers) just
-/// `.load()` the `ArcSwap` — no locks crossed, no `await` needed.
 pub struct SystemHealth {
     config: Arc<ArcSwap<AppConfig>>,
     metrics: Arc<ArcSwap<SystemHealthMetrics>>,
-    broadcast_tx: broadcast::Sender<SystemHealthMetrics>,
+    broadcast_tx: broadcast::Sender<Arc<SystemHealthMetrics>>,
     ingress_interface: String,
     egress_interface: String,
     ebpf_health: Arc<ArcSwap<EbpfHealth>>,
+    cached_disk: Arc<ArcSwap<Option<(f32, f64)>>>,
 }
 
 impl SystemHealth {
@@ -40,10 +34,6 @@ impl SystemHealth {
         let (broadcast_tx, _) = broadcast::channel(cfg.health.broadcast_channel_capacity.max(1));
         let ingress_interface = cfg.ebpf.ingress_ifname.clone();
         let egress_interface = cfg.ebpf.egress_ifname.clone();
-
-        // Bootstrap snapshot so readers don't have to handle a "no metrics yet"
-        // case before the refresh task fires for the first time. The
-        // `*_with_refreshed_list` constructors already do an initial refresh.
         let system = System::new_all();
         let networks = Networks::new_with_refreshed_list();
         let components = Components::new_with_refreshed_list();
@@ -56,6 +46,8 @@ impl SystemHealth {
             (**ebpf_health.load()).clone(),
         );
 
+        let cached_disk = Arc::new(ArcSwap::from_pointee(Self::probe_disk_usage()));
+
         Ok(SystemHealth {
             config,
             metrics: Arc::new(ArcSwap::from_pointee(initial)),
@@ -63,24 +55,26 @@ impl SystemHealth {
             ingress_interface,
             egress_interface,
             ebpf_health,
+            cached_disk,
         })
     }
 
-    pub async fn run(self: Arc<Self>, monitoring_interval: Duration) -> oneshot::Sender<()> {
+    pub async fn run(self: Arc<Self>, monitoring_interval: Duration) -> (oneshot::Sender<()>, JoinHandle<()>) {
         let (sender, mut receiver) = oneshot::channel();
         let metrics = self.metrics.clone();
         let broadcast_tx = self.broadcast_tx.clone();
         let ingress_interface = self.ingress_interface.clone();
         let egress_interface = self.egress_interface.clone();
         let ebpf_health = self.ebpf_health.clone();
+        let cached_disk = self.cached_disk.clone();
 
-        tokio::spawn(async move {
-            // Owner task exclusively holds these sysinfo handles, so no locks
-            // are needed on the data plane.
+        let handle = tokio::spawn(async move {
             let mut system = System::new_all();
             let mut networks = Networks::new_with_refreshed_list();
             let mut components = Components::new_with_refreshed_list();
             let mut interval_timer = interval(monitoring_interval);
+            let mut disk_refresh_counter: u32 = 0;
+            const DISK_REFRESH_EVERY: u32 = 6;
 
             loop {
                 tokio::select! {
@@ -91,6 +85,12 @@ impl SystemHealth {
                         networks.refresh(true);
                         components.refresh(true);
 
+                        disk_refresh_counter += 1;
+                        if disk_refresh_counter >= DISK_REFRESH_EVERY {
+                            disk_refresh_counter = 0;
+                            cached_disk.store(Arc::new(Self::probe_disk_usage()));
+                        }
+
                         let snapshot = Self::collect_metrics(
                             &system,
                             &networks,
@@ -100,7 +100,8 @@ impl SystemHealth {
                             (**ebpf_health.load()).clone(),
                         );
 
-                        metrics.store(Arc::new(snapshot.clone()));
+                        let snapshot = Arc::new(snapshot);
+                        metrics.store(Arc::clone(&snapshot));
 
                         if broadcast_tx.receiver_count() > 0
                             && let Err(e) = broadcast_tx.send(snapshot)
@@ -112,7 +113,7 @@ impl SystemHealth {
             }
         });
 
-        sender
+        (sender, handle)
     }
 
     fn collect_metrics(
@@ -129,7 +130,7 @@ impl SystemHealth {
             .unwrap_or(0);
 
         let boot_time = System::boot_time();
-        let uptime_seconds = timestamp - boot_time;
+        let uptime_seconds = timestamp.saturating_sub(boot_time);
 
         let system_info = Self::collect_system_info(system);
         let cpu_details = Self::collect_cpu_details(system);
@@ -138,7 +139,7 @@ impl SystemHealth {
             total: system.total_memory(),
             used: system.used_memory(),
             available: system.available_memory(),
-            usage_percent: (system.used_memory() as f32 / system.total_memory() as f32) * 100.0,
+            usage_percent: usage_percent(system.used_memory(), system.total_memory()),
             swap_total: system.total_swap(),
             swap_used: system.used_swap(),
         };
@@ -191,7 +192,11 @@ impl SystemHealth {
     fn collect_cpu_details(system: &System) -> CpuDetails {
         let cpus = system.cpus();
 
-        let cpu_usage = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32;
+        let cpu_usage = if cpus.is_empty() {
+            0.0
+        } else {
+            cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32
+        };
 
         let cores: Vec<CpuCoreInfo> = cpus
             .iter()
@@ -262,14 +267,7 @@ impl SystemHealth {
         (**self.metrics.load()).clone()
     }
 
-    /// Returns a handle to the shared eBPF health state. Consumers (HTTP
-    /// handlers, setup wizard, frontend) can read the current eBPF state
-    /// without going through the full metrics broadcast.
-    pub fn ebpf_health(&self) -> &Arc<ArcSwap<EbpfHealth>> {
-        &self.ebpf_health
-    }
-
-    pub fn subscribe_to_metrics(&self) -> broadcast::Receiver<SystemHealthMetrics> {
+    pub fn subscribe_to_metrics(&self) -> broadcast::Receiver<Arc<SystemHealthMetrics>> {
         self.broadcast_tx.subscribe()
     }
 
@@ -324,7 +322,7 @@ impl SystemHealth {
             status.issues.push("Egress interface not available".to_string());
         }
 
-        let disk_usage = Self::check_disk_usage();
+        let disk_usage = **self.cached_disk.load();
         if let Some((usage_percent, available_gb)) = disk_usage {
             if usage_percent > h.disk_issue_percent {
                 status.overall_healthy = false;
@@ -343,10 +341,8 @@ impl SystemHealth {
         status
     }
 
-    fn check_disk_usage() -> Option<(f32, f64)> {
-        use sysinfo::Disks;
+    fn probe_disk_usage() -> Option<(f32, f64)> {
         let disks = Disks::new_with_refreshed_list();
-        // Find the root disk or the disk containing /opt/netguardia
         for disk in disks.list() {
             let mount = disk.mount_point().to_string_lossy();
             if mount == "/" || mount.starts_with("/opt") {
@@ -363,8 +359,43 @@ impl SystemHealth {
     }
 }
 
+fn usage_percent(used: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        (used as f32 / total as f32) * 100.0
+    }
+}
+
 impl HealthQuery for SystemHealth {
     fn get_current_metrics(&self) -> SystemHealthMetrics {
-        self.get_current_metrics()
+        SystemHealth::get_current_metrics(self)
+    }
+
+    fn get_health_status(&self) -> SystemHealthStatus {
+        self.is_system_healthy()
+    }
+
+    fn get_ebpf_health(&self) -> EbpfHealth {
+        (**self.ebpf_health.load()).clone()
+    }
+
+    fn subscribe_to_metrics(&self) -> broadcast::Receiver<Arc<SystemHealthMetrics>> {
+        SystemHealth::subscribe_to_metrics(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usage_percent;
+
+    #[test]
+    fn usage_percent_returns_zero_when_total_is_zero() {
+        assert_eq!(usage_percent(42, 0), 0.0);
+    }
+
+    #[test]
+    fn usage_percent_calculates_used_fraction() {
+        assert_eq!(usage_percent(25, 100), 25.0);
     }
 }

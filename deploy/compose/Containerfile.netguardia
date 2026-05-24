@@ -25,14 +25,13 @@ RUN dnf install -y epel-release && \
     openssl-devel \
     && dnf clean all
 
-# Rust toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && /root/.cargo/bin/rustup toolchain install nightly \
-    && /root/.cargo/bin/rustup component add rust-src --toolchain nightly
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 \
+    && /root/.cargo/bin/rustup component add clippy rustfmt --toolchain 1.95.0 \
+    && /root/.cargo/bin/rustup toolchain install nightly --component rust-src \
+    && /root/.cargo/bin/rustup default 1.95.0
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# bpf-linker for aya eBPF compilation
-RUN cargo install bpf-linker
+RUN cargo install bpf-linker --version 0.10.3 --locked
 
 RUN ln -s /usr/bin/node-24 /usr/local/bin/node && \
     ln -s /usr/bin/npm-24 /usr/local/bin/npm && \

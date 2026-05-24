@@ -1,6 +1,8 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Hash, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ListType {
     #[serde(rename = "whitelist")]
@@ -14,6 +16,18 @@ impl ListType {
         match self {
             Self::White => "whitelist",
             Self::Black => "blacklist",
+        }
+    }
+}
+
+impl FromStr for ListType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "whitelist" => Ok(Self::White),
+            "blacklist" => Ok(Self::Black),
+            other => Err(format!("unknown ACL list_type: {other}")),
         }
     }
 }

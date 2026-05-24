@@ -1,4 +1,5 @@
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemHealthMetrics {
@@ -14,66 +15,46 @@ pub struct SystemHealthMetrics {
     pub ebpf: EbpfHealth,
 }
 
-/// Runtime health of the eBPF/XDP data plane.
-///
-/// `Healthy` means both ingress and egress XDP programs are attached and AF_XDP
-/// sockets are bound. `Unavailable` means one of the eBPF setup stages failed;
-/// the rest of the system continues to run but any eBPF-backed operation
-/// (access control rules, geo block, rate limit, DNS filter, packet capture)
-/// will return `EbpfError::NotLoaded` when invoked.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum EbpfHealth {
     Healthy,
-    Unavailable {
-        stage: EbpfFailStage,
-        category: EbpfFailCategory,
-        /// Human-readable explanation, including interface, kernel version,
-        /// driver name, and the raw error from the kernel where available.
-        reason: String,
-    },
+    Unavailable,
 }
 
-/// Which stage of eBPF bring-up failed.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EbpfFailStage {
-    /// `aya::Ebpf::load(...)` — reading the compiled BPF object file.
-    Load,
-    /// `aya_log::EbpfLogger::init(...)` — wiring the kernel-to-userspace log channel.
-    LoggerInit,
-    /// Pipeline program array setup (tail-call dispatch table).
-    PipelineSetup,
-    /// `EbpfServices::new(...)` — taking map handles for the userspace services.
-    MapsBind,
-    /// `xdp.attach(ifname, ...)` — attaching the XDP program to the NIC.
-    XdpAttach,
-    /// AF_XDP socket bind for packet capture.
-    AfXdpBind,
+impl EbpfHealth {
+    pub fn public_status(&self) -> &'static str {
+        match self {
+            Self::Healthy => "running",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn public_state(&self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn public_message(&self) -> &'static str {
+        match self {
+            Self::Healthy => "Security engine is active.",
+            Self::Unavailable => "Security engine is unavailable.",
+        }
+    }
 }
 
-/// Category of why eBPF bring-up failed. Used by frontend to render
-/// targeted guidance (permission vs. driver vs. interface).
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EbpfFailCategory {
-    /// EPERM / EACCES — process lacks CAP_BPF / CAP_NET_ADMIN / CAP_SYS_ADMIN.
-    Permission,
-    /// ENODEV / interface name does not resolve.
-    InterfaceNotFound,
-    /// Interface exists but XDP native/SKB attach refused by driver.
-    XdpUnsupported,
-    /// AF_XDP bind rejected — driver or netdev capabilities do not support
-    /// the requested AF_XDP socket mode on this interface.
-    AfXdpUnsupported,
-    /// ENOMEM / RLIMIT_MEMLOCK exhausted.
-    MemlockExhausted,
-    /// BPF verifier rejected the program (kernel feature missing or bug).
-    VerifierRejected,
-    /// BPF object file missing or malformed.
-    ObjectNotFound,
-    /// Catch-all for errors we could not classify.
-    Unknown,
+impl Serialize for EbpfHealth {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("EbpfHealth", 3)?;
+        state.serialize_field("state", self.public_state())?;
+        state.serialize_field("status", self.public_status())?;
+        state.serialize_field("message", self.public_message())?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

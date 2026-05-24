@@ -3,13 +3,12 @@ use std::sync::Arc;
 use macros::log;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 
+use crate::common::log::audit::AuditLog;
 use crate::domain::common::event::{AuditEvent, DriftDetectedEvent};
-use crate::domain::common::log::audit::AuditLog;
-use crate::interface::audit::AuditRepo;
+use crate::interface::system::audit::AuditRepo;
 
-/// Subscribes to `AuditEvent` and persists each entry to the `audit_log` table.
-/// Falls back to log-only when DB writes fail (never panics).
 pub struct AuditLogger {
     db: Arc<dyn AuditRepo>,
 }
@@ -19,59 +18,64 @@ impl AuditLogger {
         Self { db }
     }
 
-    /// Start background tasks that persist audit and drift events to DB + structured logs.
     pub fn start(
         self: Arc<Self>,
         audit_rx: broadcast::Receiver<AuditEvent>,
         drift_rx: broadcast::Receiver<DriftDetectedEvent>,
-    ) {
-        // Drain AuditEvent receiver
-        {
+    ) -> Vec<(&'static str, JoinHandle<()>)> {
+        let mut handles = Vec::with_capacity(2);
+        handles.push({
             let this = self.clone();
             let mut rx = audit_rx;
-            tokio::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(event) => {
-                            this.handle_audit_event(event).await;
-                        }
-                        Err(RecvError::Lagged(n)) => {
-                            log!(AuditLog::AuditLagged(n));
-                        }
-                        Err(RecvError::Closed) => {
-                            log!(AuditLog::AuditChannelClosed);
-                            break;
+            (
+                "audit_logger_audit_events",
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(event) => {
+                                this.handle_audit_event(event).await;
+                            }
+                            Err(RecvError::Lagged(n)) => {
+                                log!(AuditLog::AuditLagged("audit".to_string(), n));
+                            }
+                            Err(RecvError::Closed) => {
+                                log!(AuditLog::AuditChannelClosed);
+                                break;
+                            }
                         }
                     }
-                }
-            });
-        }
+                }),
+            )
+        });
 
-        // Drain DriftDetectedEvent receiver — log as audit trail entry
-        {
+        handles.push({
             let this = self;
             let mut rx = drift_rx;
-            tokio::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(event) => {
-                            this.handle_drift_event(event).await;
-                        }
-                        Err(RecvError::Lagged(n)) => {
-                            log!(AuditLog::AuditLagged(n));
-                        }
-                        Err(RecvError::Closed) => {
-                            log!(AuditLog::AuditChannelClosed);
-                            break;
+            (
+                "audit_logger_drift_events",
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(event) => {
+                                this.handle_drift_event(event).await;
+                            }
+                            Err(RecvError::Lagged(n)) => {
+                                log!(AuditLog::AuditLagged("drift".to_string(), n));
+                            }
+                            Err(RecvError::Closed) => {
+                                log!(AuditLog::AuditChannelClosed);
+                                break;
+                            }
                         }
                     }
-                }
-            });
-        }
+                }),
+            )
+        });
+
+        handles
     }
 
     async fn handle_audit_event(&self, event: AuditEvent) {
-        // Always emit a structured log line
         log!(AuditLog::AuditEvent(event.actor.clone(), event.action.clone(),));
 
         if let Err(e) = self

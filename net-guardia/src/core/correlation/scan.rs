@@ -8,8 +8,8 @@ use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
 use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::flow_observation::FlowObservation;
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::ml_detection::AlertMessage;
 
 struct TimedPortSet {
     ports: HashSet<u16>,
@@ -18,9 +18,7 @@ struct TimedPortSet {
     last_alerted: Option<Instant>,
 }
 
-/// Detects port scanning: a single source IP probing many destination ports.
 pub struct ScanDetector {
-    /// src_ip → set of unique dst_ports within the time window
     state: DashMap<String, TimedPortSet>,
     window: Duration,
     window_secs: u64,
@@ -39,7 +37,7 @@ impl ScanDetector {
         }
     }
 
-    pub fn process(&self, alert: &AlertMessage) -> Option<DetectionEvent> {
+    pub fn process(&self, alert: &FlowObservation) -> Option<DetectionEvent> {
         let key = alert.src_ip.clone();
         let now = Instant::now();
 
@@ -53,7 +51,6 @@ impl ScanDetector {
 
             let set = entry.value_mut();
 
-            // Reset window if expired
             if now.duration_since(set.window_start) >= self.window {
                 set.ports.clear();
                 set.window_start = now;
@@ -86,8 +83,8 @@ impl ScanDetector {
                 source_ip: key.clone(),
                 dest_ip: last_dst_ip,
                 protocol: alert.protocol,
-                packet_count: 0,
-                flow_duration_us: 0,
+                packet_count: alert.packet_count,
+                flow_duration_us: alert.flow_duration_us,
                 ae_score: 0.0,
                 anomaly_score: 0.0,
                 c2_score: 0.0,
@@ -121,21 +118,12 @@ mod tests {
         }
     }
 
-    fn make_alert(src_ip: &str, dst_port: u16) -> AlertMessage {
-        AlertMessage {
-            timestamp: 0,
-            flow_key: String::new(),
+    fn make_alert(src_ip: &str, dst_port: u16) -> FlowObservation {
+        FlowObservation {
             src_ip: src_ip.to_string(),
             dst_ip: "192.168.1.1".to_string(),
-            src_port: 12345,
             dst_port,
             protocol: 6,
-            is_attack: true,
-            attack_type: Some("Reconnaissance".to_string()),
-            confidence: 0.7,
-            ae_score: 0.3,
-            anomaly_score: 0.0,
-            c2_score: 0.0,
             packet_count: 5,
             flow_duration_us: 100_000,
         }

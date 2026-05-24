@@ -5,9 +5,9 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::domain::common::error::http::HttpError;
-use crate::domain::common::error::misc::MiscError;
-use crate::domain::common::log::http::HttpLog;
+use crate::common::error::codec::CodecError;
+use crate::common::error::http::HttpError;
+use crate::common::log::http::HttpLog;
 
 async fn handle_client_message(
     session: &mut Session,
@@ -29,11 +29,11 @@ async fn handle_client_message(
     }
 }
 
-fn serialize_json<T: Serialize>(value: &T) -> Option<String> {
+pub fn serialize_json<T: Serialize>(value: &T) -> Option<String> {
     match serde_json::to_string(value) {
         Ok(json) => Some(json),
         Err(err) => {
-            log!(MiscError::SerializeError(err));
+            log!(CodecError::SerializeFailed(err));
             None
         }
     }
@@ -64,7 +64,7 @@ pub async fn broadcast_loop<T: Clone + Send + 'static>(
                 match broadcast_result {
                     Ok(event) => {
                         let Some(json) = to_json(&event) else {
-                            break;
+                            continue;
                         };
                         if session.text(json).await.is_err() {
                             break;

@@ -1,71 +1,76 @@
-use std::collections::VecDeque;
 use std::fmt::{Arguments, Debug, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
-use serde::Serialize;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
-#[derive(Clone, Debug, Serialize)]
-pub struct LogEntry {
-    pub id: u64,
-    pub ts_ms: u64,
-    pub level: &'static str,
-    pub target: String,
-    pub message: String,
-}
+use crate::common::utils::log_level::level_severity;
+use crate::interface::system::live_logs::{LiveLogQuery, LogEntry, LogSnapshot};
 
-/// `Mutex<VecDeque>` rather than a lock-free ring because `snapshot()` needs
-/// an internally-consistent view: it filters by `since_id` + severity, then
-/// clones matching entries. A seqlock / `ArrayQueue`-based design would
-/// either require a retry loop that tears across concurrent writes or would
-/// lose the snapshot API entirely (`ArrayQueue` only supports push/pop, not
-/// iteration). The write path holds the lock for one `pop_front` +
-/// `push_back` — micros under load — which the tracing subscriber can
-/// comfortably pay on the event-emit hot path. Revisit if log volume grows
-/// past ~10k events/sec per writer, not before.
 struct LogRingBuffer {
-    entries: Mutex<VecDeque<LogEntry>>,
-    capacity: usize,
+    queue: ArrayQueue<LogEntry>,
+    snapshot_lock: Mutex<()>,
     max_message_bytes: usize,
     next_id: AtomicU64,
+    latest_id: AtomicU64,
 }
 
 impl LogRingBuffer {
     fn new(capacity: usize, max_message_bytes: usize) -> Self {
         let cap = capacity.max(1);
         Self {
-            entries: Mutex::new(VecDeque::with_capacity(cap)),
-            capacity: cap,
+            queue: ArrayQueue::new(cap),
+            snapshot_lock: Mutex::new(()),
             max_message_bytes: max_message_bytes.max(64),
             next_id: AtomicU64::new(1),
+            latest_id: AtomicU64::new(0),
         }
     }
 
     fn push(&self, entry: LogEntry) {
-        let mut guard = self.entries.lock();
-        if guard.len() >= self.capacity {
-            guard.pop_front();
+        self.latest_id.store(entry.id, Ordering::Release);
+        match self.queue.push(entry) {
+            Ok(()) => {}
+            Err(entry) => {
+                let _ = self.queue.pop();
+                let _ = self.queue.push(entry);
+            }
         }
-        guard.push_back(entry);
     }
 
-    fn snapshot(&self, since_id: u64, min_severity: u8, limit: usize) -> Snapshot {
-        let guard = self.entries.lock();
-        let total = guard.len();
-        let latest_id = guard.back().map(|e| e.id).unwrap_or(0);
-        let entries: Vec<LogEntry> = guard
-            .iter()
-            .filter(|e| e.id > since_id && level_severity(e.level) <= min_severity)
-            .take(limit)
-            .cloned()
-            .collect();
-        Snapshot {
+    fn snapshot(&self, since_id: u64, min_severity: u8, limit: usize) -> LogSnapshot {
+        let _guard = self.snapshot_lock.lock();
+        let cap = self.queue.capacity();
+        let mut entries = Vec::with_capacity(cap.min(limit));
+        let mut drained = Vec::with_capacity(cap);
+
+        while let Some(entry) = self.queue.pop() {
+            drained.push(entry);
+        }
+
+        let total = drained.len();
+        let latest_id = drained.last().map(|e| e.id).unwrap_or(0);
+
+        for entry in &drained {
+            if entries.len() >= limit {
+                break;
+            }
+            if entry.id > since_id && level_severity(entry.level) <= min_severity {
+                entries.push(entry.clone());
+            }
+        }
+
+        for entry in drained {
+            let _ = self.queue.push(entry);
+        }
+
+        LogSnapshot {
             entries,
             latest_id,
             total,
@@ -73,32 +78,13 @@ impl LogRingBuffer {
     }
 }
 
-pub struct Snapshot {
-    pub entries: Vec<LogEntry>,
-    pub latest_id: u64,
-    pub total: usize,
-}
-
-/// Handle for reading from the log ring buffer.
 pub struct LogBuffer {
     inner: Arc<LogRingBuffer>,
 }
 
-impl LogBuffer {
-    pub fn snapshot(&self, since_id: u64, min_severity: u8, limit: usize) -> Snapshot {
+impl LiveLogQuery for LogBuffer {
+    fn snapshot(&self, since_id: u64, min_severity: u8, limit: usize) -> LogSnapshot {
         self.inner.snapshot(since_id, min_severity, limit)
-    }
-}
-
-/// Map a level string to severity rank. Unknown strings sort as TRACE so
-/// they are only visible when the caller asks for everything.
-pub fn level_severity(level: &str) -> u8 {
-    match level {
-        "ERROR" => 1,
-        "WARN" => 2,
-        "INFO" => 3,
-        "DEBUG" => 4,
-        _ => 5,
     }
 }
 
@@ -119,8 +105,6 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// [`Layer`] that appends each formatted event into the in-memory ring
-/// buffer so the UI can tail logs without round-tripping the filesystem.
 pub struct LogBufferLayer {
     inner: Arc<LogRingBuffer>,
 }
@@ -140,8 +124,7 @@ impl<S: Subscriber> Layer<S> for LogBufferLayer {
         event.record(&mut visitor);
         let mut message = visitor.into_message();
         if message.len() > self.inner.max_message_bytes {
-            message.truncate(self.inner.max_message_bytes);
-            message.push_str("…[truncated]");
+            truncate_message(&mut message, self.inner.max_message_bytes);
         }
         let entry = LogEntry {
             id: self.inner.next_id.fetch_add(1, Ordering::Relaxed),
@@ -154,9 +137,27 @@ impl<S: Subscriber> Layer<S> for LogBufferLayer {
     }
 }
 
-/// Collects `message` plus remaining fields as `key=value` pairs. `tracing`
-/// macros emit the format-args body under the `message` field; structured
-/// fields come through [`Visit::record_*`] for the respective primitive.
+fn truncate_message(message: &mut String, max_message_bytes: usize) {
+    if message.len() <= max_message_bytes {
+        return;
+    }
+
+    const TRUNCATION_SUFFIX: &str = "...[truncated]";
+
+    if max_message_bytes <= TRUNCATION_SUFFIX.len() {
+        message.truncate(0);
+        message.push_str(&TRUNCATION_SUFFIX[..max_message_bytes]);
+        return;
+    }
+
+    let mut truncate_at = max_message_bytes - TRUNCATION_SUFFIX.len();
+    while truncate_at > 0 && !message.is_char_boundary(truncate_at) {
+        truncate_at -= 1;
+    }
+    message.truncate(truncate_at);
+    message.push_str(TRUNCATION_SUFFIX);
+}
+
 #[derive(Default)]
 struct MessageVisitor {
     message: String,
@@ -288,5 +289,25 @@ mod tests {
         assert!(out.contains("hello"));
         assert!(out.contains("count=42"));
         assert!(out.contains("ok=true"));
+    }
+
+    #[test]
+    fn truncate_message_preserves_utf8_boundaries() {
+        let mut message = "abcdef測試0123456789".to_string();
+
+        truncate_message(&mut message, 20);
+
+        assert_eq!(message, "abcdef...[truncated]");
+        assert!(message.len() <= 20);
+    }
+
+    #[test]
+    fn truncate_message_keeps_suffix_within_small_limit() {
+        let mut message = "abcdefghi".to_string();
+
+        truncate_message(&mut message, 7);
+
+        assert_eq!(message, "...[tru");
+        assert_eq!(message.len(), 7);
     }
 }

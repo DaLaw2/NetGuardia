@@ -506,6 +506,7 @@ main() {
     : >"$LOG_FILE"
     info "Compose log: $LOG_FILE"
     run_logged "Building containers" "${COMPOSE_CMD[@]}" build
+    generate_compose_file
     run_logged "Starting containers" "${COMPOSE_CMD[@]}" up -d
 
     info "Containers running"

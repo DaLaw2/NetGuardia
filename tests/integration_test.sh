@@ -11,7 +11,8 @@ DEV_SCRIPT="$ROOT_DIR/deploy/scripts/dev.sh"
 NG_API="http://10.10.3.10:8080"
 ADMIN_USER="admin"
 ADMIN_PASSWORD="E2eAdmin20040421!"
-CSRF_TOKEN="e2e"
+CSRF_TOKEN=""
+COOKIE_JAR="/tmp/netguardia-e2e-cookies.txt"
 RUN_LOG="${RUN_LOG:-/tmp/netguardia-ebpf-e2e.log}"
 START_TIMEOUT_SECS="${START_TIMEOUT_SECS:-240}"
 POLL_INTERVAL_SECS=2
@@ -19,6 +20,7 @@ POLL_INTERVAL_SECS=2
 SUDO_PASSWORD=""
 RUNTIME=""
 NG_PID=""
+SETUP_TOKEN=""
 TOKEN=""
 PASS=0
 FAIL=0
@@ -106,7 +108,7 @@ api_raw() {
     local auth_args=()
 
     if [[ -n "$TOKEN" ]]; then
-        auth_args=(-H "Authorization: Bearer $TOKEN")
+        auth_args=(-b "$COOKIE_JAR")
         case "$method" in
             POST|PUT|DELETE|PATCH)
                 auth_args+=(-H "X-CSRF-Token: $CSRF_TOKEN")
@@ -174,6 +176,18 @@ wait_for_http() {
     local deadline=$((SECONDS + START_TIMEOUT_SECS))
     while (( SECONDS < deadline )); do
         if ng_exec "curl -fsS --max-time 2 '${NG_API}/api/setup/status' >/dev/null"; then
+            return 0
+        fi
+        sleep "$POLL_INTERVAL_SECS"
+    done
+    return 1
+}
+
+load_setup_token() {
+    local deadline=$((SECONDS + START_TIMEOUT_SECS))
+    while (( SECONDS < deadline )); do
+        SETUP_TOKEN="$(sed -n 's/.*Setup token: //p' "$RUN_LOG" 2>/dev/null | tail -n 1)"
+        if [[ -n "$SETUP_TOKEN" ]]; then
             return 0
         fi
         sleep "$POLL_INTERVAL_SECS"
@@ -311,16 +325,19 @@ complete_setup_if_needed() {
         return 0
     fi
 
-    api_raw POST /api/setup/complete '{"ingress_interface":"ng-ext","egress_interface":"ng-int","admin_password":"'"$ADMIN_PASSWORD"'","http_port":8080}' >/dev/null
+    [[ -n "$SETUP_TOKEN" ]] || load_setup_token
+    ng_exec "curl -fsS --max-time 20 -X POST '${NG_API}/api/setup/complete' -H 'Content-Type: application/json' -H 'X-Setup-Token: ${SETUP_TOKEN}' -d '{\"ingress_interface\":\"ng-ext\",\"egress_interface\":\"ng-int\",\"admin_password\":\"${ADMIN_PASSWORD}\",\"http_port\":8080}'" >/dev/null
     wait_for_log "Full system initialization complete"
 }
 
 login() {
-    local body token
-    body="$(api_raw POST /api/auth/login '{"username":"'"$ADMIN_USER"'","password":"'"$ADMIN_PASSWORD"'"}')"
-    token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$body")"
-    [[ -n "$token" ]]
-    TOKEN="$token"
+    local body csrf_token
+    ng_exec "rm -f '$COOKIE_JAR'"
+    body="$(ng_exec "curl -fsS --max-time 20 -c '$COOKIE_JAR' -X POST '${NG_API}/api/auth/login' -H 'Content-Type: application/json' -d '{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASSWORD}\"}'")"
+    csrf_token="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token", ""))' <<<"$body")"
+    [[ -n "$csrf_token" ]]
+    CSRF_TOKEN="$csrf_token"
+    TOKEN="cookie-session"
 }
 
 scapy_send_ipv4_options_tcp() {

@@ -1,47 +1,39 @@
-use std::fs;
 use std::path::PathBuf;
 
-use chrono::Local;
 use macros::log;
 
+use super::html::escape;
 use super::report_data_builder::build_report_data;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::io::IOError;
-use crate::domain::common::error::misc::MiscError;
-use crate::domain::common::log::system::SystemLog;
+use crate::common::error::Error;
+use crate::common::error::codec::CodecError;
+use crate::common::log::reporting::ReportingLog;
 use crate::domain::report::data::ReportData;
-use crate::interface::report_snapshot::ReportSnapshotRepo;
+use crate::interface::reporting::html_report_writer::HtmlReportWriter;
+use crate::interface::reporting::report_snapshot::ReportSnapshotRepo;
 
-/// Generate a self-contained HTML security report and write to disk.
-/// Returns the path to the generated HTML file.
-pub async fn generate_html_report(db: &dyn ReportSnapshotRepo, output_dir: &str) -> Result<PathBuf, Error> {
+pub async fn generate_html_report(
+    db: &dyn ReportSnapshotRepo,
+    writer: &dyn HtmlReportWriter,
+    output_dir: &str,
+) -> Result<PathBuf, Error> {
     let data = build_report_data(db).await?;
     let html = render_html_report(&data);
 
-    let html_path = PathBuf::from(output_dir).join(format!(
-        "netguardia-report-{}.html",
-        Local::now().format("%Y%m%d-%H%M%S")
-    ));
+    let html_path = writer.write_html_report(output_dir, &html)?;
 
-    fs::create_dir_all(output_dir).map_err(|e| IOError::CreateDirectoryFailed(PathBuf::from(output_dir), e))?;
-
-    fs::write(&html_path, &html).map_err(|e| IOError::WriteFileFailed(html_path.clone(), e))?;
-
-    log!(SystemLog::HtmlReportGenerated(format!("{html_path:?}")));
+    log!(ReportingLog::HtmlReportGenerated(format!("{html_path:?}")));
 
     Ok(html_path)
 }
 
-/// Render a self-contained HTML report (inline CSS) from report data.
 fn render_html_report(data: &ReportData) -> String {
-    // Threat breakdown rows
     let mut breakdown_rows = String::new();
     for item in &data.threat_breakdown {
         breakdown_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
-            super::html::escape(&item.threat_type),
+            escape(&item.threat_type),
             item.count,
-            super::html::escape(&item.trend)
+            escape(&item.trend)
         ));
     }
     if data.threat_breakdown.is_empty() {
@@ -49,26 +41,24 @@ fn render_html_report(data: &ReportData) -> String {
             .push_str("<tr><td colspan=\"3\" class=\"empty\">No threat data available for this period</td></tr>");
     }
 
-    // Top blocked IPs rows
     let mut ip_rows = String::new();
     for ip in &data.top_blocked_ips {
         ip_rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td class=\"num\">{}</td><td>{}</td></tr>",
-            super::html::escape(&ip.ip),
+            escape(&ip.ip),
             ip.count,
-            super::html::escape(&ip.country)
+            escape(&ip.country)
         ));
     }
     if data.top_blocked_ips.is_empty() {
         ip_rows.push_str("<tr><td colspan=\"3\" class=\"empty\">No blocked IPs for this period</td></tr>");
     }
 
-    // Geo distribution rows
     let mut geo_rows = String::new();
     for geo in &data.geo_distribution {
         geo_rows.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td></tr>",
-            super::html::escape(&geo.country),
+            escape(&geo.country),
             geo.threat_count
         ));
     }
@@ -76,10 +66,9 @@ fn render_html_report(data: &ReportData) -> String {
         geo_rows.push_str("<tr><td colspan=\"2\" class=\"empty\">No geographic data available</td></tr>");
     }
 
-    // Recommendations
     let mut rec_items = String::new();
     for rec in &data.recommendations {
-        rec_items.push_str(&format!("<li>{}</li>", super::html::escape(rec)));
+        rec_items.push_str(&format!("<li>{}</li>", escape(rec)));
     }
 
     format!(
@@ -174,8 +163,8 @@ fn render_html_report(data: &ReportData) -> String {
 </div>
 </body>
 </html>"#,
-        period = super::html::escape(&data.period),
-        generated_at = super::html::escape(&data.generated_at),
+        period = escape(&data.period),
+        generated_at = escape(&data.generated_at),
         total_threats = data.executive_summary.total_threats,
         total_blocked = data.executive_summary.total_blocked,
         uptime = data.executive_summary.uptime_percent,
@@ -189,13 +178,71 @@ fn render_html_report(data: &ReportData) -> String {
         avg_cpu = data.system_health.avg_cpu_percent,
         avg_mem = data.system_health.avg_memory_percent,
         disk = data.system_health.disk_usage_percent,
-        ebpf_status = super::html::escape(&data.system_health.ebpf_status),
+        ebpf_status = escape(&data.system_health.ebpf_status),
         rec_items = rec_items,
     )
 }
 
-/// Generate report data and format as JSON (for API responses).
 pub async fn generate_report_json(db: &dyn ReportSnapshotRepo) -> Result<serde_json::Value, Error> {
     let data = build_report_data(db).await?;
-    serde_json::to_value(&data).map_err(|e| MiscError::SerializeError(e).into())
+    let json = serde_json::to_value(&data).map_err(CodecError::SerializeFailed)?;
+    Ok(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use parking_lot::Mutex;
+
+    use super::*;
+
+    struct FakeSnapshots {
+        values: HashMap<String, String>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReportSnapshotRepo for FakeSnapshots {
+        async fn get_report_snapshot(&self, key: &str) -> Result<Option<String>, Error> {
+            Ok(self.values.get(key).cloned())
+        }
+
+        async fn set_report_snapshot(&self, _key: &str, _value: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CaptureWriter {
+        calls: Mutex<Vec<(String, String)>>,
+    }
+
+    impl HtmlReportWriter for CaptureWriter {
+        fn write_html_report(&self, output_dir: &str, html: &str) -> Result<PathBuf, Error> {
+            self.calls.lock().push((output_dir.to_string(), html.to_string()));
+            Ok(PathBuf::from(output_dir).join("adapter-owned-report.html"))
+        }
+    }
+
+    #[tokio::test]
+    async fn html_report_delegates_file_write_to_port() {
+        let mut values = HashMap::new();
+        values.insert(
+            "weekly_top_ips".to_string(),
+            r#"[{"ip":"<script>alert(1)</script>","count":7,"country":"N/A"}]"#.to_string(),
+        );
+        let repo = FakeSnapshots { values };
+        let writer = CaptureWriter::default();
+
+        let path = generate_html_report(&repo, &writer, "/tmp/netguardia-reports")
+            .await
+            .expect("generate report");
+
+        let calls = writer.calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "/tmp/netguardia-reports");
+        assert_eq!(path, PathBuf::from("/tmp/netguardia-reports/adapter-owned-report.html"));
+        assert!(!calls[0].1.contains("<script>alert(1)</script>"));
+        assert!(calls[0].1.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
 }

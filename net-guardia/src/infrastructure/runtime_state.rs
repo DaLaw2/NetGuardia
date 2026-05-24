@@ -1,6 +1,20 @@
+use arc_swap::ArcSwap;
+
+use crate::interface::system::system_control::{XdpModeQuery, XdpModes};
+
 #[derive(Debug, Clone)]
 pub struct RuntimeState {
     pub xdp: XdpRuntimeState,
+}
+
+impl XdpModeQuery for ArcSwap<RuntimeState> {
+    fn get_xdp_modes(&self) -> XdpModes {
+        let xdp = self.load().xdp.clone();
+        XdpModes {
+            ingress_mode: xdp.ingress_mode,
+            egress_mode: xdp.egress_mode,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

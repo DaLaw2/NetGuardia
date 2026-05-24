@@ -1,16 +1,21 @@
+use std::mem::size_of;
 use std::net::Ipv6Addr;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use aya::maps::{MapData, RingBuf};
-use common::define::drop_reason::*;
-use common::model::drop_event::DropEvent as RawDropEvent;
+use macros::log;
+use net_guardia_abi::define::drop_reason::*;
+use net_guardia_abi::model::drop_event::DropEvent as RawDropEvent;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::interval;
 
 use crate::domain::data_plane::drop_event::{DropCounters, DropEventMessage};
-use crate::interface::drop_stats::DropStatsPort;
+use crate::domain::data_plane::ip_version::IpVersion;
+use crate::domain::data_plane::log::EbpfLog;
+use crate::interface::data_plane::drop_stats::DropStatsPort;
 
 #[derive(Default)]
 pub struct DropCountersAtomic {
@@ -22,21 +27,36 @@ pub struct DropCountersAtomic {
     protocol_filter: AtomicU64,
     dns_blacklist: AtomicU64,
     geo_block: AtomicU64,
-    total: AtomicU64,
 }
 
 impl DropCountersAtomic {
     pub fn snapshot(&self) -> DropCounters {
+        let acl_blacklist = self.acl_blacklist.load(Ordering::Relaxed);
+        let rate_limit_pkt = self.rate_limit_pkt.load(Ordering::Relaxed);
+        let rate_limit_syn = self.rate_limit_syn.load(Ordering::Relaxed);
+        let rate_limit_udp = self.rate_limit_udp.load(Ordering::Relaxed);
+        let rate_limit_dns = self.rate_limit_dns.load(Ordering::Relaxed);
+        let protocol_filter = self.protocol_filter.load(Ordering::Relaxed);
+        let dns_blacklist = self.dns_blacklist.load(Ordering::Relaxed);
+        let geo_block = self.geo_block.load(Ordering::Relaxed);
+        let total = acl_blacklist
+            + rate_limit_pkt
+            + rate_limit_syn
+            + rate_limit_udp
+            + rate_limit_dns
+            + protocol_filter
+            + dns_blacklist
+            + geo_block;
         DropCounters {
-            acl_blacklist: self.acl_blacklist.load(Ordering::Relaxed),
-            rate_limit_pkt: self.rate_limit_pkt.load(Ordering::Relaxed),
-            rate_limit_syn: self.rate_limit_syn.load(Ordering::Relaxed),
-            rate_limit_udp: self.rate_limit_udp.load(Ordering::Relaxed),
-            rate_limit_dns: self.rate_limit_dns.load(Ordering::Relaxed),
-            protocol_filter: self.protocol_filter.load(Ordering::Relaxed),
-            dns_blacklist: self.dns_blacklist.load(Ordering::Relaxed),
-            geo_block: self.geo_block.load(Ordering::Relaxed),
-            total: self.total.load(Ordering::Relaxed),
+            acl_blacklist,
+            rate_limit_pkt,
+            rate_limit_syn,
+            rate_limit_udp,
+            rate_limit_dns,
+            protocol_filter,
+            dns_blacklist,
+            geo_block,
+            total,
         }
     }
 }
@@ -73,23 +93,24 @@ impl DropMonitor {
         }
     }
 
-    fn record_drop(&self, reason: u8) {
-        self.counters.total.fetch_add(1, Ordering::Relaxed);
+    pub fn record_drop_count(&self, reason: u8) {
         if let Some(counter) = self.bucket_for(reason) {
             counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    pub fn record_userspace_drop_count_only(&self, reason: u8) {
-        self.record_drop(reason);
-    }
-
-    fn process_event(&self, raw: &RawDropEvent) {
-        self.record_drop(raw.reason);
+    pub fn record_drop_event(&self, raw: &RawDropEvent) {
+        self.record_drop_count(raw.reason);
+        let Some(ip_version) = IpVersion::from_u8(raw.ip_version) else {
+            return;
+        };
+        if self.broadcast_tx.receiver_count() == 0 {
+            return;
+        }
 
         let reason_str = reason_to_str(raw.reason);
 
-        let (src_ip, dst_ip) = format_ips(raw);
+        let (src_ip, dst_ip) = format_ips(raw, ip_version);
 
         let msg = DropEventMessage {
             timestamp_ns: raw.timestamp_ns,
@@ -99,10 +120,12 @@ impl DropMonitor {
             dst_port: raw.dst_port,
             protocol: raw.protocol,
             reason: reason_str.to_string(),
-            ip_version: raw.ip_version,
+            ip_version,
         };
 
-        let _ = self.broadcast_tx.send(msg);
+        if let Err(err) = self.broadcast_tx.send(msg) {
+            log!(EbpfLog::DropBroadcastFailed(err.to_string()));
+        }
     }
 }
 
@@ -112,9 +135,9 @@ impl DropStatsPort for DropMonitor {
     }
 }
 
-fn format_ips(raw: &RawDropEvent) -> (String, String) {
-    match raw.ip_version {
-        4 => {
+fn format_ips(raw: &RawDropEvent, ip_version: IpVersion) -> (String, String) {
+    match ip_version {
+        IpVersion::V4 => {
             let src = format!(
                 "{}.{}.{}.{}",
                 raw.src_ip[0], raw.src_ip[1], raw.src_ip[2], raw.src_ip[3]
@@ -125,7 +148,7 @@ fn format_ips(raw: &RawDropEvent) -> (String, String) {
             );
             (src, dst)
         }
-        _ => {
+        IpVersion::V6 => {
             let src = format_ipv6(&raw.src_ip);
             let dst = format_ipv6(&raw.dst_ip);
             (src, dst)
@@ -156,7 +179,6 @@ pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor
 
     tokio::spawn(async move {
         let mut ring_buf = ring_buf;
-        // todo add interval value to config
         let mut interval = interval(Duration::from_millis(100));
 
         loop {
@@ -166,13 +188,69 @@ pub async fn start_consumer(ring_buf: RingBuf<MapData>, monitor: Arc<DropMonitor
             }
 
             while let Some(item) = ring_buf.next() {
-                if item.len() >= size_of::<RawDropEvent>() {
-                    let event = unsafe { &*(item.as_ptr() as *const RawDropEvent) };
-                    monitor.process_event(event);
+                if let Some(event) = raw_drop_event_from_bytes(&item) {
+                    monitor.record_drop_event(&event);
                 }
             }
         }
     });
 
     shutdown_tx
+}
+
+fn raw_drop_event_from_bytes(bytes: &[u8]) -> Option<RawDropEvent> {
+    if bytes.len() < size_of::<RawDropEvent>() {
+        return None;
+    }
+
+    // SAFETY: The length check guarantees enough initialized bytes for RawDropEvent.
+    let event = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<RawDropEvent>()) };
+    Some(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_drop_event() -> RawDropEvent {
+        RawDropEvent {
+            timestamp_ns: 42,
+            src_ip: [1; 16],
+            dst_ip: [2; 16],
+            src_port: 1234,
+            dst_port: 443,
+            protocol: 6,
+            reason: DROP_REASON_ACL_BLACKLIST,
+            ip_version: IpVersion::V4 as u8,
+            _pad: 0,
+        }
+    }
+
+    fn event_bytes(event: &RawDropEvent) -> Vec<u8> {
+        // SAFETY: RawDropEvent is a repr(C), Copy ABI record borrowed as bytes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts((event as *const RawDropEvent).cast::<u8>(), size_of::<RawDropEvent>())
+        };
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn raw_drop_event_from_bytes_rejects_short_buffers() {
+        let bytes = vec![0; size_of::<RawDropEvent>() - 1];
+
+        assert!(raw_drop_event_from_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn raw_drop_event_from_bytes_accepts_unaligned_buffers() {
+        let event = sample_drop_event();
+        let mut bytes = vec![0];
+        bytes.extend(event_bytes(&event));
+
+        let parsed = raw_drop_event_from_bytes(&bytes[1..]).expect("drop event");
+
+        assert_eq!(parsed.timestamp_ns, event.timestamp_ns);
+        assert_eq!(parsed.src_port, event.src_port);
+        assert_eq!(parsed.reason, event.reason);
+    }
 }

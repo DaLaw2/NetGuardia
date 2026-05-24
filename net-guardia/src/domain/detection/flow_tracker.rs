@@ -1,11 +1,10 @@
-use common::define::tcp_flags::*;
+use net_guardia_abi::define::tcp_flags::*;
 
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::user_packet::UserPacket;
+use crate::domain::detection::feature_extractor::FeatureStats;
 use crate::domain::detection::ml_detection::{BulkState, FlowKey, PacketData};
 
-/// Bundle of per-flow tuning parameters. Snapshotted at `FlowTracker::new`
-/// time so the add-packet hot path does not need to re-read config.
 #[derive(Debug, Clone, Copy)]
 pub struct FlowLimits {
     pub max_packets_per_direction: usize,
@@ -45,10 +44,40 @@ pub struct FlowData {
     pub fwd_bulk_state: BulkState,
     pub bwd_bulk_state: BulkState,
     pub act_data_pkt_fwd: u32,
-    pub(crate) is_first_packet: bool,
-    /// Timestamp (us) when this flow was last sent to ML inference.
-    /// 0 means never inferred. Used to avoid re-inferring unchanged flows.
-    pub last_inferred_us: u64,
+    pub is_first_packet: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FlowSnapshot {
+    pub flow_key: FlowKey,
+    pub direction: Direction,
+    pub start_time_us: u64,
+    pub last_time_us: u64,
+    pub packet_count: usize,
+    pub fwd_packet_count: usize,
+    pub bwd_packet_count: usize,
+    pub total_bytes: u64,
+    pub feature_stats: FeatureStats,
+}
+
+impl FlowSnapshot {
+    pub fn from_flow_data(flow: &FlowData) -> Self {
+        Self {
+            flow_key: flow.flow_key,
+            direction: flow.direction,
+            start_time_us: flow.start_time_us,
+            last_time_us: flow.last_time_us,
+            packet_count: flow.packet_count(),
+            fwd_packet_count: flow.fwd_packets.len(),
+            bwd_packet_count: flow.bwd_packets.len(),
+            total_bytes: flow.fwd_total_bytes + flow.bwd_total_bytes,
+            feature_stats: FeatureStats::compute(flow),
+        }
+    }
+
+    pub fn duration_us(&self) -> u64 {
+        self.last_time_us.saturating_sub(self.start_time_us)
+    }
 }
 
 impl FlowData {
@@ -58,10 +87,10 @@ impl FlowData {
             direction,
             start_time_us: first_packet.timestamp_us,
             last_time_us: first_packet.timestamp_us,
-            fwd_packets: Vec::new(),
+            fwd_packets: Vec::with_capacity(32),
             fwd_total_bytes: 0,
             fwd_header_bytes: 0,
-            bwd_packets: Vec::new(),
+            bwd_packets: Vec::with_capacity(32),
             bwd_total_bytes: 0,
             bwd_header_bytes: 0,
             fin_count: 0,
@@ -82,14 +111,13 @@ impl FlowData {
             } else {
                 0
             },
-            active_periods: Vec::new(),
-            idle_periods: Vec::new(),
+            active_periods: Vec::with_capacity(16),
+            idle_periods: Vec::with_capacity(8),
             last_packet_time: first_packet.timestamp_us,
             fwd_bulk_state: BulkState::default(),
             bwd_bulk_state: BulkState::default(),
             act_data_pkt_fwd: 0,
             is_first_packet: true,
-            last_inferred_us: 0,
         }
     }
 

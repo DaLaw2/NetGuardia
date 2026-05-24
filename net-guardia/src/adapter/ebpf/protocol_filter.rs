@@ -3,15 +3,17 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
-use common::model::http_method::{HttpMethod, HttpMethodBitmap};
-use common::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
-use common::model::placeholder::PlaceHolder;
+use net_guardia_abi::model::empty::EmptyMapValue;
+use net_guardia_abi::model::http_method::{HttpMethod, HttpMethodBitmap};
+use net_guardia_abi::model::ip_address::{AddrPortV4, AddrPortV6, IPv4, IPv6};
 use parking_lot::RwLock;
 
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::ip_address::NativeConvert;
-use crate::interface::protocol_filter::{IpVersion, ProtocolFilterPort};
+use crate::domain::data_plane::ip_version::IpVersion;
+use crate::interface::data_plane::protocol_filter::HttpFilterPort;
+use crate::interface::data_plane::protocol_filter::SshFilterPort;
 
 pub struct ProtocolFilter {
     ipv4_http_service: RwLock<HttpServiceWrapper<AddrPortV4>>,
@@ -84,7 +86,7 @@ fn require_v6_ip(ip: IpAddr) -> Result<Ipv6Addr, Error> {
     }
 }
 
-impl ProtocolFilterPort for ProtocolFilter {
+impl HttpFilterPort for ProtocolFilter {
     fn get_http_service(&self, version: IpVersion) -> HashMap<SocketAddr, Vec<HttpMethod>> {
         match version {
             IpVersion::V4 => self
@@ -134,7 +136,9 @@ impl ProtocolFilterPort for ProtocolFilter {
                 .remove_http_service(require_v6_socket(address)?, methods),
         }
     }
+}
 
+impl SshFilterPort for ProtocolFilter {
     fn is_ssh_white_list_enable(&self) -> bool {
         self.ssh_white_list_enable.read().is_white_list_enable()
     }
@@ -248,7 +252,7 @@ impl ProtocolFilterPort for ProtocolFilter {
 }
 
 struct WhiteListControl {
-    map: Option<AyaArray<MapData, PlaceHolder>>,
+    map: Option<AyaArray<MapData, EmptyMapValue>>,
 }
 
 impl WhiteListControl {
@@ -273,14 +277,16 @@ impl WhiteListControl {
     }
 
     fn enable_white_list(&mut self) -> Result<(), Error> {
-        let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
-        map.set(0, 1_u8, 0).map_err(EbpfError::MapOperationError)?;
-        Ok(())
+        self.set_white_list(true)
     }
 
     fn disable_white_list(&mut self) -> Result<(), Error> {
+        self.set_white_list(false)
+    }
+
+    fn set_white_list(&mut self, enabled: bool) -> Result<(), Error> {
         let map = self.map.as_mut().ok_or(EbpfError::NotLoaded)?;
-        map.set(0, 0_u8, 0).map_err(EbpfError::MapOperationError)?;
+        map.set(0, u8::from(enabled), 0).map_err(EbpfError::MapOperationError)?;
         Ok(())
     }
 }
@@ -343,7 +349,7 @@ impl<T: NativeConvert + Pod> HttpServiceWrapper<T> {
 }
 
 struct EntryMap<T> {
-    map: Option<AyaHashMap<MapData, T, PlaceHolder>>,
+    map: Option<AyaHashMap<MapData, T, EmptyMapValue>>,
 }
 
 impl<T: NativeConvert + Pod> EntryMap<T> {

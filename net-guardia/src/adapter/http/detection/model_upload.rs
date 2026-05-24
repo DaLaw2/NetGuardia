@@ -1,146 +1,57 @@
-//! Multipart upload surface for BYO model files. Accepts a `manifest`
-//! YAML field, an `onnx` binary field, and an optional `scaler` JSON
-//! sidecar; streams each to `models/.staging/<uuid>/` with enforced
-//! size caps, runs structural + ONNX shape validation, then atomically
-//! renames into `models/` under a process-wide gate (AtomicBool, not a
-//! mutex — see `PromoteGate`): a second concurrent promote is rejected
-//! with 409 Conflict rather than queued. A WORM `model_swap` audit
-//! entry records the SHA-256 of both committed files plus a snapshot
-//! of the pre-swap state.
-//!
-//! Body-size caps come from `InferenceConfig::model_upload_max_*_bytes`
-//! so admins can tune them from the settings DB without a rebuild.
-//! Defaults: 100MB ONNX, 64KB manifest, 64KB scaler. Streaming writes
-//! never buffer the full file in RAM, and staged directories are torn
-//! down on any error path so failed uploads don't pile up in
-//! `models/.staging/`.
-
-use std::fs::File as StdFile;
-use std::io;
-use std::io::Read;
+use std::fs as stdfs;
+use std::io::ErrorKind;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, Scope, web};
 use arc_swap::ArcSwap;
 use futures_util::TryStreamExt;
-use serde_json::Value as JsonValue;
-use sha2::{Digest, Sha256};
+use macros::log;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::broadcast;
 use tokio::task;
 use uuid::Uuid;
+use zip::ZipArchive;
 
 use crate::adapter::http::middleware::extractor::AuthClaims;
-use crate::core::inference::model_loader::build_adapter;
+use crate::core::inference::model_promotion::{PromoteError, PromoteGate, StagedModelPromotion, validate_and_promote};
 use crate::core::inference::runner::Inference;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::{
-    AUDIT_ACTOR_SECURITY_ADMIN_PREFIX, MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR,
-};
-use crate::domain::common::event::AuditEvent;
-use crate::domain::detection::manifest::{AdapterKind, ModelManifest};
-use crate::domain::detection::ml_inference_config::MLInferenceConfig;
+use crate::domain::common::config::constants::PERMISSION_USERS_ADMIN;
+use crate::domain::detection::log::MLLog;
+use crate::domain::detection::model_files::{MANIFEST_FILENAME, MODELS_DIR, STAGING_SUBDIR};
+use crate::infrastructure::model_promotion_deps::ModelPromotionDeps;
+use crate::interface::system::audit::AuditRepo;
 
-/// Multipart field names the client must use. Stable wire contract —
-/// the frontend form generator depends on these exact strings.
-const FIELD_MANIFEST: &str = "manifest";
-const FIELD_ONNX: &str = "onnx";
-const FIELD_SCALER: &str = "scaler";
-
-/// Number of bytes of the ONNX body we inspect up-front for an obvious
-/// non-Protobuf header. A fuller structural check (shape vs manifest
-/// declared `features`) runs during `build_adapter` in the promote path.
+const FIELD_BUNDLE: &str = "bundle";
+const BUNDLE_FILENAME: &str = "model_bundle.zip";
+#[cfg(test)]
 const ONNX_SNIFF_BYTES: usize = 16;
-
-/// Permission required to drive the model-upload endpoint. The full
-/// RBAC middleware lets anyone with `ai_detection:write` reach
-/// `/api/ml/*`, but model promotion can replace the active detector —
-/// gate it tighter at the handler layer so only administrators can
-/// swap the ML source.
-const PROMOTE_REQUIRED_PERMISSION: &str = "users:admin";
-
-/// Action recorded on the WORM chain when a promote succeeds. Stable
-/// wire string — fusion-explain tooling and future "who swapped the
-/// model" views filter on it, so the rename must go through the audit
-/// chain too.
-const AUDIT_ACTION_MODEL_SWAP: &str = "model_swap";
-
-/// Process-wide gate that ensures only one promote ever runs the rename
-/// section at a time. The critical section is tiny (three `tokio::fs::rename`
-/// syscalls) but must never interleave: a concurrent promote mid-rename could
-/// leave `models/` pointing at a manifest whose ONNX hasn't landed yet.
-///
-/// Unlike a mutex, the gate does not queue. A second concurrent promote sees
-/// the gate held and gets `PromoteError::ConcurrentPromote` immediately —
-/// administrators wanting to swap models should know another swap is in flight
-/// rather than silently waiting behind it.
-#[derive(Default)]
-pub struct PromoteGate {
-    in_progress: AtomicBool,
-}
-
-impl PromoteGate {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Try to claim the gate. Returns `Some(guard)` on success; `None` when
-    /// another promote is already inside the rename section. The guard
-    /// releases the gate when dropped, including on panic.
-    fn try_acquire(&self) -> Option<PromoteGuard<'_>> {
-        if self
-            .in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            Some(PromoteGuard { gate: self })
-        } else {
-            None
-        }
-    }
-}
-
-struct PromoteGuard<'a> {
-    gate: &'a PromoteGate,
-}
-
-impl Drop for PromoteGuard<'_> {
-    fn drop(&mut self) {
-        self.gate.in_progress.store(false, Ordering::Release);
-    }
-}
+const PROMOTE_REQUIRED_PERMISSION: &str = PERMISSION_USERS_ADMIN;
 
 pub fn initialize() -> Scope {
-    // Mounted under `/ml/models/upload` so the entire ML model lifecycle
-    // (status, dormant, upload) lives under one URL subtree. The peer
-    // `/ml/models/current` GET/DELETE routes live in `ml::initialize()`;
-    // actix dispatches each path to whichever scope owns it.
     web::scope("/ml/models").route("/upload", web::post().to(upload))
 }
 
-/// `POST /api/ml/models/upload` — multipart with `manifest` (YAML text),
-/// `onnx` (binary), and optional `scaler` (JSON). Streams fields into
-/// `models/.staging/<uuid>/`, validates the manifest + ONNX shape, and
-/// atomically renames the triple into `models/` on success. A WORM
-/// `model_swap` audit entry captures the SHA-256 pair plus the
-/// pre-swap ML source state. The staging directory is always torn
-/// down on the way out, even on success (post-promote it's empty).
 async fn upload(
     app_config: web::Data<ArcSwap<AppConfig>>,
     inference: web::Data<Inference>,
-    audit_tx: web::Data<broadcast::Sender<AuditEvent>>,
+    audit_repo: web::Data<dyn AuditRepo>,
     promote_lock: web::Data<PromoteGate>,
+    promotion_deps: web::Data<ModelPromotionDeps>,
     claims: AuthClaims,
     payload: Multipart,
 ) -> impl Responder {
     if !claims.permissions.iter().any(|p| p == PROMOTE_REQUIRED_PERMISSION) {
-        return HttpResponse::Forbidden().json(serde_json::json!({
-            "error": format!("model upload requires the {PROMOTE_REQUIRED_PERMISSION} permission"),
-        }));
+        return structured_error_response(
+            403,
+            "permission_denied",
+            "authorization",
+            format!("model upload requires the {PROMOTE_REQUIRED_PERMISSION} permission"),
+            "Sign in as an administrator and retry promotion.",
+        );
     }
 
     let staging_root = PathBuf::from(MODELS_DIR).join(STAGING_SUBDIR);
@@ -148,119 +59,237 @@ async fn upload(
     let staging_dir = staging_root.join(&staging_id);
 
     let config = app_config.load();
-    let caps = UploadCaps {
-        manifest: config.ml.model_upload_max_manifest_bytes,
-        onnx: config.ml.model_upload_max_onnx_bytes,
-        scaler: config.ml.model_upload_max_scaler_bytes,
-    };
-    let batch_size = config.ml.inference_batch_size;
-    let onnx_load_timeout = Duration::from_secs(config.ml.onnx_load_timeout_secs);
+    let caps = UploadCaps::from_config(&config);
+    let batch_size = config.ml.inference.inference_batch_size;
+    let onnx_load_timeout = Duration::from_secs(config.ml.inference.onnx_load_timeout_secs);
     drop(config);
     let summary = match ingest_multipart(payload, &staging_dir, caps).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = fs::remove_dir_all(&staging_dir).await;
+            cleanup_staging_dir(&staging_dir).await;
             return e.into_response();
         }
     };
-    let outcome = validate_and_promote(&PromoteContext {
+    let outcome = validate_and_promote(&StagedModelPromotion {
         staging_dir: &staging_dir,
-        summary: &summary,
         inference: inference.get_ref(),
-        audit_tx: audit_tx.get_ref(),
-        promote_lock: promote_lock.get_ref(),
+        audit_repo: audit_repo.get_ref(),
+        promote_gate: promote_lock.get_ref(),
+        validation_gate: promotion_deps.validation_gate.as_ref(),
         actor_username: &claims.username,
         batch_size,
         onnx_load_timeout,
+        model_runtime_loader: promotion_deps.model_runtime_loader.as_ref(),
+        model_artifact_resolver: promotion_deps.model_artifact_resolver.as_ref(),
+        model_config_loader: promotion_deps.model_config_loader.as_ref(),
+        promotion_store: promotion_deps.promotion_store.as_ref(),
     })
     .await;
-
-    // Always sweep staging — successful promote renames the files out,
-    // leaving a now-empty directory; failures leave partial state we
-    // don't want orbiting forever.
-    let _ = fs::remove_dir_all(&staging_dir).await;
+    cleanup_staging_dir(&staging_dir).await;
 
     match outcome {
         Ok(report) => HttpResponse::Ok().json(serde_json::json!({
             "promoted": true,
             "staging_id": staging_id,
+            "bundle_bytes": summary.bundle_bytes,
             "manifest_bytes": summary.manifest_bytes,
             "onnx_bytes": summary.onnx_bytes,
             "scaler_bytes": summary.scaler_bytes,
             "manifest_name": report.manifest_name,
             "adapter_kind": report.adapter_kind,
             "manifest_sha256": report.manifest_sha256,
-            "onnx_sha256": report.onnx_sha256,
+            "artifacts": report.artifacts,
         })),
-        Err(e) => e.into_response(),
+        Err(e) => promote_error_response(e),
     }
 }
 
-/// Successful-path metadata the handler surfaces to the client.
-#[derive(Debug)]
-struct UploadSummary {
-    manifest_bytes: usize,
-    onnx_bytes: usize,
-    onnx_filename: String,
-    /// Bytes written for the optional scaler sidecar. `None` when the
-    /// field wasn't submitted at all.
-    scaler_bytes: Option<usize>,
+pub(crate) async fn cleanup_staging_dir(staging_dir: &Path) {
+    if let Err(err) = fs::remove_dir_all(staging_dir).await {
+        if err.kind() == ErrorKind::NotFound {
+            return;
+        }
+        log!(MLLog::ModelUploadStagingCleanupFailed(
+            staging_dir.display().to_string(),
+            err.to_string()
+        ));
+    }
 }
 
-/// Per-field byte caps. Plumbed from `InferenceConfig` through the
-/// handler so admins can tune caps from the DB without a code change.
+#[derive(Debug)]
+pub(crate) struct UploadSummary {
+    pub bundle_bytes: usize,
+    pub manifest_bytes: usize,
+    pub onnx_bytes: usize,
+    pub scaler_bytes: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy)]
-struct UploadCaps {
-    manifest: usize,
-    onnx: usize,
-    scaler: usize,
+pub(crate) struct UploadCaps {
+    pub bundle: usize,
+    pub manifest: usize,
+    pub onnx: usize,
+    pub scaler: usize,
 }
 
-/// Errors that can surface a specific HTTP response. Kept in-module
-/// because none of these have callers outside this handler.
-///
-/// The `*TooLarge(usize)` variants carry the admin-configured cap so
-/// the response can tell the client which ceiling they hit without
-/// having to query `/api/config` separately.
+impl UploadCaps {
+    pub(crate) fn from_config(config: &AppConfig) -> Self {
+        Self {
+            bundle: config
+                .ml
+                .model_upload
+                .max_manifest_bytes
+                .saturating_add(config.ml.model_upload.max_onnx_bytes)
+                .saturating_add(config.ml.model_upload.max_scaler_bytes),
+            manifest: config.ml.model_upload.max_manifest_bytes,
+            onnx: config.ml.model_upload.max_onnx_bytes,
+            scaler: config.ml.model_upload.max_scaler_bytes,
+        }
+    }
+}
+
 #[derive(Debug)]
-enum UploadError {
+pub(crate) enum UploadError {
     MissingField(&'static str),
     DuplicateField(&'static str),
+    FilenameConflict(String),
     UnknownField(String),
+    BundleTooLarge(usize),
+    BundleNotZip,
+    BundleEntryInvalid(String),
+    BundleExtractionFailed(String),
     ManifestTooLarge(usize),
     OnnxTooLarge(usize),
     ScalerTooLarge(usize),
-    OnnxNotBinary,
     StreamFailure(String),
     StagingSetupFailure(String),
 }
 
 impl UploadError {
-    fn into_response(self) -> HttpResponse {
-        let (status, message) = match self {
-            Self::MissingField(name) => (400, format!("missing required multipart field: {name}")),
-            Self::DuplicateField(name) => (400, format!("multipart field sent twice: {name}")),
-            Self::UnknownField(name) => (400, format!("unexpected multipart field: {name}")),
-            Self::ManifestTooLarge(max_bytes) => (413, format!("manifest exceeds {max_bytes} bytes")),
-            Self::OnnxTooLarge(max_bytes) => (413, format!("onnx exceeds {max_bytes} bytes")),
-            Self::ScalerTooLarge(max_bytes) => (413, format!("scaler exceeds {max_bytes} bytes")),
-            Self::OnnxNotBinary => (
+    pub(crate) fn into_response(self) -> HttpResponse {
+        let (status, code, category, message, hint) = match self {
+            Self::MissingField(name) => (
                 400,
-                "onnx field does not look like a protobuf-encoded ONNX model".to_string(),
+                "missing_field",
+                "transport",
+                format!("missing required multipart field: {name}"),
+                "Send the model bundle in the multipart field named 'bundle'.",
             ),
-            Self::StreamFailure(err) => (400, format!("upload stream error: {err}")),
-            Self::StagingSetupFailure(err) => (500, format!("staging directory error: {err}")),
+            Self::DuplicateField(name) => (
+                400,
+                "duplicate_field",
+                "transport",
+                format!("multipart field sent twice: {name}"),
+                "Send exactly one bundle field.",
+            ),
+            Self::FilenameConflict(name) => (
+                400,
+                "filename_conflict",
+                "bundle",
+                format!("multipart filename conflicts with another upload file: {name}"),
+                "Ensure every file in the bundle has a unique top-level basename.",
+            ),
+            Self::UnknownField(name) => (
+                400,
+                "unknown_field",
+                "transport",
+                format!("unexpected multipart field: {name}"),
+                "Only the bundle field is accepted.",
+            ),
+            Self::BundleTooLarge(max_bytes) => (
+                413,
+                "bundle_too_large",
+                "policy",
+                format!("bundle exceeds {max_bytes} bytes"),
+                "Reduce bundle size or raise the configured model upload limit.",
+            ),
+            Self::BundleNotZip => (
+                400,
+                "bundle_not_zip",
+                "bundle",
+                "bundle field does not look like a zip archive".to_string(),
+                "Upload the trainer-exported model_bundle.zip file.",
+            ),
+            Self::BundleEntryInvalid(err) => (
+                422,
+                "bundle_entry_invalid",
+                "bundle",
+                format!("invalid bundle entry: {err}"),
+                "Keep bundle files at the top level with safe basenames.",
+            ),
+            Self::BundleExtractionFailed(err) => (
+                422,
+                "bundle_extraction_failed",
+                "bundle",
+                format!("bundle extraction failed: {err}"),
+                "Recreate the bundle and verify it contains manifest.yaml and ONNX artifacts.",
+            ),
+            Self::ManifestTooLarge(max_bytes) => (
+                413,
+                "manifest_too_large",
+                "policy",
+                format!("manifest exceeds {max_bytes} bytes"),
+                "Reduce manifest size or raise the configured manifest upload limit.",
+            ),
+            Self::OnnxTooLarge(max_bytes) => (
+                413,
+                "onnx_too_large",
+                "policy",
+                format!("onnx exceeds {max_bytes} bytes"),
+                "Reduce model size or raise the configured ONNX upload limit.",
+            ),
+            Self::ScalerTooLarge(max_bytes) => (
+                413,
+                "sidecar_too_large",
+                "policy",
+                format!("scaler exceeds {max_bytes} bytes"),
+                "Reduce sidecar size or raise the configured sidecar upload limit.",
+            ),
+            Self::StreamFailure(err) => (
+                400,
+                "upload_stream_failure",
+                "transport",
+                format!("upload stream error: {err}"),
+                "Retry the upload with a complete bundle.",
+            ),
+            Self::StagingSetupFailure(err) => (
+                500,
+                "staging_setup_failure",
+                "storage",
+                format!("staging directory error: {err}"),
+                "Check server storage permissions and available space.",
+            ),
         };
-        let body = serde_json::json!({ "error": message });
-        match status {
-            400 => HttpResponse::BadRequest().json(body),
-            413 => HttpResponse::PayloadTooLarge().json(body),
-            _ => HttpResponse::InternalServerError().json(body),
-        }
+        structured_error_response(status, code, category, message, hint)
     }
 }
 
-async fn ingest_multipart(
+pub(crate) fn structured_error_response(
+    status: u16,
+    code: &str,
+    category: &str,
+    message: impl Into<String>,
+    hint: &str,
+) -> HttpResponse {
+    let message = message.into();
+    let body = serde_json::json!({
+        "code": code,
+        "category": category,
+        "message": &message,
+        "hint": hint,
+        "error": &message,
+    });
+    match status {
+        400 => HttpResponse::BadRequest().json(body),
+        403 => HttpResponse::Forbidden().json(body),
+        409 => HttpResponse::Conflict().json(body),
+        413 => HttpResponse::PayloadTooLarge().json(body),
+        422 => HttpResponse::UnprocessableEntity().json(body),
+        _ => HttpResponse::InternalServerError().json(body),
+    }
+}
+
+pub(crate) async fn ingest_multipart(
     mut payload: Multipart,
     staging_dir: &Path,
     caps: UploadCaps,
@@ -269,9 +298,7 @@ async fn ingest_multipart(
         .await
         .map_err(|e| UploadError::StagingSetupFailure(e.to_string()))?;
 
-    let mut manifest_written: Option<usize> = None;
-    let mut onnx_summary: Option<(String, usize)> = None;
-    let mut scaler_summary: Option<(String, usize)> = None;
+    let mut bundle_summary: Option<usize> = None;
 
     while let Some(mut field) = payload
         .try_next()
@@ -284,39 +311,19 @@ async fn ingest_multipart(
             .unwrap_or("")
             .to_string();
         match field_name.as_str() {
-            FIELD_MANIFEST => {
-                if manifest_written.is_some() {
-                    return Err(UploadError::DuplicateField(FIELD_MANIFEST));
+            FIELD_BUNDLE => {
+                if bundle_summary.is_some() {
+                    return Err(UploadError::DuplicateField(FIELD_BUNDLE));
                 }
-                let dest = staging_dir.join(MANIFEST_FILENAME);
-                let written = stream_field_to_file(&mut field, &dest, caps.manifest, FieldKind::Manifest).await?;
-                manifest_written = Some(written);
-            }
-            FIELD_ONNX => {
-                if onnx_summary.is_some() {
-                    return Err(UploadError::DuplicateField(FIELD_ONNX));
-                }
-                let onnx_filename = field
+                let _uploaded_name = field
                     .content_disposition()
                     .and_then(|cd| cd.get_filename())
                     .map(sanitize_filename)
-                    .unwrap_or_else(|| "model.onnx".to_string());
-                let dest = staging_dir.join(&onnx_filename);
-                let written = stream_field_to_file(&mut field, &dest, caps.onnx, FieldKind::Onnx).await?;
-                onnx_summary = Some((onnx_filename, written));
-            }
-            FIELD_SCALER => {
-                if scaler_summary.is_some() {
-                    return Err(UploadError::DuplicateField(FIELD_SCALER));
-                }
-                let scaler_filename = field
-                    .content_disposition()
-                    .and_then(|cd| cd.get_filename())
-                    .map(sanitize_filename)
-                    .unwrap_or_else(|| "inference_config.json".to_string());
-                let dest = staging_dir.join(&scaler_filename);
-                let written = stream_field_to_file(&mut field, &dest, caps.scaler, FieldKind::Scaler).await?;
-                scaler_summary = Some((scaler_filename, written));
+                    .unwrap_or_else(|| BUNDLE_FILENAME.to_string());
+                let bundle_filename = BUNDLE_FILENAME.to_string();
+                let dest = staging_dir.join(&bundle_filename);
+                let written = stream_field_to_file(&mut field, &dest, caps.bundle).await?;
+                bundle_summary = Some(written);
             }
             other => {
                 return Err(UploadError::UnknownField(other.to_string()));
@@ -324,41 +331,28 @@ async fn ingest_multipart(
         }
     }
 
-    let manifest_bytes = manifest_written.ok_or(UploadError::MissingField(FIELD_MANIFEST))?;
-    let (onnx_filename, onnx_bytes) = onnx_summary.ok_or(UploadError::MissingField(FIELD_ONNX))?;
-    let scaler_bytes = scaler_summary.map(|(_, n)| n);
+    let bundle_bytes = bundle_summary.ok_or(UploadError::MissingField(FIELD_BUNDLE))?;
+    let bundle_path = staging_dir.join(BUNDLE_FILENAME);
+    let extracted = extract_bundle_zip_blocking(bundle_path, staging_dir.to_path_buf(), caps).await?;
 
     Ok(UploadSummary {
-        manifest_bytes,
-        onnx_bytes,
-        onnx_filename,
-        scaler_bytes,
+        bundle_bytes,
+        manifest_bytes: extracted.manifest_bytes,
+        onnx_bytes: extracted.onnx_bytes,
+        scaler_bytes: extracted.scaler_bytes,
     })
 }
 
-/// Discriminator for which size cap / sniff rule applies to a given
-/// multipart field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FieldKind {
-    Manifest,
-    Onnx,
-    Scaler,
-}
-
-/// Stream a multipart field directly to disk. Aborts (and leaves the
-/// caller to clean up) when the declared byte cap is exceeded or when
-/// the binary sniff rejects the first chunk.
 async fn stream_field_to_file(
     field: &mut actix_multipart::Field,
     dest: &Path,
     max_bytes: usize,
-    kind: FieldKind,
 ) -> Result<usize, UploadError> {
     let mut file = fs::File::create(dest)
         .await
         .map_err(|e| UploadError::StagingSetupFailure(e.to_string()))?;
     let mut total = 0usize;
-    let mut sniffed = kind != FieldKind::Onnx;
+    let mut sniffed = false;
 
     while let Some(chunk) = field
         .try_next()
@@ -366,20 +360,14 @@ async fn stream_field_to_file(
         .map_err(|e| UploadError::StreamFailure(e.to_string()))?
     {
         if !sniffed {
-            // Cheap up-front validation: reject obvious non-ONNX blobs
-            // (empty first chunk, all-zero header, all-printable text).
-            if !looks_like_onnx(&chunk) {
-                return Err(UploadError::OnnxNotBinary);
+            if !looks_like_zip(&chunk) {
+                return Err(UploadError::BundleNotZip);
             }
             sniffed = true;
         }
         total = total.saturating_add(chunk.len());
         if total > max_bytes {
-            return Err(match kind {
-                FieldKind::Manifest => UploadError::ManifestTooLarge(max_bytes),
-                FieldKind::Onnx => UploadError::OnnxTooLarge(max_bytes),
-                FieldKind::Scaler => UploadError::ScalerTooLarge(max_bytes),
-            });
+            return Err(UploadError::BundleTooLarge(max_bytes));
         }
         file.write_all(&chunk)
             .await
@@ -391,15 +379,126 @@ async fn stream_field_to_file(
     Ok(total)
 }
 
-/// Shape-preserving filename sanitizer: keep the extension the client
-/// sent (it may be `.onnx`, `.bin`, whatever), but strip any directory
-/// traversal so the staging dir can never escape.
+async fn extract_bundle_zip_blocking(
+    bundle_path: PathBuf,
+    staging_dir: PathBuf,
+    caps: UploadCaps,
+) -> Result<BundleExtractionSummary, UploadError> {
+    task::spawn_blocking(move || extract_bundle_zip(&bundle_path, &staging_dir, caps))
+        .await
+        .map_err(|e| UploadError::BundleExtractionFailed(format!("extract join failed: {e}")))?
+}
+
+fn reserve_upload_filename(used: &mut Vec<String>, filename: &str) -> Result<(), UploadError> {
+    if used.iter().any(|existing| existing == filename) {
+        return Err(UploadError::FilenameConflict(filename.to_string()));
+    }
+    used.push(filename.to_string());
+    Ok(())
+}
+
+#[derive(Debug)]
+struct BundleExtractionSummary {
+    manifest_bytes: usize,
+    onnx_bytes: usize,
+    scaler_bytes: Option<usize>,
+}
+
+fn extract_bundle_zip(
+    bundle_path: &Path,
+    staging_dir: &Path,
+    caps: UploadCaps,
+) -> Result<BundleExtractionSummary, UploadError> {
+    let file = stdfs::File::open(bundle_path).map_err(|e| UploadError::BundleExtractionFailed(e.to_string()))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| UploadError::BundleExtractionFailed(e.to_string()))?;
+
+    let mut seen_files: Vec<String> = Vec::with_capacity(archive.len());
+    let mut manifest_bytes = None;
+    let mut onnx_bytes = 0usize;
+    let mut scaler_bytes = None;
+    let mut total_uncompressed = 0usize;
+
+    for idx in 0..archive.len() {
+        let entry = archive
+            .by_index(idx)
+            .map_err(|e| UploadError::BundleExtractionFailed(e.to_string()))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| UploadError::BundleEntryInvalid(entry.name().to_string()))?;
+        if enclosed.components().count() != 1 {
+            return Err(UploadError::BundleEntryInvalid(format!(
+                "nested archive paths are not allowed: {}",
+                enclosed.display()
+            )));
+        }
+        let filename = enclosed
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| UploadError::BundleEntryInvalid(entry.name().to_string()))?;
+        reserve_upload_filename(&mut seen_files, filename)?;
+
+        let dest = staging_dir.join(filename);
+        let mut out = stdfs::File::create(&dest).map_err(|e| UploadError::BundleExtractionFailed(e.to_string()))?;
+        let max_for_file = match filename {
+            MANIFEST_FILENAME => caps.manifest,
+            _ if filename.ends_with(".onnx") => caps.onnx,
+            _ if filename.ends_with(".json") => caps.scaler,
+            _ => caps.bundle,
+        };
+        let copied = io::copy(&mut entry.take((max_for_file as u64).saturating_add(1)), &mut out)
+            .map_err(|e| UploadError::BundleExtractionFailed(e.to_string()))?;
+        let copied = usize::try_from(copied)
+            .map_err(|_| UploadError::BundleExtractionFailed("copied size overflow".to_string()))?;
+        if copied > max_for_file {
+            return Err(match filename {
+                MANIFEST_FILENAME => UploadError::ManifestTooLarge(caps.manifest),
+                _ if filename.ends_with(".onnx") => UploadError::OnnxTooLarge(caps.onnx),
+                _ if filename.ends_with(".json") => UploadError::ScalerTooLarge(caps.scaler),
+                _ => UploadError::BundleExtractionFailed(format!("entry '{filename}' exceeds extraction cap")),
+            });
+        }
+        total_uncompressed = total_uncompressed.saturating_add(copied);
+        if total_uncompressed > caps.bundle {
+            return Err(UploadError::BundleExtractionFailed(
+                "bundle expands beyond configured upload limits".to_string(),
+            ));
+        }
+
+        match filename {
+            MANIFEST_FILENAME => {
+                manifest_bytes = Some(copied);
+            }
+            _ if filename.ends_with(".onnx") => {
+                onnx_bytes = onnx_bytes.saturating_add(copied);
+            }
+            _ if filename.ends_with(".json") => {
+                scaler_bytes = Some(copied);
+            }
+            _ => {}
+        }
+    }
+
+    let manifest_bytes = manifest_bytes
+        .ok_or_else(|| UploadError::BundleExtractionFailed("manifest.yaml missing from bundle".to_string()))?;
+    if onnx_bytes == 0 {
+        return Err(UploadError::BundleExtractionFailed(
+            "no onnx model files found in bundle".to_string(),
+        ));
+    }
+
+    Ok(BundleExtractionSummary {
+        manifest_bytes,
+        onnx_bytes,
+        scaler_bytes,
+    })
+}
+
 pub fn sanitize_filename(raw: impl AsRef<str>) -> String {
     let raw = raw.as_ref();
-    let trimmed = Path::new(raw)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model.onnx");
+    let trimmed = raw.rsplit(['/', '\\']).next().unwrap_or("model.onnx");
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         "model.onnx".to_string()
     } else {
@@ -407,68 +506,13 @@ pub fn sanitize_filename(raw: impl AsRef<str>) -> String {
     }
 }
 
-/// Reject manifest-declared filenames that aren't single-segment basenames.
-/// The multipart layer sanitizes client-sent part filenames (silent rewrite),
-/// but manifest fields like `models.model` and `preprocessing.scaler_sidecar`
-/// are user-controlled YAML — a value such as `../../../etc/cron.d/evil` would
-/// otherwise flow into `staging_dir.join(..)` / `models_dir.join(..)` and let
-/// `users:admin` write outside the models tree. Reject loudly rather than
-/// silently rewriting so an operator who fat-fingered a path sees the failure.
-fn validate_manifest_basename(field: &str, value: &str) -> Result<(), PromoteError> {
-    if value.is_empty() {
-        return Err(PromoteError::ManifestInvalid(format!(
-            "manifest field {field} is empty"
-        )));
-    }
-    if value.contains('/') || value.contains('\\') {
-        return Err(PromoteError::ManifestInvalid(format!(
-            "manifest field {field} must be a basename, not a path: {value:?}"
-        )));
-    }
-    if value == "." || value == ".." || value.contains("..") {
-        return Err(PromoteError::ManifestInvalid(format!(
-            "manifest field {field} must not contain path-traversal segments: {value:?}"
-        )));
-    }
-    if Path::new(value).is_absolute() {
-        return Err(PromoteError::ManifestInvalid(format!(
-            "manifest field {field} must be relative, not absolute: {value:?}"
-        )));
-    }
-    if Path::new(value).file_name().and_then(|s| s.to_str()) != Some(value) {
-        return Err(PromoteError::ManifestInvalid(format!(
-            "manifest field {field} must be a plain basename: {value:?}"
-        )));
-    }
-    Ok(())
-}
-
-/// Loose first-chunk heuristic. An ONNX protobuf starts with a varint
-/// tag byte — the field=1 wire=varint (`0x08` for `ir_version`) and
-/// field=1 wire=length-delimited (`0x0a`) patterns both occur in real
-/// models — but enumerating positive accept patterns is fragile because
-/// tract accepts several tag orderings. We instead:
-///
-/// 1. Reject magic bytes of container formats that users routinely
-///    upload by mistake (ZIP, PNG, PDF, ELF).
-/// 2. Reject all-zero and all-printable-ASCII prefixes (buffers and
-///    text files).
-///
-/// The authoritative structural validation happens during
-/// `build_adapter`; this heuristic's job is catching the obvious wrong
-/// upload before the bytes hit disk.
+#[cfg(test)]
 pub fn looks_like_onnx(first_chunk: &[u8]) -> bool {
     if first_chunk.is_empty() {
         return false;
     }
-    // Container formats that users commonly confuse with ONNX.
-    const BLOCKED_MAGICS: &[&[u8]] = &[
-        b"PK\x03\x04", // ZIP / JAR / DOCX — some pipelines ship ONNX weights this way,
-        // but our upload path expects a single standalone .onnx file.
-        b"\x89PNG",
-        b"%PDF",
-        b"\x7fELF",
-    ];
+
+    const BLOCKED_MAGICS: &[&[u8]] = &[b"PK\x03\x04", b"\x89PNG", b"%PDF", b"\x7fELF"];
     for magic in BLOCKED_MAGICS {
         if first_chunk.starts_with(magic) {
             return false;
@@ -485,336 +529,85 @@ pub fn looks_like_onnx(first_chunk: &[u8]) -> bool {
     true
 }
 
-/// Validate the staged manifest + ONNX + optional sidecar, then
-/// atomically promote them into `models/`. The sequence is:
-///
-/// 1. Parse and structurally validate `manifest.yaml` against the
-///    `FEATURE_REGISTRY` plus manifest-level invariants.
-/// 2. Reject `multi_task` adapters — v1 upload supports single-ONNX
-///    models only; multi-task manifests reference two ONNX files and
-///    need a different multipart shape.
-/// 3. Rename the uploaded `.onnx` to the filename the manifest
-///    declares in `models.model`. The client is free to ship the
-///    binary with any user-facing name; the manifest is the canonical
-///    layout the watcher rebuilds from.
-/// 4. Run `from_manifest_with_sidecar` + `build_adapter` — this exercises
-///    the same loader the hot-reload watcher will use after promote,
-///    including the 5-second wall-clock budget around `tract`. If
-///    anything fails here, nothing in `models/` has changed yet.
-/// 5. SHA-256 both files and snapshot the `Inference` state for the
-///    audit detail body before we mutate anything shared.
-/// 6. Under `PromoteLock`, rename ONNX first, optional sidecar second,
-///    manifest last. The manifest is the watcher's commit marker —
-///    by landing it last we avoid the window where the watcher reads
-///    a manifest that points at a not-yet-renamed ONNX.
-/// 7. Publish a WORM `model_swap` audit event. Failure to publish is
-///    logged but does not roll back the rename; the chain prefers a
-///    missing audit entry to a rolled-back promote that a downstream
-///    subscriber may already have reacted to.
-struct PromoteContext<'a> {
-    staging_dir: &'a Path,
-    summary: &'a UploadSummary,
-    inference: &'a Inference,
-    audit_tx: &'a broadcast::Sender<AuditEvent>,
-    promote_lock: &'a PromoteGate,
-    actor_username: &'a str,
-    batch_size: usize,
-    onnx_load_timeout: Duration,
+pub fn looks_like_zip(first_chunk: &[u8]) -> bool {
+    first_chunk.starts_with(b"PK")
 }
 
-async fn validate_and_promote(ctx: &PromoteContext<'_>) -> Result<PromoteReport, PromoteError> {
-    let staging_dir = ctx.staging_dir;
-    let summary = ctx.summary;
-    let inference = ctx.inference;
-    let audit_tx = ctx.audit_tx;
-    let promote_lock = ctx.promote_lock;
-    let actor_username = ctx.actor_username;
-    let batch_size = ctx.batch_size;
-    let onnx_load_timeout = ctx.onnx_load_timeout;
-    let staging_manifest = staging_dir.join(MANIFEST_FILENAME);
-
-    // Structural manifest validation. The full `build_adapter` pipeline
-    // below will revisit this via `from_manifest_with_sidecar`, but a
-    // cheap up-front `load` surfaces manifest-only problems (bad YAML,
-    // unknown feature, missing `models.model`) before we rename anything.
-    let manifest_preview =
-        ModelManifest::load(&staging_manifest).map_err(|e| PromoteError::ManifestInvalid(e.to_string()))?;
-
-    if matches!(manifest_preview.adapter, AdapterKind::MultiTask) {
-        return Err(PromoteError::UnsupportedAdapter);
-    }
-
-    let declared_onnx = manifest_preview
-        .models
-        .model
-        .clone()
-        .ok_or_else(|| PromoteError::ManifestInvalid("single-onnx adapters require models.model".to_string()))?;
-    validate_manifest_basename("models.model", &declared_onnx)?;
-    if let Some(ref pp) = manifest_preview.preprocessing {
-        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
-    }
-
-    let uploaded_onnx = staging_dir.join(&summary.onnx_filename);
-    let staged_onnx = staging_dir.join(&declared_onnx);
-    if uploaded_onnx != staged_onnx {
-        fs::rename(&uploaded_onnx, &staged_onnx)
-            .await
-            .map_err(|e| PromoteError::StagingIo(format!("rename staged onnx: {e}")))?;
-    }
-
-    // Full validate — sidecar reconciliation, ONNX shape vs manifest
-    // features, tract optimize+runnable under the 5s load budget.
-    let (config, manifest) = MLInferenceConfig::from_manifest_with_sidecar(&staging_manifest)
-        .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
-    let _adapter = build_adapter(
-        &manifest,
-        Some(&staging_manifest),
-        &config,
-        batch_size,
-        onnx_load_timeout,
-    )
-    .map_err(|e| PromoteError::ValidationFailed(e.to_string()))?;
-
-    let manifest_sha256 = sha256_file(&staging_manifest)
-        .await
-        .map_err(|e| PromoteError::StagingIo(format!("sha256 manifest: {e}")))?;
-    let onnx_sha256 = sha256_file(&staged_onnx)
-        .await
-        .map_err(|e| PromoteError::StagingIo(format!("sha256 onnx: {e}")))?;
-
-    let before_status = inference.model_source_status();
-
-    let models_dir = PathBuf::from(MODELS_DIR);
-    let target_onnx = models_dir.join(&declared_onnx);
-    let target_manifest = models_dir.join(MANIFEST_FILENAME);
-    let staged_sidecar = if let Some(ref pp) = manifest.preprocessing {
-        validate_manifest_basename("preprocessing.scaler_sidecar", &pp.scaler_sidecar)?;
-        Some(staging_dir.join(&pp.scaler_sidecar))
-    } else {
-        None
+fn promote_error_response(error: PromoteError) -> HttpResponse {
+    let (status, code, category, message, hint) = match error {
+        PromoteError::ManifestInvalid { err } => (
+            422,
+            "manifest_invalid",
+            "schema",
+            format!("manifest invalid: {err}"),
+            "Fix manifest.yaml and validate the bundle again.",
+        ),
+        PromoteError::ValidationFailed { err } => (
+            422,
+            "model_validation_failed",
+            "runtime_contract",
+            format!("model failed validation: {err}"),
+            "Check manifest, sidecar, feature order, and ONNX runtime contract.",
+        ),
+        PromoteError::StagingIo { operation, err } => (
+            500,
+            "staging_io_failed",
+            "storage",
+            format!("staging io error during {operation}: {err}"),
+            "Check server storage permissions and available space.",
+        ),
+        PromoteError::PromoteIo { operation, err } => (
+            500,
+            "promotion_io_failed",
+            "storage",
+            format!("promote io error during {operation}: {err}"),
+            "Check server storage permissions and retry promotion.",
+        ),
+        PromoteError::AuditDetailSerialize { err } => (
+            500,
+            "audit_detail_serialize_failed",
+            "audit",
+            format!("audit detail serialization failed: {err}"),
+            "Retry after checking server logs.",
+        ),
+        PromoteError::AuditWrite { err } => (
+            500,
+            "audit_write_failed",
+            "audit",
+            format!("required audit write failed: {err}"),
+            "Promotion requires audit persistence; check database health.",
+        ),
+        PromoteError::ConcurrentPromote => (
+            409,
+            "concurrent_promote",
+            "concurrency",
+            "another model promote is already in progress".to_string(),
+            "Wait for the current promotion to finish and retry.",
+        ),
+        PromoteError::ConcurrentValidation => (
+            409,
+            "concurrent_validation",
+            "concurrency",
+            "another model validation is already in progress".to_string(),
+            "Wait for the current validation to finish and retry.",
+        ),
     };
-    let target_sidecar = manifest
-        .preprocessing
-        .as_ref()
-        .map(|pp| models_dir.join(&pp.scaler_sidecar));
-
-    let _guard = promote_lock.try_acquire().ok_or(PromoteError::ConcurrentPromote)?;
-    let backup_dir = models_dir.join(format!(".promote-backup-{}", Uuid::new_v4()));
-    promote_files_atomically(&PromoteFileSet {
-        staging_manifest: staging_manifest.clone(),
-        staged_onnx,
-        staged_sidecar,
-        target_manifest,
-        target_onnx,
-        target_sidecar,
-        backup_dir,
-    })
-    .await?;
-    drop(_guard);
-
-    let audit_detail = serde_json::json!({
-        "manifest_name": manifest.name,
-        "adapter_kind": manifest.adapter.as_str(),
-        "manifest_sha256": manifest_sha256,
-        "onnx_sha256": onnx_sha256,
-        "before": serde_json::to_value(&before_status).unwrap_or(JsonValue::Null),
-    })
-    .to_string();
-    let _ = audit_tx.send(AuditEvent {
-        actor: format!("{AUDIT_ACTOR_SECURITY_ADMIN_PREFIX}@{actor_username}"),
-        action: AUDIT_ACTION_MODEL_SWAP.to_string(),
-        detail: audit_detail,
-    });
-
-    Ok(PromoteReport {
-        manifest_name: manifest.name,
-        adapter_kind: manifest.adapter.as_str().to_string(),
-        manifest_sha256,
-        onnx_sha256,
-    })
-}
-
-struct PromoteFileSet {
-    staging_manifest: PathBuf,
-    staged_onnx: PathBuf,
-    staged_sidecar: Option<PathBuf>,
-    target_manifest: PathBuf,
-    target_onnx: PathBuf,
-    target_sidecar: Option<PathBuf>,
-    backup_dir: PathBuf,
-}
-
-async fn promote_files_atomically(files: &PromoteFileSet) -> Result<(), PromoteError> {
-    fs::create_dir_all(&files.backup_dir)
-        .await
-        .map_err(|e| PromoteError::PromoteIo(format!("create promote backup dir: {e}")))?;
-
-    let backup_manifest = backup_existing(&files.target_manifest, &files.backup_dir, "manifest.yaml").await?;
-    let backup_onnx = backup_existing(&files.target_onnx, &files.backup_dir, "model.onnx").await?;
-    let backup_sidecar = match &files.target_sidecar {
-        Some(target) => Some(backup_existing(target, &files.backup_dir, "sidecar").await?),
-        None => None,
-    };
-
-    let result = async {
-        move_file(&files.staged_onnx, &files.target_onnx, "rename onnx into models/").await?;
-        if let (Some(src), Some(dst)) = (&files.staged_sidecar, &files.target_sidecar) {
-            move_file(src, dst, "rename sidecar into models/").await?;
-        }
-        move_file(
-            &files.staging_manifest,
-            &files.target_manifest,
-            "rename manifest into models/",
-        )
-        .await
-    }
-    .await;
-
-    match result {
-        Ok(()) => {
-            let _ = fs::remove_dir_all(&files.backup_dir).await;
-            Ok(())
-        }
-        Err(err) => {
-            rollback_promote(files, backup_manifest, backup_onnx, backup_sidecar).await;
-            let _ = fs::remove_dir_all(&files.backup_dir).await;
-            Err(err)
-        }
-    }
-}
-
-async fn backup_existing(target: &Path, backup_dir: &Path, backup_name: &str) -> Result<Option<PathBuf>, PromoteError> {
-    if !target
-        .try_exists()
-        .map_err(|e| PromoteError::PromoteIo(format!("check existing target {}: {e}", target.display())))?
-    {
-        return Ok(None);
-    }
-    let backup = backup_dir.join(backup_name);
-    fs::rename(target, &backup)
-        .await
-        .map_err(|e| PromoteError::PromoteIo(format!("backup existing target {}: {e}", target.display())))?;
-    Ok(Some(backup))
-}
-
-async fn move_file(src: &Path, dst: &Path, op: &str) -> Result<(), PromoteError> {
-    fs::rename(src, dst)
-        .await
-        .map_err(|e| PromoteError::PromoteIo(format!("{op}: {e}")))
-}
-
-async fn rollback_promote(
-    files: &PromoteFileSet,
-    backup_manifest: Option<PathBuf>,
-    backup_onnx: Option<PathBuf>,
-    backup_sidecar: Option<Option<PathBuf>>,
-) {
-    remove_if_exists(&files.target_manifest).await;
-    remove_if_exists(&files.target_onnx).await;
-    if let Some(target) = &files.target_sidecar {
-        remove_if_exists(target).await;
-    }
-    restore_backup(backup_manifest, &files.target_manifest).await;
-    restore_backup(backup_onnx, &files.target_onnx).await;
-    if let (Some(backup), Some(target)) = (backup_sidecar.flatten(), &files.target_sidecar) {
-        restore_backup(Some(backup), target).await;
-    }
-}
-
-async fn remove_if_exists(path: &Path) {
-    if let Ok(true) = path.try_exists() {
-        let _ = fs::remove_file(path).await;
-    }
-}
-
-async fn restore_backup(backup: Option<PathBuf>, target: &Path) {
-    if let Some(backup) = backup {
-        let _ = fs::rename(backup, target).await;
-    }
-}
-
-/// Metadata surfaced back to the client when the promote succeeds.
-#[derive(Debug)]
-struct PromoteReport {
-    manifest_name: String,
-    adapter_kind: String,
-    manifest_sha256: String,
-    onnx_sha256: String,
-}
-
-/// Validation / promote error taxonomy. Distinct from `UploadError` so
-/// the two stages produce different HTTP status codes: staging-ingest
-/// failures are typically client-facing (400/413), while validation
-/// and rename failures are server-side (422/500).
-#[derive(Debug)]
-enum PromoteError {
-    ManifestInvalid(String),
-    ValidationFailed(String),
-    UnsupportedAdapter,
-    StagingIo(String),
-    PromoteIo(String),
-    ConcurrentPromote,
-}
-
-impl PromoteError {
-    fn into_response(self) -> HttpResponse {
-        let (status, message) = match self {
-            Self::ManifestInvalid(err) => (422, format!("manifest invalid: {err}")),
-            Self::ValidationFailed(err) => (422, format!("model failed validation: {err}")),
-            Self::UnsupportedAdapter => (
-                422,
-                "multi_task adapter is not supported by the v1 upload flow — \
-                 submit an autoencoder_only or classifier_only manifest"
-                    .to_string(),
-            ),
-            Self::StagingIo(err) => (500, format!("staging io error: {err}")),
-            Self::PromoteIo(err) => (500, format!("promote io error: {err}")),
-            Self::ConcurrentPromote => (409, "another model promote is already in progress".to_string()),
-        };
-        let body = serde_json::json!({ "error": message });
-        match status {
-            422 => HttpResponse::UnprocessableEntity().json(body),
-            409 => HttpResponse::Conflict().json(body),
-            _ => HttpResponse::InternalServerError().json(body),
-        }
-    }
-}
-
-/// Read `path` in 64KB chunks and return its SHA-256 hex digest.
-/// Offloaded to `spawn_blocking` so a large ONNX can't stall the
-/// actix worker while the hash computes.
-async fn sha256_file(path: &Path) -> io::Result<String> {
-    let path = path.to_path_buf();
-    task::spawn_blocking(move || -> io::Result<String> {
-        let mut file = StdFile::open(&path)?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        let out = hasher.finalize();
-        let mut hex = String::with_capacity(64);
-        for byte in out {
-            use std::fmt::Write;
-            // SAFETY: write! on a String is infallible.
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        Ok(hex)
-    })
-    .await
-    .unwrap_or_else(|e| Err(io::Error::other(format!("sha256 join: {e}"))))
+    structured_error_response(status, code, category, message, hint)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs as stdfs;
     use std::time::Duration;
 
+    use sha2::{Digest, Sha256};
+
     use super::*;
-    use crate::utils::staging::clean_staging_orphans;
+    use crate::adapter::model_promotion_store::FsModelPromotionStore;
+    use crate::core::inference::model_promotion::{PromoteArtifact, PromoteFileSet, promote_files_atomically};
+    use crate::infrastructure::staging_cleanup::clean_staging_orphans;
+    use crate::interface::detection::model_promotion_store::ModelPromotionStore;
 
     #[test]
     fn onnx_sniff_rejects_empty() {
@@ -828,24 +621,26 @@ mod tests {
 
     #[test]
     fn onnx_sniff_rejects_plain_text() {
-        // A YAML or plain-text payload that ended up in the wrong field.
         assert!(!looks_like_onnx(b"name: wrong-file\nkind: yaml\n"));
         assert!(!looks_like_onnx(b"PK\x03\x04"));
     }
 
     #[test]
     fn onnx_sniff_accepts_varint_tag_prefix() {
-        // `0x08` = tag field 1, wire-type varint (ir_version). Real ONNX
-        // files commonly open with this.
         let buf = [0x08u8, 0x07, 0x12, 0x0a, 0x70, 0x79, 0x74, 0x6f, 0x72, 0x63, 0x68, 0x00];
         assert!(looks_like_onnx(&buf));
     }
 
     #[test]
     fn onnx_sniff_accepts_length_delimited_tag() {
-        // `0x0a` = tag field 1, wire-type length-delimited. Also valid.
         let buf = [0x0au8, 0x10, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
         assert!(looks_like_onnx(&buf));
+    }
+
+    #[test]
+    fn zip_sniff_accepts_local_file_header() {
+        assert!(looks_like_zip(b"PK\x03\x04"));
+        assert!(!looks_like_zip(b"name: not-a-zip"));
     }
 
     #[test]
@@ -853,6 +648,7 @@ mod tests {
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("subdir/model.onnx"), "model.onnx");
         assert_eq!(sanitize_filename("/abs/path/classifier.onnx"), "classifier.onnx");
+        assert_eq!(sanitize_filename(r"C:\fakepath\model.onnx"), "model.onnx");
     }
 
     #[test]
@@ -863,16 +659,31 @@ mod tests {
     }
 
     #[test]
+    fn reserve_upload_filename_rejects_manifest_collision() {
+        let mut used = vec![MANIFEST_FILENAME.to_string()];
+
+        let err = reserve_upload_filename(&mut used, MANIFEST_FILENAME).expect_err("manifest filename is reserved");
+
+        assert!(matches!(err, UploadError::FilenameConflict(name) if name == MANIFEST_FILENAME));
+    }
+
+    #[test]
+    fn reserve_upload_filename_rejects_duplicate_artifact_filenames() {
+        let mut used = vec![MANIFEST_FILENAME.to_string()];
+
+        reserve_upload_filename(&mut used, "model.onnx").expect("first artifact name is unique");
+        let err = reserve_upload_filename(&mut used, "model.onnx").expect_err("artifact names must be unique");
+
+        assert!(matches!(err, UploadError::FilenameConflict(name) if name == "model.onnx"));
+    }
+
+    #[test]
     fn orphan_cleanup_removes_every_dir_when_max_age_is_zero() {
-        // A zero-length max age declares every existing entry stale, so
-        // the helper must sweep all of them. Portable without touching
-        // filesystem mtime APIs.
-        let tmp = std::env::temp_dir().join(format!("nguardia-staging-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::create_dir_all(tmp.join("abandoned-1")).unwrap();
-        std::fs::create_dir_all(tmp.join("abandoned-2")).unwrap();
-        // A file (not a dir) should be ignored by the sweep.
-        std::fs::write(tmp.join("sidecar.log"), b"noise").unwrap();
+        let tmp = env::temp_dir().join(format!("nguardia-staging-test-{}", Uuid::new_v4()));
+        stdfs::create_dir_all(&tmp).unwrap();
+        stdfs::create_dir_all(tmp.join("abandoned-1")).unwrap();
+        stdfs::create_dir_all(tmp.join("abandoned-2")).unwrap();
+        stdfs::write(tmp.join("sidecar.log"), b"noise").unwrap();
 
         let cleaned = clean_staging_orphans(&tmp, Duration::ZERO).unwrap();
         assert_eq!(cleaned, 2);
@@ -880,22 +691,20 @@ mod tests {
         assert!(!tmp.join("abandoned-2").exists());
         assert!(tmp.join("sidecar.log").exists(), "non-directory entries must survive");
 
-        std::fs::remove_dir_all(&tmp).ok();
+        stdfs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn orphan_cleanup_preserves_fresh_directories() {
-        // With a generous max_age, a freshly-created directory must not
-        // be touched — the positive case of the time-guard.
-        let tmp = std::env::temp_dir().join(format!("nguardia-staging-fresh-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::create_dir_all(tmp.join("recent")).unwrap();
+        let tmp = env::temp_dir().join(format!("nguardia-staging-fresh-{}", Uuid::new_v4()));
+        stdfs::create_dir_all(&tmp).unwrap();
+        stdfs::create_dir_all(tmp.join("recent")).unwrap();
 
         let cleaned = clean_staging_orphans(&tmp, Duration::from_secs(3600)).unwrap();
         assert_eq!(cleaned, 0);
         assert!(tmp.join("recent").exists());
 
-        std::fs::remove_dir_all(&tmp).ok();
+        stdfs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
@@ -907,65 +716,62 @@ mod tests {
 
     #[tokio::test]
     async fn sha256_file_produces_known_hex_digest() {
-        // Canonical NIST-style empty-string vector: the SHA-256 of the
-        // empty byte sequence is the hex digest below. Asserting the
-        // concrete value guards against a silently-swapped hash impl.
-        let tmp = std::env::temp_dir().join(format!("nguardia-sha256-empty-{}", Uuid::new_v4()));
-        std::fs::write(&tmp, b"").unwrap();
-        let hex = sha256_file(&tmp).await.expect("hash empty file");
+        let tmp = env::temp_dir().join(format!("nguardia-sha256-empty-{}", Uuid::new_v4()));
+        stdfs::write(&tmp, b"").unwrap();
+        let store = FsModelPromotionStore;
+        let hex = store.sha256_file(&tmp).await.expect("hash empty file");
         assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        std::fs::remove_file(&tmp).ok();
+        stdfs::remove_file(&tmp).ok();
     }
 
     #[tokio::test]
     async fn sha256_file_hex_matches_multi_chunk_content() {
-        // A payload larger than the 64KB internal read buffer so the
-        // chunk-loop path actually executes; "abc" repeated until > 64KB.
-        let tmp = std::env::temp_dir().join(format!("nguardia-sha256-bulk-{}", Uuid::new_v4()));
+        let tmp = env::temp_dir().join(format!("nguardia-sha256-bulk-{}", Uuid::new_v4()));
         let payload = "abc".repeat(30_000);
-        std::fs::write(&tmp, payload.as_bytes()).unwrap();
-        let hex = sha256_file(&tmp).await.expect("hash large file");
+        stdfs::write(&tmp, payload.as_bytes()).unwrap();
+        let store = FsModelPromotionStore;
+        let hex = store.sha256_file(&tmp).await.expect("hash large file");
         let mut hasher = Sha256::new();
         hasher.update(payload.as_bytes());
         let expected = hasher.finalize();
         let expected_hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(hex, expected_hex);
-        std::fs::remove_file(&tmp).ok();
+        stdfs::remove_file(&tmp).ok();
     }
 
     #[test]
     fn promote_error_validation_failure_maps_to_422() {
-        let resp = PromoteError::ValidationFailed("shape mismatch".into()).into_response();
+        let resp = promote_error_response(PromoteError::ValidationFailed("shape mismatch"));
         assert_eq!(resp.status().as_u16(), 422);
     }
 
     #[test]
-    fn promote_error_manifest_invalid_maps_to_422() {
-        let resp = PromoteError::ManifestInvalid("bad yaml".into()).into_response();
-        assert_eq!(resp.status().as_u16(), 422);
-    }
-
-    #[test]
-    fn promote_error_unsupported_adapter_maps_to_422() {
-        let resp = PromoteError::UnsupportedAdapter.into_response();
+    fn promote_error_invalid_manifest_maps_to_422() {
+        let resp = promote_error_response(PromoteError::ManifestInvalid("bad yaml"));
         assert_eq!(resp.status().as_u16(), 422);
     }
 
     #[test]
     fn promote_error_staging_io_maps_to_500() {
-        let resp = PromoteError::StagingIo("disk full".into()).into_response();
+        let resp = promote_error_response(PromoteError::StagingIo("write upload", "disk full"));
         assert_eq!(resp.status().as_u16(), 500);
     }
 
     #[test]
     fn promote_error_promote_io_maps_to_500() {
-        let resp = PromoteError::PromoteIo("rename failed".into()).into_response();
+        let resp = promote_error_response(PromoteError::PromoteIo("rename active model", "rename failed"));
+        assert_eq!(resp.status().as_u16(), 500);
+    }
+
+    #[test]
+    fn promote_error_audit_detail_serialize_maps_to_500() {
+        let resp = promote_error_response(PromoteError::AuditDetailSerialize("status"));
         assert_eq!(resp.status().as_u16(), 500);
     }
 
     #[tokio::test]
     async fn promote_files_rolls_back_active_files_when_sidecar_move_fails() {
-        let tmp = std::env::temp_dir().join(format!("nguardia-promote-rollback-{}", Uuid::new_v4()));
+        let tmp = env::temp_dir().join(format!("nguardia-promote-rollback-{}", Uuid::new_v4()));
         let staging = tmp.join("staging");
         let models = tmp.join("models");
         let backup = models.join(".promote-backup-test");
@@ -985,19 +791,35 @@ mod tests {
         fs::write(&target_onnx, b"old onnx").await.unwrap();
         fs::write(&target_sidecar, b"old sidecar").await.unwrap();
 
-        let err = promote_files_atomically(&PromoteFileSet {
-            staging_manifest: staging_manifest.clone(),
-            staged_onnx,
-            staged_sidecar: Some(missing_sidecar),
-            target_manifest: target_manifest.clone(),
-            target_onnx: target_onnx.clone(),
-            target_sidecar: Some(target_sidecar.clone()),
-            backup_dir: backup,
-        })
+        let store = FsModelPromotionStore;
+        let err = promote_files_atomically(
+            &store,
+            &PromoteFileSet {
+                staging_manifest: staging_manifest.clone(),
+                artifacts: vec![
+                    PromoteArtifact {
+                        file: "model.onnx".to_string(),
+                        kind: "onnx".to_string(),
+                        staged: staged_onnx,
+                        target: target_onnx.clone(),
+                        backup_name: "artifact-0-model.onnx".to_string(),
+                    },
+                    PromoteArtifact {
+                        file: "scaler.json".to_string(),
+                        kind: "sidecar".to_string(),
+                        staged: missing_sidecar,
+                        target: target_sidecar.clone(),
+                        backup_name: "artifact-1-scaler.json".to_string(),
+                    },
+                ],
+                target_manifest: target_manifest.clone(),
+                backup_dir: backup,
+            },
+        )
         .await
         .expect_err("missing sidecar should fail promote");
 
-        assert!(matches!(err, PromoteError::PromoteIo(_)));
+        assert!(matches!(err, PromoteError::PromoteIo { .. }));
         assert_eq!(fs::read(&target_manifest).await.unwrap(), b"old manifest");
         assert_eq!(fs::read(&target_onnx).await.unwrap(), b"old onnx");
         assert_eq!(fs::read(&target_sidecar).await.unwrap(), b"old sidecar");
@@ -1013,9 +835,6 @@ mod tests {
 
     #[test]
     fn upload_error_onnx_too_large_echoes_configured_cap_in_message() {
-        // Dynamic cap from config must reach the client verbatim — this
-        // guards against a future refactor that silently drops the cap
-        // from the format string.
         let rendered = format!("{:?}", UploadError::OnnxTooLarge(7_000_000));
         assert!(
             rendered.contains("7000000"),

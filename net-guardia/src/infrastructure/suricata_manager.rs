@@ -1,16 +1,4 @@
-//! Suricata subprocess manager — M1 scope.
-//!
-//! Responsibilities:
-//! - Spawn Suricata as a child process bound to the ingress interface via AF_PACKET,
-//!   writing eve.json to the configured log path.
-//! - Track liveness; update `SuricataHealth` shared state.
-//! - On crash, restart with configured backoff (if enabled in config).
-//! - On shutdown signal, send SIGTERM first then wait briefly, then SIGKILL
-//!   if the child still hasn't exited.
-//!
-//! M2 will add eve.json tail + parse; M3 will add SOAR translation. This module
-//! does not read eve.json itself — downstream consumers tail the log path.
-
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,13 +7,15 @@ use arc_swap::ArcSwap;
 use macros::log;
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
+use crate::common::error::Error;
+use crate::common::error::suricata::SuricataError;
+use crate::common::log::suricata::SuricataLog;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::error::Error;
-use crate::domain::common::system::suricata::SuricataHealth;
-use crate::domain::detection::error::SuricataError;
-use crate::domain::detection::log::SuricataLog;
+use crate::domain::detection::suricata_health::SuricataHealth;
+use crate::interface::system::health_query::SuricataHealthQuery;
 
 pub struct SuricataManager {
     config: Arc<ArcSwap<AppConfig>>,
@@ -47,31 +37,26 @@ impl SuricataManager {
         })
     }
 
-    /// Shared handle for HTTP handlers and the health broadcast.
-    pub fn health(&self) -> Arc<ArcSwap<SuricataHealth>> {
-        self.health.clone()
-    }
-
-    /// Supervisor loop. Returns a `oneshot::Sender` — dropping or sending on it
-    /// initiates graceful shutdown (SIGTERM → wait → SIGKILL).
-    pub fn run(self: Arc<Self>) -> oneshot::Sender<()> {
+    pub fn run(self: Arc<Self>) -> (oneshot::Sender<()>, JoinHandle<()>) {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         if !self.config.load().suricata.enabled {
             log!(SuricataLog::Disabled);
-            return shutdown_tx;
+            let handle = tokio::spawn(async move {
+                let _ = shutdown_rx.await;
+            });
+            return (shutdown_tx, handle);
         }
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             self.supervisor_loop(shutdown_rx).await;
         });
 
-        shutdown_tx
+        (shutdown_tx, handle)
     }
 
     async fn supervisor_loop(self: Arc<Self>, mut shutdown_rx: oneshot::Receiver<()>) {
         loop {
-            // Pre-flight: validate binary + config exist before spawning.
             if let Err(e) = Self::preflight(&self.config) {
                 self.health
                     .store(Arc::new(SuricataHealth::Stopped { reason: e.to_string() }));
@@ -152,7 +137,6 @@ impl SuricataManager {
             .arg("--af-packet")
             .arg(iface)
             .arg("-l")
-            // Log dir is the parent of the configured eve.json path.
             .arg(
                 Path::new(&sc.eve_log_path)
                     .parent()
@@ -161,23 +145,33 @@ impl SuricataManager {
             )
             .kill_on_drop(true);
 
-        cmd.spawn().map_err(|e| SuricataError::SpawnFailed(e).into())
+        let child = cmd.spawn().map_err(SuricataError::SpawnFailed)?;
+        Ok(child)
     }
 
-    /// Send SIGTERM, wait up to 5s, then SIGKILL if still alive.
     async fn graceful_stop(child: &mut Child) {
         if let Some(pid) = child.id() {
             // SAFETY: SIGTERM to a known child pid. pid was obtained from tokio::process::Child
-            // and is valid as long as we haven't reaped it, which we haven't.
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            if ret != 0 {
+                log!(SuricataLog::ShutdownSignalFailed(
+                    io::Error::last_os_error().to_string(),
+                ));
             }
         }
         match timeout(Duration::from_secs(5), child.wait()).await {
             Ok(_) => {}
             Err(_) => {
-                let _ = child.kill().await;
+                if let Err(err) = child.kill().await {
+                    log!(SuricataLog::ShutdownKillFailed(err.to_string()));
+                }
             }
         }
+    }
+}
+
+impl SuricataHealthQuery for SuricataManager {
+    fn get_suricata_health(&self) -> SuricataHealth {
+        (**self.health.load()).clone()
     }
 }

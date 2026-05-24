@@ -7,22 +7,11 @@ use actix_web::{Error as ActixError, FromRequest, HttpMessage, HttpRequest};
 
 use crate::domain::identity::auth::Claims;
 
-/// Actix-web extractor that pulls `Claims` from request extensions.
-///
-/// The `AuthMiddleware` validates JWT/API key and stores Claims in extensions.
-/// This extractor simply reads them out, returning 401 if missing.
-///
-/// Usage:
-/// ```ignore
-/// async fn handler(auth: AuthClaims, ...) -> HttpResponse {
-///     let user_id = auth.sub;
-///     // ...
-/// }
-/// ```
 pub struct AuthClaims(pub Claims);
 
 impl Deref for AuthClaims {
     type Target = Claims;
+
     fn deref(&self) -> &Self::Target {
         &self.0
     }

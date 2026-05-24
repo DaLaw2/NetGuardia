@@ -13,12 +13,17 @@ mod user;
 use std::env;
 
 use async_sqlite::{Client, ClientBuilder};
+use hkdf::Hkdf;
 use macros::log;
 use rusqlite::{self, Connection, params};
+use sha2::Sha256;
 
-use crate::domain::common::error::Error;
-use crate::domain::common::error::database::DatabaseError;
-use crate::domain::common::log::misc::MiscLog;
+use crate::common::error::Error;
+use crate::common::error::codec::CodecError;
+use crate::common::error::crypto::CryptoError;
+use crate::common::error::database::DatabaseError;
+use crate::common::log::crypto::CryptoLog;
+use crate::domain::identity::auth::{ADMIN_PERMISSIONS, GROUP_ADMIN, GROUP_VIEWER, VIEWER_PERMISSIONS};
 
 impl From<rusqlite::Error> for DatabaseError {
     fn from(e: rusqlite::Error) -> Self {
@@ -37,10 +42,7 @@ impl From<async_sqlite::Error> for Error {
         Self::Database(DatabaseError::QueryFailed(e))
     }
 }
-use crate::domain::identity::auth::{ADMIN_PERMISSIONS, GROUP_ADMIN, GROUP_VIEWER, VIEWER_PERMISSIONS};
 
-/// Reads the SQLCipher encryption key from the environment variable `NETGUARDIA_DB_KEY`.
-/// Returns `Some(key)` if set and non-empty, `None` otherwise (dev / unencrypted mode).
 fn db_encryption_key() -> Option<String> {
     match env::var("NETGUARDIA_DB_KEY") {
         Ok(k) if !k.is_empty() => Some(k),
@@ -50,8 +52,6 @@ fn db_encryption_key() -> Option<String> {
 
 pub struct Database {
     pool: Client,
-    /// HMAC-SHA256 key for API key hashing, derived from NETGUARDIA_SECRETS_KEY.
-    api_key_hmac: [u8; 32],
 }
 
 impl Database {
@@ -59,7 +59,7 @@ impl Database {
         let encryption_key = db_encryption_key();
 
         if path != ":memory:" && encryption_key.is_none() {
-            log!(MiscLog::DbEncryptionDisabled);
+            log!(CryptoLog::DbEncryptionDisabled);
         }
 
         let builder = if path == ":memory:" {
@@ -84,47 +84,33 @@ impl Database {
         })
         .await
         .map_err(DatabaseError::QueryFailed)?;
-
-        // Verify the pool is actually usable (catches wrong key / corrupt DB early).
         pool.conn(|conn| conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())))
             .await
             .map_err(|_| DatabaseError::EncryptionKeyInvalid)?;
 
-        let api_key_hmac = Self::derive_api_key_hmac();
-        let db = Self { pool, api_key_hmac };
+        let db = Self { pool };
         db.create_tables().await?;
         Ok(db)
     }
 
-    /// Derive HMAC-SHA256 key for API key hashing from NETGUARDIA_SECRETS_KEY.
-    /// Falls back to a static dev key if the env var is unset.
-    fn derive_api_key_hmac() -> [u8; 32] {
-        use hkdf::Hkdf;
-        use sha2::Sha256;
-
-        let root_key = env::var("NETGUARDIA_SECRETS_KEY")
-            .ok()
-            .filter(|k| !k.is_empty())
-            .or_else(|| env::var("NETGUARDIA_DB_KEY").ok().filter(|k| !k.is_empty()))
-            .unwrap_or_else(|| "netguardia-dev-api-key-secret".to_string());
-
+    pub fn derive_api_key_hmac(path: &str) -> Result<[u8; 32], Error> {
+        let encryption_key = db_encryption_key();
+        let root_key = api_key_hmac_root_key(path, encryption_key.as_deref())?;
         let hk = Hkdf::<Sha256>::new(Some(b"netguardia-v1-salt"), root_key.as_bytes());
         let mut okm = [0u8; 32];
-        // SAFETY: 32 bytes is a valid output length for HKDF-SHA256
-        hk.expand(b"netguardia-apikey-hmac-v1", &mut okm).unwrap();
-        okm
+        if hk.expand(b"netguardia-apikey-hmac-v1", &mut okm).is_err() {
+            // SAFETY: HKDF-SHA256 accepts 32-byte output keys.
+            unreachable!("HKDF-SHA256 accepts 32-byte output keys");
+        }
+        Ok(okm)
     }
 
-    /// Export an encrypted database to a plaintext copy.
-    /// The original file is NOT modified.
     pub fn decrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
         let conn = Connection::open(src_path).map_err(DatabaseError::QueryFailed)?;
         conn.pragma_update(None, "key", key)
             .map_err(DatabaseError::QueryFailed)?;
-        // Verify we can read the encrypted DB
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
             .map_err(|_| DatabaseError::DatabaseNotReadable)?;
-        // Attach a plaintext destination (empty key = no encryption)
         conn.execute("ATTACH DATABASE ?1 AS plaintext KEY '';", params![dest_path])
             .map_err(DatabaseError::QueryFailed)?;
         conn.query_row("SELECT sqlcipher_export('plaintext')", [], |_| Ok(()))
@@ -134,11 +120,8 @@ impl Database {
         Ok(())
     }
 
-    /// Encrypt a plaintext database to a new encrypted copy.
-    /// The original file is NOT modified.
     pub fn encrypt_to_file(src_path: &str, key: &str, dest_path: &str) -> Result<(), Error> {
         let conn = Connection::open(src_path).map_err(DatabaseError::QueryFailed)?;
-        // Verify it's readable as plaintext
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
             .map_err(|_| DatabaseError::SourceDatabaseNotReadable)?;
         conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2;", params![dest_path, key])
@@ -300,7 +283,9 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_ip TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                retry_count INTEGER NOT NULL DEFAULT 0
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                exhausted_at TEXT,
+                last_error TEXT
             );
 
             -- Audit trail (WORM: hash-chained, triggers block UPDATE/DELETE)
@@ -316,6 +301,13 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_audit_log_action
                 ON audit_log(action, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_audit_log_action_ts
+                ON audit_log(action, ts);
+
+            CREATE INDEX IF NOT EXISTS idx_audit_log_fusion_src_ip
+                ON audit_log(json_extract(detail, '$.src_ip'), id ASC)
+                WHERE action = 'fused_threat_emitted' AND json_valid(detail);
 
             CREATE INDEX IF NOT EXISTS idx_soar_block_active_expires
                 ON soar_block_rules(expires_at)
@@ -355,27 +347,12 @@ impl Database {
         ",
                 )?;
 
-                if !Self::column_exists(conn, "soar_block_rules", "created_acl_rule")? {
-                    conn.execute(
-                        "ALTER TABLE soar_block_rules ADD COLUMN created_acl_rule INTEGER NOT NULL DEFAULT 1",
-                        [],
-                    )?;
-                }
-                if !Self::column_exists(conn, "soar_block_rules", "preserve_acl_on_unblock")? {
-                    conn.execute(
-                        "ALTER TABLE soar_block_rules ADD COLUMN preserve_acl_on_unblock INTEGER NOT NULL DEFAULT 0",
-                        [],
-                    )?;
-                }
-
-                Self::migrate_legacy_settings_state(conn)?;
-
                 let group_count: i64 = conn.query_row("SELECT COUNT(*) FROM user_groups", [], |row| row.get(0))?;
                 if group_count == 0 {
                     let all_permissions =
-                        serde_json::to_string(&ADMIN_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+                        serde_json::to_string(&ADMIN_PERMISSIONS).map_err(CodecError::SerializeFailed)?;
                     let viewer_permissions =
-                        serde_json::to_string(&VIEWER_PERMISSIONS).unwrap_or_else(|_| "[]".to_string());
+                        serde_json::to_string(&VIEWER_PERMISSIONS).map_err(CodecError::SerializeFailed)?;
 
                     conn.execute(
                         "INSERT INTO user_groups (name, description, permissions) VALUES (?1, ?2, ?3)",
@@ -391,85 +368,33 @@ impl Database {
             })
             .await
     }
+}
 
-    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, Error> {
-        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        for row in rows {
-            if row? == column {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+fn api_key_hmac_root_key(path: &str, encryption_key: Option<&str>) -> Result<String, Error> {
+    if let Some(key) = env::var("NETGUARDIA_SECRETS_KEY").ok().filter(|k| !k.is_empty()) {
+        return Ok(key);
     }
-
-    fn migrate_legacy_settings_state(conn: &Connection) -> Result<(), Error> {
-        conn.execute_batch(
-            "
-            INSERT OR IGNORE INTO system_state (key, value)
-                SELECT key, value FROM settings WHERE key = 'setup_complete';
-
-            INSERT OR IGNORE INTO report_snapshots (key, value)
-                SELECT key, value FROM settings
-                WHERE key IN (
-                    'weekly_threats_count',
-                    'weekly_top_ips',
-                    'weekly_threat_breakdown',
-                    'weekly_system_health',
-                    'system_uptime_percent',
-                    'active_rules_count',
-                    'weekly_geo_distribution',
-                    'weekly_soar_blocks',
-                    'weekly_soar_triggers',
-                    'weekly_soar_unblocks',
-                    'weekly_blocked_count'
-                );
-
-            INSERT OR IGNORE INTO login_attempts (username, failure_count)
-                SELECT substr(key, length('login_failures:') + 1), CAST(value AS INTEGER)
-                FROM settings
-                WHERE key LIKE 'login_failures:%';
-
-            INSERT INTO login_attempts (username, locked_until)
-                SELECT substr(key, length('login_locked_until:') + 1), CAST(value AS INTEGER)
-                FROM settings
-                WHERE key LIKE 'login_locked_until:%'
-                ON CONFLICT(username) DO UPDATE SET
-                    locked_until = COALESCE(login_attempts.locked_until, excluded.locked_until);
-
-            DELETE FROM settings
-            WHERE key = 'setup_complete'
-               OR key IN (
-                    'weekly_threats_count',
-                    'weekly_top_ips',
-                    'weekly_threat_breakdown',
-                    'weekly_system_health',
-                    'system_uptime_percent',
-                    'active_rules_count',
-                    'weekly_geo_distribution',
-                    'weekly_soar_blocks',
-                    'weekly_soar_triggers',
-                    'weekly_soar_unblocks',
-                    'weekly_blocked_count'
-               )
-               OR key LIKE 'login_failures:%'
-               OR key LIKE 'login_locked_until:%';
-            ",
-        )?;
-        Ok(())
+    if let Some(key) = encryption_key {
+        log!(CryptoLog::ApiKeyHmacUsingDbKey);
+        return Ok(key.to_string());
     }
+    if path == ":memory:" {
+        return Ok("netguardia-in-memory-test-api-key-secret".to_string());
+    }
+    Err(CryptoError::MasterKeyUnavailable)?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::domain::data_plane::direction::FlowDirection;
+    use crate::domain::data_plane::ip_version::IpVersion;
+    use crate::domain::data_plane::list_type::ListType;
+    use crate::interface::data_plane::acl::AclRepo;
+    use crate::interface::identity::auth_repo::UserRepo;
+    use crate::interface::system::config_repo::ConfigRepo;
 
-    use crate::interface::acl::AclRepo;
-    use crate::interface::config_repo::ConfigRepo;
-    use crate::interface::identity::UserRepo;
-
-    pub(super) async fn test_db() -> Database {
+    pub async fn test_db() -> Database {
         Database::new(":memory:").await.expect("Failed to create test database")
     }
 
@@ -478,9 +403,6 @@ mod tests {
         let _db = test_db().await;
     }
 
-    /// Verify that Database satisfies each aggregate Repo trait contract
-    /// (AclRepo / ConfigRepo / UserRepo). Exercises the trait-object
-    /// path so callers that take `Arc<dyn XxxRepo>` compile end-to-end.
     #[tokio::test]
     async fn test_aggregate_repo_trait_objects() {
         let db = test_db().await;
@@ -493,82 +415,23 @@ mod tests {
         );
 
         let acl: &dyn AclRepo = &db;
-        acl.insert_acl_rule(4, "source", "blacklist", "10.0.0.1", 443)
-            .await
-            .unwrap();
-        // load_acl_rules is an inherent Database method (not on AclRepo),
-        // so go through `&db` directly for this read-back assertion.
+        acl.insert_acl_rule(
+            IpVersion::V4,
+            FlowDirection::Source,
+            ListType::Black,
+            "10.0.0.1",
+            443,
+            false,
+        )
+        .await
+        .unwrap();
         let rules = db.list_acl_rules().await.unwrap();
         assert_eq!(rules.len(), 1);
 
         let identity: &dyn UserRepo = &db;
-        // user_count is inherent — inserts still go through the trait so
-        // the vtable has something to exercise.
         assert_eq!(db.user_count().await.unwrap(), 0);
         identity.insert_user("test", "hash", "viewer", false).await.unwrap();
         assert_eq!(db.user_count().await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn legacy_non_config_settings_are_backfilled() {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("netguardia-legacy-settings-{}-{unique}.db", std::process::id()));
-        let locked_until = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600;
-
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "
-                CREATE TABLE settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                ",
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
-                params!["setup_complete", "true"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
-                params!["weekly_threats_count", "7"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
-                params!["login_failures:alice", "4"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
-                params!["login_locked_until:alice", locked_until.to_string()],
-            )
-            .unwrap();
-        }
-
-        let db = Database::new(path.to_str().unwrap()).await.unwrap();
-
-        assert_eq!(
-            db.get_system_state("setup_complete").await.unwrap(),
-            Some("true".to_string())
-        );
-        assert_eq!(
-            db.get_report_snapshot("weekly_threats_count").await.unwrap(),
-            Some("7".to_string())
-        );
-        assert_eq!(db.get_config_value("setup_complete").await.unwrap(), None);
-        assert_eq!(db.get_config_value("weekly_threats_count").await.unwrap(), None);
-
-        let remaining_lock = db.check_login_locked("alice").await.unwrap();
-        assert!(remaining_lock.is_some_and(|remaining| remaining > 0));
-        assert_eq!(db.get_config_value("login_failures:alice").await.unwrap(), None);
-
-        drop(db);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[tokio::test]

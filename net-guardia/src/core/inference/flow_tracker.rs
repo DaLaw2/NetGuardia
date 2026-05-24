@@ -1,30 +1,21 @@
 use std::sync::Arc;
 
-use common::define::tcp_flags::*;
 use moka::sync::Cache;
+use net_guardia_abi::define::tcp_flags::*;
 use parking_lot::Mutex;
 
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::user_packet::UserPacket;
-use crate::domain::detection::flow_tracker::{FlowData, FlowLimits};
+use crate::domain::detection::flow_tracker::{FlowData, FlowLimits, FlowSnapshot};
 use crate::domain::detection::ml_detection::FlowKey;
 
-/// Per-flow handle: an `Arc` so map operations stay copy-cheap, with an inner
-/// `Mutex` because `add_packet` is a read-modify-write that needs exclusive
-/// access. Same-flow packets land on the same XSK queue (symmetric eBPF
-/// hash), so this mutex is effectively single-writer; the inference tick
-/// briefly contends only when it clones the entry for a snapshot.
-type FlowEntry = Arc<Mutex<FlowData>>;
+struct TrackedFlow {
+    data: FlowData,
+    last_inferred_us: u64,
+}
 
-/// Per-queue flow tracker backed by a sharded W-TinyLFU cache (`moka`).
-///
-/// The hot path (`process_packet`) acquires only the per-shard moka lock
-/// and the per-flow entry mutex — never a global tracker lock — so the
-/// inference loop's snapshot pass (`get_uninferred_flows`,
-/// `cleanup_stale_flows`) can run in parallel without stalling AF_XDP rx.
-/// W-TinyLFU's frequency sketch keeps high-rate attack flows resident
-/// even when burst noise floods the cache, which a strict-LRU eviction
-/// policy would mishandle.
+type FlowEntry = Arc<Mutex<TrackedFlow>>;
+
 pub struct FlowTracker {
     active: Cache<FlowKey, FlowEntry>,
     limits: FlowLimits,
@@ -41,28 +32,34 @@ impl FlowTracker {
 
     pub fn process_packet(&self, mut packet: UserPacket, is_ingress: bool) {
         let packet_key = FlowKey::from_packet(&packet);
-        let reversed_key = packet_key.reverse();
 
-        let (actual_key, is_forward) = if self.active.contains_key(&packet_key) {
-            (packet_key, true)
-        } else if self.active.contains_key(&reversed_key) {
-            (reversed_key, false)
-        } else {
-            let syn = packet.tcp_flags & TCP_SYN != 0;
-            let ack = packet.tcp_flags & TCP_ACK != 0;
-            if syn && ack {
-                if is_ingress {
-                    (reversed_key, false)
-                } else {
-                    (packet_key, true)
-                }
-            } else if syn {
-                (packet_key, true)
-            } else if is_ingress {
+        if let Some(entry) = self.active.get(&packet_key) {
+            packet.is_forward = true;
+            entry.lock().data.add_packet(&packet, &self.limits);
+            return;
+        }
+
+        let reversed_key = packet_key.reverse();
+        if let Some(entry) = self.active.get(&reversed_key) {
+            packet.is_forward = false;
+            entry.lock().data.add_packet(&packet, &self.limits);
+            return;
+        }
+
+        let syn = packet.tcp_flags & TCP_SYN != 0;
+        let ack = packet.tcp_flags & TCP_ACK != 0;
+        let (actual_key, is_forward) = if syn && ack {
+            if is_ingress {
                 (reversed_key, false)
             } else {
                 (packet_key, true)
             }
+        } else if syn {
+            (packet_key, true)
+        } else if is_ingress {
+            (reversed_key, false)
+        } else {
+            (packet_key, true)
         };
 
         packet.is_forward = is_forward;
@@ -81,47 +78,75 @@ impl FlowTracker {
 
         let key_for_init = actual_key;
         let entry = self.active.get_with(actual_key, || {
-            Arc::new(Mutex::new(FlowData::new(key_for_init, &packet, initiator_direction)))
+            Arc::new(Mutex::new(TrackedFlow {
+                data: FlowData::new(key_for_init, &packet, initiator_direction),
+                last_inferred_us: 0,
+            }))
         });
-        entry.lock().add_packet(&packet, &self.limits);
+        entry.lock().data.add_packet(&packet, &self.limits);
     }
 
     pub fn get_flow_stats<T>(&self, convert: impl Fn(&FlowData) -> T) -> Vec<T> {
-        self.active.iter().map(|(_, entry)| convert(&entry.lock())).collect()
+        self.active
+            .iter()
+            .map(|(_, entry)| convert(&entry.lock().data))
+            .collect()
     }
 
-    pub fn get_uninferred_flows(&self, limit: usize) -> Vec<FlowData> {
-        let mut result = Vec::new();
+    pub fn get_filtered_flow_stats<T>(
+        &self,
+        filter: impl Fn(&FlowData) -> bool,
+        convert: impl Fn(&FlowData) -> T,
+    ) -> Vec<T> {
+        self.active
+            .iter()
+            .filter_map(|(_, entry)| {
+                let tracked = entry.lock();
+                filter(&tracked.data).then(|| convert(&tracked.data))
+            })
+            .collect()
+    }
+
+    pub fn get_uninferred_flows(&self, limit: usize) -> Vec<FlowSnapshot> {
+        let mut clones = Vec::new();
         for (_, entry) in self.active.iter() {
-            if result.len() >= limit {
+            if clones.len() >= limit {
                 break;
             }
-            let mut flow = entry.lock();
-            if flow.last_time_us > flow.last_inferred_us {
-                let snapshot = FlowData {
-                    fwd_packets: std::mem::take(&mut flow.fwd_packets),
-                    bwd_packets: std::mem::take(&mut flow.bwd_packets),
-                    active_periods: std::mem::take(&mut flow.active_periods),
-                    idle_periods: std::mem::take(&mut flow.idle_periods),
-                    ..flow.clone()
-                };
-                flow.last_inferred_us = flow.last_time_us;
-                result.push(snapshot);
+            let mut tracked = entry.lock();
+            if tracked.data.last_time_us > tracked.last_inferred_us {
+                clones.push(tracked.data.clone());
+                tracked.last_inferred_us = tracked.data.last_time_us;
             }
         }
-        result
+        clones.iter().map(FlowSnapshot::from_flow_data).collect()
     }
 
     pub fn flow_count(&self) -> usize {
         self.active.entry_count() as usize
     }
 
+    pub fn summary_stats(&self) -> (usize, u64, usize) {
+        let mut total_flows = 0usize;
+        let mut total_bytes = 0u64;
+        let mut total_packets = 0usize;
+
+        for (_, entry) in self.active.iter() {
+            let flow = entry.lock();
+            total_flows += 1;
+            total_bytes += flow.data.fwd_total_bytes + flow.data.bwd_total_bytes;
+            total_packets += flow.data.packet_count();
+        }
+
+        (total_flows, total_bytes, total_packets)
+    }
+
     pub fn cleanup_stale_flows(&self, now_us: u64) -> usize {
         let mut keys_to_remove = Vec::new();
         for (key, entry) in self.active.iter() {
             let flow = entry.lock();
-            let idle = now_us.saturating_sub(flow.last_time_us);
-            let is_terminated = flow.fin_count > 0 || flow.rst_count > 0;
+            let idle = now_us.saturating_sub(flow.data.last_time_us);
+            let is_terminated = flow.data.fin_count > 0 || flow.data.rst_count > 0;
             let stale = if is_terminated {
                 idle >= self.limits.terminated_timeout_us
             } else {
@@ -143,6 +168,8 @@ impl FlowTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::data_plane::direction::Direction;
+    use crate::domain::data_plane::ip_version::IpVersion;
 
     fn test_limits() -> FlowLimits {
         FlowLimits {
@@ -158,7 +185,7 @@ mod tests {
 
     fn make_packet(timestamp_us: u64, tcp_flags: u8) -> UserPacket {
         UserPacket {
-            ip_version: 4,
+            ip_version: IpVersion::V4,
             protocol: 6,
             tcp_flags,
             src_ip: [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -177,6 +204,49 @@ mod tests {
     fn sync_count(tracker: &FlowTracker) -> usize {
         tracker.active.run_pending_tasks();
         tracker.flow_count()
+    }
+
+    #[test]
+    fn reverse_packet_updates_existing_flow_backward_side() {
+        let tracker = FlowTracker::new(10000, test_limits());
+        let first = make_packet(1_000_000, TCP_SYN);
+        let mut reply = make_packet(1_001_000, TCP_ACK);
+        (reply.src_ip, reply.dst_ip) = (reply.dst_ip, reply.src_ip);
+        (reply.src_port, reply.dst_port) = (reply.dst_port, reply.src_port);
+
+        tracker.process_packet(first, false);
+        tracker.process_packet(reply, true);
+
+        let flows = tracker.get_flow_stats(|flow| {
+            (
+                flow.direction,
+                flow.fwd_packets.len(),
+                flow.bwd_packets.len(),
+                flow.fwd_total_bytes + flow.bwd_total_bytes,
+                flow.flow_key.src_port,
+                flow.flow_key.dst_port,
+            )
+        });
+        assert_eq!(flows, vec![(Direction::Egress, 1, 1, 200, 12345, 80)]);
+        assert_eq!(tracker.summary_stats(), (1, 200, 2));
+    }
+
+    #[test]
+    fn uninferred_snapshots_do_not_drain_packet_history() {
+        let tracker = FlowTracker::new(10000, test_limits());
+
+        tracker.process_packet(make_packet(1_000_000, TCP_SYN), false);
+        tracker.process_packet(make_packet(1_001_000, TCP_ACK), false);
+
+        let first_snapshot = tracker.get_uninferred_flows(10);
+        assert_eq!(first_snapshot[0].packet_count, 2);
+
+        tracker.process_packet(make_packet(1_002_000, TCP_ACK), false);
+        tracker.process_packet(make_packet(1_003_000, TCP_ACK), false);
+        tracker.process_packet(make_packet(1_004_000, TCP_ACK), false);
+
+        let second_snapshot = tracker.get_uninferred_flows(10);
+        assert_eq!(second_snapshot[0].packet_count, 5);
     }
 
     #[test]

@@ -4,13 +4,12 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-common = { workspace = true, features = ["user"] }
+net-guardia-abi = { workspace = true, features = ["user"] }
 macros = { workspace = true }
 
 # eBPF userspace
 aya = { workspace = true }
 aya-log = { workspace = true }
-network-types = { workspace = true }
 xsk-rs = { workspace = true }
 libxdp-sys = { workspace = true }
 libc = { workspace = true }
@@ -26,16 +25,16 @@ uuid = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 url = { workspace = true }
-tokio-tungstenite = { workspace = true }
+zip = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-toml = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 futures-util = { workspace = true }
 crossbeam = { workspace = true }
 
@@ -73,7 +72,6 @@ ipnetwork = { workspace = true }
 lru = { workspace = true }
 rusqlite = { workspace = true }
 async-sqlite = { workspace = true }
-jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }

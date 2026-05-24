@@ -1,21 +1,34 @@
 use std::fs;
+use std::io;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 
-use actix_web::{HttpResponse, Scope, web};
+use actix_web::{HttpRequest, HttpResponse, Scope, web};
 use macros::log;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
-use crate::adapter::persistence::Database;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::system::SystemError;
-use crate::domain::identity::auth::DEFAULT_ADMIN_USERNAME;
-use crate::domain::identity::password;
-use crate::infrastructure::http_server::SetupCompleteFlag;
-use crate::infrastructure::secret_store::SecretStore;
-use crate::interface::secret_store::SecretStorePort;
-use crate::interface::system_state::SystemStateRepo;
+use crate::adapter::http::helpers::{bad_request, conflict, internal_error};
+use crate::common::error::Error;
+use crate::common::error::system::SystemError;
+use crate::common::utils::security::constant_time_eq;
+use crate::core::common::setup_service::{CompleteSetupInput, SetupService, is_valid_interface_name};
+use crate::infrastructure::http_runtime::SetupCompleteFlag;
+
+pub const SETUP_TOKEN_HEADER: &str = "X-Setup-Token";
+
+#[derive(Clone)]
+pub struct SetupToken {
+    token: String,
+}
+
+impl SetupToken {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+
+    fn validate(&self, candidate: &str) -> bool {
+        constant_time_eq(&self.token, candidate)
+    }
+}
 
 pub fn initialize() -> Scope {
     web::scope("/setup")
@@ -25,26 +38,16 @@ pub fn initialize() -> Scope {
 }
 
 async fn setup_status(setup_flag: web::Data<SetupCompleteFlag>) -> HttpResponse {
-    let complete = setup_flag.0.load(Ordering::SeqCst);
+    let complete = setup_flag.is_complete();
     HttpResponse::Ok().json(serde_json::json!({
         "setup_complete": complete,
     }))
 }
 
 async fn list_interfaces() -> HttpResponse {
-    // List available network interfaces
-    let interfaces: Vec<Value> = match fs::read_dir("/sys/class/net") {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                serde_json::json!({
-                    "name": name,
-                    "is_loopback": name == "lo",
-                })
-            })
-            .collect(),
-        Err(_) => Vec::new(),
+    let interfaces = match list_network_interfaces(Path::new("/sys/class/net")) {
+        Ok(interfaces) => interfaces,
+        Err(e) => return internal_error(format!("Failed to list network interfaces: {}", e)),
     };
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -52,120 +55,78 @@ async fn list_interfaces() -> HttpResponse {
     }))
 }
 
+#[derive(Serialize)]
+struct NetworkInterface {
+    name: String,
+    is_loopback: bool,
+}
+
+fn list_network_interfaces(interface_dir: &Path) -> io::Result<Vec<NetworkInterface>> {
+    let mut interfaces = Vec::new();
+    for entry in fs::read_dir(interface_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        interfaces.push(NetworkInterface {
+            is_loopback: name == "lo",
+            name,
+        });
+    }
+    interfaces.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(interfaces)
+}
+
 #[derive(Deserialize)]
 struct SetupRequest {
-    /// Ingress network interface (external-facing)
     ingress_interface: String,
-    /// Egress network interface (internal-facing)
     egress_interface: String,
-    /// Admin password
     admin_password: String,
-    /// HTTP port (optional, default 8080)
     http_port: Option<u16>,
-    /// SMTP config (optional)
     smtp_host: Option<String>,
     smtp_port: Option<u16>,
     smtp_username: Option<String>,
     smtp_password: Option<String>,
     smtp_recipient: Option<String>,
-    /// Telegram config (optional)
     telegram_bot_token: Option<String>,
     telegram_chat_id: Option<String>,
 }
 
-/// Validate interface name: only alphanumeric, dots, underscores, hyphens allowed.
-/// Prevents path traversal via crafted interface names like "../../etc/shadow".
-fn is_valid_interface_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 16
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-}
-
 async fn complete_setup(
-    db: web::Data<Database>,
-    secret_store: web::Data<SecretStore>,
+    req: HttpRequest,
+    setup_service: web::Data<SetupService>,
     setup_flag: web::Data<SetupCompleteFlag>,
+    setup_token: web::Data<SetupToken>,
     body: web::Json<SetupRequest>,
 ) -> HttpResponse {
-    if setup_flag.0.load(Ordering::SeqCst) {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "Setup already completed"
+    if setup_flag.is_complete() {
+        return conflict("Setup already completed");
+    }
+
+    let token = req
+        .headers()
+        .get(SETUP_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if !setup_token.validate(token) {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Invalid setup token",
         }));
     }
 
-    // Validate interface names (prevent path traversal)
     for iface in [&body.ingress_interface, &body.egress_interface] {
         if !is_valid_interface_name(iface) {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("Invalid interface name '{}': only alphanumeric, dots, underscores, hyphens allowed (max 16 chars)", iface)
-            }));
+            return bad_request(format!("Invalid network interface name '{}'", iface));
         }
-        let iface_path = format!("/sys/class/net/{}", iface);
-        if !Path::new(&iface_path).exists() {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("Network interface '{}' not found", iface)
-            }));
+        if !Path::new("/sys/class/net").join(iface).exists() {
+            return bad_request(format!("Network interface '{}' not found", iface));
         }
     }
 
-    // Validate ingress != egress
-    if body.ingress_interface == body.egress_interface {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Ingress and egress interfaces must be different"
-        }));
+    if let Err(e) = setup_service.complete_setup(body.into_inner().into()).await {
+        log!(SystemError::SetupCompleteFlagFailed(e.to_string()));
+        return setup_error_response(e);
     }
 
-    // Validate password strength: min 8 chars, must contain letter + digit + symbol
-    let pw = &body.admin_password;
-    if pw.len() < 8 {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Password must be at least 8 characters"
-        }));
-    }
-    let has_letter = pw.chars().any(|c| c.is_ascii_alphabetic());
-    let has_digit = pw.chars().any(|c| c.is_ascii_digit());
-    let has_symbol = pw.chars().any(|c| !c.is_ascii_alphanumeric());
-    if !has_letter || !has_digit || !has_symbol {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Password must contain at least one letter, one digit, and one symbol"
-        }));
-    }
-
-    // Save configuration to database
-    if let Err(e) = save_config(&db, secret_store.as_ref(), &body).await {
-        return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to save configuration: {}", e)
-        }));
-    }
-
-    // Update admin password
-    match password::hash_password(&body.admin_password) {
-        Ok(hash) => {
-            // Find admin user and update password
-            if let Ok(Some(user)) = db.find_user(DEFAULT_ADMIN_USERNAME).await
-                && let Err(e) = db.update_user_password(user.id, &hash).await
-            {
-                log!(SystemError::SetupPasswordUpdateFailed(e));
-            }
-        }
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": format!("Failed to hash password: {}", e)
-            }));
-        }
-    }
-
-    // Mark setup as complete
-    let state_repo = db.get_ref() as &dyn SystemStateRepo;
-    if let Err(e) = state_repo.set_system_state("setup_complete", "true").await {
-        log!(SystemError::SetupCompleteFlagFailed(e));
-    }
-    setup_flag.0.store(true, Ordering::SeqCst);
-
-    // System::run() polls the setup_complete flag and will automatically
-    // start eBPF, ML, and SOAR services once this flag becomes true.
+    setup_flag.mark_complete();
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -174,50 +135,39 @@ async fn complete_setup(
     }))
 }
 
-async fn save_config(db: &Database, secrets: &dyn SecretStorePort, req: &SetupRequest) -> Result<(), Error> {
-    // Save network config
-    db.set_config_value("ingress_interface", &req.ingress_interface).await?;
-    db.set_config_value("egress_interface", &req.egress_interface).await?;
+impl From<SetupRequest> for CompleteSetupInput {
+    fn from(req: SetupRequest) -> Self {
+        Self {
+            ingress_interface: req.ingress_interface,
+            egress_interface: req.egress_interface,
+            admin_password: req.admin_password,
+            http_port: req.http_port,
+            smtp_host: req.smtp_host,
+            smtp_port: req.smtp_port,
+            smtp_username: req.smtp_username,
+            smtp_password: req.smtp_password,
+            smtp_recipient: req.smtp_recipient,
+            telegram_bot_token: req.telegram_bot_token,
+            telegram_chat_id: req.telegram_chat_id,
+        }
+    }
+}
 
-    if let Some(port) = req.http_port {
-        db.set_config_value("http_port", &port.to_string()).await?;
+fn setup_error_response(e: Error) -> HttpResponse {
+    match &e {
+        Error::System(SystemError::SetupAlreadyComplete) => conflict(e),
+        Error::System(SystemError::InvalidSetupInput { .. }) => bad_request(e),
+        _ => internal_error(format!("Failed to complete setup: {}", e)),
     }
-
-    // Save SMTP config (non-secret fields go to settings)
-    if let Some(host) = &req.smtp_host {
-        db.set_config_value("smtp_host", host).await?;
-    }
-    if let Some(port) = req.smtp_port {
-        db.set_config_value("smtp_port", &port.to_string()).await?;
-    }
-    if let Some(user) = &req.smtp_username {
-        db.set_config_value("smtp_username", user).await?;
-    }
-    if let Some(pass) = &req.smtp_password {
-        // Store password through secret store (encrypted)
-        secrets.set_secret("smtp_password", pass).await?;
-        db.set_config_value("smtp_password", "__encrypted__").await?;
-    }
-    if let Some(recipient) = &req.smtp_recipient {
-        db.set_config_value("smtp_recipient", recipient).await?;
-    }
-
-    // Save Telegram config (bot_token through secret store, chat_id in JSON)
-    if let (Some(token), Some(chat_id)) = (&req.telegram_bot_token, &req.telegram_chat_id) {
-        secrets.set_secret("telegram_bot_token", token).await?;
-        let config_json = serde_json::json!({
-            "bot_token": "__encrypted__",
-            "chat_id": chat_id,
-        })
-        .to_string();
-        db.set_notification_config("telegram", &config_json).await?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -237,7 +187,6 @@ mod tests {
     fn test_invalid_interface_too_long() {
         let long = "a".repeat(17);
         assert!(!is_valid_interface_name(&long));
-        // Exactly 16 should be valid
         let exact = "a".repeat(16);
         assert!(is_valid_interface_name(&exact));
     }
@@ -247,6 +196,8 @@ mod tests {
         assert!(!is_valid_interface_name("../etc"));
         assert!(!is_valid_interface_name("../../shadow"));
         assert!(!is_valid_interface_name("/sys/class"));
+        assert!(!is_valid_interface_name("."));
+        assert!(!is_valid_interface_name(".."));
     }
 
     #[test]
@@ -254,5 +205,46 @@ mod tests {
         assert!(!is_valid_interface_name("eth0;rm"));
         assert!(!is_valid_interface_name("lo&&cat"));
         assert!(!is_valid_interface_name("eth0 space"));
+    }
+
+    #[test]
+    fn missing_interface_dir_is_reported() {
+        let path = temp_path("net-guardia-missing-ifaces");
+
+        assert!(list_network_interfaces(&path).is_err());
+    }
+
+    #[test]
+    fn setup_token_validates_exact_value_only() {
+        let token = SetupToken::new("secret-token".to_string());
+
+        assert!(token.validate("secret-token"));
+        assert!(!token.validate("secret-token-2"));
+        assert!(!token.validate("secret"));
+    }
+
+    #[test]
+    fn network_interfaces_are_sorted_and_mark_loopback() {
+        let dir = temp_path("net-guardia-ifaces");
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(dir.join("zeth0")).unwrap();
+        fs::create_dir(dir.join("lo")).unwrap();
+
+        let interfaces = list_network_interfaces(&dir).unwrap();
+
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(interfaces[0].name, "lo");
+        assert!(interfaces[0].is_loopback);
+        assert_eq!(interfaces[1].name, "zeth0");
+        assert!(!interfaces[1].is_loopback);
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "{}-{}",
+            prefix,
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ))
     }
 }

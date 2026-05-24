@@ -3,16 +3,16 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use aya::{Ebpf, Pod};
-use common::model::ip_address::{IPv4, IPv6, Port};
-use common::model::port_rule::PortRule;
+use net_guardia_abi::model::ip_address::{IPv4, IPv6, Port};
+use net_guardia_abi::model::port_rule::PortRule;
 use parking_lot::RwLock;
 
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
 use crate::domain::data_plane::direction::FlowDirection;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::ip_address::NativeConvert;
 use crate::domain::data_plane::list_type::ListType;
-use crate::interface::access_control_admin::AccessControlAdminPort;
+use crate::interface::data_plane::access_control_admin::AccessControlAdminPort;
 
 pub struct AccessControl {
     ipv4_src_whitelist: RwLock<MapWrapper<IPv4>>,
@@ -182,6 +182,12 @@ struct MapWrapper<T> {
     map: Option<AyaHashMap<MapData, T, PortRule>>,
 }
 
+enum PortRuleRemoval {
+    Unchanged,
+    Update,
+    Delete,
+}
+
 impl<T: NativeConvert + Pod> MapWrapper<T> {
     fn new(ebpf: &mut Ebpf, map_name: &str) -> Result<Self, Error> {
         let map = ebpf.take_map(map_name).ok_or(EbpfError::MapNotFound)?;
@@ -237,19 +243,56 @@ impl<T: NativeConvert + Pod> MapWrapper<T> {
         }
 
         let mut rule = map.get(&ip, 0).map_err(|_| EbpfError::IpDoesNotExist)?;
-
-        if rule.is_match_all() {
-            map.remove(&ip).map_err(EbpfError::MapOperationError)?;
-            return Ok(());
-        }
-
-        rule.remove_port(port);
-
-        if rule.is_empty() {
-            map.remove(&ip).map_err(EbpfError::MapOperationError)?;
-        } else {
-            map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
+        match remove_port_from_rule(&mut rule, port) {
+            PortRuleRemoval::Unchanged => {}
+            PortRuleRemoval::Delete => {
+                map.remove(&ip).map_err(EbpfError::MapOperationError)?;
+            }
+            PortRuleRemoval::Update => {
+                map.insert(ip, rule, 0).map_err(EbpfError::MapOperationError)?;
+            }
         }
         Ok(())
+    }
+}
+
+fn remove_port_from_rule(rule: &mut PortRule, port: Port) -> PortRuleRemoval {
+    if rule.is_match_all() {
+        return if port == 0 {
+            PortRuleRemoval::Delete
+        } else {
+            PortRuleRemoval::Unchanged
+        };
+    }
+
+    rule.remove_port(port);
+    if rule.is_empty() {
+        PortRuleRemoval::Delete
+    } else {
+        PortRuleRemoval::Update
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removing_specific_port_from_match_all_rule_is_noop() {
+        let mut rule = PortRule::new_match_all();
+
+        let removal = remove_port_from_rule(&mut rule, 443);
+
+        assert!(matches!(removal, PortRuleRemoval::Unchanged));
+        assert!(rule.is_match_all());
+    }
+
+    #[test]
+    fn removing_port_zero_from_match_all_rule_deletes_rule() {
+        let mut rule = PortRule::new_match_all();
+
+        let removal = remove_port_from_rule(&mut rule, 0);
+
+        assert!(matches!(removal, PortRuleRemoval::Delete));
     }
 }

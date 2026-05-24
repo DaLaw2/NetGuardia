@@ -1,14 +1,9 @@
 use super::html::escape;
 use super::report_data_builder::build_report_data;
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
 use crate::domain::report::data::ReportData;
-use crate::interface::report_snapshot::ReportSnapshotRepo;
+use crate::interface::reporting::report_snapshot::ReportSnapshotRepo;
 
-/// Generate an HTML weekly report email body.
-///
-/// The email path shares the typed `ReportData` builder used by the report
-/// API/file renderer. This keeps parsing/defaulting in one place and makes
-/// HTML escaping a renderer invariant instead of a per-field caller detail.
 pub async fn generate_weekly_report(db: &dyn ReportSnapshotRepo) -> Result<String, Error> {
     let data = build_report_data(db).await?;
     Ok(render_weekly_email(&data))

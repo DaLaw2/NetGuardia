@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand};
 use macros::log;
 
 use crate::adapter::persistence::Database;
-use crate::domain::common::error::Error;
-use crate::domain::common::log::cli::CliLog;
+use crate::common::error::Error;
+use crate::common::log::cli::CliLog;
 
 const EXIT_USAGE: i32 = 1;
 const EXIT_OP_FAILED: i32 = 2;
@@ -88,13 +88,10 @@ fn run_encrypt(db_path: &str, dest: &str) -> Result<(), Error> {
 
 async fn run_verify(db_path: &str) -> Result<(), Error> {
     log!(CliLog::VerifyStarted(db_path.to_string()));
-    let db = match Database::new(db_path).await {
-        Ok(db) => db,
-        Err(e) => {
-            log!(CliLog::DbOpenFailed(db_path.to_string(), e.to_string()));
-            process::exit(EXIT_OP_FAILED);
-        }
-    };
+    let db = Database::new(db_path).await.unwrap_or_else(|e| {
+        log!(CliLog::DbOpenFailed(db_path.to_string(), e.to_string()));
+        process::exit(EXIT_OP_FAILED);
+    });
     match db.verify_audit_log_chain(0).await {
         Ok((count, _last_id)) => {
             log!(CliLog::VerifyOk(count));

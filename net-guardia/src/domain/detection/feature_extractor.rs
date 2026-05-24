@@ -1,38 +1,30 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use common::define::tcp_flags::*;
+use net_guardia_abi::define::tcp_flags::*;
 
 use super::flow_tracker::FlowData;
 use crate::domain::detection::flow_features::FlowFeatures;
 use crate::domain::detection::ml_detection::PacketData;
 
-/// Signature of a feature getter — takes precomputed flow statistics and returns
-/// a single f64 feature value. Must be pure (no I/O, no allocation).
-/// Kept module-private because `PrecomputedStats` is an implementation detail.
-type FeatureGetter = fn(&PrecomputedStats) -> f64;
+type FeatureGetter = fn(&FeatureStats) -> f64;
 
-/// Returns true if `name` (canonical or alias) is present in FEATURE_REGISTRY.
-/// Used by ModelManifest validation at load time.
 pub fn feature_is_known(name: &str) -> bool {
     FEATURE_REGISTRY.contains_key(name)
 }
 
-/// Every name (canonical or alias) the system accepts inside a
-/// `manifest.features` list, sorted alphabetically so the BYO
-/// Quickstart endpoint returns a deterministic ordering. Callers
-/// treat this as an opaque string list; aliases for the same
-/// underlying feature appear next to each other after sort only by
-/// coincidence, not as a structural guarantee.
-pub fn feature_registry_names() -> Vec<&'static str> {
+pub fn feature_registry_names() -> &'static [&'static str] {
+    FEATURE_REGISTRY_NAMES.as_slice()
+}
+
+static FEATURE_REGISTRY_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut names: Vec<&'static str> = FEATURE_REGISTRY.keys().copied().collect();
     names.sort_unstable();
     names
-}
+});
 
 impl FlowFeatures {
-    pub fn extract(flow: &FlowData, feature_names: &[String]) -> Self {
-        let precomputed = PrecomputedStats::compute(flow);
+    pub fn extract_from_stats(precomputed: &FeatureStats, feature_names: &[String]) -> Self {
         let feature_num = feature_names.len();
         let mut features = Vec::with_capacity(feature_num);
 
@@ -45,9 +37,8 @@ impl FlowFeatures {
     }
 }
 
-/// All statistics pre-computed once from a FlowData, then looked up by feature name.
-struct PrecomputedStats {
-    // Basic counts and durations
+#[derive(Debug, Clone)]
+pub struct FeatureStats {
     dst_port: f64,
     protocol: f64,
     duration_us: f64,
@@ -59,55 +50,46 @@ struct PrecomputedStats {
     total_bytes: f64,
     duration_s: f64,
 
-    // Forward packet length stats
     fwd_len_max: f64,
     fwd_len_min: f64,
     fwd_len_mean: f64,
     fwd_len_std: f64,
 
-    // Backward packet length stats
     bwd_len_max: f64,
     bwd_len_min: f64,
     bwd_len_mean: f64,
     bwd_len_std: f64,
 
-    // Combined packet length stats
     all_len_max: f64,
     all_len_min: f64,
     all_len_mean: f64,
     all_len_std: f64,
 
-    // Flow IAT stats
     flow_iat_max: f64,
     flow_iat_min: f64,
     flow_iat_mean: f64,
     flow_iat_std: f64,
 
-    // Forward IAT stats
     fwd_iat_total: f64,
     fwd_iat_max: f64,
     fwd_iat_min: f64,
     fwd_iat_mean: f64,
     fwd_iat_std: f64,
 
-    // Backward IAT stats
     bwd_iat_total: f64,
     bwd_iat_max: f64,
     bwd_iat_min: f64,
     bwd_iat_mean: f64,
     bwd_iat_std: f64,
 
-    // Flag counts (per-direction)
     fwd_psh: f64,
     bwd_psh: f64,
     fwd_urg: f64,
     bwd_urg: f64,
 
-    // Header bytes
     fwd_header_bytes: f64,
     bwd_header_bytes: f64,
 
-    // Flag counts (global)
     fin_count: f64,
     syn_count: f64,
     rst_count: f64,
@@ -117,7 +99,6 @@ struct PrecomputedStats {
     cwe_count: f64,
     ece_count: f64,
 
-    // Bulk stats
     fwd_avg_bytes_bulk: f64,
     fwd_avg_packets_bulk: f64,
     fwd_avg_bulk_rate: f64,
@@ -125,17 +106,13 @@ struct PrecomputedStats {
     bwd_avg_packets_bulk: f64,
     bwd_avg_bulk_rate: f64,
 
-    // Window sizes
     init_win_bytes_fwd: f64,
     init_win_bytes_bwd: f64,
 
-    // Active data packets
     act_data_pkt_fwd: f64,
 
-    // Min forward header (segment) size
     min_seg_size_forward: f64,
 
-    // Active/idle period stats
     active_max: f64,
     active_min: f64,
     active_mean: f64,
@@ -145,13 +122,12 @@ struct PrecomputedStats {
     idle_mean: f64,
     idle_std: f64,
 
-    // Phase 2: new features for C2/Bot detection
     fwd_bwd_bytes_ratio: f64,
     fwd_iat_skewness: f64,
 }
 
-impl PrecomputedStats {
-    fn compute(flow: &FlowData) -> Self {
+impl FeatureStats {
+    pub fn compute(flow: &FlowData) -> Self {
         let safe_div = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
 
         let fwd_count = flow.fwd_packets.len() as f64;
@@ -189,31 +165,18 @@ impl PrecomputedStats {
         let (flow_iat_max, flow_iat_min, flow_iat_mean, flow_iat_std) =
             compute_flow_iat_stats(&flow.fwd_packets, &flow.bwd_packets);
 
-        let fwd_iats = compute_iats(&flow.fwd_packets);
-        let mut fwd_iat_stats = StreamingStats::new();
-        let mut fwd_iat_total: f64 = 0.0;
-        for &v in &fwd_iats {
-            fwd_iat_stats.push(v);
-            fwd_iat_total += v;
-        }
-        let (fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = fwd_iat_stats.finalize();
+        let mut fwd_iats = compute_iats(&flow.fwd_packets);
+        let (fwd_iat_total, fwd_iat_max, fwd_iat_min, fwd_iat_mean, fwd_iat_std) = iat_stats(&fwd_iats);
+        let fwd_iat_skewness = compute_bowley_skewness(&mut fwd_iats);
 
-        let bwd_iats = compute_iats(&flow.bwd_packets);
-        let mut bwd_iat_stats = StreamingStats::new();
-        let mut bwd_iat_total: f64 = 0.0;
-        for &v in &bwd_iats {
-            bwd_iat_stats.push(v);
-            bwd_iat_total += v;
-        }
-        let (bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = bwd_iat_stats.finalize();
+        let bwd_iat_values = flow.bwd_packets.windows(2).map(|w| packet_iat(&w[0], &w[1]) as f64);
+        let (bwd_iat_total, bwd_iat_max, bwd_iat_min, bwd_iat_mean, bwd_iat_std) = iat_stats_from_iter(bwd_iat_values);
 
-        // Per-direction flag counts
         let fwd_psh = flow.fwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
         let bwd_psh = flow.bwd_packets.iter().filter(|p| p.flags & TCP_PSH != 0).count() as f64;
         let fwd_urg = flow.fwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
         let bwd_urg = flow.bwd_packets.iter().filter(|p| p.flags & TCP_URG != 0).count() as f64;
 
-        // Bulk stats
         let fwd_bulk = &flow.fwd_bulk_state;
         let bwd_bulk = &flow.bwd_bulk_state;
 
@@ -230,7 +193,6 @@ impl PrecomputedStats {
             bwd_bulk.total_duration_us as f64 / 1_000_000.0,
         );
 
-        // Min forward segment (header) size
         let min_seg_size_forward = flow
             .fwd_packets
             .iter()
@@ -250,9 +212,7 @@ impl PrecomputedStats {
         }
         let (idle_max, idle_min, idle_mean, idle_std) = idle_stats.finalize();
 
-        // Phase 2: new features for C2/Bot detection
         let fwd_bwd_bytes_ratio = safe_div(fwd_total_bytes, fwd_total_bytes + bwd_total_bytes);
-        let fwd_iat_skewness = compute_bowley_skewness(&fwd_iats);
 
         Self {
             dst_port: flow.flow_key.dst_port as f64,
@@ -328,7 +288,7 @@ impl PrecomputedStats {
         }
     }
 
-    fn get(&self, feature_name: &str) -> f64 {
+    pub fn get(&self, feature_name: &str) -> f64 {
         FEATURE_REGISTRY.get(feature_name).map(|g| g(self)).unwrap_or(0.0)
     }
 }
@@ -343,9 +303,6 @@ fn reg_insert(m: &mut HashMap<&'static str, FeatureGetter>, names: &[&'static st
     }
 }
 
-/// Central name → getter table. Every name the system recognizes for a feature
-/// lives here. Manifest validation refuses any name not present in this map.
-/// Aliases (long-form CICFlowMeter names, short snake_case) map to the same getter.
 static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLock::new(|| {
     let mut m: HashMap<&'static str, FeatureGetter> = HashMap::new();
 
@@ -448,8 +405,6 @@ static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLo
     reg_insert(&mut m, &["Bwd PSH Flags"], |s| s.bwd_psh);
     reg_insert(&mut m, &["Fwd URG Flags"], |s| s.fwd_urg);
     reg_insert(&mut m, &["Bwd URG Flags"], |s| s.bwd_urg);
-
-    // "Fwd Header Length" and "Fwd Header Length.1" are legacy CICFlowMeter aliases.
     reg_insert(&mut m, &["Fwd Header Length", "Fwd Header Length.1"], |s| {
         s.fwd_header_bytes
     });
@@ -507,10 +462,18 @@ static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLo
     reg_insert(&mut m, &["Bwd Avg Packets/Bulk"], |s| s.bwd_avg_packets_bulk);
     reg_insert(&mut m, &["Bwd Avg Bulk Rate"], |s| s.bwd_avg_bulk_rate);
 
-    reg_insert(&mut m, &["fwd_win_bytes"], |s| s.init_win_bytes_fwd);
-    reg_insert(&mut m, &["bwd_win_bytes"], |s| s.init_win_bytes_bwd);
-    reg_insert(&mut m, &["fwd_act_data_pkts"], |s| s.act_data_pkt_fwd);
-    reg_insert(&mut m, &["fwd_seg_size_min"], |s| s.min_seg_size_forward);
+    reg_insert(&mut m, &["Init_Win_bytes_forward", "fwd_win_bytes"], |s| {
+        s.init_win_bytes_fwd
+    });
+    reg_insert(&mut m, &["Init_Win_bytes_backward", "bwd_win_bytes"], |s| {
+        s.init_win_bytes_bwd
+    });
+    reg_insert(&mut m, &["act_data_pkt_fwd", "fwd_act_data_pkts"], |s| {
+        s.act_data_pkt_fwd
+    });
+    reg_insert(&mut m, &["min_seg_size_forward", "fwd_seg_size_min"], |s| {
+        s.min_seg_size_forward
+    });
 
     reg_insert(&mut m, &["Active Mean"], |s| s.active_mean);
     reg_insert(&mut m, &["Active Std"], |s| s.active_std);
@@ -521,16 +484,12 @@ static FEATURE_REGISTRY: LazyLock<HashMap<&'static str, FeatureGetter>> = LazyLo
     reg_insert(&mut m, &["Idle Max"], |s| s.idle_max);
     reg_insert(&mut m, &["Idle Min"], |s| s.idle_min);
 
-    // Phase 2: C2/Bot-oriented features
     reg_insert(&mut m, &["fwd_bwd_bytes_ratio"], |s| s.fwd_bwd_bytes_ratio);
     reg_insert(&mut m, &["fwd_iat_skewness"], |s| s.fwd_iat_skewness);
     reg_insert(&mut m, &["iat_cv"], |s| reg_safe_div(s.flow_iat_std, s.flow_iat_mean));
 
     m
 });
-
-/// Welford online accumulator — computes max, min, mean, sample-std in a
-/// single pass without allocating a Vec.
 struct StreamingStats {
     count: u64,
     min: f64,
@@ -578,49 +537,55 @@ impl StreamingStats {
 }
 
 fn compute_iats(packets: &[PacketData]) -> Vec<f64> {
-    if packets.len() < 2 {
-        return Vec::new();
-    }
-
-    packets
-        .windows(2)
-        .map(|w| (w[1].timestamp_us - w[0].timestamp_us) as f64)
-        .collect()
+    packets.windows(2).map(|w| packet_iat(&w[0], &w[1]) as f64).collect()
 }
 
-/// Bowley (quartile) skewness: (Q3 + Q1 - 2*Q2) / (Q3 - Q1)
-/// Returns 0.0 for insufficient data or zero IQR.
-/// Uses `select_nth_unstable` for O(n) partial ordering instead of O(n log n) full sort.
-fn compute_bowley_skewness(values: &[f64]) -> f64 {
+fn packet_iat(prev: &PacketData, current: &PacketData) -> u64 {
+    current.timestamp_us.saturating_sub(prev.timestamp_us)
+}
+
+fn iat_stats(values: &[f64]) -> (f64, f64, f64, f64, f64) {
+    iat_stats_from_iter(values.iter().copied())
+}
+
+fn iat_stats_from_iter(values: impl Iterator<Item = f64>) -> (f64, f64, f64, f64, f64) {
+    let mut stats = StreamingStats::new();
+    let mut total = 0.0;
+    for value in values {
+        stats.push(value);
+        total += value;
+    }
+    let (max, min, mean, std) = stats.finalize();
+    (total, max, min, mean, std)
+}
+
+fn compute_bowley_skewness(values: &mut [f64]) -> f64 {
     let n = values.len();
     if n < 4 {
         return 0.0;
     }
-    let mut buf = values.to_vec();
 
     let i_q1 = n / 4;
     let i_q2 = n / 2;
     let i_q3 = 3 * n / 4;
 
-    buf.select_nth_unstable_by(i_q2, |a, b| a.total_cmp(b));
-    let q2 = buf[i_q2];
+    values.select_nth_unstable_by(i_q2, |a, b| a.total_cmp(b));
+    let q2 = values[i_q2];
 
-    buf[..i_q2].select_nth_unstable_by(i_q1, |a, b| a.total_cmp(b));
-    let q1 = buf[i_q1];
+    values[..i_q2].select_nth_unstable_by(i_q1, |a, b| a.total_cmp(b));
+    let q1 = values[i_q1];
 
     let q3 = {
         let offset = i_q2 + 1;
         let local_idx = i_q3 - offset;
-        buf[offset..].select_nth_unstable_by(local_idx, |a, b| a.total_cmp(b));
-        buf[i_q3]
+        values[offset..].select_nth_unstable_by(local_idx, |a, b| a.total_cmp(b));
+        values[i_q3]
     };
 
     let iqr = q3 - q1;
     if iqr <= 0.0 { 0.0 } else { (q3 + q1 - 2.0 * q2) / iqr }
 }
 
-/// Merge-walk two already-timestamp-ordered packet sequences to compute
-/// flow IAT stats in O(n) without allocating a combined Vec or sorting.
 fn compute_flow_iat_stats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]) -> (f64, f64, f64, f64) {
     let mut fi = fwd_packets.iter().peekable();
     let mut bi = bwd_packets.iter().peekable();
@@ -653,7 +618,7 @@ fn compute_flow_iat_stats(fwd_packets: &[PacketData], bwd_packets: &[PacketData]
             (None, None) => break,
         };
         if let Some(prev) = prev_ts {
-            stats.push((ts - prev) as f64);
+            stats.push(ts.saturating_sub(prev) as f64);
         }
         prev_ts = Some(ts);
     }
@@ -670,22 +635,39 @@ mod tests {
 
     #[test]
     fn bowley_skewness_insufficient_data() {
-        assert_eq!(compute_bowley_skewness(&[]), 0.0);
-        assert_eq!(compute_bowley_skewness(&[1.0]), 0.0);
-        assert_eq!(compute_bowley_skewness(&[1.0, 2.0, 3.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&mut []), 0.0);
+        assert_eq!(compute_bowley_skewness(&mut [1.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&mut [1.0, 2.0, 3.0]), 0.0);
     }
 
     #[test]
     fn bowley_skewness_zero_iqr() {
-        // All identical values → Q1 == Q3 → IQR = 0
-        assert_eq!(compute_bowley_skewness(&[5.0, 5.0, 5.0, 5.0]), 0.0);
-        assert_eq!(compute_bowley_skewness(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&mut [5.0, 5.0, 5.0, 5.0]), 0.0);
+        assert_eq!(compute_bowley_skewness(&mut [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), 0.0);
     }
 
-    /// Hand-crafted PrecomputedStats with distinctive sentinel values per field.
-    /// Lets us verify registry getter dispatch without constructing a real FlowData.
-    fn sample_stats() -> PrecomputedStats {
-        PrecomputedStats {
+    #[test]
+    fn packet_iat_saturates_out_of_order_timestamps() {
+        let prev = PacketData {
+            timestamp_us: 200,
+            length: 0,
+            header_length: 0,
+            payload_length: 0,
+            flags: 0,
+        };
+        let current = PacketData {
+            timestamp_us: 100,
+            length: 0,
+            header_length: 0,
+            payload_length: 0,
+            flags: 0,
+        };
+
+        assert_eq!(packet_iat(&prev, &current), 0);
+    }
+
+    fn sample_stats() -> FeatureStats {
+        FeatureStats {
             dst_port: 443.0,
             protocol: 6.0,
             duration_us: 1_000_000.0,
@@ -767,7 +749,6 @@ mod tests {
 
     #[test]
     fn registry_aliases_resolve_identically() {
-        // Long-form, short-form, and "Subflow" aliases must all map to the same getter.
         let s = sample_stats();
         for group in [
             [
@@ -782,7 +763,7 @@ mod tests {
                 "fwd_bytes",
                 "Subflow Fwd Bytes",
             ],
-            ["Flow IAT Std", "flow_iat_std", "Flow IAT Std", "Flow IAT Std"], // pad to 4
+            ["Flow IAT Std", "flow_iat_std", "Flow IAT Std", "Flow IAT Std"],
             ["Fwd IAT Std", "fwd_iat_std", "Fwd IAT Std", "Fwd IAT Std"],
             ["Bwd IAT Std", "bwd_iat_std", "Bwd IAT Std", "Bwd IAT Std"],
             [
@@ -815,7 +796,6 @@ mod tests {
         let mut s = sample_stats();
         s.flow_iat_mean = 0.0;
         s.flow_iat_std = 500.0;
-        // iat_cv = std / mean, but mean=0 → safe_div → 0.0
         assert_eq!(s.get("iat_cv"), 0.0);
         s.duration_s = 0.0;
         assert_eq!(s.get("flow_bytes_per_sec"), 0.0);
@@ -824,8 +804,6 @@ mod tests {
 
     #[test]
     fn registry_covers_v10_manifest_features() {
-        // Every feature the shipped v10 manifest references must be registered.
-        // A missing name here means the match → registry refactor dropped a binding.
         const V10_FEATURES: &[&str] = &[
             "flow_duration",
             "fwd_packets",
@@ -865,23 +843,32 @@ mod tests {
     }
 
     #[test]
+    fn registry_covers_exported_flow_trace_header() {
+        for feature in FlowFeatures::all_feature_names() {
+            assert!(
+                feature_is_known(feature),
+                "flow trace feature '{feature}' missing from FEATURE_REGISTRY"
+            );
+        }
+    }
+
+    #[test]
     fn feature_registry_names_returns_sorted_unique_list() {
         let names = feature_registry_names();
         assert!(
             names.len() > 30,
             "FEATURE_REGISTRY should carry at least the v10 feature set plus aliases"
         );
-        let mut sorted = names.clone();
+        let mut sorted = names.to_vec();
         sorted.sort_unstable();
         assert_eq!(names, sorted, "feature_registry_names must be sorted");
-        let mut dedup = names.clone();
+        let mut dedup = names.to_vec();
         dedup.dedup();
         assert_eq!(
             names.len(),
             dedup.len(),
             "feature_registry_names must have no duplicates"
         );
-        // Spot-check a canonical + alias pair both surface.
         assert!(names.contains(&"Flow Duration"));
         assert!(names.contains(&"flow_duration"));
     }
@@ -929,17 +916,11 @@ mod tests {
 
     #[test]
     fn bowley_skewness_known_output() {
-        // Symmetric distribution: [1, 2, 3, 4, 5, 6, 7, 8] (n=8)
-        // Q1 = sorted[2] = 3, Q2 = sorted[4] = 5, Q3 = sorted[6] = 7
-        // Bowley = (7 + 3 - 2*5) / (7 - 3) = 0 / 4 = 0.0
-        let symmetric = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        assert!((compute_bowley_skewness(&symmetric)).abs() < 1e-10);
+        let mut symmetric = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        assert!((compute_bowley_skewness(&mut symmetric)).abs() < 1e-10);
 
-        // Right-skewed: [1, 1, 1, 1, 2, 5, 10, 20] (n=8)
-        // Q1 = sorted[2] = 1, Q2 = sorted[4] = 2, Q3 = sorted[6] = 10
-        // Bowley = (10 + 1 - 2*2) / (10 - 1) = 7 / 9 ≈ 0.778
-        let right_skewed = vec![1.0, 1.0, 1.0, 1.0, 2.0, 5.0, 10.0, 20.0];
-        let skew = compute_bowley_skewness(&right_skewed);
+        let mut right_skewed = vec![1.0, 1.0, 1.0, 1.0, 2.0, 5.0, 10.0, 20.0];
+        let skew = compute_bowley_skewness(&mut right_skewed);
         assert!((skew - 7.0 / 9.0).abs() < 1e-10);
     }
 }

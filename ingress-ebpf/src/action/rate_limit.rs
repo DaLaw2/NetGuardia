@@ -1,13 +1,13 @@
 use aya_ebpf::helpers::bpf_ktime_get_ns;
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::{Array, LruHashMap};
-use common::define::drop_reason::*;
-use common::define::rate_limit::*;
-use common::define::setting::*;
-use common::define::tcp_flags::*;
-use common::model::ip_address::{IPv4, IPv6};
-use common::model::parsed_packet::ParsedPacket;
-use common::model::rate_limit::RateState;
+use net_guardia_abi::define::drop_reason::*;
+use net_guardia_abi::define::rate_limit::*;
+use net_guardia_abi::define::setting::*;
+use net_guardia_abi::define::tcp_flags::*;
+use net_guardia_abi::model::ip_address::{IPv4, IPv6, IpVersion};
+use net_guardia_abi::model::parsed_packet::ParsedPacket;
+use net_guardia_abi::model::rate_limit::RateState;
 use network_types::ip::IpProto;
 
 #[map]
@@ -31,26 +31,24 @@ static IPV6_DNS_RATE_MAP: LruHashMap<IPv6, RateState> = LruHashMap::with_max_ent
 
 pub fn should_drop(pkt: &ParsedPacket) -> Option<u8> {
     match pkt.ip_version {
-        4 => ipv4_should_drop(pkt),
-        6 => ipv6_should_drop(pkt),
+        value if value == IpVersion::V4.as_u8() => ipv4_should_drop(pkt),
+        value if value == IpVersion::V6.as_u8() => ipv6_should_drop(pkt),
         _ => None,
     }
 }
 
 #[inline(always)]
 fn get_config(index: u32, default: u64) -> u64 {
-    unsafe {
-        RATE_LIMIT_CONFIG
-            .get(index)
-            .copied()
-            .filter(|&v| v > 0)
-            .unwrap_or(default)
-    }
+    RATE_LIMIT_CONFIG
+        .get(index)
+        .copied()
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
 }
 
 #[inline(always)]
 fn is_syn_only(pkt: &ParsedPacket) -> bool {
-    matches!(pkt.protocol, IpProto::Tcp) && (pkt.tcp_flags & TCP_SYN != 0) && (pkt.tcp_flags & TCP_ACK == 0)
+    pkt.protocol == IpProto::Tcp as u8 && (pkt.tcp_flags & TCP_SYN != 0) && (pkt.tcp_flags & TCP_ACK == 0)
 }
 
 #[inline(always)]
@@ -93,40 +91,41 @@ fn ipv4_should_drop(pkt: &ParsedPacket) -> Option<u8> {
         return Some(DROP_REASON_RATE_LIMIT_PKT);
     }
 
-    if is_syn_only(pkt) {
-        if check_rate(
+    if is_syn_only(pkt)
+        && check_rate(
             &IPV4_SYN_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_SYN);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_SYN);
     }
 
-    if matches!(pkt.protocol, IpProto::Udp) {
-        if check_rate(
+    if pkt.protocol == IpProto::Udp as u8
+        && check_rate(
             &IPV4_UDP_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_UDP);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_UDP);
     }
 
-    if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
-        if check_rate(
+    if pkt.protocol == IpProto::Udp as u8
+        && pkt.dst_port == 53
+        && check_rate(
             &IPV4_DNS_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_DNS);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_DNS);
     }
 
     None
@@ -148,40 +147,41 @@ fn ipv6_should_drop(pkt: &ParsedPacket) -> Option<u8> {
         return Some(DROP_REASON_RATE_LIMIT_PKT);
     }
 
-    if is_syn_only(pkt) {
-        if check_rate(
+    if is_syn_only(pkt)
+        && check_rate(
             &IPV6_SYN_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_SYN_RATE, DEFAULT_SYN_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_SYN);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_SYN);
     }
 
-    if matches!(pkt.protocol, IpProto::Udp) {
-        if check_rate(
+    if pkt.protocol == IpProto::Udp as u8
+        && check_rate(
             &IPV6_UDP_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_UDP_RATE, DEFAULT_UDP_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_UDP);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_UDP);
     }
 
-    if matches!(pkt.protocol, IpProto::Udp) && pkt.dst_port == 53 {
-        if check_rate(
+    if pkt.protocol == IpProto::Udp as u8
+        && pkt.dst_port == 53
+        && check_rate(
             &IPV6_DNS_RATE_MAP,
             &src_ip,
             now,
             window,
             get_config(CFG_DNS_RATE, DEFAULT_DNS_RATE),
-        ) {
-            return Some(DROP_REASON_RATE_LIMIT_DNS);
-        }
+        )
+    {
+        return Some(DROP_REASON_RATE_LIMIT_DNS);
     }
 
     None

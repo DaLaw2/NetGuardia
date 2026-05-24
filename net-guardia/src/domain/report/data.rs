@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Shared report data structure used by both HTML email and PDF report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportData {
     pub period: String,

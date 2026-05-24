@@ -1,6 +1,6 @@
-/// Audit log entry returned by `list_audit_logs` and
-/// `verify_audit_log_chain` APIs.
-#[derive(Debug, Clone)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AuditLogEntry {
     pub id: i64,
     pub actor: String,

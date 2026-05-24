@@ -1,19 +1,21 @@
-#![no_std]
+#![cfg_attr(any(target_arch = "bpf", target_os = "none"), no_std)]
 #![no_main]
 mod action;
 
 use aya_ebpf::bindings::xdp_action;
+use aya_ebpf::helpers::bpf_ktime_get_ns;
 use aya_ebpf::macros::{map, xdp};
 use aya_ebpf::maps::{Array, PerCpuArray, ProgramArray, RingBuf, XskMap};
 use aya_ebpf::programs::XdpContext;
 #[allow(unused_imports)]
 use aya_log_ebpf::info;
-use common::define::drop_reason::*;
-use common::define::pipeline::*;
-use common::ebpf::parsing;
-use common::ebpf::symmetric_hash::symmetric_queue_id;
-use common::model::drop_event::DropEvent;
-use common::model::parsed_packet::ParsedPacket;
+use net_guardia_abi::define::drop_reason::*;
+use net_guardia_abi::define::pipeline::*;
+use net_guardia_abi::ebpf::parsing;
+use net_guardia_abi::ebpf::symmetric_hash::symmetric_queue_id;
+use net_guardia_abi::model::drop_event::DropEvent;
+use net_guardia_abi::model::ip_address::IpVersion;
+use net_guardia_abi::model::parsed_packet::ParsedPacket;
 
 use crate::action::{access_control, protocol_filter, rate_limit};
 
@@ -40,30 +42,32 @@ pub fn net_guardia(ctx: XdpContext) -> u32 {
 }
 
 #[inline(always)]
-unsafe fn chain_next(ctx: &XdpContext, current_id: u32) {
+fn chain_next(ctx: &XdpContext, current_id: u32) {
     unsafe {
-        if let Some(&next_slot) = NEXT_STAGE.get(current_id) {
-            if next_slot != STAGE_NONE {
-                let _ = PROGRAM_ARRAY.tail_call(ctx, next_slot);
-            }
+        if let Some(&next_slot) = NEXT_STAGE.get(current_id)
+            && next_slot != STAGE_NONE
+        {
+            let _ = PROGRAM_ARRAY.tail_call(ctx, next_slot);
         }
         let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
     }
 }
 
 #[inline(always)]
-unsafe fn emit_drop_event(pkt: &ParsedPacket, reason: u8) {
+fn emit_drop_event(pkt: &ParsedPacket, reason: u8) {
     if let Some(mut entry) = DROP_EVENTS.reserve::<DropEvent>(0) {
-        let event = entry.as_mut_ptr();
-        (*event).timestamp_ns = aya_ebpf::helpers::bpf_ktime_get_ns();
-        (*event).src_ip = pkt.src_ip;
-        (*event).dst_ip = pkt.dst_ip;
-        (*event).src_port = pkt.src_port;
-        (*event).dst_port = pkt.dst_port;
-        (*event).protocol = pkt.protocol as u8;
-        (*event).reason = reason;
-        (*event).ip_version = pkt.ip_version;
-        (*event)._pad = 0;
+        unsafe {
+            let event = &mut *entry.as_mut_ptr();
+            event.timestamp_ns = bpf_ktime_get_ns();
+            event.src_ip = pkt.src_ip;
+            event.dst_ip = pkt.dst_ip;
+            event.src_port = pkt.src_port;
+            event.dst_port = pkt.dst_port;
+            event.protocol = pkt.protocol;
+            event.reason = reason;
+            event.ip_version = pkt.ip_version;
+            event._pad = 0;
+        }
         entry.submit(0);
     }
 }
@@ -73,7 +77,10 @@ unsafe fn packet_intake(ctx: &XdpContext) {
     let Some(ptr) = PARSED_PACKET.get_ptr_mut(0) else {
         return;
     };
-    if parsing::parse_packet(ctx.data(), ctx.data_end(), ptr).is_ok() {
+    if unsafe { parsing::parse_packet(ctx.data(), ctx.data_end(), ptr).is_some() } {
+        unsafe {
+            (*ptr).timestamp_ns = bpf_ktime_get_ns();
+        }
         chain_next(ctx, STAGE_ENTRY);
     }
 }
@@ -97,7 +104,7 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
         let ptr = PARSED_PACKET.get_ptr(0).ok_or(())?;
         let pkt = &*ptr;
         match pkt.ip_version {
-            4 => {
+            value if value == IpVersion::V4.as_u8() => {
                 if access_control::ipv4_is_whitelisted(pkt) {
                     let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
@@ -111,7 +118,7 @@ unsafe fn try_access_control(ctx: &XdpContext) -> Result<u32, ()> {
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            6 => {
+            value if value == IpVersion::V6.as_u8() => {
                 if access_control::ipv6_is_whitelisted(pkt) {
                     let _ = PROGRAM_ARRAY.tail_call(ctx, STAGE_TRANSMISSION);
                     return Err(());
@@ -181,17 +188,17 @@ unsafe fn try_protocol_filter(ctx: &XdpContext) -> Result<u32, ()> {
         let pkt = &*ptr;
 
         match pkt.ip_version {
-            4 => {
+            value if value == IpVersion::V4.as_u8() => {
                 if protocol_filter::ipv4_service_rule_violation(start, end, pkt) {
                     emit_drop_event(pkt, DROP_REASON_PROTOCOL_FILTER);
                     return Ok(xdp_action::XDP_DROP);
                 }
             }
-            6 => {
-                if protocol_filter::ipv6_service_rule_violation(start, end, pkt) {
-                    emit_drop_event(pkt, DROP_REASON_PROTOCOL_FILTER);
-                    return Ok(xdp_action::XDP_DROP);
-                }
+            value
+                if value == IpVersion::V6.as_u8() && protocol_filter::ipv6_service_rule_violation(start, end, pkt) =>
+            {
+                emit_drop_event(pkt, DROP_REASON_PROTOCOL_FILTER);
+                return Ok(xdp_action::XDP_DROP);
             }
             _ => {}
         }
@@ -218,7 +225,7 @@ pub fn transmission(ctx: XdpContext) -> u32 {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), any(target_arch = "bpf", target_os = "none")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }

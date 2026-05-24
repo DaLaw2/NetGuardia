@@ -1,10 +1,11 @@
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
-use common::model::ip_address::*;
+use net_guardia_abi::model::ip_address::*;
 
 pub trait NativeConvert: Copy {
     type Native: Eq + PartialEq + Hash;
+
     fn into_native(self) -> Self::Native;
     fn from_native(native: Self::Native) -> Self;
 }

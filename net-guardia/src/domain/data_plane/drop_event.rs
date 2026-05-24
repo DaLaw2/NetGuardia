@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::domain::data_plane::ip_version::IpVersion;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DropEventMessage {
     pub timestamp_ns: u64,
@@ -9,11 +11,9 @@ pub struct DropEventMessage {
     pub dst_port: u16,
     pub protocol: u8,
     pub reason: String,
-    pub ip_version: u8,
+    pub ip_version: IpVersion,
 }
 
-/// Wire snapshot of drop counts. Returned by `DropMonitor::snapshot` and
-/// serialized to JSON for the HTTP stats endpoint.
 #[derive(Default, Clone, Serialize)]
 pub struct DropCounters {
     pub acl_blacklist: u64,

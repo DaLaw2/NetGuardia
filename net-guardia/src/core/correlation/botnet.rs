@@ -8,21 +8,24 @@ use crate::core::correlation::correlation_cleanup::capped_cleanup;
 use crate::domain::common::config::correlation::CorrelationDetectorParams;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
 use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::flow_observation::FlowObservation;
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::ml_detection::AlertMessage;
 
 struct TimedSourceSet {
     sources: HashSet<String>,
     window_start: Instant,
-    last_alert: AlertMessage,
     last_alerted: Option<Instant>,
 }
 
-/// Detects coordinated attacks: multiple source IPs targeting the same destination IP:port.
-/// Uses a DashMap for lock-free concurrent access.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BotnetKey {
+    dst_ip: String,
+    protocol: u8,
+    dst_port: u16,
+}
+
 pub struct BotnetDetector {
-    /// dst_ip → set of unique src_ips within the time window
-    state: DashMap<String, TimedSourceSet>,
+    state: DashMap<BotnetKey, TimedSourceSet>,
     window: Duration,
     window_secs: u64,
     threshold: usize,
@@ -40,28 +43,25 @@ impl BotnetDetector {
         }
     }
 
-    pub fn process(&self, alert: &AlertMessage) -> Option<DetectionEvent> {
-        let key = alert.dst_ip.clone();
+    pub fn process(&self, alert: &FlowObservation) -> Option<DetectionEvent> {
+        let key = botnet_key(alert);
         let now = Instant::now();
 
         let should_alert = {
             let mut entry = self.state.entry(key.clone()).or_insert_with(|| TimedSourceSet {
                 sources: HashSet::new(),
                 window_start: now,
-                last_alert: alert.clone(),
                 last_alerted: None,
             });
 
             let set = entry.value_mut();
 
-            // Reset window if expired
             if now.duration_since(set.window_start) >= self.window {
                 set.sources.clear();
                 set.window_start = now;
             }
 
             set.sources.insert(alert.src_ip.clone());
-            set.last_alert = alert.clone();
 
             if set.sources.len() >= self.threshold {
                 if let Some(last) = set.last_alerted
@@ -69,9 +69,10 @@ impl BotnetDetector {
                 {
                     set.sources.clear();
                     set.window_start = now;
-                    return None;
+                    None
+                } else {
+                    Some(set.sources.len())
                 }
-                Some(set.sources.len())
             } else {
                 None
             }
@@ -79,22 +80,22 @@ impl BotnetDetector {
 
         if let Some(unique_sources) = should_alert {
             log!(DetectionLog::BotnetDetected(
-                key.clone(),
+                format!("{}:{}", alert.dst_ip, alert.dst_port),
                 unique_sources,
                 self.window_secs,
             ));
 
-            // source_ip = the latest attacker; dest_ip = the victim being targeted.
-            // SOAR blocks source_ip, so we must NOT put the victim here.
+            let attacker_ip = alert.src_ip.clone();
+            let victim_ip = alert.dst_ip.clone();
             let event = DetectionEvent {
                 source: DetectionSource::Correlation,
                 attack_type: CanonicalAttackType::BotActivity.as_str().to_string(),
                 confidence: 0.85,
-                source_ip: alert.src_ip.clone(),
-                dest_ip: key.clone(),
+                source_ip: attacker_ip,
+                dest_ip: victim_ip,
                 protocol: alert.protocol,
-                packet_count: 0,
-                flow_duration_us: 0,
+                packet_count: alert.packet_count,
+                flow_duration_us: alert.flow_duration_us,
                 ae_score: 0.0,
                 anomaly_score: 0.0,
                 c2_score: 0.0,
@@ -117,27 +118,30 @@ impl BotnetDetector {
     }
 }
 
+fn botnet_key(alert: &FlowObservation) -> BotnetKey {
+    BotnetKey {
+        dst_ip: alert.dst_ip.clone(),
+        protocol: alert.protocol,
+        dst_port: alert.dst_port,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::thread;
 
     use super::*;
 
-    fn make_alert(src_ip: &str, dst_ip: &str) -> AlertMessage {
-        AlertMessage {
-            timestamp: 0,
-            flow_key: String::new(),
+    fn make_alert(src_ip: &str, dst_ip: &str) -> FlowObservation {
+        make_alert_to_port(src_ip, dst_ip, 80)
+    }
+
+    fn make_alert_to_port(src_ip: &str, dst_ip: &str, dst_port: u16) -> FlowObservation {
+        FlowObservation {
             src_ip: src_ip.to_string(),
             dst_ip: dst_ip.to_string(),
-            src_port: 12345,
-            dst_port: 80,
+            dst_port,
             protocol: 6,
-            is_attack: true,
-            attack_type: Some("DDoS".to_string()),
-            confidence: 0.9,
-            ae_score: 0.5,
-            anomaly_score: 0.0,
-            c2_score: 0.0,
             packet_count: 100,
             flow_duration_us: 1_000_000,
         }
@@ -162,8 +166,41 @@ mod tests {
         let alert = make_alert("10.0.0.9", "192.168.1.1");
         let event = detector.process(&alert).expect("Should alert at threshold");
         assert_eq!(event.source, DetectionSource::Correlation);
-        // source_ip must be the attacker, NOT the victim
         assert_eq!(event.source_ip, "10.0.0.9");
+        assert_eq!(event.dest_ip, "192.168.1.1");
+    }
+
+    #[test]
+    fn botnet_threshold_is_scoped_to_destination_port() {
+        let detector = BotnetDetector::new(
+            &CorrelationDetectorParams {
+                window_secs: 300,
+                threshold: 3,
+            },
+            10_000,
+        );
+
+        assert!(
+            detector
+                .process(&make_alert_to_port("10.0.0.1", "192.168.1.1", 80))
+                .is_none()
+        );
+        assert!(
+            detector
+                .process(&make_alert_to_port("10.0.0.2", "192.168.1.1", 80))
+                .is_none()
+        );
+        assert!(
+            detector
+                .process(&make_alert_to_port("10.0.0.3", "192.168.1.1", 443))
+                .is_none()
+        );
+
+        let event = detector
+            .process(&make_alert_to_port("10.0.0.4", "192.168.1.1", 80))
+            .expect("third source on the same destination port should alert");
+
+        assert_eq!(event.source_ip, "10.0.0.4");
         assert_eq!(event.dest_ip, "192.168.1.1");
     }
 

@@ -3,68 +3,56 @@ use std::sync::Arc;
 use macros::log;
 use serde::Serialize;
 
-use crate::domain::common::error::Error;
+use crate::common::error::Error;
+use crate::core::identity::user_service::role_from_group_names;
 use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
-use crate::domain::identity::error::AuthError;
-use crate::domain::identity::password;
+use crate::domain::identity::error::{AuthError, LoginError, RegisterError};
 use crate::domain::identity::validation::{validate_password, validate_username};
-use crate::interface::app_repo::AppRepo;
-use crate::interface::token_minter::TokenMinter;
+use crate::interface::identity::auth_repo::IdentityAuthRepo;
+use crate::interface::identity::password_hasher::PasswordHasher;
 
 pub const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dW5rbm93bg$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
 
 pub struct AuthService {
-    db: Arc<dyn AppRepo>,
-    jwt: Arc<dyn TokenMinter>,
+    db: Arc<dyn IdentityAuthRepo>,
+    password_hasher: Arc<dyn PasswordHasher>,
 }
 
 #[derive(Serialize)]
 pub struct LoginResult {
-    pub token: String,
-    pub role: String,
-    pub force_password_change: bool,
-}
-
-#[derive(Serialize)]
-pub struct UserProfile {
-    pub id: i64,
+    pub user_id: i64,
     pub username: String,
     pub role: String,
     pub permissions: Vec<String>,
-    pub groups: Vec<String>,
-}
-
-#[derive(Debug)]
-pub enum LoginError {
-    Locked { retry_after_secs: u64 },
-    InvalidCredentials,
-    InternalError,
-}
-
-pub enum RegisterError {
-    Validation(&'static str),
-    InvalidRole,
-    Forbidden,
-    HashFailed,
-    Conflict(Error),
+    pub force_password_change: bool,
 }
 
 impl AuthService {
-    pub fn new(db: Arc<dyn AppRepo>, jwt: Arc<dyn TokenMinter>) -> Self {
-        Self { db, jwt }
+    pub fn new(db: Arc<dyn IdentityAuthRepo>, password_hasher: Arc<dyn PasswordHasher>) -> Self {
+        Self { db, password_hasher }
     }
 
     pub async fn login(&self, username: &str, raw_password: &str) -> Result<LoginResult, LoginError> {
-        if let Ok(Some(remaining)) = self.db.check_login_locked(username).await {
-            return Err(LoginError::Locked {
-                retry_after_secs: remaining,
-            });
+        match self.db.get_remaining_lock_secs(username).await {
+            Ok(Some(remaining)) => {
+                return Err(LoginError::Locked(remaining));
+            }
+            Ok(None) => {
+                if let Err(e) = self.db.clear_expired_login_lock(username).await {
+                    log!(AuthError::LoginLockoutLookupFailed(e));
+                    return Err(LoginError::InternalError);
+                }
+            }
+            Err(e) => {
+                log!(AuthError::LoginLockoutLookupFailed(e));
+                return Err(LoginError::InternalError);
+            }
         }
 
         let user = match self.db.find_user(username).await {
             Ok(Some(u)) => u,
             _ => {
-                let _ = password::verify_password(raw_password, DUMMY_HASH);
+                let _ = self.password_hasher.verify_password(raw_password, DUMMY_HASH);
                 if let Err(e) = self.db.record_login_failure(username).await {
                     log!(AuthError::LoginFailureTrackingError(e));
                 }
@@ -72,7 +60,7 @@ impl AuthService {
             }
         };
 
-        match password::verify_password(raw_password, &user.password_hash) {
+        match self.password_hasher.verify_password(raw_password, &user.password_hash) {
             Ok(true) => {}
             _ => {
                 if let Err(e) = self.db.record_login_failure(username).await {
@@ -86,17 +74,23 @@ impl AuthService {
             log!(AuthError::LoginClearError(e));
         }
 
-        let permissions = self.db.list_user_permissions(user.id).await.unwrap_or_default();
-        let role = self.derive_role(user.id).await;
-
-        let token = self
-            .jwt
-            .create_token(user.id, &user.username, &role, permissions)
-            .map_err(|_| LoginError::InternalError)?;
+        let mut permissions = self.db.list_user_permissions(user.id).await.map_err(|e| {
+            log!(AuthError::PermissionLookupFailed(e));
+            LoginError::InternalError
+        })?;
+        if user.force_password_change {
+            permissions.clear();
+        }
+        let role = self.derive_role(user.id).await.map_err(|e| {
+            log!(AuthError::GroupLookupFailed(e));
+            LoginError::InternalError
+        })?;
 
         Ok(LoginResult {
-            token,
+            user_id: user.id,
+            username: user.username,
             role,
+            permissions,
             force_password_change: user.force_password_change,
         })
     }
@@ -118,7 +112,12 @@ impl AuthService {
             return Err(RegisterError::Forbidden);
         }
 
-        let hash = password::hash_password(raw_password).map_err(|_| RegisterError::HashFailed)?;
+        let default_group = if role == ROLE_ADMIN { GROUP_ADMIN } else { GROUP_VIEWER };
+        let default_group_id = self.default_group_id(default_group).await?;
+        let hash = self
+            .password_hasher
+            .hash_password(raw_password)
+            .map_err(|_| RegisterError::HashFailed)?;
 
         let new_id = self
             .db
@@ -126,43 +125,30 @@ impl AuthService {
             .await
             .map_err(RegisterError::Conflict)?;
 
-        let default_group = if role == ROLE_ADMIN { GROUP_ADMIN } else { GROUP_VIEWER };
-        if let Ok(groups) = self.db.list_user_groups().await
-            && let Some(g) = groups.into_iter().find(|g| g.name == default_group)
-            && let Err(e) = self.db.set_user_groups(new_id, &[g.id]).await
-        {
+        if let Err(e) = self.db.set_user_groups(new_id, &[default_group_id]).await {
+            let message = e.to_string();
             log!(AuthError::GroupAssignmentFailed(e));
+            if let Err(cleanup_err) = self.db.delete_user(new_id).await {
+                log!(AuthError::GroupAssignmentFailed(cleanup_err));
+            }
+            return Err(RegisterError::Internal(message));
         }
 
         Ok(new_id)
     }
 
-    pub async fn user_profile(&self, user_id: i64, username: &str) -> UserProfile {
-        let groups_raw = self.db.list_groups_for_user(user_id).await.unwrap_or_default();
-        let group_names: Vec<String> = groups_raw.iter().map(|g| g.name.clone()).collect();
-        let role = if group_names.iter().any(|n| n == GROUP_ADMIN) {
-            ROLE_ADMIN.to_string()
-        } else {
-            ROLE_VIEWER.to_string()
-        };
-        let permissions = self.db.list_user_permissions(user_id).await.unwrap_or_default();
-
-        UserProfile {
-            id: user_id,
-            username: username.to_string(),
-            role,
-            permissions,
-            groups: group_names,
-        }
+    async fn default_group_id(&self, group_name: &str) -> Result<i64, RegisterError> {
+        let groups = self.db.list_user_groups().await.map_err(RegisterError::Internal)?;
+        groups
+            .into_iter()
+            .find(|group| group.name == group_name)
+            .map(|group| group.id)
+            .ok_or_else(|| RegisterError::Internal(format!("Default group '{group_name}' is missing")))
     }
 
-    pub async fn derive_role(&self, user_id: i64) -> String {
-        let groups = self.db.list_groups_for_user(user_id).await.unwrap_or_default();
-        if groups.iter().any(|g| g.name == GROUP_ADMIN) {
-            ROLE_ADMIN.to_string()
-        } else {
-            ROLE_VIEWER.to_string()
-        }
+    async fn derive_role(&self, user_id: i64) -> Result<String, Error> {
+        let groups = self.db.list_groups_for_user(user_id).await?;
+        Ok(role_from_group_names(groups.iter().map(|group| group.name.as_str())).to_string())
     }
 }
 
@@ -170,23 +156,142 @@ impl AuthService {
 mod tests {
     use std::sync::Arc;
 
-    use super::*;
-    use crate::adapter::http::jwt::JwtService;
-    use crate::adapter::persistence::Database;
-    use crate::domain::identity::password;
-    use crate::infrastructure::secret_store::SecretStore;
-    use crate::interface::secret_store::SecretStorePort;
+    use async_trait::async_trait;
 
-    async fn auth_fixture() -> (Arc<Database>, Arc<JwtService>, AuthService) {
+    use super::*;
+    use crate::adapter::identity::password_hasher::Argon2PasswordHasher;
+    use crate::adapter::persistence::Database;
+    use crate::common::error::Error;
+    use crate::common::error::database::DatabaseError;
+    use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER, ROLE_ADMIN, ROLE_VIEWER};
+    use crate::domain::identity::user::{GroupMemberView, UserGroupView, UserView, UserWithGroupsView};
+    use crate::interface::identity::auth_repo::{IdentityAuthRepo, LoginAttemptRepo, UserGroupRepo, UserRepo};
+    use crate::interface::identity::password_hasher::PasswordHasher;
+
+    struct FailingLockoutRepo;
+
+    fn test_db_error() -> Error {
+        DatabaseError::PersistedValueInvalid("login_attempts", "locked_until", "bad").into()
+    }
+
+    #[async_trait]
+    impl UserRepo for FailingLockoutRepo {
+        async fn find_user(&self, _username: &str) -> Result<Option<UserView>, Error> {
+            Ok(None)
+        }
+
+        async fn find_user_by_id(&self, _user_id: i64) -> Result<Option<UserView>, Error> {
+            Ok(None)
+        }
+
+        async fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn insert_user(
+            &self,
+            _username: &str,
+            _password_hash: &str,
+            _role: &str,
+            _force_password_change: bool,
+        ) -> Result<i64, Error> {
+            Err(test_db_error())
+        }
+
+        async fn update_user_password(&self, _user_id: i64, _password_hash: &str) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn update_user_role(&self, _user_id: i64, _role: &str) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn reset_user_password(&self, _user_id: i64, _password_hash: &str) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn delete_user(&self, _user_id: i64) -> Result<bool, Error> {
+            Err(test_db_error())
+        }
+    }
+
+    #[async_trait]
+    impl UserGroupRepo for FailingLockoutRepo {
+        async fn get_user_group(&self, _id: i64) -> Result<Option<UserGroupView>, Error> {
+            Ok(None)
+        }
+
+        async fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn list_groups_for_user(&self, _user_id: i64) -> Result<Vec<UserGroupView>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn list_user_permissions(&self, _user_id: i64) -> Result<Vec<String>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn list_group_member_ids(&self, _group_id: i64) -> Result<Vec<i64>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn list_group_members(&self, _group_id: i64) -> Result<Vec<GroupMemberView>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn create_user_group(&self, _name: &str, _description: &str, _permissions: &str) -> Result<i64, Error> {
+            Err(test_db_error())
+        }
+
+        async fn update_user_group(
+            &self,
+            _id: i64,
+            _name: &str,
+            _description: &str,
+            _permissions: &str,
+        ) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn set_user_groups(&self, _user_id: i64, _group_ids: &[i64]) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn delete_user_group(&self, _id: i64) -> Result<bool, Error> {
+            Err(test_db_error())
+        }
+    }
+
+    #[async_trait]
+    impl LoginAttemptRepo for FailingLockoutRepo {
+        async fn get_remaining_lock_secs(&self, _username: &str) -> Result<Option<u64>, Error> {
+            Err(test_db_error())
+        }
+
+        async fn clear_expired_login_lock(&self, _username: &str) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+
+        async fn record_login_failure(&self, _username: &str) -> Result<(u32, Option<u64>), Error> {
+            Err(test_db_error())
+        }
+
+        async fn clear_login_failures(&self, _username: &str) -> Result<(), Error> {
+            Err(test_db_error())
+        }
+    }
+
+    async fn auth_fixture() -> (Arc<Database>, AuthService) {
         let db = Arc::new(Database::new(":memory:").await.expect("test db"));
-        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::new(db.clone()));
-        let jwt = Arc::new(JwtService::new(&secrets, 24).expect("jwt"));
-        let auth = AuthService::new(db.clone() as Arc<dyn AppRepo>, jwt.clone());
-        (db, jwt, auth)
+        let auth = AuthService::new(db.clone() as Arc<dyn IdentityAuthRepo>, Arc::new(Argon2PasswordHasher));
+        (db, auth)
     }
 
     async fn create_viewer(db: &Database, username: &str, password: &str) -> i64 {
-        let hash = password::hash_password(password).expect("hash");
+        let hasher = Argon2PasswordHasher;
+        let hash = hasher.hash_password(password).expect("hash");
         let user_id = db
             .insert_user(username, &hash, ROLE_VIEWER, false)
             .await
@@ -205,22 +310,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relogin_token_permissions_follow_role_promotion_and_demotion() {
-        let (db, jwt, auth) = auth_fixture().await;
+    async fn login_lockout_lookup_error_fails_closed() {
+        let auth = AuthService::new(Arc::new(FailingLockoutRepo), Arc::new(Argon2PasswordHasher));
+
+        let result = auth.login("alice", "Correct Horse 123!").await;
+
+        assert!(matches!(result, Err(LoginError::InternalError)));
+    }
+
+    #[tokio::test]
+    async fn force_password_change_login_has_no_admin_permissions() {
+        let (db, auth) = auth_fixture().await;
+        let hasher = Argon2PasswordHasher;
+        let hash = hasher.hash_password("Default Admin 123!").expect("hash");
+        let user_id = db
+            .insert_user("setup_admin", &hash, ROLE_ADMIN, true)
+            .await
+            .expect("insert admin");
+        let admin_group = db
+            .list_user_groups()
+            .await
+            .expect("groups")
+            .into_iter()
+            .find(|g| g.name == GROUP_ADMIN)
+            .expect("admin group");
+        db.set_user_groups(user_id, &[admin_group.id])
+            .await
+            .expect("assign admin group");
+
+        let login = auth.login("setup_admin", "Default Admin 123!").await.expect("login");
+
+        assert!(login.force_password_change);
+        assert!(login.permissions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relogin_permissions_follow_role_promotion_and_demotion() {
+        let (db, auth) = auth_fixture().await;
         let user_id = create_viewer(&db, "alice", "Correct Horse 123!").await;
 
         db.update_user_role(user_id, ROLE_ADMIN).await.expect("promote");
         let promoted = auth.login("alice", "Correct Horse 123!").await.expect("login");
-        let promoted_claims = jwt.validate_token(&promoted.token).expect("promoted token");
         assert_eq!(promoted.role, ROLE_ADMIN);
-        assert_eq!(promoted_claims.role, ROLE_ADMIN);
-        assert!(promoted_claims.permissions.contains(&"users:admin".to_string()));
+        assert!(promoted.permissions.contains(&"users:admin".to_string()));
 
         db.update_user_role(user_id, ROLE_VIEWER).await.expect("demote");
         let demoted = auth.login("alice", "Correct Horse 123!").await.expect("login");
-        let demoted_claims = jwt.validate_token(&demoted.token).expect("demoted token");
         assert_eq!(demoted.role, ROLE_VIEWER);
-        assert_eq!(demoted_claims.role, ROLE_VIEWER);
-        assert!(!demoted_claims.permissions.contains(&"users:admin".to_string()));
+        assert!(!demoted.permissions.contains(&"users:admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn register_assigns_default_group_before_returning_success() {
+        let (db, auth) = auth_fixture().await;
+
+        let user_id = auth
+            .register("bob", "Correct Horse 123!", ROLE_ADMIN, ROLE_ADMIN)
+            .await
+            .expect("register admin");
+
+        let groups = db.list_groups_for_user(user_id).await.expect("user groups");
+        assert!(groups.iter().any(|group| group.name == GROUP_ADMIN));
+    }
+
+    #[tokio::test]
+    async fn register_fails_without_creating_user_when_default_group_is_missing() {
+        let (db, auth) = auth_fixture().await;
+        let admin_group = db
+            .list_user_groups()
+            .await
+            .expect("groups")
+            .into_iter()
+            .find(|group| group.name == GROUP_ADMIN)
+            .expect("admin group");
+        db.delete_user_group(admin_group.id).await.expect("delete admin group");
+
+        let err = auth
+            .register("carol", "Correct Horse 123!", ROLE_ADMIN, ROLE_ADMIN)
+            .await
+            .expect_err("missing default group should fail registration");
+
+        assert!(matches!(err, RegisterError::Internal { .. }));
+        assert!(db.find_user("carol").await.expect("find user").is_none());
     }
 }

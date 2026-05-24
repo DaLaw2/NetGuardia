@@ -1,10 +1,11 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::domain::data_plane::direction::Direction;
+use crate::domain::data_plane::ip_version::IpVersion;
 use crate::domain::data_plane::user_packet::UserPacket;
+use crate::domain::detection::attack_type::CanonicalAttackType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipParams {
@@ -12,14 +13,14 @@ pub struct ClipParams {
     pub upper: f64,
 }
 
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize)]
 pub struct FlowKey {
     pub src_ip: [u8; 16],
     pub dst_ip: [u8; 16],
     pub src_port: u16,
     pub dst_port: u16,
     pub protocol: u8,
-    pub ip_version: u8,
+    pub ip_version: IpVersion,
 }
 
 impl FlowKey {
@@ -54,7 +55,7 @@ impl FlowKey {
     }
 
     fn ip_bytes_to_string(&self, bytes: &[u8; 16]) -> String {
-        if self.ip_version == 6 {
+        if self.ip_version.is_v6() {
             Ipv6Addr::from(*bytes).to_string()
         } else {
             let octets: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
@@ -91,8 +92,9 @@ pub struct DetectionResult {
     pub flow_key_raw: FlowKey,
     pub direction: Direction,
     pub is_attack: bool,
-    pub attack_type: Option<String>,
+    pub attack_type: Option<CanonicalAttackType>,
     pub confidence: f32,
+    pub alert_threshold: f32,
     pub ae_score: f32,
     pub anomaly_score: f32,
     pub c2_score: f32,
@@ -149,12 +151,7 @@ pub struct AlertMessage {
 }
 
 impl AlertMessage {
-    pub fn from_detection_result(result: &DetectionResult) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
+    pub fn from_detection_result(result: &DetectionResult, timestamp: u64) -> Self {
         Self {
             timestamp,
             flow_key: result.flow_key.clone(),
@@ -164,7 +161,7 @@ impl AlertMessage {
             dst_port: result.flow_key_raw.dst_port,
             protocol: result.flow_key_raw.protocol,
             is_attack: result.is_attack,
-            attack_type: result.attack_type.clone(),
+            attack_type: result.attack_type.map(|attack_type| attack_type.to_string()),
             confidence: result.confidence,
             ae_score: result.ae_score,
             anomaly_score: result.anomaly_score,

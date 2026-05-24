@@ -1,17 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use rusqlite::{Error as RusqliteError, params};
 
 use super::Database;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::database::DatabaseError;
+use crate::common::error::Error;
+use crate::common::error::database::DatabaseError;
 use crate::domain::identity::auth::{GROUP_ADMIN, GROUP_VIEWER, LOGIN_LOCKOUT_SECS, LOGIN_MAX_FAILURES, ROLE_ADMIN};
 use crate::domain::identity::user::{
     GroupMemberView, UserGroupMembership, UserGroupView, UserView, UserWithGroupsView,
 };
-use crate::interface::identity::{LoginAttemptRepo, UserGroupRepo, UserRepo};
+use crate::interface::identity::auth_repo::{LoginAttemptRepo, UserGroupRepo, UserRepo};
 
 fn user_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserView> {
     Ok(UserView {
@@ -30,6 +30,25 @@ fn group_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserGroupView> {
         permissions: row.get(3)?,
         created_at: row.get(4)?,
     })
+}
+
+fn decode_login_failure_count(value: i64) -> Result<u32, Error> {
+    u32::try_from(value)
+        .map_err(|_| DatabaseError::PersistedValueInvalid("login_attempts", "failure_count", value.to_string()).into())
+}
+
+fn encode_login_locked_until(value: u64) -> Result<i64, Error> {
+    i64::try_from(value)
+        .map_err(|_| DatabaseError::PersistedValueInvalid("login_attempts", "locked_until", value.to_string()).into())
+}
+
+fn decode_login_locked_until(value: Option<i64>) -> Result<Option<u64>, Error> {
+    match value {
+        Some(value) => u64::try_from(value).map(Some).map_err(|_| {
+            DatabaseError::PersistedValueInvalid("login_attempts", "locked_until", value.to_string()).into()
+        }),
+        None => Ok(None),
+    }
 }
 
 impl Database {
@@ -82,15 +101,19 @@ impl Database {
         let password_hash = password_hash.to_string();
         self.pool
             .conn_and_then(move |conn| {
-                conn.execute(
+                let updated = conn.execute(
                     "UPDATE users SET password_hash = ?1, force_password_change = 0 WHERE id = ?2",
                     params![password_hash, user_id],
                 )?;
+                if updated == 0 {
+                    Err(DatabaseError::UserNotFound(user_id))?;
+                }
                 Ok(())
             })
             .await
     }
 
+    #[cfg(test)]
     pub async fn user_count(&self) -> Result<i64, Error> {
         self.pool
             .conn_and_then(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?))
@@ -119,28 +142,28 @@ impl Database {
                     ))
                 })?;
 
-                let mut user_map: HashMap<i64, UserWithGroupsView> = HashMap::new();
-                let mut order: Vec<i64> = Vec::new();
+                let mut users: Vec<UserWithGroupsView> = Vec::new();
                 for row in rows {
                     let (id, username, force_pw, created_at, group_id, group_name) = row?;
-                    let entry = user_map.entry(id).or_insert_with(|| {
-                        order.push(id);
-                        UserWithGroupsView {
+                    if users.last().is_none_or(|user| user.id != id) {
+                        users.push(UserWithGroupsView {
                             id,
                             username,
                             force_password_change: force_pw,
                             created_at,
                             groups: Vec::new(),
-                        }
-                    });
-                    if let (Some(gid), Some(gname)) = (group_id, group_name) {
-                        entry.groups.push(UserGroupMembership {
+                        });
+                    }
+                    if let (Some(gid), Some(gname)) = (group_id, group_name)
+                        && let Some(user) = users.last_mut()
+                    {
+                        user.groups.push(UserGroupMembership {
                             group_id: gid,
                             group_name: gname,
                         });
                     }
                 }
-                Ok(order.into_iter().filter_map(|id| user_map.remove(&id)).collect())
+                Ok(users)
             })
             .await
     }
@@ -184,10 +207,13 @@ impl Database {
         let password_hash = password_hash.to_string();
         self.pool
             .conn_and_then(move |conn| {
-                conn.execute(
+                let updated = conn.execute(
                     "UPDATE users SET password_hash = ?1, force_password_change = 1 WHERE id = ?2",
                     params![password_hash, user_id],
                 )?;
+                if updated == 0 {
+                    Err(DatabaseError::UserNotFound(user_id))?;
+                }
                 Ok(())
             })
             .await
@@ -215,11 +241,7 @@ impl Database {
                 let mut stmt =
                     conn.prepare("SELECT id, name, description, permissions, created_at FROM user_groups ORDER BY id")?;
                 let rows = stmt.query_map([], group_from_row)?;
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row?);
-                }
-                Ok(results)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -304,11 +326,7 @@ impl Database {
                      WHERE m.user_id = ?1 ORDER BY g.id",
                 )?;
                 let rows = stmt.query_map(params![user_id], group_from_row)?;
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row?);
-                }
-                Ok(results)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -340,10 +358,10 @@ impl Database {
         let groups = self.list_groups_for_user(user_id).await?;
         let mut all_perms = HashSet::new();
         for g in groups {
-            if let Ok(perms) = serde_json::from_str::<Vec<String>>(&g.permissions) {
-                for p in perms {
-                    all_perms.insert(p);
-                }
+            let perms = serde_json::from_str::<Vec<String>>(&g.permissions)
+                .map_err(|e| DatabaseError::PersistedJsonInvalid(g.id, "user_groups.permissions", e))?;
+            for p in perms {
+                all_perms.insert(p);
             }
         }
         let mut result: Vec<String> = all_perms.into_iter().collect();
@@ -356,11 +374,7 @@ impl Database {
             .conn_and_then(move |conn| {
                 let mut stmt = conn.prepare("SELECT user_id FROM user_group_members WHERE group_id = ?1")?;
                 let rows = stmt.query_map(params![group_id], |row| row.get::<_, i64>(0))?;
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row?);
-                }
-                Ok(results)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
@@ -379,67 +393,54 @@ impl Database {
                         username: row.get(1)?,
                     })
                 })?;
-                let mut results = Vec::new();
-                for row in rows {
-                    results.push(row?);
-                }
-                Ok(results)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .await
     }
 
     pub async fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> {
         let username = username.to_string();
-        let count: u32 = self
-            .pool
-            .conn_and_then({
-                let username = username.clone();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+        self.pool
+            .conn_mut_and_then({
                 move |conn| {
-                    let count = conn
-                        .query_row(
-                            "SELECT failure_count FROM login_attempts WHERE username = ?1",
-                            params![username],
-                            |row| row.get::<_, u32>(0),
-                        )
-                        .unwrap_or(0)
-                        + 1;
-                    conn.execute(
-                        "INSERT INTO login_attempts (username, failure_count) VALUES (?1, ?2) \
-                         ON CONFLICT(username) DO UPDATE SET failure_count = ?2",
-                        params![username, count],
+                    let tx = conn.transaction()?;
+                    let current_count = match tx.query_row(
+                        "SELECT failure_count FROM login_attempts WHERE username = ?1",
+                        params![&username],
+                        |row| row.get::<_, i64>(0),
+                    ) {
+                        Ok(count) => decode_login_failure_count(count)?,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+                        Err(err) => Err(DatabaseError::QueryFailed(err))?,
+                    };
+                    let count = current_count.saturating_add(1);
+                    let locked_until = if count >= LOGIN_MAX_FAILURES {
+                        Some(now.saturating_add(LOGIN_LOCKOUT_SECS))
+                    } else {
+                        None
+                    };
+                    let locked_until_db = locked_until.map(encode_login_locked_until).transpose()?;
+                    tx.execute(
+                        "INSERT INTO login_attempts (username, failure_count, locked_until) VALUES (?1, ?2, ?3) \
+                         ON CONFLICT(username) DO UPDATE SET failure_count = ?2, locked_until = ?3",
+                        params![&username, count, locked_until_db],
                     )?;
-                    Ok::<u32, Error>(count)
+                    tx.commit()?;
+                    Ok::<_, Error>((count, locked_until))
                 }
             })
-            .await?;
-        if count >= LOGIN_MAX_FAILURES {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_secs();
-            let locked_until = now + LOGIN_LOCKOUT_SECS;
-            let locked_until_db = locked_until as i64;
-            self.pool
-                .conn_and_then(move |conn| {
-                    conn.execute(
-                        "UPDATE login_attempts SET locked_until = ?2 WHERE username = ?1",
-                        params![username, locked_until_db],
-                    )?;
-                    Ok::<(), Error>(())
-                })
-                .await?;
-            Ok((count, Some(locked_until)))
-        } else {
-            Ok((count, None))
-        }
+            .await
     }
 
-    pub async fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> {
+    pub async fn get_remaining_lock_secs(&self, username: &str) -> Result<Option<u64>, Error> {
         let username = username.to_string();
-        if let Some(locked_until) = self
+        let locked_until = self
             .pool
             .conn_and_then({
-                let username = username.clone();
                 move |conn| {
                     let result = conn.query_row(
                         "SELECT locked_until FROM login_attempts WHERE username = ?1",
@@ -447,14 +448,15 @@ impl Database {
                         |row| row.get::<_, Option<i64>>(0),
                     );
                     match result {
-                        Ok(value) => Ok::<Option<u64>, Error>(value.and_then(|v| u64::try_from(v).ok())),
-                        Err(rusqlite::Error::QueryReturnedNoRows) => Ok::<Option<u64>, Error>(None),
+                        Ok(value) => decode_login_locked_until(value),
+                        Err(RusqliteError::QueryReturnedNoRows) => Ok::<Option<u64>, Error>(None),
                         Err(e) => Err(Error::from(e)),
                     }
                 }
             })
-            .await?
-        {
+            .await?;
+
+        if let Some(locked_until) = locked_until {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
@@ -462,9 +464,25 @@ impl Database {
             if now < locked_until {
                 return Ok(Some(locked_until - now));
             }
-            self.clear_login_failures(&username).await?;
         }
         Ok(None)
+    }
+
+    pub async fn clear_expired_login_lock(&self, username: &str) -> Result<(), Error> {
+        let username = username.to_string();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs() as i64;
+        self.pool
+            .conn_and_then(move |conn| {
+                conn.execute(
+                    "DELETE FROM login_attempts WHERE username = ?1 AND locked_until IS NOT NULL AND locked_until <= ?2",
+                    params![username, now],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     pub async fn clear_login_failures(&self, username: &str) -> Result<(), Error> {
@@ -488,6 +506,10 @@ impl UserRepo for Database {
         self.find_user_by_id(user_id).await
     }
 
+    async fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error> {
+        self.list_users_with_groups().await
+    }
+
     async fn insert_user(
         &self,
         username: &str,
@@ -503,14 +525,6 @@ impl UserRepo for Database {
         self.update_user_password(user_id, password_hash).await
     }
 
-    async fn list_users_with_groups(&self) -> Result<Vec<UserWithGroupsView>, Error> {
-        self.list_users_with_groups().await
-    }
-
-    async fn delete_user(&self, user_id: i64) -> Result<bool, Error> {
-        self.delete_user(user_id).await
-    }
-
     async fn update_user_role(&self, user_id: i64, role: &str) -> Result<(), Error> {
         self.update_user_role(user_id, role).await
     }
@@ -518,36 +532,24 @@ impl UserRepo for Database {
     async fn reset_user_password(&self, user_id: i64, password_hash: &str) -> Result<(), Error> {
         self.reset_user_password(user_id, password_hash).await
     }
+
+    async fn delete_user(&self, user_id: i64) -> Result<bool, Error> {
+        self.delete_user(user_id).await
+    }
 }
 
 #[async_trait]
 impl UserGroupRepo for Database {
-    async fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
-        self.list_user_groups().await
-    }
-
-    async fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> {
-        self.create_user_group(name, description, permissions).await
-    }
-
-    async fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> {
-        self.update_user_group(id, name, description, permissions).await
-    }
-
-    async fn delete_user_group(&self, id: i64) -> Result<bool, Error> {
-        self.delete_user_group(id).await
-    }
-
     async fn get_user_group(&self, id: i64) -> Result<Option<UserGroupView>, Error> {
         self.get_user_group(id).await
     }
 
-    async fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<UserGroupView>, Error> {
-        self.list_groups_for_user(user_id).await
+    async fn list_user_groups(&self) -> Result<Vec<UserGroupView>, Error> {
+        self.list_user_groups().await
     }
 
-    async fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> {
-        self.set_user_groups(user_id, group_ids).await
+    async fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<UserGroupView>, Error> {
+        self.list_groups_for_user(user_id).await
     }
 
     async fn list_user_permissions(&self, user_id: i64) -> Result<Vec<String>, Error> {
@@ -561,19 +563,162 @@ impl UserGroupRepo for Database {
     async fn list_group_members(&self, group_id: i64) -> Result<Vec<GroupMemberView>, Error> {
         self.list_group_members(group_id).await
     }
+
+    async fn create_user_group(&self, name: &str, description: &str, permissions: &str) -> Result<i64, Error> {
+        self.create_user_group(name, description, permissions).await
+    }
+
+    async fn update_user_group(&self, id: i64, name: &str, description: &str, permissions: &str) -> Result<(), Error> {
+        self.update_user_group(id, name, description, permissions).await
+    }
+
+    async fn set_user_groups(&self, user_id: i64, group_ids: &[i64]) -> Result<(), Error> {
+        self.set_user_groups(user_id, group_ids).await
+    }
+
+    async fn delete_user_group(&self, id: i64) -> Result<bool, Error> {
+        self.delete_user_group(id).await
+    }
 }
 
 #[async_trait]
 impl LoginAttemptRepo for Database {
+    async fn get_remaining_lock_secs(&self, username: &str) -> Result<Option<u64>, Error> {
+        self.get_remaining_lock_secs(username).await
+    }
+
+    async fn clear_expired_login_lock(&self, username: &str) -> Result<(), Error> {
+        self.clear_expired_login_lock(username).await
+    }
+
     async fn record_login_failure(&self, username: &str) -> Result<(u32, Option<u64>), Error> {
         self.record_login_failure(username).await
     }
 
-    async fn check_login_locked(&self, username: &str) -> Result<Option<u64>, Error> {
-        self.check_login_locked(username).await
-    }
-
     async fn clear_login_failures(&self, username: &str) -> Result<(), Error> {
         self.clear_login_failures(username).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::params;
+
+    use super::*;
+    use crate::domain::identity::auth::ROLE_VIEWER;
+
+    #[tokio::test]
+    async fn list_user_permissions_rejects_malformed_group_permissions() {
+        let db = Database::new(":memory:").await.expect("test db");
+        let user_id = db
+            .insert_user("broken_perms", "hash", ROLE_VIEWER, false)
+            .await
+            .expect("user");
+        let group_id = db
+            .create_user_group("broken-permissions", "broken", "{not-json")
+            .await
+            .expect("group");
+        db.set_user_groups(user_id, &[group_id]).await.expect("membership");
+
+        let err = db
+            .list_user_permissions(user_id)
+            .await
+            .expect_err("permissions should fail");
+
+        match err {
+            Error::Database(DatabaseError::PersistedJsonInvalid { id, column, .. }) => {
+                assert_eq!(id, group_id);
+                assert_eq!(column, "user_groups.permissions");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_remaining_lock_secs_rejects_negative_persisted_lock_time() {
+        let db = Database::new(":memory:").await.expect("test db");
+        db.pool
+            .conn_and_then(|conn| {
+                conn.execute(
+                    "INSERT INTO login_attempts (username, failure_count, locked_until) VALUES (?1, ?2, ?3)",
+                    params!["alice", 1_i64, -1_i64],
+                )?;
+                Ok::<(), Error>(())
+            })
+            .await
+            .expect("corrupt lock row");
+
+        let err = db
+            .get_remaining_lock_secs("alice")
+            .await
+            .expect_err("negative lock time should fail");
+
+        match err {
+            Error::Database(DatabaseError::PersistedValueInvalid { table, column, value }) => {
+                assert_eq!(table, "login_attempts");
+                assert_eq!(column, "locked_until");
+                assert_eq!(value, "-1");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_user_password_errors_when_user_is_missing() {
+        let db = Database::new(":memory:").await.expect("test db");
+
+        let err = db
+            .update_user_password(404, "new-hash")
+            .await
+            .expect_err("missing user should not be a successful update");
+
+        match err {
+            Error::Database(DatabaseError::UserNotFound { id }) => assert_eq!(id, 404),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_user_password_errors_when_user_is_missing() {
+        let db = Database::new(":memory:").await.expect("test db");
+
+        let err = db
+            .reset_user_password(404, "new-hash")
+            .await
+            .expect_err("missing user should not be a successful reset");
+
+        match err {
+            Error::Database(DatabaseError::UserNotFound { id }) => assert_eq!(id, 404),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_login_failure_rejects_negative_persisted_failure_count() {
+        let db = Database::new(":memory:").await.expect("test db");
+        db.pool
+            .conn_and_then(|conn| {
+                conn.execute(
+                    "INSERT INTO login_attempts (username, failure_count, locked_until) VALUES (?1, ?2, ?3)",
+                    params!["alice", -1_i64, Option::<i64>::None],
+                )?;
+                Ok::<(), Error>(())
+            })
+            .await
+            .expect("corrupt failure row");
+
+        let err = db
+            .record_login_failure("alice")
+            .await
+            .expect_err("negative failure count should fail");
+
+        match err {
+            Error::Database(DatabaseError::PersistedValueInvalid { table, column, value }) => {
+                assert_eq!(table, "login_attempts");
+                assert_eq!(column, "failure_count");
+                assert_eq!(value, "-1");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

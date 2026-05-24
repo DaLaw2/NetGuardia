@@ -1,5 +1,7 @@
+use crate::domain::data_plane::ip_version::IpVersion;
+
 pub struct UserPacket {
-    pub ip_version: u8,
+    pub ip_version: IpVersion,
     pub protocol: u8,
     pub tcp_flags: u8,
     pub src_ip: [u8; 16],

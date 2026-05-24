@@ -1,7 +1,5 @@
 use crate::domain::detection::ml_inference_config::MLInferenceConfig;
 
-/// Baselines loaded from the inference config (scaler mean / std).
-/// If inference_config has no scaler data, drift detection is disabled.
 pub struct FeatureBaselines {
     pub names: Vec<String>,
     pub means: Vec<f64>,
@@ -9,8 +7,6 @@ pub struct FeatureBaselines {
 }
 
 impl FeatureBaselines {
-    /// Build baselines from the ML inference config.
-    /// Returns `None` if the config has no features (drift detection disabled).
     pub fn from_inference_config(config: &MLInferenceConfig) -> Option<Self> {
         if config.ae_feature_names.is_empty() {
             return None;
@@ -23,7 +19,6 @@ impl FeatureBaselines {
     }
 }
 
-/// Report emitted when feature drift is detected.
 #[derive(Debug, Clone)]
 pub struct DriftReport {
     pub drifted_features: Vec<String>,

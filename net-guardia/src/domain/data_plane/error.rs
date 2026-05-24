@@ -1,5 +1,6 @@
 use macros::traceable;
-use tracing;
+
+use crate::domain::data_plane::direction::Direction;
 
 traceable! {
     EbpfError {
@@ -34,6 +35,10 @@ traceable! {
         #[error("Failed to configure AF_XDP")]
         AfXdpSetFailed => tracing::Level::ERROR,
 
+        #[no_source]
+        #[error("Failed to remove limit on locked memory, ret is: {ret}")]
+        MemoryLimitUnlockFailed { ret: i32 } => tracing::Level::ERROR,
+
         #[error("Failed to wakeup TX")]
         WakeupTXFailed => tracing::Level::ERROR,
 
@@ -41,7 +46,7 @@ traceable! {
         #[error("eBPF map not found")]
         MapNotFound => tracing::Level::ERROR,
 
-        #[error("eBPF map operation failed")]
+        #[error("eBPF map operation failed: {err}")]
         MapOperationError => tracing::Level::ERROR,
 
         #[no_source]
@@ -57,8 +62,43 @@ traceable! {
         FillQueueInitFailed => tracing::Level::ERROR,
 
         #[no_source]
+        #[error("Fill queue initialization incomplete: produced {produced}, expected {expected}")]
+        FillQueueInitIncomplete { produced: usize, expected: usize } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("AF_XDP queue unavailable for {direction} queue {queue_id}")]
+        AfXdpQueueUnavailable { direction: Direction, queue_id: u32 } => tracing::Level::ERROR,
+
+        #[no_source]
         #[error("Invalid IP address: {ip}")]
         InvalidIpAddress { ip: String } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Invalid DNS domain: {message}")]
+        InvalidDnsDomain { message: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("DNS label length out of range: {len} (must be 1..64)")]
+        DnsLabelOutOfRange { len: usize } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("DNS domain name too long: '{domain}'")]
+        DnsDomainTooLong { domain: String } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Too many DNS domains in one request (max {max})")]
+        TooManyDnsDomains { max: usize } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Invalid rate limit value for {field}: {value} (must be greater than 0)")]
+        InvalidRateLimitValue { field: String, value: u64 } => tracing::Level::WARN,
+
+        #[no_source]
+        #[error("Invalid country code: {code}")]
+        InvalidCountryCode { code: String } => tracing::Level::WARN,
+
+        #[error("Invalid GeoIP CIDR literal '{cidr}': {err}")]
+        InvalidGeoIpCidr { cidr: String } => tracing::Level::ERROR,
 
         #[no_source]
         #[error("IP version mismatch: expected {expected}")]

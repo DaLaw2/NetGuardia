@@ -17,11 +17,22 @@ traceable! {
         #[error("Failed to parse inference configuration: {err}")]
         ConfigParseFailed => tracing::Level::ERROR,
 
+        #[no_source]
+        #[error("Inference configuration is invalid: {detail}")]
+        ConfigInvalid { detail: String } => tracing::Level::ERROR,
+
         #[error("Failed to flush traffic log: {err}")]
         TrafficLogFlushFailed => tracing::Level::ERROR,
 
-        #[error("Model manifest at {path:?} is invalid: {err}")]
-        ManifestInvalid { path: PathBuf } => tracing::Level::ERROR,
+        #[error("Failed to read model manifest at {path:?}: {err}")]
+        ManifestReadFailed { path: PathBuf } => tracing::Level::ERROR,
+
+        #[error("Failed to parse model manifest at {path:?}: {err}")]
+        ManifestParseFailed { path: PathBuf } => tracing::Level::ERROR,
+
+        #[no_source]
+        #[error("Model manifest at {path:?} is invalid: {detail}")]
+        ManifestInvalid { path: PathBuf, detail: String } => tracing::Level::ERROR,
 
         #[no_source]
         #[error("Feature count mismatch for {model:?}: manifest declares {declared}, ONNX input expects {onnx_dim}")]
@@ -31,29 +42,14 @@ traceable! {
         #[error("Model load timed out after {seconds}s: {path:?}")]
         ModelLoadTimeout { path: PathBuf, seconds: u64 } => tracing::Level::ERROR,
 
+        #[error("Model runtime failed for {model}: {err}")]
+        RuntimeFailed { model: String } => tracing::Level::ERROR,
+
         #[no_source]
         #[error("Unknown feature '{name}' — not registered in FEATURE_REGISTRY")]
         UnknownFeature { name: String } => tracing::Level::ERROR,
 
         #[error("Model watcher failed: {err}")]
         ModelWatcherFailed => tracing::Level::ERROR,
-    }
-}
-
-traceable! {
-    SuricataError {
-        #[no_source]
-        #[error("Suricata binary not found at '{path}'")]
-        BinaryNotFound { path: String } => tracing::Level::ERROR,
-
-        #[no_source]
-        #[error("Suricata config not found at '{path}'")]
-        ConfigNotFound { path: String } => tracing::Level::ERROR,
-
-        #[error("Failed to spawn Suricata subprocess")]
-        SpawnFailed => tracing::Level::ERROR,
-
-        #[error("Failed to open eve.json stream at '{path}'")]
-        EveOpenFailed { path: String } => tracing::Level::ERROR,
     }
 }

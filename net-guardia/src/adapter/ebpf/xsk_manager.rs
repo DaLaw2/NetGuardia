@@ -4,31 +4,31 @@ use std::num::NonZero;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use aya::Ebpf;
 use aya::maps::{MapData, XskMap};
-use common::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
 use crossbeam::channel::{Receiver, Sender, TrySendError, bounded};
 use crossbeam::queue::SegQueue;
 use macros::log;
+use net_guardia_abi::define::drop_reason::DROP_REASON_DNS_BLACKLIST;
 use parking_lot::Mutex;
 use tokio::sync::oneshot::{self, error::TryRecvError};
 use xsk_rs::config::{BindFlags, FrameSize, Interface, LibxdpFlags, QueueSize, SocketConfig, UmemConfig};
 use xsk_rs::{CompQueue, FillQueue, FrameDesc, RxQueue, Socket, TxQueue, Umem};
 
 use crate::adapter::ebpf::drop_monitor::DropMonitor;
+use crate::common::error::Error;
+use crate::common::error::system::SystemError;
+use crate::common::utils::packet_parser::parse_packet_at;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::config::ebpf::EbpfConfig;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::system::SystemError;
 use crate::domain::data_plane::direction::Direction;
 use crate::domain::data_plane::error::EbpfError;
 use crate::domain::data_plane::log::EbpfLog;
-use crate::interface::dns_query_filter::DnsQueryFilter;
-use crate::interface::packet_sink::{PacketSink, PacketSinkFactory};
-use crate::utils::packet_parser::parse_packet;
+use crate::interface::data_plane::dns_query_filter::DnsQueryFilter;
+use crate::interface::data_plane::packet_sink::{PacketSink, PacketSinkFactory};
 
 struct BufferPool {
     buffers: Vec<Vec<u8>>,
@@ -102,10 +102,6 @@ impl XskManager {
         drop_monitor: Option<Arc<DropMonitor>>,
         shutdowns: &SegQueue<oneshot::Sender<()>>,
     ) -> Result<(), Error> {
-        // todo need to check logic
-        // If eBPF failed to load, there are no XSK maps to bind and no queues
-        // to start — skip silently. AF_XDP would have no maps to attach sockets
-        // to, and ML sees no packets, which is the designed behaviour.
         if self.ingress_xsk_map.lock().is_none() || self.egress_xsk_map.lock().is_none() {
             return Ok(());
         }
@@ -200,14 +196,24 @@ impl XskPair {
         dns_filter: Option<Arc<dyn DnsQueryFilter>>,
         drop_monitor: Option<Arc<DropMonitor>>,
     ) -> Result<Self, Error> {
-        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfig)?;
+        let ifname_field = match direction {
+            Direction::Ingress => "ebpf.ingress_ifname",
+            Direction::Egress => "ebpf.egress_ifname",
+        };
+        let rx_ifname_c = CString::new(rx_ifname).map_err(|_| SystemError::InvalidConfigField(ifname_field))?;
 
-        let fill_queue_size = QueueSize::new(config.fill_queue_size).map_err(|_| SystemError::InvalidConfig)?;
-        let comp_queue_size = QueueSize::new(config.comp_queue_size).map_err(|_| SystemError::InvalidConfig)?;
-        let tx_queue_size = QueueSize::new(config.tx_queue_size).map_err(|_| SystemError::InvalidConfig)?;
-        let rx_queue_size = QueueSize::new(config.rx_queue_size).map_err(|_| SystemError::InvalidConfig)?;
-        let frame_size = FrameSize::new(config.frame_size).map_err(|_| SystemError::InvalidConfig)?;
-        let frame_count = NonZero::new(config.frame_count).ok_or(SystemError::InvalidConfig)?;
+        let fill_queue_size = QueueSize::new(config.fill_queue_size)
+            .map_err(|_| SystemError::InvalidConfigField("ebpf.fill_queue_size"))?;
+        let comp_queue_size = QueueSize::new(config.comp_queue_size)
+            .map_err(|_| SystemError::InvalidConfigField("ebpf.comp_queue_size"))?;
+        let tx_queue_size =
+            QueueSize::new(config.tx_queue_size).map_err(|_| SystemError::InvalidConfigField("ebpf.tx_queue_size"))?;
+        let rx_queue_size =
+            QueueSize::new(config.rx_queue_size).map_err(|_| SystemError::InvalidConfigField("ebpf.rx_queue_size"))?;
+        let frame_size =
+            FrameSize::new(config.frame_size).map_err(|_| SystemError::InvalidConfigField("ebpf.frame_size"))?;
+        let frame_count =
+            NonZero::new(config.frame_count).ok_or(SystemError::InvalidConfigField("ebpf.frame_count"))?;
 
         let umem_config = UmemConfig::builder()
             .fill_queue_size(fill_queue_size)
@@ -231,7 +237,7 @@ impl XskPair {
         let (tx, rx, queue) =
             unsafe { Socket::new(socket_config, &umem, &interface, queue_id).map_err(EbpfError::SocketSetFailed)? };
 
-        let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::UnknownError)?;
+        let (mut fill_queue, comp_queue) = queue.ok_or(EbpfError::AfXdpQueueUnavailable(direction, queue_id))?;
 
         let total_frames = frame_descs.len();
         let fill_frames_count = (total_frames / 2).min(config.fill_queue_size as usize);
@@ -240,7 +246,7 @@ impl XskPair {
 
         let submitted = unsafe { fill_queue.produce(&fill_frames) };
         if submitted != fill_frames.len() {
-            Err(EbpfError::FillQueueInitFailed)?;
+            Err(EbpfError::FillQueueInitIncomplete(submitted, fill_frames.len()))?;
         }
 
         let pool_frames: Vec<FrameDesc> = frame_descs.iter().skip(fill_frames_count).copied().collect();
@@ -360,6 +366,7 @@ impl XskPair {
 
         if rx_count > 0 {
             let is_ingress = self.direction == Direction::Ingress;
+            let timestamp_us = current_timestamp_us();
 
             for rx_desc in rx_descs.iter().take(rx_count) {
                 let lengths = rx_desc.lengths();
@@ -373,29 +380,19 @@ impl XskPair {
                 }
 
                 let raw = &contents[..packet_len];
-
-                // DNS blacklist check — drop blacklisted DNS queries before forwarding.
-                // Report to DropMonitor so `/api/stats/drops` and `/ws/drops`
-                // reflect userspace-decided drops (the kernel eBPF never saw
-                // this packet's DNS payload, so it emits no DROP_EVENTS entry).
                 if let Some(ref dns) = self.dns_filter
                     && dns.is_query_blacklisted(raw)
                 {
                     if let Some(ref monitor) = self.drop_monitor {
-                        monitor.record_userspace_drop_count_only(DROP_REASON_DNS_BLACKLIST);
+                        monitor.record_drop_count(DROP_REASON_DNS_BLACKLIST);
                     }
                     continue;
                 }
-
-                // Parse directly from UMEM (zero-copy for ML path).
-                // Only clone for the forwarding path afterwards.
                 if let Some(ref sink) = self.sink
-                    && let Some((packet_info, _)) = parse_packet(raw)
+                    && let Some((packet_info, _)) = parse_packet_at(raw, timestamp_us)
                 {
                     sink.process_packet(packet_info, is_ingress);
                 }
-
-                // Clone into pooled buffer for forwarding
                 let mut buf = buffer_pool.get();
                 buf.extend_from_slice(raw);
                 if let Err(e) = forward_tx.try_send(buf) {
@@ -479,8 +476,6 @@ impl XskPair {
         }
 
         let nb_submitted = unsafe { self.tx.produce(&self.tx_frame_buf) };
-
-        // Return unsubmitted frames to pool to prevent frame leak
         if nb_submitted < self.tx_frame_buf.len() {
             for frame in self.tx_frame_buf[nb_submitted..].iter() {
                 self.frame_pool.push(*frame);
@@ -492,22 +487,21 @@ impl XskPair {
         {
             log!(EbpfLog::TXWakeupFailed(e.to_string()));
         }
-
-        // Drop accounting: a packet is dropped whenever we couldn't put it
-        // on the TX ring. That includes both the frame-pool-exhausted path
-        // (frames.len() < total_packets) and the TX-ring backpressure path
-        // (nb_submitted < frames.len()). Using `nb_submitted` as the sent
-        // count covers both.
         let dropped = total_packets - nb_submitted;
         if dropped > 0 {
             log!(EbpfLog::FramePoolExhausted(dropped));
         }
-
-        // Return all buffers to pool
         for pkt in self.tx_packet_buf.drain(..) {
             buffer_pool.put(pkt);
         }
 
         Ok(nb_submitted)
     }
+}
+
+fn current_timestamp_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0)
 }

@@ -1,35 +1,22 @@
-//! Fusion policy math primitive — cross-source confidence aggregation.
-//!
-//! The policy assumes detection sources are conditionally independent given
-//! a true attack. In practice ML and CV can share signal on C2 beaconing,
-//! so a future calibration pass may introduce per-pair weights; this
-//! module stays the canonical home for whichever formula is in force.
-
 use crate::domain::common::event::DetectionSource;
 
-/// Compute `1 − ∏(1 − c_i)` over the given per-source confidences.
-///
-/// - Empty input → `0.0` (no evidence).
-/// - Single input → returns that confidence unchanged.
-/// - Values are clamped to `[0.0, 1.0]` to keep the result bounded even if
-///   an upstream source ships noisy unnormalized scores.
 pub fn fused_confidence(per_source: &[f32]) -> f32 {
     if per_source.is_empty() {
         return 0.0;
     }
     let mut inverse: f64 = 1.0;
     for &c in per_source {
-        let clamped = (c as f64).clamp(0.0, 1.0);
+        let clamped = sanitize_confidence(c);
         inverse *= 1.0 - clamped;
     }
     (1.0 - inverse).clamp(0.0, 1.0) as f32
 }
 
-/// Default per-source fusion-window length in seconds. Each value scales
-/// the orchestrator's lookahead budget when that source opens a dedup key.
-/// Slower sources (Suricata signatures) get longer windows so a follow-up
-/// ML hit still lands inside; faster sources (ML ticks) use short windows
-/// because they'd otherwise waste latency waiting on downstream signals.
+fn sanitize_confidence(confidence: f32) -> f64 {
+    let value = confidence as f64;
+    if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FusionWindowLengths {
     pub suricata_secs: u64,
@@ -38,8 +25,6 @@ pub struct FusionWindowLengths {
     pub graph_secs: u64,
 }
 
-/// Valid range, in seconds, for a fusion window. Clamps protect against a
-/// misconfigured source opening a wedged (too-long) or useless (zero) key.
 pub const FUSION_WINDOW_MIN_SECS: u64 = 1;
 pub const FUSION_WINDOW_MAX_SECS: u64 = 30;
 
@@ -55,8 +40,6 @@ impl Default for FusionWindowLengths {
 }
 
 impl FusionWindowLengths {
-    /// Range-clamped lookup for the window length of the first source to
-    /// open a fusion key.
     pub fn for_source(&self, source: DetectionSource) -> u64 {
         let raw = match source {
             DetectionSource::Suricata => self.suricata_secs,
@@ -86,7 +69,6 @@ mod tests {
 
     #[test]
     fn two_sources_boost() {
-        // 1 − (1 − 0.7)(1 − 0.9) = 1 − 0.03 = 0.97
         let got = fused_confidence(&[0.7, 0.9]);
         assert!((got - 0.97).abs() < 1e-5);
     }
@@ -107,9 +89,15 @@ mod tests {
 
     #[test]
     fn out_of_range_confidences_are_clamped() {
-        // Negative / above-1 inputs don't break the math.
         assert_eq!(fused_confidence(&[-0.5, -0.1]), 0.0);
         assert_eq!(fused_confidence(&[2.0, 3.0]), 1.0);
+    }
+
+    #[test]
+    fn non_finite_confidences_stay_bounded() {
+        assert_eq!(fused_confidence(&[f32::NAN, 0.75]), 0.75);
+        assert_eq!(fused_confidence(&[f32::INFINITY]), 1.0);
+        assert_eq!(fused_confidence(&[f32::NEG_INFINITY]), 0.0);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use actix_web::{HttpResponse, Scope, web};
 
+use crate::adapter::http::helpers::internal_error;
 use crate::adapter::http::middleware::extractor::AuthClaims;
-use crate::adapter::persistence::Database;
-use crate::domain::common::error::Error;
-use crate::domain::common::error::database::DatabaseError;
-use crate::interface::audit::AuditRepo;
+use crate::common::error::Error;
+use crate::common::error::database::DatabaseError;
+use crate::interface::system::audit::AuditRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/audit")
@@ -12,33 +12,13 @@ pub fn initialize() -> Scope {
         .route("/verify", web::get().to(verify_chain))
 }
 
-async fn list_audit_logs(_auth: AuthClaims, db: web::Data<Database>) -> HttpResponse {
-    match db.list_audit_logs().await {
-        Ok(entries) => {
-            let json: Vec<serde_json::Value> = entries
-                .into_iter()
-                .map(|e| {
-                    serde_json::json!({
-                        "id": e.id,
-                        "actor": e.actor,
-                        "action": e.action,
-                        "detail": e.detail,
-                        "created_at": e.created_at,
-                    })
-                })
-                .collect();
-            HttpResponse::Ok().json(json)
-        }
-        Err(_) => HttpResponse::Ok().json(serde_json::json!([])),
+async fn list_audit_logs(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> HttpResponse {
+    match audit.list_audit_logs().await {
+        Ok(entries) => HttpResponse::Ok().json(entries),
+        Err(e) => internal_error(e),
     }
 }
 
-/// `GET /api/audit/verify` — walk the WORM hash chain and report whether
-/// every row_hash still matches `H(ts || actor || action || detail ||
-/// prev_hash)`. Surfaces over HTTP the same verification the CLI's
-/// `--verify-audit-log` flag performs, so auditors can check chain
-/// integrity without shell access. Any mismatch returns the offending
-/// row id inside `error` so the dashboard can link straight to it.
 async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> HttpResponse {
     match audit.verify_audit_log_chain(0).await {
         Ok((count, _last_id)) => HttpResponse::Ok().json(serde_json::json!({
@@ -46,11 +26,6 @@ async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> Htt
             "verified": count,
         })),
         Err(e) => {
-            // Tamper detection is a successful verify outcome, not a server
-            // failure — return 200 with `chain_intact: false` so frontend
-            // retry/error handling treats real chain corruption as a
-            // distinct condition from transient DB connectivity issues.
-            // Reserve 500 for actual DB/IO failures.
             let prev_mismatch = matches!(&e, Error::Database(DatabaseError::AuditPrevHashMismatch { .. }));
             let row_mismatch = matches!(&e, Error::Database(DatabaseError::AuditRowHashMismatch { .. }));
             if prev_mismatch || row_mismatch {
@@ -73,5 +48,60 @@ async fn verify_chain(_auth: AuthClaims, audit: web::Data<dyn AuditRepo>) -> Htt
                 }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use actix_web::http::StatusCode;
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::domain::common::audit::AuditLogEntry;
+    use crate::domain::identity::auth::Claims;
+
+    struct FailingAuditRepo;
+
+    fn test_error() -> Error {
+        DatabaseError::PersistedValueInvalid("audit_log", "detail", "bad").into()
+    }
+
+    #[async_trait]
+    impl AuditRepo for FailingAuditRepo {
+        async fn insert_audit_log(&self, _actor: &str, _action: &str, _detail: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn list_audit_logs(&self) -> Result<Vec<AuditLogEntry>, Error> {
+            Err(test_error())
+        }
+
+        async fn list_audit_logs_by_src_ip(&self, _src_ip: &str, _limit: i64) -> Result<Vec<AuditLogEntry>, Error> {
+            Ok(Vec::new())
+        }
+
+        async fn verify_audit_log_chain(&self, _after_id: i64) -> Result<(usize, i64), Error> {
+            Ok((0, 0))
+        }
+    }
+
+    fn claims() -> AuthClaims {
+        AuthClaims(Claims {
+            sub: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            permissions: Vec::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn list_audit_logs_returns_500_on_repo_error() {
+        let repo = web::Data::from(Arc::new(FailingAuditRepo) as Arc<dyn AuditRepo>);
+
+        let response = list_audit_logs(claims(), repo).await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

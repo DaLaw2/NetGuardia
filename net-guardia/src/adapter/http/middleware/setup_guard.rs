@@ -1,14 +1,15 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+use actix_web::http::StatusCode;
 use actix_web::{Error as ActixError, HttpResponse, web};
 
-use crate::infrastructure::http_server::SetupCompleteFlag;
+use crate::adapter::http::helpers::json_error;
+use crate::infrastructure::http_runtime::SetupCompleteFlag;
 
 pub struct SetupGuard;
 
@@ -52,25 +53,19 @@ where
 
         Box::pin(async move {
             let path = req.path().to_string();
-
-            // Check setup_complete flag from app data
             let setup_complete = req
                 .app_data::<web::Data<SetupCompleteFlag>>()
-                .map(|flag| flag.0.load(Ordering::SeqCst))
-                .unwrap_or(true);
+                .map(|flag| flag.is_complete())
+                .unwrap_or(false);
 
             if setup_complete {
-                // Normal mode: pass through, but block setup mutation endpoints.
-                // Allow /api/setup/status (read-only) so frontend can check setup state.
                 if path.starts_with("/api/setup/") && path != "/api/setup/status" {
-                    let resp = HttpResponse::Gone().json(serde_json::json!({"error": "Setup already completed"}));
+                    let resp = json_error(StatusCode::GONE, "Setup already completed");
                     return Ok(req.into_response(resp).map_into_right_body());
                 }
                 let res = service.call(req).await?.map_into_left_body();
                 return Ok(res);
             }
-
-            // Setup mode: only allow setup wizard and health endpoints
             if path.starts_with("/api/setup/")
                 || path.starts_with("/api/health/")
                 || path == "/api/auth/login"
@@ -79,8 +74,6 @@ where
                 let res = service.call(req).await?.map_into_left_body();
                 return Ok(res);
             }
-
-            // Block all other API routes with 503
             let resp = HttpResponse::ServiceUnavailable().json(serde_json::json!({
                 "error": "System setup in progress",
                 "setup_required": true,

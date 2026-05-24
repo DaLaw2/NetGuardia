@@ -11,12 +11,12 @@ use tokio::time::interval;
 use crate::domain::common::config::AppConfig;
 use crate::domain::common::event::{DetectionEvent, DetectionSource};
 use crate::domain::detection::attack_type::CanonicalAttackType;
+use crate::domain::detection::flow_observation::FlowObservation;
 use crate::domain::detection::log::DetectionLog;
-use crate::domain::detection::ml_detection::AlertMessage;
 
 pub struct BeaconingDetector {
     state: BeaconingState,
-    alert_rx: broadcast::Receiver<AlertMessage>,
+    alert_rx: broadcast::Receiver<FlowObservation>,
     detection_tx: mpsc::Sender<DetectionEvent>,
     analysis_interval_secs: u64,
 }
@@ -24,7 +24,7 @@ pub struct BeaconingDetector {
 impl BeaconingDetector {
     pub fn new(
         app_config: &Arc<ArcSwap<AppConfig>>,
-        alert_rx: broadcast::Receiver<AlertMessage>,
+        alert_rx: broadcast::Receiver<FlowObservation>,
         detection_tx: mpsc::Sender<DetectionEvent>,
     ) -> Self {
         let cfg = app_config.load();
@@ -44,11 +44,7 @@ impl BeaconingDetector {
         }
     }
 
-    pub fn start(self) {
-        tokio::spawn(async move { self.run().await });
-    }
-
-    async fn run(mut self) {
+    pub async fn run(mut self) {
         log!(DetectionLog::BeaconingDetectorStarted);
         let mut analysis_interval = interval(Duration::from_secs(self.analysis_interval_secs));
         loop {
@@ -62,13 +58,7 @@ impl BeaconingDetector {
                 }
                 _ = analysis_interval.tick() => {
                     for event in self.state.analyze() {
-                        if let Err(mpsc::error::TrySendError::Full(d)) = self.detection_tx.try_send(event) {
-                            log!(DetectionLog::DetectionChannelDrop(
-                                format!("{:?}", d.source),
-                                d.attack_type,
-                                d.source_ip,
-                            ));
-                        }
+                        super::send_detection_or_log(&self.detection_tx, event);
                     }
                     self.state.cleanup();
                 }
@@ -77,7 +67,13 @@ impl BeaconingDetector {
     }
 }
 
-type FlowTuple = (String, String, u16);
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BeaconingKey {
+    src_ip: String,
+    dst_ip: String,
+    protocol: u8,
+    dst_port: u16,
+}
 
 struct CachedFlow {
     timestamps: Vec<Instant>,
@@ -85,7 +81,7 @@ struct CachedFlow {
 }
 
 pub struct BeaconingState {
-    flow_cache: DashMap<FlowTuple, CachedFlow>,
+    flow_cache: DashMap<BeaconingKey, CachedFlow>,
     min_observations: usize,
     cv_threshold: f64,
     max_cache_entries: usize,
@@ -114,8 +110,13 @@ impl BeaconingState {
         }
     }
 
-    pub fn record_flow(&self, alert: &AlertMessage) {
-        let key = (alert.src_ip.clone(), alert.dst_ip.clone(), alert.dst_port);
+    pub fn record_flow(&self, alert: &FlowObservation) {
+        let key = BeaconingKey {
+            src_ip: alert.src_ip.clone(),
+            dst_ip: alert.dst_ip.clone(),
+            protocol: alert.protocol,
+            dst_port: alert.dst_port,
+        };
         let now = Instant::now();
 
         let mut entry = self.flow_cache.entry(key).or_insert_with(|| CachedFlow {
@@ -135,7 +136,7 @@ impl BeaconingState {
         let now = Instant::now();
         let cooldown = Duration::from_secs(self.alert_cooldown_secs);
 
-        let mut candidates: Vec<(FlowTuple, f64, usize)> = Vec::new();
+        let mut candidates: Vec<(BeaconingKey, f64, usize)> = Vec::new();
         for entry in self.flow_cache.iter() {
             let flow = entry.value();
             if flow.timestamps.len() < self.min_observations {
@@ -154,11 +155,10 @@ impl BeaconingState {
 
         let mut events = Vec::new();
         for (key, cv, count) in candidates {
-            let (src_ip, dst_ip, dst_port) = &key;
             log!(DetectionLog::BeaconingDetected(
-                src_ip.clone(),
-                dst_ip.clone(),
-                *dst_port,
+                key.src_ip.clone(),
+                key.dst_ip.clone(),
+                key.dst_port,
                 cv,
                 count,
             ));
@@ -167,9 +167,9 @@ impl BeaconingState {
                 source: DetectionSource::Beaconing,
                 attack_type: CanonicalAttackType::C2Beacon.as_str().to_string(),
                 confidence: (1.0 - cv / self.cv_threshold) as f32 * 0.5 + 0.5,
-                source_ip: src_ip.clone(),
-                dest_ip: dst_ip.clone(),
-                protocol: 6,
+                source_ip: key.src_ip.clone(),
+                dest_ip: key.dst_ip.clone(),
+                protocol: key.protocol,
                 packet_count: count as u64,
                 flow_duration_us: 0,
                 ae_score: 0.0,
@@ -197,7 +197,8 @@ impl BeaconingState {
 
         if self.flow_cache.len() > self.max_cache_entries {
             let excess = self.flow_cache.len() - self.max_cache_entries;
-            let keys_to_remove: Vec<FlowTuple> = self.flow_cache.iter().take(excess).map(|e| e.key().clone()).collect();
+            let keys_to_remove: Vec<BeaconingKey> =
+                self.flow_cache.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys_to_remove {
                 self.flow_cache.remove(&key);
             }
@@ -210,19 +211,23 @@ pub fn compute_cv(timestamps: &[Instant]) -> f64 {
         return f64::MAX;
     }
 
-    let intervals: Vec<f64> = timestamps
-        .windows(2)
-        .map(|w| w[1].duration_since(w[0]).as_secs_f64())
-        .collect();
+    let mut sum = 0.0;
+    let mut sum_sq = 0.0;
+    let mut count = 0;
+    for window in timestamps.windows(2) {
+        let interval = window[1].duration_since(window[0]).as_secs_f64();
+        sum += interval;
+        sum_sq += interval * interval;
+        count += 1;
+    }
 
-    let n = intervals.len() as f64;
-    let mean = intervals.iter().sum::<f64>() / n;
+    let n = count as f64;
+    let mean = sum / n;
 
     if mean <= 0.0 {
         return f64::MAX;
     }
-
-    let variance = intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+    let variance = ((sum_sq / n) - (mean * mean)).max(0.0);
     let std = variance.sqrt();
 
     std / mean
@@ -235,6 +240,17 @@ mod tests {
     use crate::core::detection::beaconing::{BeaconingState, CachedFlow, compute_cv};
     use crate::domain::common::event::DetectionSource;
     use crate::domain::detection::attack_type::CanonicalAttackType;
+    use crate::domain::detection::flow_observation::FlowObservation;
+
+    fn test_key(protocol: u8, dst_port: u16) -> super::BeaconingKey {
+        super::BeaconingKey {
+            src_ip: "10.0.0.1".to_string(),
+            dst_ip: "1.2.3.4".to_string(),
+            protocol,
+            dst_port,
+        }
+    }
+
     #[test]
     fn cv_perfectly_periodic() {
         let base = Instant::now();
@@ -284,7 +300,7 @@ mod tests {
     fn beaconing_state_detects_periodic_flows() {
         let state = BeaconingState::new(5, 0.3, 50_000, 100, 3600, 120);
         let base = Instant::now();
-        let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
+        let key = test_key(6, 443);
         state.flow_cache.insert(
             key,
             CachedFlow {
@@ -296,34 +312,53 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, DetectionSource::Beaconing);
         assert_eq!(events[0].attack_type, CanonicalAttackType::C2Beacon.as_str());
+        assert_eq!(events[0].protocol, 6);
     }
 
     #[test]
     fn record_flow_respects_configured_timestamp_cap() {
         let state = BeaconingState::new(1, 0.3, 50_000, 3, 3600, 120);
-        let alert = crate::domain::detection::ml_detection::AlertMessage {
-            timestamp: 0,
-            flow_key: "10.0.0.1:12345-1.2.3.4:443".to_string(),
+        let alert = FlowObservation {
             src_ip: "10.0.0.1".to_string(),
             dst_ip: "1.2.3.4".to_string(),
-            src_port: 12345,
             dst_port: 443,
             protocol: 6,
-            is_attack: true,
-            attack_type: Some("c2_beacon".to_string()),
-            confidence: 0.9,
             packet_count: 10,
             flow_duration_us: 1000,
-            ae_score: 0.0,
-            anomaly_score: 0.0,
-            c2_score: 0.0,
         };
 
         for _ in 0..5 {
             state.record_flow(&alert);
         }
 
-        let key = ("10.0.0.1".to_string(), "1.2.3.4".to_string(), 443_u16);
+        let key = test_key(6, 443);
         assert_eq!(state.flow_cache.get(&key).unwrap().timestamps.len(), 3);
+    }
+
+    #[test]
+    fn beaconing_state_keeps_protocols_separate_and_emits_observed_protocol() {
+        let state = BeaconingState::new(3, 0.3, 50_000, 100, 3600, 120);
+        let base = Instant::now();
+        state.flow_cache.insert(
+            test_key(17, 53),
+            CachedFlow {
+                timestamps: (0..3).map(|i| base + Duration::from_secs(i * 60)).collect(),
+                last_alerted: None,
+            },
+        );
+        state.flow_cache.insert(
+            test_key(6, 53),
+            CachedFlow {
+                timestamps: vec![base],
+                last_alerted: None,
+            },
+        );
+
+        let events = state.analyze();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].protocol, 17);
+        assert_eq!(events[0].source_ip, "10.0.0.1");
+        assert_eq!(events[0].dest_ip, "1.2.3.4");
     }
 }

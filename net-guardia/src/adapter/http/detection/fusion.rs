@@ -1,20 +1,14 @@
-//! HTTP surface for fusion-layer observability + incident explain.
-//! Metrics handlers read shared atomic counters maintained by the
-//! detection orchestrator — they never touch orchestrator state, so a
-//! hung dashboard cannot stall the detection pipeline. The explain
-//! handler reads the WORM audit chain populated by
-//! `publish_fusion_audit` and surfaces a per-IP evidence timeline so
-//! analysts can answer "why was this IP blocked?" without parsing
-//! logs by hand.
+use std::cmp;
+use std::net::IpAddr;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
+use actix_web::{HttpResponse, Responder, Scope, web};
 use arc_swap::ArcSwap;
 
+use crate::adapter::http::helpers::{bad_request, internal_error};
 use crate::core::detection::metrics::FusionMetrics;
 use crate::domain::common::audit::AuditLogEntry;
 use crate::domain::common::config::AppConfig;
-use crate::domain::common::config::constants::FUSION_AUDIT_ACTION;
-use crate::interface::audit::AuditRepo;
+use crate::interface::system::audit::AuditRepo;
 
 pub fn initialize() -> Scope {
     web::scope("/fusion")
@@ -22,45 +16,34 @@ pub fn initialize() -> Scope {
         .route("/explain/{src_ip}", web::get().to(explain_ip))
 }
 
-/// `GET /api/fusion/metrics` — lock-free snapshot of fusion counters and
-/// derived rates. Drives the operator dashboard's "how well is fusion
-/// working on my network?" view.
 async fn get_metrics(metrics: web::Data<FusionMetrics>) -> impl Responder {
     HttpResponse::Ok().json(metrics.snapshot())
 }
 
-/// `GET /api/fusion/explain/{src_ip}` — per-IP fusion evidence timeline.
-/// Scans the WORM audit chain for `fused_threat_emitted` entries that
-/// match `src_ip`, returning them oldest-first so the UI can render a
-/// chronological "why was this IP blocked" view.
 async fn explain_ip(
-    req: HttpRequest,
+    path: web::Path<String>,
     audit: web::Data<dyn AuditRepo>,
     app_config: web::Data<ArcSwap<AppConfig>>,
 ) -> impl Responder {
-    let src_ip = match req.match_info().get("src_ip") {
-        Some(ip) => ip.to_string(),
-        None => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "missing src_ip path segment",
-            }));
-        }
+    let src_ip = path.into_inner();
+    let src_ip = match src_ip.parse::<IpAddr>() {
+        Ok(ip) => ip.to_string(),
+        Err(_) => return bad_request("Invalid source IP address"),
     };
-
     let obs = app_config.load().observability.clone();
-    let entries = match audit
-        .list_audit_logs_by_action(FUSION_AUDIT_ACTION, obs.fusion_explain_scan_limit)
-        .await
-    {
+    let query_limit = fusion_explain_query_limit(obs.fusion_explain_scan_limit, obs.fusion_explain_response_cap);
+    let mut entries = match audit.list_audit_logs_by_src_ip(&src_ip, query_limit).await {
         Ok(e) => e,
         Err(e) => {
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": format!("audit store unavailable: {e}"),
-            }));
+            return internal_error(format!("audit store unavailable: {e}"));
         }
     };
 
-    let (matches, truncated) = filter_fusion_evidence_for_ip(&entries, &src_ip, obs.fusion_explain_response_cap);
+    let truncated = entries.len() > obs.fusion_explain_response_cap;
+    if truncated {
+        entries.truncate(obs.fusion_explain_response_cap);
+    }
+    let matches: Vec<serde_json::Value> = entries.iter().map(render_fusion_evidence_entry).collect();
     HttpResponse::Ok().json(serde_json::json!({
         "src_ip": src_ip,
         "match_count": matches.len(),
@@ -69,19 +52,12 @@ async fn explain_ip(
     }))
 }
 
-/// Filter audit entries down to the ones whose JSON detail's `src_ip`
-/// matches `target_ip`, ordered oldest-first (ascending id). Entries
-/// with unparseable detail are dropped silently — the chain is
-/// append-only, so a malformed row is an integrity concern for the
-/// audit-verify endpoint to surface, not this handler.
-///
-/// Returns `(entries_up_to_cap, truncated)`. `truncated` is `true` when
-/// at least one matching entry was dropped — `matches.len() == cap` does
-/// NOT imply truncation, so we look at `cap + 1` candidates and set the
-/// flag only when the overflow entry exists.
-///
-/// Extracted as a free function so tests can cover the filter /
-/// ordering / cap behaviour without an in-memory DB.
+fn fusion_explain_query_limit(scan_limit: i64, response_cap: usize) -> i64 {
+    let cap_plus_one = i64::try_from(response_cap.saturating_add(1)).unwrap_or(i64::MAX);
+    cmp::max(1, cmp::min(scan_limit, cap_plus_one))
+}
+
+#[cfg(test)]
 pub fn filter_fusion_evidence_for_ip(
     entries: &[AuditLogEntry],
     target_ip: &str,
@@ -96,22 +72,22 @@ pub fn filter_fusion_evidence_for_ip(
     if truncated {
         filtered.truncate(cap);
     }
-    let rendered = filtered
-        .into_iter()
-        .map(|entry| {
-            let detail: serde_json::Value = serde_json::from_str(&entry.detail).unwrap_or(serde_json::Value::Null);
-            serde_json::json!({
-                "id": entry.id,
-                "actor": entry.actor,
-                "action": entry.action,
-                "created_at": entry.created_at,
-                "detail": detail,
-            })
-        })
-        .collect();
+    let rendered = filtered.into_iter().map(render_fusion_evidence_entry).collect();
     (rendered, truncated)
 }
 
+fn render_fusion_evidence_entry(entry: &AuditLogEntry) -> serde_json::Value {
+    let detail: serde_json::Value = serde_json::from_str(&entry.detail).unwrap_or_default();
+    serde_json::json!({
+        "id": entry.id,
+        "actor": entry.actor,
+        "action": entry.action,
+        "created_at": entry.created_at,
+        "detail": detail,
+    })
+}
+
+#[cfg(test)]
 fn detail_matches_src_ip(detail_json: &str, target_ip: &str) -> bool {
     let parsed: serde_json::Value = match serde_json::from_str(detail_json) {
         Ok(v) => v,
@@ -157,7 +133,6 @@ mod tests {
 
     #[test]
     fn filter_sorts_oldest_first_even_when_input_is_reversed() {
-        // Real repo query returns DESC; filter must still hand back ASC.
         let entries = [
             entry(30, "1.1.1.1", "a"),
             entry(10, "1.1.1.1", "b"),
@@ -180,8 +155,6 @@ mod tests {
 
     #[test]
     fn filter_exactly_cap_is_not_truncated() {
-        // Regression guard: `matches.len() == cap` with no overflow row must
-        // return `truncated = false`. Earlier `>=` check mis-flagged this.
         let entries: Vec<AuditLogEntry> = (1..=3).map(|i| entry(i, "9.9.9.9", "x")).collect();
         let (got, truncated) = filter_fusion_evidence_for_ip(&entries, "9.9.9.9", 3);
         assert_eq!(got.len(), 3);

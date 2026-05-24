@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-common = { workspace = true, features = ["kernel"] }
+net-guardia-abi = { workspace = true, features = ["kernel"] }
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
 network-types = { workspace = true }

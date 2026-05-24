@@ -1,20 +1,24 @@
 use std::fs;
-use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, Scope, web};
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
+use tokio_util::io::ReaderStream;
 
+use crate::adapter::http::helpers::{bad_request, forbidden, internal_error, json_error, not_found};
+use crate::common::utils::log_level::level_severity;
 use crate::domain::common::config::AppConfig;
-use crate::infrastructure::log_buffer::{self, LogBuffer, LogEntry};
+use crate::interface::system::live_logs::{LiveLogQuery, LogEntry};
 
-/// Validate log filename: only alphanumeric, dots, underscores, hyphens.
-/// Prevents path traversal.
 fn is_valid_log_filename(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
+        && name != "."
+        && name != ".."
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
@@ -48,7 +52,7 @@ struct LiveResponse {
 async fn live_logs(
     query: web::Query<LiveQuery>,
     app_config: web::Data<ArcSwap<AppConfig>>,
-    buf: web::Data<LogBuffer>,
+    buf: web::Data<dyn LiveLogQuery>,
 ) -> HttpResponse {
     let since_id = query.since_id.unwrap_or(0);
     let obs = app_config.load().observability.clone();
@@ -59,13 +63,10 @@ async fn live_logs(
     let min_severity = query
         .min_level
         .as_deref()
-        .map(|s| log_buffer::level_severity(&s.to_ascii_uppercase()))
-        .unwrap_or(log_buffer::level_severity("TRACE"));
+        .map(|s| level_severity(&s.to_ascii_uppercase()))
+        .unwrap_or(level_severity("TRACE"));
 
     let snap = buf.snapshot(since_id, min_severity, limit);
-    // Signal to the UI that it lagged enough for the ring to evict rows
-    // between polls. Frontend can warn "older entries dropped" without
-    // silently skipping a gap.
     let dropped_oldest = since_id > 0 && snap.entries.first().is_some_and(|e| e.id > since_id + 1);
     let next_id = snap.entries.last().map(|e| e.id).unwrap_or(snap.latest_id);
 
@@ -86,31 +87,35 @@ struct LogFileEntry {
 
 async fn list_logs(app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
     let log_dir = app_config.load().system.log_dir.clone();
-    let entries = match fs::read_dir(&log_dir) {
-        Ok(dir) => dir
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                let meta = e.metadata().ok()?;
-                if !meta.is_file() {
-                    return None;
-                }
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
-                Some(LogFileEntry {
-                    name,
-                    size: meta.len(),
-                    modified,
-                })
-            })
-            .collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
+    let entries = match list_log_files(Path::new(&log_dir)) {
+        Ok(entries) => entries,
+        Err(e) => return internal_error(format!("Failed to list log files: {}", e)),
     };
 
     HttpResponse::Ok().json(serde_json::json!({ "files": entries }))
+}
+
+fn list_log_files(log_dir: &Path) -> io::Result<Vec<LogFileEntry>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(log_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let meta = entry.metadata()?;
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        files.push(LogFileEntry {
+            name,
+            size: meta.len(),
+            modified,
+        });
+    }
+    Ok(files)
 }
 
 async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<AppConfig>>) -> HttpResponse {
@@ -120,67 +125,52 @@ async fn download_log(path: web::Path<String>, app_config: web::Data<ArcSwap<App
     let filename = path.into_inner();
 
     if !is_valid_log_filename(&filename) {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Invalid filename: only alphanumeric, dots, underscores, hyphens allowed"
-        }));
+        return bad_request("Invalid filename: only alphanumeric, dots, underscores, hyphens allowed");
     }
 
     let file_path = log_dir.join(&filename);
-
-    // Canonicalize to prevent symlink traversal
     let canonical = match fs::canonicalize(&file_path) {
         Ok(p) => p,
-        Err(_) => {
-            return HttpResponse::NotFound().json(serde_json::json!({
-                "error": format!("Log file '{}' not found", filename)
-            }));
-        }
+        Err(_) => return not_found(format!("Log file '{}' not found", filename)),
     };
     if let Ok(log_dir_canonical) = fs::canonicalize(&log_dir)
         && !canonical.starts_with(&log_dir_canonical)
     {
-        return HttpResponse::Forbidden().json(serde_json::json!({
-            "error": "Access denied: file is outside the log directory"
-        }));
+        return forbidden("Access denied: file is outside the log directory");
     }
-
-    // Check file size before reading to prevent OOM on large logs
     match fs::metadata(&canonical) {
         Ok(meta) if meta.len() > max_download_size => {
-            return HttpResponse::PayloadTooLarge().json(serde_json::json!({
-                "error": format!("Log file exceeds maximum download size ({}MB)", max_download_size / 1024 / 1024)
-            }));
+            return json_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Log file exceeds maximum download size ({}MB)",
+                    max_download_size / 1024 / 1024
+                ),
+            );
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return HttpResponse::NotFound().json(serde_json::json!({
-                "error": format!("Log file '{}' not found", filename)
-            }));
-        }
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": format!("Failed to read log file: {}", e)
-            }));
-        }
+        Err(e) if e.kind() == ErrorKind::NotFound => return not_found(format!("Log file '{}' not found", filename)),
+        Err(e) => return internal_error(format!("Failed to read log file: {}", e)),
         Ok(_) => {}
     }
 
-    let content = match fs::read(&canonical) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": format!("Failed to read log file: {}", e)
-            }));
-        }
+    let file = match tokio::fs::File::open(&canonical).await {
+        Ok(f) => f,
+        Err(e) => return internal_error(format!("Failed to open log file: {}", e)),
     };
+    let stream = ReaderStream::new(file);
 
     HttpResponse::Ok()
         .insert_header(("Content-Type", "application/octet-stream"))
         .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-        .body(content)
+        .streaming(stream)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -195,6 +185,8 @@ mod tests {
         assert!(!is_valid_log_filename("../../etc/passwd"));
         assert!(!is_valid_log_filename("../secret"));
         assert!(!is_valid_log_filename("/etc/shadow"));
+        assert!(!is_valid_log_filename("."));
+        assert!(!is_valid_log_filename(".."));
     }
 
     #[test]
@@ -210,5 +202,35 @@ mod tests {
         assert!(!is_valid_log_filename(&long));
         let exact = "a".repeat(128);
         assert!(is_valid_log_filename(&exact));
+    }
+
+    #[test]
+    fn missing_log_dir_is_reported() {
+        let path = temp_path("net-guardia-missing");
+
+        assert!(list_log_files(&path).is_err());
+    }
+
+    #[test]
+    fn list_log_files_ignores_directories() {
+        let dir = temp_path("net-guardia-logs");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("app.log"), b"hello").unwrap();
+        fs::create_dir(dir.join("nested")).unwrap();
+
+        let files = list_log_files(&dir).unwrap();
+
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "app.log");
+        assert_eq!(files[0].size, 5);
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "{}-{}",
+            prefix,
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ))
     }
 }
