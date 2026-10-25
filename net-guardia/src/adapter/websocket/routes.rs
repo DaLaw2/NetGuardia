@@ -1,5 +1,6 @@
+use actix_web::error::InternalError;
 use actix_web::http::StatusCode;
-use actix_web::{HttpRequest, HttpResponse, Responder, Scope, web};
+use actix_web::{Error as ActixError, HttpRequest, HttpResponse, Scope, web};
 use tokio::sync::broadcast;
 
 use super::{alert_websocket, drop_websocket, flow_websocket, fusion_websocket, health_websocket};
@@ -31,18 +32,22 @@ fn validate_ws_auth(
     session_service: &web::Data<SessionService>,
     cookie_service: &web::Data<SessionCookieService>,
     required_permission: &str,
-) -> Result<(), HttpResponse> {
+) -> Result<(), ActixError> {
     let Some(cookie) = req.cookie(cookie_service.cookie_name()) else {
-        return Err(json_error(StatusCode::UNAUTHORIZED, "Missing authentication cookie"));
+        return Err(ws_rejection(StatusCode::UNAUTHORIZED, "Missing authentication cookie"));
     };
     let claims = session_service
         .claims_for_session(cookie.value())
-        .ok_or_else(|| json_error(StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
+        .ok_or_else(|| ws_rejection(StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
     if has_permission(&claims, required_permission) {
         Ok(())
     } else {
-        Err(json_error(StatusCode::FORBIDDEN, "Insufficient permissions"))
+        Err(ws_rejection(StatusCode::FORBIDDEN, "Insufficient permissions"))
     }
+}
+
+fn ws_rejection(status: StatusCode, message: &'static str) -> ActixError {
+    InternalError::from_response(message, json_error(status, message)).into()
 }
 
 fn has_permission(claims: &Claims, required_permission: &str) -> bool {
@@ -55,13 +60,11 @@ async fn health_ws(
     health: web::Data<dyn HealthQuery>,
     session_service: web::Data<SessionService>,
     cookie_service: web::Data<SessionCookieService>,
-) -> impl Responder {
-    if let Err(resp) = validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_DASHBOARD_READ) {
-        return resp;
-    }
-    health_websocket::websocket_system_health(req, stream, health)
+) -> Result<HttpResponse, ActixError> {
+    validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_DASHBOARD_READ)?;
+    Ok(health_websocket::websocket_system_health(req, stream, health)
         .await
-        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err)))
+        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err))))
 }
 
 async fn alerts_ws(
@@ -70,13 +73,11 @@ async fn alerts_ws(
     ai: web::Data<MLAlert>,
     session_service: web::Data<SessionService>,
     cookie_service: web::Data<SessionCookieService>,
-) -> impl Responder {
-    if let Err(resp) = validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_AI_DETECTION_READ) {
-        return resp;
-    }
-    alert_websocket::websocket_alert(req, stream, ai)
+) -> Result<HttpResponse, ActixError> {
+    validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_AI_DETECTION_READ)?;
+    Ok(alert_websocket::websocket_alert(req, stream, ai)
         .await
-        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err)))
+        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err))))
 }
 
 async fn fusion_ws(
@@ -85,13 +86,11 @@ async fn fusion_ws(
     threat_tx: web::Data<broadcast::Sender<ThreatDetectedEvent>>,
     session_service: web::Data<SessionService>,
     cookie_service: web::Data<SessionCookieService>,
-) -> impl Responder {
-    if let Err(resp) = validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_FUSION_READ) {
-        return resp;
-    }
-    fusion_websocket::websocket_fusion(req, stream, threat_tx)
+) -> Result<HttpResponse, ActixError> {
+    validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_FUSION_READ)?;
+    Ok(fusion_websocket::websocket_fusion(req, stream, threat_tx)
         .await
-        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err)))
+        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err))))
 }
 
 async fn flows_ws(
@@ -100,14 +99,11 @@ async fn flows_ws(
     stats: web::Data<FlowStatistics>,
     session_service: web::Data<SessionService>,
     cookie_service: web::Data<SessionCookieService>,
-) -> impl Responder {
-    if let Err(resp) = validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_TRAFFIC_MAP_READ) {
-        return resp;
-    }
-    match flow_websocket::flow_stats_ws(req, stream, stats).await {
-        Ok(response) => response,
-        Err(err) => internal_error(format!("WebSocket error: {}", err)),
-    }
+) -> Result<HttpResponse, ActixError> {
+    validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_TRAFFIC_MAP_READ)?;
+    Ok(flow_websocket::flow_stats_ws(req, stream, stats)
+        .await
+        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err))))
 }
 
 async fn drops_ws(
@@ -116,13 +112,11 @@ async fn drops_ws(
     monitor: web::Data<DropMonitor>,
     session_service: web::Data<SessionService>,
     cookie_service: web::Data<SessionCookieService>,
-) -> impl Responder {
-    if let Err(resp) = validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_DROPS_READ) {
-        return resp;
-    }
-    drop_websocket::websocket_drops(req, stream, monitor)
+) -> Result<HttpResponse, ActixError> {
+    validate_ws_auth(&req, &session_service, &cookie_service, PERMISSION_DROPS_READ)?;
+    Ok(drop_websocket::websocket_drops(req, stream, monitor)
         .await
-        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err)))
+        .unwrap_or_else(|err| internal_error(format!("WebSocket error: {}", err))))
 }
 
 #[cfg(test)]

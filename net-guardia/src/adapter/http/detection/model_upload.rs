@@ -425,9 +425,10 @@ fn extract_bundle_zip(
         if entry.is_dir() {
             continue;
         }
+        let entry_name = String::from_utf8_lossy(entry.name_raw());
         let enclosed = entry
             .enclosed_name()
-            .ok_or_else(|| UploadError::BundleEntryInvalid(entry.name().to_string()))?;
+            .ok_or_else(|| UploadError::BundleEntryInvalid(entry_name.to_string()))?;
         if enclosed.components().count() != 1 {
             return Err(UploadError::BundleEntryInvalid(format!(
                 "nested archive paths are not allowed: {}",
@@ -437,7 +438,7 @@ fn extract_bundle_zip(
         let filename = enclosed
             .file_name()
             .and_then(|value| value.to_str())
-            .ok_or_else(|| UploadError::BundleEntryInvalid(entry.name().to_string()))?;
+            .ok_or_else(|| UploadError::BundleEntryInvalid(entry_name.to_string()))?;
         reserve_upload_filename(&mut seen_files, filename)?;
 
         let dest = staging_dir.join(filename);

@@ -17,14 +17,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve frontend submodule commit
         id: frontend-ref
         run: echo "sha=$(git rev-parse HEAD:net-guardia-frontend)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout frontend submodule
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: DaLaw2/NetGuardia-FrontEnd
           ref: ${{ steps.frontend-ref.outputs.sha }}
@@ -39,9 +39,9 @@ jobs:
             libelf-dev zlib1g-dev pkg-config
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: net-guardia-frontend/package-lock.json
 
@@ -70,14 +70,12 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.26.1
+
       - name: Install bpf-linker
         run: |
-          cargo install cargo-binstall --locked 2>/dev/null || true
-          if command -v cargo-binstall &>/dev/null; then
-            cargo binstall bpf-linker --no-confirm --force || cargo install bpf-linker --locked
-          else
-            cargo install bpf-linker --locked
-          fi
+          cargo binstall bpf-linker --no-confirm --force
           ls -la "$HOME/.cargo/bin/bpf-linker"
         timeout-minutes: 45
 
@@ -106,7 +104,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Integration test reminder
         run: |

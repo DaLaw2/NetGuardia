@@ -120,7 +120,6 @@ fn parse_timestamp_suffix(name: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::env;
-    use std::io::Write as _;
     use std::path::PathBuf;
 
     use uuid::Uuid;

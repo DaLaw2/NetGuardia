@@ -145,7 +145,7 @@ fn truncate_message(message: &mut String, max_message_bytes: usize) {
     const TRUNCATION_SUFFIX: &str = "...[truncated]";
 
     if max_message_bytes <= TRUNCATION_SUFFIX.len() {
-        message.truncate(0);
+        message.clear();
         message.push_str(&TRUNCATION_SUFFIX[..max_message_bytes]);
         return;
     }
